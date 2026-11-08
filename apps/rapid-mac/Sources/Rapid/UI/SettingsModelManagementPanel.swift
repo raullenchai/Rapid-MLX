@@ -35,6 +35,19 @@ import SwiftUI
 struct SettingsModelManagementPanel: View {
     @Environment(ServerManager.self) private var server
     @Environment(DownloadManager.self) private var downloads
+    private let checkpointDefaults: UserDefaults
+    private let checkpointDirectory: @MainActor () -> URL?
+    @State private var openedCheckpointPaths: [String]
+    @State private var openingCheckpoint = false
+    @State private var checkpointError: String?
+    @State private var checkpointTask: Task<Void, Never>?
+
+    init(checkpointDefaults: UserDefaults = .standard,
+         checkpointDirectory: @escaping @MainActor () -> URL? = { SettingsModelManagementPanel.selectExistingCheckpointDirectory() }) {
+        self.checkpointDefaults = checkpointDefaults
+        self.checkpointDirectory = checkpointDirectory
+        _openedCheckpointPaths = State(initialValue: OpenedCheckpoints.paths(defaults: checkpointDefaults))
+    }
 
     // Seeded from the process-wide cache rather than starting empty: an
     // empty start re-rendered the spinner on every visit regardless of
@@ -51,6 +64,14 @@ struct SettingsModelManagementPanel: View {
     @State private var endpointFeedback: String?
 
     @State private var query: String = ""
+    @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
+    @FocusState private var searchFocused: Bool
+    @State private var hfCheck: HuggingFaceModelCheck?
+    @State private var hfCheckError: String?
+    @State private var hfCheckedQuery = ""
+    @State private var hfCheckRevision = 0
+    @State private var hfCheckImmediately = false
+
     /// Which capability tab is showing (Chat vs Image vs Audio vs future Video). Model
     /// Management manages every kind, but never mixes them in one list.
     @State private var capability: ModelKind = .chat
@@ -136,16 +157,22 @@ struct SettingsModelManagementPanel: View {
             header
             capabilityTabs
             controlsRow
+            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                openedCheckpointsSection
+            }
             crossTabHints
-            modelsFolderSection
-            storageOverviewSection
-            preferencesSection
-            downloadEndpointSection
+            if !isSearching {
+                modelsFolderSection
+                storageOverviewSection
+                preferencesSection
+                downloadEndpointSection
+            }
             if capability == .chat {
                 if showRecommendedSection {
                     recommendedSection
                 }
             }
+            huggingFaceSection
             if loading && catalog.isEmpty {
                 loadingState
             } else if catalog.isEmpty {
@@ -175,6 +202,13 @@ struct SettingsModelManagementPanel: View {
         // Loading, empty, and catalog branches are deliberately exclusive.
         // Animating this container retains both conditional trees during the
         // transition, which can overlay the spinner on stale model rows.
+        // Downloads and deletions change the check's `cached` result, so rerun on them too.
+        .task(id: "\(query)\n\(hfCheckRevision)\n\(hfCacheSignature)") {
+            await checkHuggingFace()
+        }
+        .onAppear { consumeModelSearchRequest() }
+        .onDisappear { checkpointTask?.cancel() }
+        .onChange(of: settingsRouter?.modelSearchRequest) { _, _ in consumeModelSearchRequest() }
         .task {
             await refreshCatalog()
             refreshStorageCapacity()
@@ -231,6 +265,151 @@ struct SettingsModelManagementPanel: View {
                 for: entry,
                 isServing: entry.alias == server.servingAlias
             ).message)
+        }
+    }
+
+    private var hfReference: HuggingFaceReference? {
+        guard HuggingFaceReference.catalogMatch(query, in: catalog) == nil else { return nil }
+        return HuggingFaceReference.detect(query)
+    }
+
+    private var currentHFCheck: HuggingFaceModelCheck? { hfCheckedQuery == query ? hfCheck : nil }
+
+    private var hfCacheSignature: String {
+        catalog.filter(\.cached).map(\.alias).sorted().joined(separator: ",")
+    }
+
+    private func consumeModelSearchRequest() {
+        guard let request = settingsRouter?.modelSearchRequest else { return }
+        settingsRouter?.modelSearchRequest = nil
+        query = request.prefill ?? ""
+        filterMode = .all
+        capability = .chat
+        searchFocused = true
+    }
+
+    private func checkHuggingFace() async {
+        let input = query
+        let reference = HuggingFaceReference.detect(input)
+        hfCheck = nil
+        hfCheckError = nil
+        hfCheckedQuery = input
+        if let match = HuggingFaceReference.catalogMatch(input, in: catalog) {
+            filterMode = .all
+            capability = match.kind
+            // Browser links still receive the CLI check; a known bare repo
+            // remains an ordinary catalog search.
+            if case .model(_, true) = reference {} else { return }
+        }
+        guard reference != nil else { return }
+        do {
+            if !hfCheckImmediately { try await Task.sleep(for: .milliseconds(400)) }
+            try Task.checkCancellation()
+            guard let binary = server.binaryPath ?? ServerLocator.find() else {
+                hfCheckError = String(localized: "Couldn't find the model checker. Restart Rapid-MLX and try again.")
+                return
+            }
+            let result = try await ModelCatalog.checkHuggingFace(reference: input, binary: binary)
+            guard !Task.isCancelled, query == input else { return }
+            hfCheck = result
+            if result.inCatalog {
+                filterMode = .all
+                if let entry = catalog.first(where: { $0.alias == result.alias || $0.hfRepo == result.repo }) {
+                    capability = entry.kind
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, query == input else { return }
+            hfCheckError = String(localized: "Couldn't check this model. Try again.")
+        }
+    }
+
+    @ViewBuilder
+    private var huggingFaceSection: some View {
+        if let reference = hfReference, currentHFCheck?.inCatalog != true {
+            let result = currentHFCheck
+            let repo: String = if case .model(let repo, _) = reference { repo } else { query }
+            let entry = result?.entry ?? ModelEntry(alias: repo, hfRepo: repo, sizeOnDisk: nil, cached: false)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                ModelsTableHeading(heading: .init(title: String(localized: "From Hugging Face"), countText: "1"))
+                HStack(spacing: RapidTheme.Space.sm) {
+                    favoriteStar(entry.alias, identifier: "Settings.ModelManagement.HFRow.Favorite")
+                    BrandIcon(alias: entry.alias)
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                        HStack(spacing: RapidTheme.Space.xs) {
+                            Text(entry.alias.components(separatedBy: "/").last ?? entry.alias)
+                                .font(RapidFont.bodyEmphasis)
+                                .foregroundStyle(RapidTheme.textPrimary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .accessibilityIdentifier("Settings.ModelManagement.HFRow.Name")
+                            badgePill(String(localized: "HUGGING FACE"), color: RapidTheme.textSecondary)
+                        }
+                        hfMeta(result)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if showsMeters {
+                        metersView(alias: "")
+                            .frame(width: ModelTableLayout.metersColumnWidth)
+                    }
+                    hfAction(entry: entry, result: result)
+                        .frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
+                }
+                .padding(.vertical, RapidTheme.Space.md)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("Settings.ModelManagement.HFRow")
+                .settingsGroupedCard()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func hfMeta(_ result: HuggingFaceModelCheck?) -> some View {
+        if let result {
+            let warning = result.rowState == .warning || result.rowState == .downloadAnyway
+            Text(result.rowState == .downloadAnyway ? result.memoryWarning(physicalRAMGB: hardware.physicalRAMGB)
+                 : result.rowState == .warning ? result.message ?? String(localized: "Couldn't check this model. Try again.")
+                 : result.communityMeta)
+                .font(RapidFont.caption)
+                .foregroundStyle(warning ? RapidTheme.amber : RapidTheme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("Settings.ModelManagement.HFRow.Meta")
+        } else if let error = hfCheckedQuery == query ? hfCheckError : nil {
+            Text(error)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.amber)
+                .accessibilityIdentifier("Settings.ModelManagement.HFRow.Meta")
+        } else {
+            HStack(spacing: RapidTheme.Space.xs) {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel(String(localized: "Checking format and size…"))
+                    .accessibilityIdentifier("Settings.ModelManagement.HFRow.Checking")
+                Text("Checking format and size…").font(RapidFont.caption)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func hfAction(entry: ModelEntry, result: HuggingFaceModelCheck?) -> some View {
+        if let result, result.rowState == .download || result.rowState == .downloadAnyway {
+            let badge = ModelCacheActions.statusBadge(for: entry, downloadJob: downloads.jobs[entry.alias], servingAlias: server.servingAlias)
+            if result.rowState == .downloadAnyway, badge == .notCached {
+                VStack(alignment: .trailing, spacing: RapidTheme.Space.xxs) {
+                    if let bytes = result.downloadBytes {
+                        Text(DownloadProgress.formatBytes(bytes)).font(RapidFont.caption)
+                    }
+                    Button("Download anyway") {
+                        _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: result.downloadBytes)
+                    }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .accessibilityLabel(String(localized: "Download anyway"))
+                    .accessibilityIdentifier("Settings.ModelManagement.HFRow.DownloadAnyway")
+                }
+            } else {
+                sizeAction(entry: entry, badge: badge, identifierPrefix: "Settings.ModelManagement.HFRow")
+            }
         }
     }
 
@@ -389,7 +568,7 @@ struct SettingsModelManagementPanel: View {
 
                 SettingsRow(
                     title: String(localized: "Unload model when idle"),
-                    description: String(localized: "Idle chat models are unloaded while the local API stays online; the next request reloads them. The server still stops if a dictation or speech model is idle, or if the runtime is too old for idle unload.")
+                    description: String(localized: "Idle models are unloaded while the local API stays online; the next request reloads them. Older runtimes may stop the server to release idle models.")
                 ) {
                     Picker("Unload model when idle", selection: $idleReleaseSeconds) {
                         Text("Never").tag(0)
@@ -521,6 +700,95 @@ struct SettingsModelManagementPanel: View {
         Task { await refreshCatalog() }
     }
 
+    private var openedCheckpointsSection: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            HStack {
+                Text("Existing checkpoints").font(RapidFont.body)
+                Spacer(minLength: 0)
+                if openingCheckpoint {
+                    ProgressView().controlSize(.small).accessibilityLabel("Checking checkpoint…")
+                        .accessibilityIdentifier("Settings.ModelManagement.CheckingCheckpoint")
+                }
+                Button("Open existing checkpoint…") { chooseExistingCheckpoint() }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .disabled(openingCheckpoint)
+                    .accessibilityIdentifier("Settings.ModelManagement.OpenCheckpoint")
+            }
+            Text("Use a supported chat checkpoint where it is. Downloads keep their current location.")
+                .font(RapidFont.caption).foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let checkpointError {
+                InlineNotice(message: checkpointError, tone: .error,
+                    actionTitle: String(localized: "Dismiss"),
+                    actionIdentifier: "Settings.ModelManagement.DismissCheckpointError",
+                    action: { self.checkpointError = nil })
+            }
+            ForEach(openedCheckpointPaths, id: \.self) { path in
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(URL(fileURLWithPath: path).lastPathComponent).font(RapidFont.body)
+                        Text(path).font(RapidFont.caption).foregroundStyle(RapidTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Remove reference") {
+                        OpenedCheckpoints.remove(path, defaults: checkpointDefaults)
+                        openedCheckpointPaths = OpenedCheckpoints.paths(defaults: checkpointDefaults)
+                        downloads.markCacheChanged()
+                        Task { await refreshCatalog() }
+                    }
+                    .buttonStyle(.rapidTertiary).disabled(openingCheckpoint)
+                    .accessibilityIdentifier("Settings.ModelManagement.RemoveCheckpoint.\(path)")
+                }
+            }
+            if !openedCheckpointPaths.isEmpty {
+                Text("Removing a reference leaves the checkpoint files unchanged. Only available, supported checkpoints appear in the model list.")
+                    .font(RapidFont.caption).foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Settings.ModelManagement.OpenedCheckpoints")
+    }
+
+    private func chooseExistingCheckpoint() {
+        guard let selected = checkpointDirectory() else { return }
+        guard let path = OpenedCheckpoints.canonicalPath(selected.path) else {
+            checkpointError = LocalCheckpointError.rejected("invalid_path").localizedDescription
+            return
+        }
+        checkpointError = nil
+        openingCheckpoint = true
+        checkpointTask = Task {
+            defer { openingCheckpoint = false }
+            do {
+                guard let binary = server.binaryPath else { throw LocalCheckpointError.unavailable }
+                let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [path], binary: binary,
+                    hubCacheOverride: ModelsFolderPreference.validatedOverrideURL(defaults: checkpointDefaults))
+                try Task.checkCancellation()
+                try OpenedCheckpoints.register(checks[0], defaults: checkpointDefaults)
+                openedCheckpointPaths = OpenedCheckpoints.paths(defaults: checkpointDefaults)
+                downloads.markCacheChanged()
+                await refreshCatalog()
+            } catch is CancellationError {
+                // Leaving the panel never registers a late inspection reply.
+            } catch {
+                checkpointError = error.localizedDescription
+            }
+        }
+    }
+
+    static func selectExistingCheckpointDirectory(panel: NSOpenPanel = NSOpenPanel()) -> URL? {
+        panel.title = String(localized: "Open existing checkpoint")
+        panel.message = String(localized: "Choose a complete chat checkpoint directory. Files stay in their current location.")
+        panel.prompt = String(localized: "Open checkpoint")
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     /// Clear the custom folder and fall back to the default location.
     private func resetModelsFolder() {
         ModelsFolderPreference.setStoredPath(nil)
@@ -554,8 +822,15 @@ struct SettingsModelManagementPanel: View {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(RapidTheme.utilityActionLabel)
                         .accessibilityHidden(true)
-                    TextField("Search models", text: $query)
+                    TextField("Search or paste a Hugging Face link", text: $query)
                         .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .onChange(of: query) { _, _ in hfCheckImmediately = false }
+                        .onSubmit {
+                            hfCheckImmediately = true
+                            hfCheckRevision &+= 1
+                        }
+                        .accessibilityLabel(String(localized: "Search or paste a Hugging Face link"))
                         .font(RapidFont.body)
                         .accessibilityIdentifier("Settings.ModelManagement.Search")
                     if !query.isEmpty {
@@ -669,13 +944,17 @@ struct SettingsModelManagementPanel: View {
         return map
     }
 
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Cards only make sense on the unfiltered default view. Hide them
     /// the moment the user searches or switches the cached filter so
     /// those controls act on the whole catalog without a fixed 4-card
     /// header in the way.
     private var showRecommendedSection: Bool {
         !catalog.isEmpty
-            && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isSearching
             && filterMode == .all
     }
 
@@ -727,7 +1006,9 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(Self.pickStatsLine(pick))
+                    Text(Self.pickStatsLine(pick, repoID: entry.hfRepo, hardware: hardware))
+                        .help(DecodeExpectations.summary(alias: pick.alias, repoID: entry.hfRepo, hardware: hardware))
+                        .accessibilityValue(DecodeExpectations.summary(alias: pick.alias, repoID: entry.hfRepo, hardware: hardware))
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(2)
@@ -777,27 +1058,19 @@ struct SettingsModelManagementPanel: View {
         .accessibilityIdentifier("Settings.ModelManagement.Recommended.\(isPrimary ? "primary" : "alt")")
     }
 
-    /// Peak memory for an 8K prompt, capability, and measured speed.
-    /// Compact stats line under a recommended card's model name:
-    /// "7.6 GB memory · 86% capability · ~17 tok/s" (tok/s omitted when we have
-    /// no local measurement for that tier). When the pick carries a
-    /// ``caveat`` (e.g. a chat specialist), that word replaces the
-    /// capability % — "4.8 GB memory · ~117 tok/s · Chat only" — because the
-    /// blended score would understate conversation and overstate the rest.
-    static func pickStatsLine(_ pick: RAMBucketedDefault.Pick) -> String {
+    /// Working-set memory, capability or caveat, and a compact chip-specific
+    /// catalog-default decode reference. The card's help and accessibility
+    /// value carry the measured sample count and RAM scope; unavailable data
+    /// never inherits an unqualified speed from another Mac.
+    static func pickStatsLine(_ pick: RAMBucketedDefault.Pick, repoID: String? = nil, hardware: MacHardware = .detect()) -> String {
         let size = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))
         var parts = [String(localized: "\(size) memory")]
         if let caveat = pick.caveat {
-            if let tps = pick.tokensPerSec {
-                parts.append(String(localized: "~\(Int(tps.rounded())) tok/s"))
-            }
             parts.append(caveat)
         } else {
             parts.append(String(localized: "\(pick.capabilityPct)% capability"))
-            if let tps = pick.tokensPerSec {
-                parts.append(String(localized: "~\(Int(tps.rounded())) tok/s"))
-            }
         }
+        parts.append(DecodeExpectations.summary(alias: pick.alias, repoID: repoID, hardware: hardware, compact: true))
         return parts.joined(separator: " · ")
     }
 
@@ -871,7 +1144,7 @@ struct SettingsModelManagementPanel: View {
     /// misattributed those curated numbers as published benchmarks.)
     @ViewBuilder
     private var meterLegend: some View {
-        Text("Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = measured tokens/sec on this class of Mac · Untested = no compatible result recorded yet.")
+        Text("Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = reference benchmark on recorded hardware · Untested = no compatible result recorded yet.")
             .font(RapidFont.caption)
             .foregroundStyle(RapidTheme.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -976,7 +1249,7 @@ struct SettingsModelManagementPanel: View {
     }
 
     @ViewBuilder
-    private func favoriteStar(_ alias: String) -> some View {
+    private func favoriteStar(_ alias: String, identifier: String? = nil) -> some View {
         let isFav = favorites.contains(alias)
         Button {
             toggleFavorite(alias)
@@ -988,7 +1261,7 @@ struct SettingsModelManagementPanel: View {
         .buttonStyle(.plain)
         .frame(width: 15)
         .accessibilityLabel(isFav ? String(localized: "Unpin \(ModelDisplayName.name(for: alias))") : String(localized: "Pin \(ModelDisplayName.name(for: alias))"))
-        .accessibilityIdentifier("Settings.ModelManagement.Favorite.\(alias)")
+        .accessibilityIdentifier(identifier ?? "Settings.ModelManagement.Favorite.\(alias)")
     }
 
     private func toggleFavorite(_ alias: String) {
@@ -1004,7 +1277,7 @@ struct SettingsModelManagementPanel: View {
         if let badge = recommendedBadgeByAlias[alias] {
             badgePill(badge, color: RapidTheme.brandPrimaryDeep)
         } else if ModelBrandStyle.modelType(forAlias: alias) == .vision {
-            badgePill("VISION", color: RapidTheme.textSecondary)
+            badgePill(String(localized: "Vision").uppercased(), color: RapidTheme.textSecondary)
         }
         ForEach(ModelCacheActions.retentionBadges(
             alias: alias,
@@ -1036,7 +1309,7 @@ struct SettingsModelManagementPanel: View {
     /// failed → retry. Preserves the accessibility identifiers the
     /// original text buttons carried so existing selectors still resolve.
     @ViewBuilder
-    private func sizeAction(entry: ModelEntry, badge: ModelCacheActions.StatusBadge) -> some View {
+    private func sizeAction(entry: ModelEntry, badge: ModelCacheActions.StatusBadge, identifierPrefix: String? = nil) -> some View {
         switch badge {
         case .cached:
             // The size is the point of this tab. A cached row used to show
@@ -1089,7 +1362,7 @@ struct SettingsModelManagementPanel: View {
                     ) {
                         pendingDeletion = entry
                     }
-                    .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
+                    .accessibilityIdentifier(identifierPrefix.map { "\($0).Delete" } ?? "Settings.ModelManagement.Delete.\(entry.alias)")
                 }
             }
         case .inUse:
@@ -1121,7 +1394,7 @@ struct SettingsModelManagementPanel: View {
                 ) {
                     pendingDeletion = entry
                 }
-                .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
+                .accessibilityIdentifier(identifierPrefix.map { "\($0).Delete" } ?? "Settings.ModelManagement.Delete.\(entry.alias)")
             }
         case .notCached:
             HStack(spacing: 8) {
@@ -1142,7 +1415,7 @@ struct SettingsModelManagementPanel: View {
                 ) {
                     _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
                 }
-                .accessibilityIdentifier("Settings.ModelManagement.Download.\(entry.alias)")
+                .accessibilityIdentifier(identifierPrefix.map { "\($0).Download" } ?? "Settings.ModelManagement.Download.\(entry.alias)")
             }
         case .downloading(let pct):
             Button {
@@ -1153,7 +1426,7 @@ struct SettingsModelManagementPanel: View {
             .buttonStyle(.rapidSecondaryCompact)
             .help("Cancel download")
             .accessibilityLabel(pct.map { String(localized: "Cancel download, \($0) percent") } ?? String(localized: "Cancel download"))
-            .accessibilityIdentifier("Settings.ModelManagement.Cancel.\(entry.alias)")
+            .accessibilityIdentifier(identifierPrefix.map { "\($0).Cancel" } ?? "Settings.ModelManagement.Cancel.\(entry.alias)")
         case .failed:
             Button {
                 downloads.dismissJob(alias: entry.alias)
@@ -1162,7 +1435,7 @@ struct SettingsModelManagementPanel: View {
                 Text("Retry")
             }
             .buttonStyle(.rapidSecondaryCompact)
-            .accessibilityIdentifier("Settings.ModelManagement.Retry.\(entry.alias)")
+            .accessibilityIdentifier(identifierPrefix.map { "\($0).Retry" } ?? "Settings.ModelManagement.Retry.\(entry.alias)")
         }
     }
 
@@ -1175,7 +1448,10 @@ struct SettingsModelManagementPanel: View {
 
     private var visibleEntries: [ModelEntry] {
         let byCapability = entriesForCapability
-        let filtered = ModelCacheActions.filter(byCapability, by: filterMode, query: query)
+        let match = HuggingFaceReference.catalogMatch(query, in: catalog)
+        let checked = hfCheckedQuery == query && hfCheck?.inCatalog == true ? hfCheck : nil
+        let search = match?.alias ?? checked?.alias ?? checked?.repo ?? query
+        let filtered = ModelCacheActions.filter(byCapability, by: filterMode, query: search)
         let sorted = ModelCacheActions.sorted(filtered, order: sortOrder)
         return ModelFavorites.favoritesFirst(sorted, favorites: favorites)
     }
@@ -1253,9 +1529,15 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    rowBadge(for: entry.alias)
+                    if entry.isFromHuggingFace {
+                        badgePill(String(localized: "HUGGING FACE"), color: RapidTheme.textSecondary)
+                    } else {
+                        rowBadge(for: entry.alias)
+                    }
                 }
-                Text(rowMeta(entry.alias))
+                Text(entry.isFromHuggingFace
+                     ? [entry.hfRepo?.components(separatedBy: "/").first, String(localized: "community upload, not tested")].compactMap { $0 }.joined(separator: " · ")
+                     : rowMeta(entry.alias))
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textTertiary)
                     .lineLimit(1)
@@ -1287,6 +1569,7 @@ struct SettingsModelManagementPanel: View {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(ModelDisplayName.name(for: entry.alias))
+                    .help(entry.alias)
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
@@ -1576,7 +1859,7 @@ struct SettingsModelManagementPanel: View {
         // through to the established per-surface compatibility loaders.
         if let atomic = await Self.stableAtomicCatalogSnapshot(
             currentGeneration: { downloads.cacheGeneration },
-            loader: { await ModelCatalog.productEntries(binary: binary) }
+            loader: { await ModelCatalog.productEntries(binary: binary, openedPaths: openedCheckpointPaths) }
         ) {
             guard !Task.isCancelled else { return }
             catalog = atomic

@@ -2113,6 +2113,114 @@ def _get_music_lock() -> _CrossLoopAsyncLock:
     return _music_lock
 
 
+async def release_idle_audio_lanes(
+    ttl: float, *, lanes: tuple[str, ...] = ("stt", "alignment", "tts")
+) -> None:
+    """Recheck idle age under request locks before releasing cached weights."""
+    if ttl <= 0:
+        return
+    from ..runtime.audio_worker import audio_worker, run_audio_mlx
+
+    async def release(lane: str, cached: object | None) -> bool:
+        if cached is None:
+            return False
+        # Inspect AFTER acquiring the route lock: a queued request may have
+        # finished since the timer woke. Handoff checks are also repeated by
+        # the dispatcher immediately before it reserves worker ownership.
+        state = next((s for s in audio_worker.snapshot() if s["lane"] == lane), None)
+        idle_seconds = state["idle_seconds"] if state is not None else None
+        if (
+            state is None
+            or state["state"] == "registered"
+            or state["active_requests"] != 0
+            or not isinstance(idle_seconds, (int, float))
+            or idle_seconds < ttl
+        ):
+            return False
+        unload = getattr(cached, "unload", None)
+        if not callable(unload):
+            return False
+
+        def unload_and_release() -> None:
+            from ..runtime.resident_models import _release_allocator_cache
+
+            unload()
+            _release_allocator_cache()
+
+        await run_audio_mlx(
+            lane, getattr(cached, "model_name", "unknown"), "unload", unload_and_release
+        )
+        return True
+
+    async def release_lane(lane: str) -> None:
+        global _stt_engine, _aligner_engine, _tts_engine
+
+        try:
+            lock = _get_tts_lane_lock() if lane == "tts" else _get_stt_lane_lock()
+            async with lock:
+                cached = {
+                    "stt": _stt_engine,
+                    "alignment": _aligner_engine,
+                    "tts": _tts_engine,
+                }[lane]
+                if await release(lane, cached):
+                    if lane == "stt":
+                        _stt_engine = None
+                    elif lane == "alignment":
+                        _aligner_engine = None
+                        await _release_alignment_role()
+                    else:
+                        _tts_engine = None
+        except Exception:
+            # Preserve a failed cache for a later retry; don't strand the
+            # other lanes when a backend fails or the primary is switching.
+            logger.exception("Failed to release idle %s audio lane", lane)
+
+    # An active STT request must not postpone release of an idle TTS lane.
+    # STT and alignment still serialize on their existing shared request lock.
+    await asyncio.gather(*(release_lane(lane) for lane in lanes))
+
+
+async def audio_lane_idle_loop(ttl: float) -> None:
+    """Lifespan-owned timer; zero TTL creates no background work."""
+
+    async def run_lane(lane: str) -> None:
+        while ttl > 0:
+            await asyncio.sleep(min(60.0, max(1.0, ttl / 4.0)))
+            # Finish cache bookkeeping even if shutdown cancels during unload.
+            task = asyncio.create_task(release_idle_audio_lanes(ttl, lanes=(lane,)))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                task.result()
+                raise
+
+    # Each lane advances independently. Shield the group so repeated parent
+    # cancellation cannot abandon a child while it drains an owning worker.
+    loops = [
+        asyncio.create_task(run_lane(lane), name=f"audio-idle-{lane}")
+        for lane in ("stt", "alignment", "tts")
+    ]
+    completion = asyncio.gather(*loops, return_exceptions=True)
+    try:
+        await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        for loop in loops:
+            loop.cancel()
+        while not completion.done():
+            try:
+                await asyncio.shield(completion)
+            except asyncio.CancelledError:
+                continue
+        completion.result()
+        raise
+
+
 async def shutdown_audio_lanes() -> None:
     """Unload cached audio models on their owning MLX worker.
 

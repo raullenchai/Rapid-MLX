@@ -704,6 +704,8 @@ class RequestOutput:
     # Frozen scheduler timings for a successful terminal text generation.
     # Appended after prompt_compression to preserve its positional index.
     timing_metrics: dict[str, float] | None = None
+    # Appended for positional compatibility; successful terminal output only.
+    execution_reference: dict | None = None
 
     @property
     def usage(self) -> dict[str, int]:

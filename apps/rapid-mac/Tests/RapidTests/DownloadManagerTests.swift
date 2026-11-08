@@ -577,6 +577,113 @@ struct DownloadManagerTests {
         #expect(env["RAPID_MLX_MODEL_MIRROR"] == "https://models.rapidmlx.com")
     }
 
+    // /usr/bin/true stands in for pull: retries create real replacement jobs
+    // through startDownload, without network traffic or model/cache writes.
+    private func retryManager() -> DownloadManager {
+        let binary = URL(fileURLWithPath: "/usr/bin/true")
+        return DownloadManager(binaryPath: binary, binaryLocator: { binary }, endpointPreference: { nil })
+    }
+
+    private func awaitRetry(_ mgr: DownloadManager, replacing job: DownloadManager.Job) async throws -> DownloadManager.Job {
+        let replaced = await waitUntil(deadline: Date().addingTimeInterval(20)) {
+            guard let next = mgr.job(for: job.alias) else { return false }
+            return next.instanceID != job.instanceID && next.status == .completed
+        }
+        #expect(replaced, "automatic retry did not create and finish a replacement job")
+        return try #require(mgr.job(for: job.alias))
+    }
+
+    @Test("Mirror unavailable switches immediately without resetting the retry budget", arguments: [0, 2])
+    func unavailableMirrorAutomaticallyUsesHF(attempt: Int) async throws {
+        let mgr = retryManager()
+        defer { mgr.beginShutdown(); mgr.finishShutdown() }
+        let job = mgr._testingSeedJob(alias: "model", retryAttempt: attempt)
+        mgr._testingIngestStderr(alias: "model", line: "Error: mirror unreachable")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+        #expect(job.retryDelaySeconds == 2 << attempt)
+        let next = try await awaitRetry(mgr, replacing: job)
+        #expect(next.source == .huggingFace)
+        #expect(next.retryAttempt == attempt + 1)
+        mgr._testingIngestStderr(alias: "model", line: attempt == 2
+            ? "Error: connection refused" : "Error: could not reach Hugging Face")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+        #expect(next.status == .failed(message: "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry."))
+        #expect(next.retryDelaySeconds == nil)
+    }
+
+    @Test("Transient mirror failures retry once on mirror then switch to HF")
+    func repeatedTransientMirrorFailureUsesHF() async throws {
+        let mgr = retryManager()
+        defer { mgr.beginShutdown(); mgr.finishShutdown() }
+        let initial = mgr._testingSeedJob(alias: "model")
+        mgr._testingIngestStderr(alias: "model", line: "ConnectionResetError: peer reset")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+        #expect(initial.retryDelaySeconds == 2)
+        let first = try await awaitRetry(mgr, replacing: initial)
+        #expect(first.source == .mirror)
+        #expect(first.retryAttempt == 1)
+        mgr._testingIngestStderr(alias: "model", line: "ConnectionResetError: peer reset")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+        #expect(first.retryDelaySeconds == 4)
+        let second = try await awaitRetry(mgr, replacing: first)
+        #expect(second.source == .huggingFace)
+        #expect(second.retryAttempt == 2)
+    }
+
+    @Test("Two mirror stalls switch to HF")
+    func repeatedMirrorStallsUseHF() async throws {
+        let mgr = retryManager()
+        defer { mgr.beginShutdown(); mgr.finishShutdown() }
+        let initial = mgr._testingSeedJob(alias: "model")
+        mgr._testingFinish(alias: "model", status: 9, reason: .uncaughtSignal, wasStalled: true)
+        let first = try await awaitRetry(mgr, replacing: initial)
+        #expect(first.source == .mirror)
+        #expect(first.retryAttempt == 1)
+        mgr._testingFinish(alias: "model", status: 9, reason: .uncaughtSignal, wasStalled: true)
+        let second = try await awaitRetry(mgr, replacing: first)
+        #expect(second.source == .huggingFace)
+        #expect(second.retryAttempt == 2)
+    }
+
+    @Test("Explicit mirror choice and existing HF jobs keep their source", arguments: [false, true])
+    func automaticRetryPreservesSource(huggingFace: Bool) async throws {
+        let mgr = retryManager()
+        defer { mgr.beginShutdown(); mgr.finishShutdown() }
+        let source: DownloadManager.DownloadSource = huggingFace ? .huggingFace : .mirror
+        let job = mgr._testingSeedJob(alias: "model", source: source, forceMirror: !huggingFace, retryAttempt: 1)
+        mgr._testingIngestStderr(alias: "model", line: "Error: mirror returned 503 Service Unavailable")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+        let next = try await awaitRetry(mgr, replacing: job)
+        #expect(next.source == source)
+        #expect(next.forceMirror == !huggingFace)
+        #expect(next.retryAttempt == 2)
+    }
+
+    @Test("Permanent mirror failures stay terminal despite earlier network errors")
+    func permanentMirrorFailuresDoNotSwitch() {
+        for error in ["No space left on device", "GatedRepoError", "403 Client Error: Forbidden",
+                      "sha256 mismatch", "checksum mismatch", "404 Client Error: Not Found"] {
+            let mgr = DownloadManager()
+            let job = mgr._testingSeedJob(alias: "model", retryAttempt: 1)
+            mgr._testingIngestStderr(alias: "model", line: "mirror connection reset")
+            mgr._testingIngestStderr(alias: "model", line: error)
+            mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+            #expect(job.retryDelaySeconds == nil)
+            #expect(job.source == .mirror)
+            if case .failed = job.status {} else { Issue.record("Expected terminal failure for \(error)") }
+        }
+    }
+
+    @Test("Cancellation never schedules a mirror fallback")
+    func cancelledMirrorDoesNotSwitch() {
+        let mgr = DownloadManager()
+        let job = mgr._testingSeedJob(alias: "model", retryAttempt: 1)
+        mgr._testingIngestStderr(alias: "model", line: "mirror unreachable")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit, wasCancelling: true)
+        #expect(job.status == .cancelled)
+        #expect(job.retryDelaySeconds == nil)
+    }
+
     // MARK: - Cache generation
     //
     // Dogfood report: "I deleted the two qwens in Settings, but the

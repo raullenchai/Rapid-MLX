@@ -325,7 +325,7 @@ struct CommunityBenchmarkCommunityView: View {
                     format: String(
                         localized: "No published %1$@ results for an %2$@ came back. That does not mean there are none — try another workload, or check again later."
                     ),
-                    workload.displayName,
+                    workload.sentenceName,
                     macProfile.displayName
                 )
             )

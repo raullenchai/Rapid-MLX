@@ -182,6 +182,26 @@ envelope. All field names are snake_case.
 | POST | `/v1/local-search/reindex` | `{"folder_id": null}` for all folders, or a folder id; status body, 202 |
 | POST | `/v1/local-search/search` | `{"query": "search text", "limit": 20, "folder_ids": null, "kinds": null}` → results, took_ms, mode |
 
+Search requests may set `"include_text": true` to add `text`, `end_line`,
+and `end_page` to every result, including grouped results. `text` is the entire
+matched stored chunk, not the 500-character snippet or the whole source file.
+No source re-extraction or reindex is needed for existing indexes. The default
+(omitted or false) preserves the existing result fields and snippet/highlight
+behavior.
+
+End locators are inclusive and refer to the full returned chunk: `end_line`
+counts LF-separated lines from the existing one-based `line` (CRLF counts once),
+using extracted text for HTML and DOCX. Page-based PDF, PPTX and XLSX chunks
+stay within a single page/slide/sheet, so `end_page` equals `page` and line fields
+are null. For indexed line-based text, page fields are null. Name-only files,
+images and video frames have no matched text chunk: all three opt-in fields are
+null. Snippet highlights remain relative to `snippet`, not `text`.
+
+For example, `{"query": "returns policy", "include_text": true, "limit": 3}`
+lets a retrieval client build context from `text` and cite the supplied locators
+without reopening files. This API does not automatically ground chat responses;
+chat and Desktop integration remain separate work in issue #5575.
+
 Status is shaped as:
 
 ```json
@@ -565,3 +585,121 @@ Local availability requires complete weights plus `tokenizer_config.json` and
 `processor_config.json`; without it the snapshot is reported as not downloaded,
 so indexing remains keyword-only until the required assets are present. Optional
 repository files do not affect availability.
+
+## Ask a question about registered folders
+
+The chat endpoint can retrieve supporting text before answering when the request
+explicitly selects registered folders. Start the server with
+`--enable-local-search`, register your folder, and use the returned folder ID:
+
+```sh
+curl -s http://127.0.0.1:8461/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Can I return yarn that has been wound into a ball?"}],"local_search":{"folder_ids":["YOUR_REGISTERED_FOLDER_ID"],"limit":3}}'
+```
+
+`local_search` is optional. Omit it or send `null` for ordinary chat. When present,
+`folder_ids` is required (1–16 unique IDs) and `limit` defaults to 3 (1–10).
+Paths and an implicit search across all folders are not accepted. This option
+uses only text already in the selected local index; it does not open files,
+register folders, or download models. Keyword retrieval works without an
+embedding model. This initial mode requires string-valued content in every message. Text-only
+content-part arrays are also rejected. Tools, tool history, multimodal
+messages, and non-text structured output cannot be combined with this initial question-answering mode; those
+combinations return an error before retrieval.
+
+An opted-in response adds a top-level `local_search` object:
+
+```json
+{
+  "mode": "keyword",
+  "status": "grounded",
+  "indexing": false,
+  "truncated": false,
+  "sources": [{
+    "id": "1",
+    "folder_id": "YOUR_REGISTERED_FOLDER_ID",
+    "title": "returns-policy.md",
+    "text": "Items wound into a ball cannot be returned.",
+    "line": 8,
+    "end_line": 8
+  }]
+}
+```
+
+The assistant is instructed to cite the request-local source IDs as `[1]`, `[2]`,
+and so on. Sources contain complete indexed chunks, safe file names, and known
+inclusive line/page locators; unknown locators are omitted. Sources are bounded
+to 16 KiB of added context, including the catalogue and grounding instructions.
+Whole chunks that do not fit are omitted and `truncated` becomes true. If no
+complete matching chunk fits, the request returns `local_search_context_too_large`
+instead of silently quoting a partial chunk. The normal model context limit still
+applies to the complete conversation.
+
+With `stream: true`, this metadata appears on the first ordinary assistant-role
+SSE chunk only. Content deltas, finish reasons, optional usage, and `[DONE]` retain
+the ordinary chat framing. With no usable matching evidence, `status` is
+`no_matches`, `sources` is empty, and the endpoint returns an explicit abstention
+without invoking the chat model (zero token usage). `indexing` indicates that a
+selected folder is queued or currently indexing. Disabled or unavailable local
+search and missing folder IDs return structured errors; they never widen scope
+or fall back to an ungrounded model answer.
+
+Grounded requests bypass the response cache so prior answers cannot outlive
+changes to the selected index. Source metadata records retrieval provenance; it
+does not prove every model statement is supported. Small models can contradict
+a retrieved fact even while emitting a citation; use a capable instruction-following
+model and verify answers against the quoted text. Treat source contents as
+untrusted, verify citations, and retain human review for consequential answers.
+### Desktop folder chat
+
+Folder chat currently requires **Settings → Experimental → Built-in Agent Harness
+(Experimental)**. This opt-in changes the engine for new chats; existing chats keep
+their engine. Local Search must also be enabled with a registered folder. Choosing
+**Ask this folder…** while the chat opt-in is off opens that Settings category; it
+does not enable the preference or send a question. An older chat owner without
+folder-chat capability is rejected before submission.
+
+In Search, choose **Ask this folder…** on one registered folder. This starts a new
+chat with a removable folder chip. Only that folder is searched: no global scope,
+new registration, automatic indexing or model download is implied. The chip states
+that retrieved passages are saved with the chat. New Chat clears the scope; switching
+back to the conversation restores its scope. Remove the chip to stop using it for
+later turns. Folder chat accepts text questions and disables web, file, terminal
+and delegation tools; attachments must be removed first.
+
+Each admitted answer saves its retrieved text before generation. The source rows
+list all retrieved passages, including passages the model did not cite. Open the numbered
+source rows below the answer to read the saved passage and known page/line range.
+This preview does not open a model-supplied URL or the original file. Changing the
+index or original file cannot rewrite a saved answer's evidence. Source numbers
+are local to that answer. Reconnecting replays the same answer; a new question retrieves again and owns a
+separate source catalogue. The existing owner API also retrieves anew for an
+explicit regeneration. Desktop owner-backed regeneration remains unavailable;
+this feature does not change that existing restriction. Removing a
+folder registration does not erase excerpts already saved in chat history.
+
+Deleting an owner-backed conversation removes its local history immediately and
+records a deletion request before dropping its owner identifiers. Desktop verifies
+the original owner store, cancels its known active turn and waits for a terminal
+receipt before requesting owner deletion. Once confirmed, conversation and saved
+passage reads are unavailable. Original folder files and the search index are
+unaffected; retained owner database records and attachment bytes are not physically
+purged by this operation.
+
+If the owner is offline or a turn cannot be confirmed stopped, a small notice
+keeps deletion pending with **Retry**. Pending requests survive relaunch and retry
+when Desktop reconnects to the existing owner; retry does not start a model or an
+owner process. Older history without a recorded owner identity requires **Review
+connected owner** and explicit confirmation of its inspected title and store.
+Desktop never silently adopts a different store. If an earlier conversation
+creation response was lost before its identifier arrived, deletion stays pending;
+if another unknown owner turn is active, stop that turn before retrying. Local-only
+conversations retain their existing deletion behavior.
+
+Keyword-only retrieval, partial indexing and omitted oversized passages remain
+visible. No matches produces an abstention without inference; while indexing is
+in progress the reply explains that some files are not searchable yet. Missing
+folders, disabled or older services, incomplete full-text responses and context
+limits fail explicitly instead of sending an ordinary ungrounded request. Cited
+passages establish provenance, not model correctness; check the quoted text.

@@ -216,6 +216,7 @@ def inject_qwen4_exp_mtp_support(
         original_class = type(inner)
 
         class _Qwen4ExpWithMTP(original_class):  # type: ignore[valid-type, misc]
+            mtp_head_atomic_rollback = True
             mtp_prompt_lookup_supported = True
             mtp_prompt_lookup_policy = PromptLookupPolicy(
                 enabled_by_default=True,
@@ -244,10 +245,10 @@ def inject_qwen4_exp_mtp_support(
             def make_mtp_cache(self):
                 from mlx_lm.models.cache import CacheList, KVCache
 
-                from rapid_mlx.models.qwen4_exp_cache import QSAIndexCache
+                from rapid_mlx.models.qwen4_exp_cache import Qwen4MTPIndexCache
 
                 ratio = self.mtp.layers[0].self_attn.indexer.compress_ratio
-                return [CacheList(KVCache(), QSAIndexCache(ratio))]
+                return [CacheList(KVCache(), Qwen4MTPIndexCache(ratio))]
 
         inner.mtp = mtp
         # One autoregressive MTP layer can be invoked twice to form a verified

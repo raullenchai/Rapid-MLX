@@ -1183,6 +1183,11 @@ def inject_mtp_support(
             return [KVCache() for _ in self.mtp.layers]
 
     inner.__class__ = _Qwen3_5WithMTP
+    # Internal load provenance only: consumed at the engine handoff, never
+    # serialized. A configured sidecar or random-init head is not this proof.
+    inner._rapid_mlx_mtp_weights_container = (
+        str(weights_file.parent.absolute()) if weights_file is not None else None
+    )
     # Some callers retain the VLM-style outer wrapper and pass it onward.
     # Mirror the capability there so the gate follows the injected model
     # regardless of which supported shape reaches the generator.

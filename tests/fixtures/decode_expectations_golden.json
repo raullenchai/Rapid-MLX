@@ -1,0 +1,108 @@
+[
+  {
+    "alias": "qwen3.5-4b-4bit",
+    "chip": "M4",
+    "ram_gib": 32,
+    "summary": "29\u201339 tok/s measured \u00b7 MTP off \u00b7 smooth (n=6, 16\u201332 GB sampled)",
+    "repo_id": "mlx-community/Qwen3.5-4B-MLX-4bit",
+    "compact": "29\u201339 tok/s \u00b7 MTP off \u00b7 smooth"
+  },
+  {
+    "alias": "qwen3.5-9b-4bit",
+    "chip": "M4",
+    "ram_gib": 32,
+    "summary": "Expected decode range unavailable \u00b7 MTP on; MTP-off reference 17\u201321 tok/s (n=6, 16\u201332 GB sampled)",
+    "repo_id": "mlx-community/Qwen3.5-9B-4bit",
+    "compact": "Expected decode range unavailable \u00b7 MTP on"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M4",
+    "ram_gib": 32,
+    "summary": "Expected decode range unavailable \u00b7 MTP on",
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "compact": "Expected decode range unavailable \u00b7 MTP on"
+  },
+  {
+    "alias": "qwen3.5-4b-4bit",
+    "chip": "M4",
+    "ram_gib": 64,
+    "summary": "Expected decode range unavailable \u00b7 MTP off",
+    "repo_id": "mlx-community/Qwen3.5-4B-MLX-4bit",
+    "compact": "Expected decode range unavailable \u00b7 MTP off"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M4",
+    "ram_gib": 8,
+    "summary": "Expected decode unavailable: below catalog RAM requirement",
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "compact": "Expected decode unavailable: below catalog RAM requirement"
+  },
+  {
+    "alias": "qwen3.6-35b-4bit",
+    "chip": "M4",
+    "ram_gib": 64,
+    "summary": "Expected decode range unavailable \u00b7 MTP on",
+    "repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "compact": "Expected decode range unavailable \u00b7 MTP on"
+  },
+  {
+    "alias": "qwen3.5-4b-4bit",
+    "chip": "M42",
+    "ram_gib": 32,
+    "summary": "Expected decode range unavailable \u00b7 MTP off",
+    "repo_id": "mlx-community/Qwen3.5-4B-MLX-4bit",
+    "compact": "Expected decode range unavailable \u00b7 MTP off"
+  },
+  {
+    "alias": "unknown",
+    "chip": "M4",
+    "ram_gib": 32,
+    "summary": "Expected decode range unavailable",
+    "repo_id": null,
+    "compact": "Expected decode range unavailable"
+  },
+  {
+    "alias": "qwen3.5-4b-4bit",
+    "chip": "M4",
+    "ram_gib": 32,
+    "repo_id": "custom/foreign",
+    "summary": "Expected decode range unavailable",
+    "compact": "Expected decode range unavailable"
+  },
+  {
+    "alias": "qwen3.8-flash-next-tensorfold",
+    "chip": "M4",
+    "ram_gib": 4096,
+    "repo_id": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+    "summary": "Expected decode range unavailable \u00b7 configuration unavailable",
+    "compact": "Expected decode range unavailable \u00b7 configuration unavailable"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M3 Ultra",
+    "ram_gib": 96,
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "summary": "71\u201372 tok/s measured \u00b7 MTP on \u00b7 smooth (n=4, 96\u201396 GB sampled)",
+    "compact": "71\u201372 tok/s \u00b7 MTP on \u00b7 smooth"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M3 Ultra",
+    "ram_gib": 96,
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "summary": "Expected decode range unavailable \u00b7 MTP on; MTP-off reference 36\u201337 tok/s (n=3, 96\u2013512 GB sampled)",
+    "compact": "Expected decode range unavailable \u00b7 MTP on",
+    "cohort_config_key_override": "mtp:embedded_head:k=2:ordinary"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M3 Ultra",
+    "ram_gib": 96,
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "summary": "Expected decode range unavailable \u00b7 MTP on; MTP-off reference 36\u201337 tok/s (n=3, 96\u2013512 GB sampled)",
+    "compact": "Expected decode range unavailable \u00b7 MTP on",
+    "cohort_config_key_override": "mtp:external_model:k=3:ordinary"
+  }
+]

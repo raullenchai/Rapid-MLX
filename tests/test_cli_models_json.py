@@ -346,3 +346,37 @@ def test_atomic_shadow_failure_preserves_legacy_discovery(monkeypatch) -> None:
     assert payload["text"]
     assert payload["audio"] == []
     assert "atomic" not in payload
+
+
+def test_json_retains_all_draft_rows_with_standalone_contract():
+    from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
+
+    rows = {
+        r["alias"]: r
+        for key in ("text", "video", "image")
+        for r in _available_models_json_payload()[key]
+    }
+    for alias, profile in list_profiles().items():
+        assert rows[alias]["standalone"] == (
+            draft_only_conflict(profile.hf_path) is None
+        )
+    assert rows["qwen3.5-4b-mtp-4bit"]["standalone"] is False
+    assert rows["qwen3.5-9b-mtp-4bit"]["standalone"] is False
+    assert rows["qwen3.5-4b-4bit"]["standalone"] is True
+
+
+def test_cached_json_labels_draft_inventory(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_hub_model
+
+    repo = resolve_hub_model("qwen3.5-4b-mtp-4bit")
+    monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [(repo, 100, 1)])
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+    monkeypatch.setattr(cli, "_cached_repository_is_runnable", lambda repo: True)
+    monkeypatch.setattr(
+        "rapid_mlx.local_models.discover_runnable_chat_models", lambda: []
+    )
+    rows = _cached_models_json_payload()["cached"]
+    assert len(rows) == 1
+    assert rows[0]["repo"] == repo
+    assert rows[0]["standalone"] is False

@@ -549,6 +549,7 @@ async def test_route_validation(monkeypatch, tmp_path, overrides, detail):
     assert detail in exc.value.detail
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_minimax(monkeypatch):
     import argparse
 

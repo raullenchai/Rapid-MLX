@@ -1567,12 +1567,51 @@ class StreamOptions(BaseModel):
         return v
 
 
+class LocalSearchGroundingRequest(BaseModel):
+    """Explicit registered-folder scope for text-only grounded chat."""
+
+    model_config = ConfigDict(extra="forbid")
+    folder_ids: list[StrictStr] = Field(min_length=1, max_length=16)
+    limit: StrictInt = Field(default=3, ge=1, le=10)
+
+    @field_validator("folder_ids")
+    @classmethod
+    def _registered_ids(cls, value: list[str]) -> list[str]:
+        if any(not item or "/" in item or "\\" in item for item in value):
+            raise ValueError("folder_ids must contain registered folder IDs, not paths")
+        if len(set(value)) != len(value):
+            raise ValueError("folder_ids must be unique")
+        return value
+
+
+class LocalSearchSource(BaseModel):
+    id: str
+    folder_id: str
+    title: str
+    text: str
+    line: int | None = None
+    end_line: int | None = None
+    page: int | None = None
+    end_page: int | None = None
+
+
+class LocalSearchGrounding(BaseModel):
+    mode: Literal["keyword", "hybrid"]
+    status: Literal["grounded", "no_matches"]
+    indexing: bool
+    truncated: bool = False
+    sources: list[LocalSearchSource]
+
+
 class ChatCompletionRequest(BaseModel):
     """Request for chat completion."""
 
     # Preserve the caller's declarations when tool_choice narrows prompt tools.
     # Passed separately to streaming processing because model_dump omits it.
     _tool_authorization_names: set[str] | None = PrivateAttr(default=None)
+    _local_search_metadata: LocalSearchGrounding | None = PrivateAttr(default=None)
+
+    local_search: LocalSearchGroundingRequest | None = None
 
     model: str = "default"
     # D-ANTHRO-VALIDATION F11 (Anthropic sibling fix on OpenAI surface):
@@ -2249,11 +2288,91 @@ class PromptCompressionMetrics(BaseModel):
     kept_tokens: int
 
 
+class ExecutionReferenceMetrics(BaseModel):
+    """Bounded facts frozen from one successful executing generation."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+    version: Literal[1] = 1
+    status: Literal["known", "unknown", "mixed"]
+    repo_id: StrictStr | None = Field(default=None, max_length=256)
+    method: Literal["none", "mtp", "unknown", "mixed"]
+    assistant_source: Literal["embedded_head", "external_model", "unknown"] | None = (
+        None
+    )
+    backend: Literal["ordinary", "unknown", "mixed"]
+    max_draft_tokens: StrictInt | None = Field(default=None, ge=1, le=128)
+    observed_max_draft_tokens: StrictInt | None = Field(default=None, ge=1, le=128)
+    config_key: StrictStr | None = Field(default=None, max_length=96)
+    completion_tokens: StrictInt = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _consistent_reference(self):
+        from ..execution_reference import public_repositories
+
+        if self.repo_id is not None and self.repo_id not in public_repositories():
+            raise ValueError(
+                "execution repository is not in the bundled public catalog"
+            )
+        expected = None
+        if self.method == "none" and self.backend == "ordinary":
+            expected = "none"
+        elif (
+            self.method == "mtp"
+            and self.backend == "ordinary"
+            and self.assistant_source == "embedded_head"
+            and self.max_draft_tokens is not None
+        ):
+            expected = f"mtp:embedded_head:k={self.max_draft_tokens}:ordinary"
+        if self.config_key is not None and self.config_key != expected:
+            raise ValueError("execution configuration key does not match its facts")
+        if self.method != "mtp" and any(
+            value is not None
+            for value in (
+                self.assistant_source,
+                self.max_draft_tokens,
+                self.observed_max_draft_tokens,
+            )
+        ):
+            raise ValueError("non-MTP reference carries draft configuration")
+        if self.status == "known" and (
+            self.repo_id is None or expected is None or self.config_key != expected
+        ):
+            raise ValueError(
+                "known execution requires a public repository and configuration"
+            )
+        if (self.status == "mixed") != (self.method == "mixed"):
+            raise ValueError("mixed execution state must remain explicit")
+        return self
+
+
+class ExecutionHostMetrics(BaseModel):
+    """Non-identifying hardware frozen with one local inference result."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+    chip: StrictStr = Field(max_length=32)
+    memory_bytes: StrictInt = Field(gt=0, le=1 << 44)
+
+    @field_validator("chip")
+    @classmethod
+    def _normalized_chip(cls, value):
+        from ..decode_expectations import chip_name
+
+        if chip_name(value) != value:
+            raise ValueError("execution chip must be an exact normalized Apple variant")
+        return value
+
+
 class PerRequestMetrics(BaseModel):
     """Optional engine metrics carried only on a terminal response."""
 
     speculative_decoding: SpeculativeDecodingMetrics | None = None
     prompt_compression: PromptCompressionMetrics | None = None
+    execution_reference: ExecutionReferenceMetrics | None = None
+    execution_host: ExecutionHostMetrics | None = None
     time_to_first_token_ms: float | None = Field(
         default=None, ge=0, allow_inf_nan=False
     )
@@ -2282,6 +2401,7 @@ class ChatCompletionResponse(BaseModel):
     metrics: PerRequestMetrics | None = None
     # Diagnostic-only extension: these are NEVER executable tool_calls.
     rejected_tool_calls: list[dict[str, str]] | None = None
+    local_search: LocalSearchGrounding | None = None
 
 
 # =============================================================================
@@ -3474,6 +3594,7 @@ class ChatCompletionChunk(BaseModel):
     metrics: PerRequestMetrics | None = None
     # Diagnostic-only extension: these are NEVER executable tool_calls.
     rejected_tool_calls: list[dict[str, str]] | None = None
+    local_search: LocalSearchGrounding | None = None
 
 
 # Supported output dimensions: a bounded range keeps a single request from

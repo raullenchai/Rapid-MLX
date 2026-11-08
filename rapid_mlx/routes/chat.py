@@ -4060,6 +4060,35 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if resolved_model != request.model:
         request = request.model_copy(update={"model": resolved_model})
     _validate_model_name(request.model)
+    if request.local_search is not None:
+        from ..local_search.grounding import ABSTENTION, prepare_grounding
+
+        request = await prepare_grounding(
+            request, getattr(raw_request.app.state, "local_search", None)
+        )
+        metadata = request._local_search_metadata
+        assert metadata is not None
+        if metadata.status == "no_matches":
+            response = ChatCompletionResponse(
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChoice(
+                        message=AssistantMessage(content=ABSTENTION),
+                        finish_reason="stop",
+                    )
+                ],
+                local_search=request._local_search_metadata,
+            )
+            if request.stream:
+                return StreamingResponse(
+                    _stream_buffered_chat_response(response, request),
+                    media_type="text/event-stream",
+                    headers=SSE_RESPONSE_HEADERS,
+                )
+            return Response(
+                content=response.model_dump_json(exclude_none=True),
+                media_type="application/json",
+            )
     engine = get_engine(request.model)
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
@@ -5536,6 +5565,7 @@ async def _create_chat_completion_impl(
     _response_cache_epoch = 0
     _cacheable = (
         not request.stream
+        and request.local_search is None
         and not has_media
         and not engine.is_mllm
         and is_deterministic(chat_kwargs)
@@ -7215,6 +7245,7 @@ async def _create_chat_completion_impl(
         choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
+        local_search=request._local_search_metadata,
         rejected_tool_calls=current_rejected_tool_calls(),
         model=_resolve_model_name(request.model),
         choices=[
@@ -7355,10 +7386,21 @@ async def _stream_buffered_chat_response(
         terminal.timing_metrics = (
             response.metrics.model_dump(
                 exclude_none=True,
-                exclude={"speculative_decoding", "prompt_compression"},
+                exclude={
+                    "speculative_decoding",
+                    "prompt_compression",
+                    "execution_reference",
+                    "execution_host",
+                },
             )
             or None
         )
+        if response.metrics.execution_host is not None:
+            terminal.execution_host = response.metrics.execution_host.model_dump()
+        if response.metrics.execution_reference is not None:
+            terminal.execution_reference = (
+                response.metrics.execution_reference.model_dump(exclude_none=True)
+            )
         if response.metrics.prompt_compression is not None:
             terminal.prompt_compression = (
                 response.metrics.prompt_compression.model_dump()
@@ -7615,9 +7657,27 @@ async def stream_chat_completion(
                 pass
 
         # First chunk with role
-        _first_sse = f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
+        if request._local_search_metadata is not None:
+            role_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0, delta=ChatCompletionChunkDelta(role="assistant")
+                    )
+                ],
+                local_search=request._local_search_metadata,
+            )
+            _first_sse = f"data: {role_chunk.model_dump_json(exclude_none=True)}\n\n"
+        else:
+            _first_sse = f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
         if logger.isEnabledFor(logging.INFO):
-            logger.info(f"[SSE-ROLE] {_first_sse.strip()[:200]}")
+            logger.info(
+                "[SSE-ROLE] assistant (local sources attached)"
+                if request._local_search_metadata is not None
+                else f"[SSE-ROLE] {_first_sse.strip()[:200]}"
+            )
         yield _first_sse
 
         # Initialize post-processor.

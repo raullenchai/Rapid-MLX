@@ -112,6 +112,7 @@ def test_whisper_aliases_declare_processors():
     assert registry.runtime_assets_for("parakeet") == ()
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_fetches_pinned_processor(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr("rapid_mlx.audio.probe.require_audio_or_exit", lambda _: None)

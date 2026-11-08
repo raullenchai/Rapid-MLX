@@ -28,6 +28,8 @@ struct SettingsMemoryPanel: View {
                 }
             }
             .toggleStyle(.switch)
+            .accessibilityLabel("Automatic memory")
+            .accessibilityHint("Review completed conversations and save durable preferences. Disabled by default.")
             .accessibilityIdentifier("Settings.Memory.EnableToggle")
 
             if memoryStore.isEnabled && !memoryStore.entries.isEmpty {

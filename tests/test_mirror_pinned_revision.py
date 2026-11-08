@@ -532,6 +532,7 @@ def test_default_branch_pull_still_fails_when_refs_main_is_unwritable(
     assert ok is False
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize(
     ("repo", "source"),
     [
@@ -561,6 +562,7 @@ def test_pull_fetches_the_commit_serve_uses(monkeypatch, repo, source):
     assert calls == [(repo, {"revision_override": pin})]
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_of_an_unpinned_repo_follows_main(monkeypatch):
     from rapid_mlx import cli
 

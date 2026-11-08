@@ -9,6 +9,7 @@ import SwiftUI
 struct CommunityBenchmarkTestMethodSheet: View {
     let modelAlias: String
     let workload: CommunityWorkload
+    var protocolID: String? = nil
     let onDone: () -> Void
 
     var body: some View {
@@ -127,7 +128,7 @@ struct CommunityBenchmarkTestMethodSheet: View {
             return [
                 Pass(
                     title: String(localized: "One image"),
-                    detail: String(localized: "1024 × 1024 at 20 steps, fixed prompt and seed"),
+                    detail: CommunityBenchmarkMetrics.imageMethodDetail(protocolID: protocolID),
                     rounds: String(localized: "1 warm-up render\n1 measured render")
                 )
             ]

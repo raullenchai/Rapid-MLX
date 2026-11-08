@@ -413,10 +413,10 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
 
 
 def serve_failure_subtype(exc: BaseException) -> str:
-    """Classify an unclassified serve failure using exception types only.
+    """Classify an unclassified serve failure by boundary, then exception type.
 
-    Prefer a specific cause over a generic outer RuntimeError. Never inspect
-    exception messages, filenames, model references, or traceback frames.
+    Prefer an explicitly recorded startup boundary over the exception type.
+    Never inspect messages, filenames, model references, or traceback frames.
     """
     chain: list[BaseException] = []
     current: BaseException | None = exc
@@ -430,6 +430,12 @@ def serve_failure_subtype(exc: BaseException) -> str:
             current = current.__cause__
         except BaseException:
             break
+
+    from rapid_mlx.engine_startup_errors import startup_boundary_for
+
+    for cause in chain:
+        if boundary := startup_boundary_for(cause):
+            return boundary
 
     for failure_type, subtype in (
         (json.JSONDecodeError, "config_parse"),
@@ -475,6 +481,37 @@ def model_type(alias_or_path: object) -> str:
     except Exception:
         pass
     return "other"
+
+
+@_never_raise
+def emit_model_ref_checked(result: dict, *, ref_form: str | None) -> None:
+    """Report a completed metadata check using only registry-approved values."""
+    from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+    from rapid_mlx.telemetry.track import track
+
+    verdict = result["verdict"]
+    preflight = (
+        "refused"
+        if verdict in {"unsupported", "too_big"}
+        else "cached"
+        if result["cached"]
+        else "passed"
+        if verdict == "ok"
+        else "no_verdict"
+    )
+    props = {
+        "model": telemetry_model_id(result["repo"]),
+        "preflight": preflight,
+        "verdict": verdict,
+        "in_catalog": result["in_catalog"],
+        "request_surface": "desktop" if is_desktop_sidecar() else "cli",
+    }
+    if result["reason"] is not None:
+        props["reason"] = result["reason"]
+    if ref_form in {"alias", "repo_id", "hf_url"}:
+        props["ref_form"] = ref_form
+    track("model_ref_checked", props)
 
 
 @_never_raise

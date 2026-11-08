@@ -4,6 +4,25 @@ import Testing
 
 @Suite("Effective runtime configuration DTO")
 struct EffectiveRuntimeConfigTests {
+    @Test("Runtime setting titles explain every current field without exposing raw keys")
+    func readableTitles() {
+        let titles = [
+            "prefill_step_size": "Prompt processing batch size",
+            "max_num_seqs": "Maximum concurrent requests",
+            "gpu_memory_utilization": "GPU memory budget",
+            "enable_prefix_cache": "Reuse prompt prefixes",
+            "kv_cache_dtype": "Attention cache precision",
+            "future_raw_key": "Additional engine setting"
+        ]
+        for (key, title) in titles {
+            let field = EffectiveRuntimeField(field: key, value: .null, source: "global_default",
+                                              sourceID: "default", reasonCode: "default", trace: [])
+            #expect(field.displayName == title)
+            #expect(!field.helpText.isEmpty)
+            #expect(!field.displayName.contains("_"))
+        }
+    }
+
     @Test("Decodes values and provenance from the server")
     func decodesWireContract() throws {
         let json = #"""

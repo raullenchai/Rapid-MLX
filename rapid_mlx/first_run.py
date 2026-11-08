@@ -32,18 +32,18 @@ from pathlib import Path
 # Must stay a dogfood-tested, tool-calling-reliable alias (0.11.0 headline);
 # an experimental low-bit model would damage the first impression.
 #
-# PARITY: this is the same model install.sh recommends for its lowest RAM tier
-# (the 8-23 GB branch, ``RECOMMENDED_MODEL="qwen3.5-4b-4bit"``). If you change
-# one, change the other so the installer and the CLI tell one story.
-FIRST_RUN_MODEL = "qwen3.5-4b-4bit"
+# PARITY: this is the starter install.sh recommends on 8 GB+ Macs
+# (``starter_baseline_for_ram``) and Desktop Quickstart's ``defaultChoice``. If
+# you change one, change the others so the installer, the CLI and the app tell
+# one story.
+FIRST_RUN_MODEL = "lfm2.5-2.6b-4bit"
 
 # Human-facing one-time download size for FIRST_RUN_MODEL. A fixed string (not
 # a network probe) so the "no model specified" notice is instant. Anchored to
-# the actual snapshot size of ``mlx-community/Qwen3.5-4B-MLX-4bit`` — 3.061 GB
-# decimal (2.85 GiB), i.e. the ``3061132920`` bytes the download bar counts up
-# to. The old "~2.5 GB" undershot the real download by ~0.5 GB (0.11 dogfood).
-# If the starter checkpoint is re-quantized, re-probe and update this.
-FIRST_RUN_MODEL_SIZE = "~3.1 GB"
+# the pinned ``LiquidAI/LFM2.5-2.6B-MLX`` ``4bit`` snapshot — 1.601 GB decimal,
+# the same ``downloadBytes`` Desktop Quickstart counts up to. If the starter
+# checkpoint is re-quantized, re-probe and update this.
+FIRST_RUN_MODEL_SIZE = "~1.6 GB"
 
 # Preference order when several coding agents are detected: claude-code is the
 # ICP, so it leads. Others follow in a stable order.
@@ -83,11 +83,12 @@ def cached_known_aliases(
         # Lazy import: cli.py imports this module, so importing it back at
         # module-load time would cycle. By call time cli is fully loaded.
         from rapid_mlx.cli import _cache_entry_is_runnable, _scan_hf_cache_models
-        from rapid_mlx.model_aliases import list_profiles
+        from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
 
         hf_to_alias: dict[str, str] = {}
         for alias, profile in list_profiles().items():
-            hf_to_alias.setdefault(profile.hf_path, alias)
+            if draft_only_conflict(profile.hf_path) is None:
+                hf_to_alias.setdefault(profile.hf_path, alias)
 
         rows: list[tuple[str, float]] = []
         if cache_rows is None:

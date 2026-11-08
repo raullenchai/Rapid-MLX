@@ -1,17 +1,45 @@
+import Darwin
 import Foundation
 import Testing
 @testable import Rapid
 
-/// v0.4.40 contract pins for the system-memory pill. The live VM
-/// syscall layer is unmockable without a private DI seam, so the
-/// tests focus on the pure-function surface: pressure classification,
-/// label formatting, ratio math. Real-host snapshots are exercised
-/// by a smoke that just asserts ``snapshot()`` returns nil-or-real
-/// numbers on the test machine — never crashes, never returns
-/// nonsense.
+/// Contracts for the system-memory pill and its shared VM accounting.
+/// Synthetic host page counts pin Memory Used without depending on the test
+/// machine's current workload; a live snapshot smoke covers syscall plumbing.
 @MainActor
 @Suite("MemoryProbe — v0.4.40 system-memory pill")
 struct MemoryProbeTests {
+    @Test("Memory Used excludes file-backed active pages and purgeable memory")
+    func activityMonitorAccounting() {
+        var vm = vm_statistics64()
+        vm.internal_page_count = 400
+        vm.purgeable_count = 50
+        vm.wire_count = 100
+        vm.compressor_page_count = 25
+        vm.active_count = 800
+        vm.external_page_count = 600
+        let first = MemoryProbe.snapshot(totalBytes: 1_000 * 16_384, pageSize: 16_384, vm: vm)
+        #expect(first.usedBytes == 475 * 16_384)
+        #expect(first.freeBytes == 525 * 16_384)
+        vm.active_count = 950
+        vm.external_page_count = 750
+        #expect(MemoryProbe.snapshot(totalBytes: first.totalBytes, pageSize: 16_384, vm: vm) == first)
+    }
+
+    @Test("VM accounting clamps to total and purgeable subtraction cannot underflow")
+    func pageCountClamps() {
+        var vm = vm_statistics64()
+        vm.internal_page_count = 10
+        vm.purgeable_count = 20
+        vm.wire_count = 2
+        vm.compressor_page_count = 3
+        #expect(MemoryProbe.snapshot(totalBytes: 100, pageSize: 10, vm: vm).usedBytes == 50)
+        vm.internal_page_count = 100
+        let saturated = MemoryProbe.snapshot(totalBytes: 100, pageSize: 10, vm: vm)
+        #expect(saturated.usedBytes == 100)
+        #expect(saturated.freeBytes == 0)
+    }
+
     // MARK: - Pressure thresholds
 
     @Test("0.50 ratio → .normal (idle desktop)")

@@ -74,7 +74,7 @@ def _parse_legacy_serve(argv: object) -> tuple[str, str, str, int]:
     if (
         len(argv) < 3
         or not Path(argv[0]).is_absolute()
-        or not argv[0].endswith("rapid-mlx")
+        or Path(argv[0]).name != "rapid-mlx"
     ):
         raise ValueError("unrecognized legacy service executable")
     from rapid_mlx.cli_parser import build_parser

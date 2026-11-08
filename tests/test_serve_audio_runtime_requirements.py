@@ -142,6 +142,7 @@ def test_local_kokoro_uses_folder_requirement_lookup(
     assert events[-1] == "uvicorn"
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_preparation_failure_preserves_error_and_exit(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_pull_repository", lambda *a, **kw: None)
     monkeypatch.setattr("rapid_mlx.audio.probe.require_audio_or_exit", lambda *a: None)

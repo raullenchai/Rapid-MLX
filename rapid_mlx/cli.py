@@ -60,6 +60,7 @@ from rapid_mlx.runtime.optional_runtime import (
 from rapid_mlx.runtime.optional_runtime import (
     handle_optional_runtime_missing as _handle_optional_runtime_missing,
 )
+from rapid_mlx.serve_process import serve_subcommand_index
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
@@ -936,6 +937,10 @@ def _validate_primary_lifecycle_args(args) -> None:
     if not math.isfinite(idle_unload_seconds) or idle_unload_seconds < 0:
         print("Error: --idle-unload-seconds must be finite and >= 0")
         raise SystemExit(1)
+    audio_ttl = getattr(args, "audio_lane_idle_ttl", 0.0)
+    if not math.isfinite(audio_ttl) or audio_ttl < 0:
+        print("Error: --audio-lane-idle-ttl must be finite and >= 0")
+        raise SystemExit(1)
 
 
 def _port_is_busy(host: str, port: int) -> bool:
@@ -1774,9 +1779,27 @@ def _missing_download_bytes(
             def _selected(filename: str) -> bool:
                 return any(fnmatchcase(filename, pattern) for pattern in selection)
         else:
+            from rapid_mlx.byom.preflight import (
+                in_nested_checkpoint,
+                nested_checkpoint_dirs,
+            )
+
+            # Root checkpoint with per-quantization sibling folders: the
+            # loader reads only the root, so only the root is downloaded.
+            _nested = (
+                ()
+                if _prefix
+                else nested_checkpoint_dirs(
+                    s.rfilename
+                    for s in (getattr(info, "siblings", None) or [])
+                    if isinstance(getattr(s, "rfilename", None), str)
+                )
+            )
 
             def _selected(filename: str) -> bool:
-                return not _prefix or filename.startswith(_prefix)
+                if _prefix:
+                    return filename.startswith(_prefix)
+                return not in_nested_checkpoint(filename, _nested)
 
         siblings = [
             sibling
@@ -2782,9 +2805,17 @@ def _hub_not_found_hint(model_id: str) -> str:
     """Suggest catalog names near either an alias or a full Hub ID."""
     import difflib
 
-    from rapid_mlx.model_aliases import list_builtin_aliases, suggest_similar
+    from rapid_mlx.model_aliases import (
+        draft_only_conflict,
+        list_builtin_aliases,
+        suggest_similar,
+    )
 
-    aliases = list_builtin_aliases()
+    aliases = {
+        a: repo
+        for a, repo in list_builtin_aliases().items()
+        if draft_only_conflict(repo) is None
+    }
     suggestions = suggest_similar(model_id)
     if not suggestions and "/" in model_id:
         close_ids = difflib.get_close_matches(
@@ -2950,6 +2981,17 @@ def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> No
 
 
 def _ensure_model_downloaded(
+    model_name: str, *, force_disk_check: bool = False, auto_mtp: bool = True
+) -> None:
+    """Provision the target and its eligible optional catalog MTP dependency."""
+    from types import SimpleNamespace
+
+    _ensure_target_model_downloaded(model_name, force_disk_check=force_disk_check)
+    if auto_mtp:
+        _provision_automatic_mtp_sidecar(SimpleNamespace(model=model_name))
+
+
+def _ensure_target_model_downloaded(
     model_name: str, *, force_disk_check: bool = False
 ) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
@@ -3766,6 +3808,144 @@ def _restore_speculative_changes(args, before, after):
                 delattr(args, key)
 
 
+def _automatic_mtp_prefetch_options(args):
+    """Preserve explicit decoding choices on foreground sibling prefetches."""
+    return (
+        {"auto_mtp": False}
+        if (
+            getattr(args, "no_spec_decode", False)
+            or getattr(args, "speculative_config", None) is not None
+            or getattr(args, "mllm", False)
+        )
+        else {}
+    )
+
+
+def _automatic_mtp_sidecar_plan(args, *, allow_deferred: bool = False):
+    """Resolve an optional external dependency through the serving eligibility checks."""
+    from .model_aliases import (
+        resolve_profile,
+        resolve_revision,
+        subfolder_allow_patterns,
+    )
+
+    if (
+        os.path.exists(args.model)
+        or getattr(args, "speculative_config", None) is not None
+        or not _automatic_continuous_mtp_requested(args)
+    ):
+        return None
+    sidecar, _ = _alias_mtp_declaration(_mtp_catalog_identity(args))
+    if not sidecar:
+        return None
+    eligible, deferred, _ = _automatic_mtp_target_eligibility(args)
+    if not eligible and not (allow_deferred and deferred):
+        return None
+    profile = resolve_profile(_mtp_catalog_identity(args))
+    if profile is None or sidecar == profile.hf_path:
+        return None
+    # An explicit file plan counts missing head bytes even in config-only caches.
+    return (
+        sidecar,
+        resolve_revision(sidecar),
+        subfolder_allow_patterns(sidecar) or ["*"],
+    )
+
+
+def _automatic_mtp_missing_message(sidecar):
+    print(
+        f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
+        f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
+        file=sys.stderr,
+    )
+
+
+def _provision_automatic_mtp_sidecar(
+    args, *, explicit_pull: bool = False, report_missing: bool = True
+):
+    """Best-effort dependency pull; target provisioning must remain usable."""
+    import copy
+
+    from . import model_downloads
+
+    try:
+        plan = _automatic_mtp_sidecar_plan(args)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Automatic MTP planning failed", exc_info=True
+        )
+        return
+    if plan is None:
+        return
+    sidecar, revision, patterns = plan
+    if _cached_mtp_sidecar(sidecar) is not None:
+        return
+    try:
+        if not _offline_hub_mode_active() and (
+            explicit_pull or not model_downloads.disabled()
+        ):
+            dependency_args = copy.copy(args)
+            dependency_args.model = sidecar
+            dependency_args._original_alias = sidecar
+            dependency_args.bits = None
+            dependency_args.format = None
+            dependency_args._emit_pull_lifecycle_event = False
+            print(f"\n  Automatic MTP runtime assets: {sidecar}", flush=True)
+            _pull_repository(
+                dependency_args,
+                revision_override=revision,
+                allow_patterns_override=patterns,
+            )
+    except (Exception, SystemExit):
+        logging.getLogger(__name__).debug(
+            "Automatic MTP sidecar fetch failed", exc_info=True
+        )
+    if report_missing and _cached_mtp_sidecar(sidecar) is None:
+        _automatic_mtp_missing_message(sidecar)
+
+
+def _automatic_continuous_mtp_requested(args) -> bool:
+    """The catalog-owned continuous-MTP default, shared with provisioning."""
+    return (
+        not getattr(args, "no_spec_decode", False)
+        and not getattr(args, "mllm", False)
+        and _alias_continuous_mtp_tier(_mtp_catalog_identity(args)) == "verified"
+        and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
+    )
+
+
+def _automatic_mtp_target_eligibility(args):
+    """Return (eligible, defer_until_provisioned, skip_reason) for auto MTP."""
+    from .model_aliases import resolve_profile
+    from .spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from .spec_decode.mtp.detect import _detect_mtp_eligibility_verbose
+
+    deferred = False
+    reason = None
+    hf_cfg, _ = _gather_kv_cache_dtype_inputs(args.model)
+    if detect_mtp_eligibility(hf_cfg, has_external_sidecar=True) is MTPEligibility.NONE:
+        if hf_cfg is None:
+            profile = resolve_profile(_mtp_catalog_identity(args))
+            pin = (
+                profile.revision
+                or getattr(profile, "tensorfold_target_revision", None)
+                or getattr(profile, "dflash_target_revision", None)
+            )
+            _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
+            reason = reason or "cached target config could not be read"
+            if not getattr(
+                args, "_auto_mtp_retry", False
+            ) and _cached_hf_config_is_absent(profile.hf_path, reason):
+                deferred = True
+                reason = None
+        else:
+            reason = _detect_mtp_eligibility_verbose(
+                hf_cfg, has_external_sidecar=True
+            ).reason
+        return False, deferred, reason
+    return True, False, None
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -4086,49 +4266,18 @@ def _normalize_speculative_config_or_exit(args):
         ):
             raw_config = '{"method":"mtp","backend":"native"}'
             args.speculative_config = raw_config
-        elif (
-            not getattr(args, "no_spec_decode", False)
-            and not getattr(args, "mllm", False)
-            and _alias_continuous_mtp_tier(_mtp_catalog_identity(args)) == "verified"
-            and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
-        ):
+        elif _automatic_continuous_mtp_requested(args):
             # Exact artifacts that passed the mixed-workload qualification
             # select their declared MTP preset by default, unless the catalog
             # ships them default-off (#3115: qwen3.5-4b-4bit measured -25%..-37%
             # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
             # the single source of truth, and --no-spec-decode stays the
             # explicit user escape hatch on every surface.
-            from .model_aliases import resolve_profile
-            from .spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
-            from .spec_decode.mtp.detect import _detect_mtp_eligibility_verbose
 
-            # The catalog qualifies a preset, but the local target config is
-            # authoritative for this particular checkpoint. A missing config
-            # must also fail closed: explicit MTP requests still reach the
-            # serve-time validator and retain its error.
-            hf_cfg, _ = _gather_kv_cache_dtype_inputs(args.model)
-            if (
-                detect_mtp_eligibility(hf_cfg, has_external_sidecar=True)
-                is MTPEligibility.NONE
-            ):
-                if hf_cfg is None:
-                    profile = resolve_profile(_mtp_catalog_identity(args))
-                    pin = (
-                        profile.revision
-                        or getattr(profile, "tensorfold_target_revision", None)
-                        or getattr(profile, "dflash_target_revision", None)
-                    )
-                    _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
-                    reason = reason or "cached target config could not be read"
-                    if not getattr(
-                        args, "_auto_mtp_retry", False
-                    ) and _cached_hf_config_is_absent(profile.hf_path, reason):
-                        args._auto_mtp_deferred = True
-                        reason = None
-                else:
-                    reason = _detect_mtp_eligibility_verbose(
-                        hf_cfg, has_external_sidecar=True
-                    ).reason
+            eligible, deferred, reason = _automatic_mtp_target_eligibility(args)
+            if not eligible:
+                if deferred:
+                    args._auto_mtp_deferred = True
                 if reason is not None:
                     print(
                         f"Automatic MTP skipped: {reason}; using plain decode.",
@@ -4155,19 +4304,15 @@ def _normalize_speculative_config_or_exit(args):
                         file=sys.stderr,
                     )
                 elif sidecar and cached_sidecar is None:
-                    profile = resolve_profile(_mtp_catalog_identity(args))
-                    if (
-                        not getattr(args, "_auto_mtp_retry", False)
-                        and sidecar == profile.hf_path
+                    if not os.path.exists(args.model) and not getattr(
+                        args, "_auto_mtp_retry", False
                     ):
-                        # Retry after provisioning, including a missing same-repo head.
+                        # Retry after provisioning either an external sidecar or a same-repo head.
                         args._auto_mtp_deferred = True
                     else:
-                        print(
-                            f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
-                            f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
-                            file=sys.stderr,
-                        )
+                        # Local folders bypass automatic provisioning, so
+                        # report the missing dependency on the first pass.
+                        _automatic_mtp_missing_message(sidecar)
                 else:
                     raw_config = json.dumps({"method": "mtp", "model": cached_sidecar})
                     args.speculative_config = raw_config
@@ -6199,6 +6344,7 @@ def _cua_only_incompatible_options(args) -> list[str]:
         "mllm": getattr(args, "mllm", False),
         "no-mllm": getattr(args, "no_mllm", False),
         "lazy-load": getattr(args, "lazy_load", False),
+        "audio-lane-idle-ttl": getattr(args, "audio_lane_idle_ttl", 0),
         "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0),
         "disk-stream": getattr(args, "disk_stream", False),
         "enable-dflash": getattr(args, "enable_dflash", False),
@@ -6262,6 +6408,7 @@ def _retrieval_only_incompatible_options(args) -> list[str]:
         "mllm": getattr(args, "mllm", False),
         "no-mllm": getattr(args, "no_mllm", False),
         "lazy-load": getattr(args, "lazy_load", False),
+        "audio-lane-idle-ttl": getattr(args, "audio_lane_idle_ttl", 0),
         "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0)
         or getattr(args, "_idle_unload_seconds_explicit", False),
         "disk-stream": getattr(args, "disk_stream", False),
@@ -7140,6 +7287,11 @@ def serve_command(args):
             raise SystemExit(2)
 
     _validate_primary_lifecycle_args(args)
+    from . import server as audio_lifecycle_server
+
+    audio_lifecycle_server._audio_lane_idle_ttl = getattr(
+        args, "audio_lane_idle_ttl", 0.0
+    )
 
     if bounds_error := _vision_pixel_bounds_error(
         getattr(args, "vision_min_pixels", 0),
@@ -7690,12 +7842,13 @@ def serve_command(args):
         pass
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
-            _ensure_model_downloaded(args.model, force_disk_check=True)
+            _ensure_model_downloaded(args.model, force_disk_check=True, auto_mtp=False)
         else:
-            # Keep the historical one-argument call on the default path; a
-            # number of embedders/tests replace this hook with a one-argument
-            # prefetch function.
-            _ensure_model_downloaded(args.model)
+            # Serve provisions optional assets below with its actual decoding
+            # options, rather than the shared helper's catalog defaults.
+            _ensure_model_downloaded(args.model, auto_mtp=False)
+
+    _provision_automatic_mtp_sidecar(args, report_missing=False)
 
     if getattr(args, "_auto_mtp_deferred", False):
         from . import model_downloads
@@ -9806,7 +9959,10 @@ def bench_command(args):
     # fully-cached repos and swallows mirror errors gracefully (mlx_lm.load
     # falls through to HF), so this is safe on the warm path and when
     # the mirror is unreachable.
-    _ensure_model_downloaded(args.model)
+    _ensure_model_downloaded(
+        args.model,
+        **_automatic_mtp_prefetch_options(args),
+    )
 
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
@@ -10784,6 +10940,11 @@ def _print_cached_models() -> None:
         # interactive display because their registered alias is the canonical
         # launch identity; external rows have no independent alias channel.
         repo_disp = repo if is_external_row or len(repo) <= 50 else (repo[:47] + "...")
+        from rapid_mlx.model_aliases import draft_only_conflict
+
+        if guidance := draft_only_conflict(repo):
+            alias = "(draft sidecar)"
+            print(f"  {guidance}")
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
@@ -11046,6 +11207,7 @@ def _cached_models_json_payload() -> dict:
     from rapid_mlx.local_models import discover_runnable_chat_models
     from rapid_mlx.model_aliases import (
         cached_repository_collides,
+        draft_only_conflict,
         resolve_subfolder,
     )
 
@@ -11150,6 +11312,7 @@ def _cached_models_json_payload() -> dict:
             models.append(
                 {
                     "alias": alias,
+                    "standalone": draft_only_conflict(repo) is None,
                     "launch_path": collision_paths.get((repo, is_external)),
                     "repo": repo,
                     "subfolder": subfolder,
@@ -11184,9 +11347,16 @@ def _available_models_json_payload() -> dict:
     image) exactly as the text sections are. Sizes are download bytes from the
     checked-in manifest (``None`` when unknown); no per-invocation HF I/O.
     """
-    from rapid_mlx.model_aliases import list_builtin_aliases, list_profiles
+    from rapid_mlx.decode_expectations import detected_chip, expectation
+    from rapid_mlx.model_aliases import (
+        draft_only_conflict,
+        list_builtin_aliases,
+        list_profiles,
+    )
     from rapid_mlx.model_sizes import size_bytes
+    from rapid_mlx.recommendations import physical_ram_gb
 
+    decode_chip, decode_ram = detected_chip(), physical_ram_gb()
     all_profiles = list_profiles()
     builtin_aliases = set(list_builtin_aliases())
 
@@ -11207,6 +11377,10 @@ def _available_models_json_payload() -> dict:
             default_steps = default_steps_for_model(p.hf_path)
         return {
             "alias": alias,
+            "expected_decode": expectation(
+                alias, decode_chip, decode_ram, repo_id=p.hf_path
+            ),
+            "standalone": draft_only_conflict(p.hf_path) is None,
             "hf_path": p.hf_path,
             **({"revision": p.revision} if p.revision is not None else {}),
             "size_bytes": int(raw) if isinstance(raw, int) and raw > 0 else None,
@@ -11313,8 +11487,36 @@ def models_command(args):
     ``Alias | HF repo | Size on disk | Last modified``. Also reachable as
     the top-level ``rapid-mlx ls`` alias.
     """
+    if paths := getattr(args, "inspect_local", None):
+        from rapid_mlx.local_checkpoints import (
+            MAX_LOCAL_CHECKPOINTS,
+            inspect_local_checkpoints,
+        )
+
+        if (
+            not getattr(args, "json", False)
+            or getattr(args, "cached", False)
+            or getattr(args, "search", None)
+            or getattr(args, "modality", None)
+            or len(paths) > MAX_LOCAL_CHECKPOINTS
+        ):
+            print(
+                "models --inspect-local requires --json, accepts at most 32 directories, "
+                "and cannot be combined with --cached/--search/--modality",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        import json
+
+        print(
+            json.dumps(
+                {"schema": 1, "local_checkpoints": inspect_local_checkpoints(paths)}
+            )
+        )
+        return
+
     from rapid_mlx._version_check import print_staleness_warning_if_any
-    from rapid_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
     from rapid_mlx.model_sizes import format_size
 
     search_display = (getattr(args, "search", None) or "").strip()
@@ -11357,7 +11559,11 @@ def models_command(args):
         _print_next_step()
         return
 
-    all_profiles = list_profiles()
+    all_profiles = {
+        a: p
+        for a, p in list_profiles().items()
+        if draft_only_conflict(p.hf_path) is None
+    }
     # Video-generation aliases are not chat models: they have no
     # tokenizer and no ``stream_chat``, so ``/v1/chat/completions`` on one
     # is an AttributeError, and ``serve`` exits 2 before binding a port
@@ -11525,26 +11731,53 @@ def models_command(args):
             12,
             max((len(p.reasoning_parser or "—") for p in profiles.values()), default=0),
         )
+        preset_width = max(
+            8,
+            max(
+                (
+                    len(f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}")
+                    if p.mtp_draft_model
+                    else len("MTP@native@99")
+                    for p in profiles.values()
+                ),
+                default=8,
+            ),
+        )
         cols = (
             ("Alias", alias_width),
             ("Size", 10),
             ("Tools", tools_width),
             ("Reasoning", reasoning_width),
-            ("Spec-Decode", 10),
+            ("Spec-Decode", 11),
             ("Suffix Tier", 11),
             ("DFlash", 9),
             ("DDTree", 9),
-            ("Preset", 8),
+            ("Preset", preset_width),
+            ("Default decode reference", 42),
         )
         width = sum(w for _, w in cols) + len(cols) - 1
         sep = "  " + "─" * width
         header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
-        print(sep)
-        print(header)
-        print(sep)
+        from rapid_mlx.decode_expectations import (
+            detected_chip,
+            expectation,
+            snapshot,
+            summary,
+        )
+        from rapid_mlx.recommendations import physical_ram_gb
 
         from .spec_decode.capability import assess_method
 
+        decode_chip, decode_ram = detected_chip(), physical_ram_gb()
+        print(
+            f"  Decode references: {decode_chip or 'unknown chip'} · {decode_ram:g} GB RAM · snapshot {snapshot()['refreshed_at']}"
+        )
+        print(
+            "  Catalog defaults; measured interquartile ranges. Sample scope: rapid-mlx models --json"
+        )
+        print(sep)
+        print(header)
+        print(sep)
         for alias in sorted(profiles.keys()):
             p = profiles[alias]
             tools = p.tool_call_parser or "—"
@@ -11592,7 +11825,8 @@ def models_command(args):
             row = (
                 f"  {alias:<{alias_width}} {size:<10} {tools:<{tools_width}} "
                 f"{reasoning:<{reasoning_width}} "
-                f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<8}"
+                f"{spec:<11} {tier:<11} {dflash:<9} {ddtree:<9} {preset:<{preset_width}} "
+                f"{summary(expectation(alias, decode_chip, decode_ram, repo_id=p.hf_path), compact=True)}"
             )
             print(row)
 
@@ -11944,6 +12178,26 @@ def _emit_completed_model_pull(
     except Exception:
         size = None
     emit_model_pulled(repo_id, source, size)
+
+
+def _nested_checkpoint_ignore(repo_id: str, revision: str | None) -> list[str] | None:
+    """``ignore_patterns`` for sibling quantization folders.
+
+    Fails closed through the Hub retry path: silently fetching every variant
+    would break the disk budget the size check approved for the root only.
+    Offline pulls download nothing, so they skip the listing.
+    """
+    if _offline_hub_mode_active():
+        return None
+    from huggingface_hub import list_repo_files
+
+    from rapid_mlx.byom.preflight import nested_checkpoint_ignore_patterns
+
+    return nested_checkpoint_ignore_patterns(
+        _retry_hub_download(
+            lambda: list_repo_files(repo_id, revision=revision), repo_id
+        )
+    )
 
 
 def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
@@ -12510,8 +12764,20 @@ def _pull_repository(
         download_kwargs: dict[str, object] = (
             {"revision": revision_override} if revision_override else {}
         )
+        _ignore = (
+            None if _allow else _nested_checkpoint_ignore(repo_id, revision_override)
+        )
         if _allow:
             download_kwargs["allow_patterns"] = _allow
+        elif _ignore:
+            # A root checkpoint published alongside one folder per
+            # quantization: fetch the root the loader serves, not every copy.
+            print(
+                "  This repo also ships "
+                + ", ".join(p[:-2] for p in _ignore)
+                + " variant folders; fetching only the root checkpoint."
+            )
+            download_kwargs["ignore_patterns"] = _ignore
         path = run_cancellable_download(
             lambda: _retry_hub_download(
                 lambda: snapshot_download(repo_id, **download_kwargs), repo_id
@@ -12524,6 +12790,7 @@ def _pull_repository(
             path,
             revision=revision_override,
             allow_patterns=_allow,
+            ignore_patterns=_ignore,
             local_files_only=_offline_hub_mode_active(),
         )
         _after = _blob_identifier(_cache_root)
@@ -12621,6 +12888,11 @@ _HF_CACHE_COMMANDS = frozenset({"pull", "rm"})
 
 def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
+    if getattr(args, "check", False):
+        from rapid_mlx.byom.reference_check import check_command
+
+        check_command(args)
+        return
 
     import copy
 
@@ -12665,6 +12937,12 @@ def pull_command(args):
 
     if getattr(args, "with_ref2va", False) and primary_repo != "Pika-Labs/Pika-H3-Flex":
         raise ValueError("--with-ref2va is only supported for Pika H3 Flex")
+
+    from rapid_mlx.byom.preflight import _check_catalog_memory_fit
+
+    memory_args = copy.copy(primary_args)
+    memory_args.command = "pull"
+    _check_catalog_memory_fit(memory_args)
 
     # Run the same video runtime preflight as ``serve`` BEFORE downloading
     # multi-gigabyte weights. A host that cannot run the alias must fail here,
@@ -12711,6 +12989,66 @@ def pull_command(args):
         )
         resolve_product_paths(artifact, allow_local=False)
         return
+
+    mtp_plan = _automatic_mtp_sidecar_plan(primary_args, allow_deferred=True)
+    if mtp_plan is not None:
+        sidecar, revision, patterns = mtp_plan
+        sidecar_bytes = _missing_download_bytes(
+            sidecar, revision_override=revision, allow_patterns=patterns
+        )
+        print(
+            f"  Optional automatic MTP file plan: {sidecar} "
+            f"({_format_bytes(sidecar_bytes)} uncached)"
+        )
+
+    # These lanes have no existing pre-download disk gate. Price all runtime
+    # payloads together; unavailable metadata contributes zero, as in serve.
+    if (
+        primary_repo != TARGET_REPO and not getattr(args, "with_ref2va", False)
+    ) or mtp_plan is not None:
+        from rapid_mlx.video.minimax_h3 import video_payloads
+
+        payloads = video_payloads(primary_repo)
+        if not payloads:
+            bits = getattr(primary_args, "bits", None)
+            fmt = getattr(primary_args, "format", None)
+            variant = f"{bits}bit" if bits else fmt
+            patterns = (
+                list(IMAGE_MODEL_DATA_FILES[primary_repo])
+                if primary_repo in IMAGE_MODEL_DATA_FILES
+                else [_escape_glob_literal(variant) + "/*"]
+                if variant
+                else None
+            )
+            payloads = (
+                (primary_repo, _pinned_checkpoint_revision(primary_repo), patterns),
+            )
+        payloads = (
+            *payloads,
+            *image_runtime_assets_for(primary_repo),
+            *(
+                (a.repo_id, a.revision, a.allow_patterns)
+                for a in runtime_assets_for(primary_repo)
+                if a.repo_id != primary_repo
+            ),
+        )
+        if mtp_plan is not None:
+            payloads = (*payloads, mtp_plan)
+        try:
+            _check_download_disk_space(
+                sum(
+                    _missing_download_bytes(
+                        repo,
+                        revision_override=rev,
+                        allow_patterns=list(files) if files is not None else None,
+                    )
+                    for repo, rev, files in payloads
+                ),
+                force=getattr(args, "force_disk_check", False),
+            )
+        except SystemExit:
+            print("  Nothing was downloaded.", file=sys.stderr)
+            raise
 
     if primary_repo == TARGET_REPO:
         _check_disk_space(
@@ -12762,6 +13100,7 @@ def pull_command(args):
         _pull_repository(primary_args, revision_override=pinned_revision)
     else:
         _pull_repository(primary_args)
+    _provision_automatic_mtp_sidecar(primary_args, explicit_pull=True)
     if primary_repo == TARGET_REPO:
         print(f"\n  Runtime assets: {MTP_REPO}")
         _check_disk_space(
@@ -12853,6 +13192,10 @@ def pull_command(args):
         bool(getattr(primary_args, "_telemetry_pull_transferred", False)),
     )
     _emit_pull_activation()
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    if guidance := draft_only_conflict(primary_repo):
+        print(f"\n  Download complete. {guidance}")
 
 
 def rm_command(args):
@@ -12978,20 +13321,8 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
             cmd = proc.info["cmdline"] or []
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        if not any(
-            ("rapid-mlx" in c or "rapid_mlx" in c) and "serve" in cmd for c in cmd
-        ):
-            continue
-
-        # 0.9.0 dogfood: ``rapid-mlx serve`` runs under a ``caffeinate
-        # -is rapid-mlx serve ...`` wrapper on macOS to prevent sleep.
-        # The wrapper's argv carries the same ``rapid-mlx`` / ``serve``
-        # tokens as the real server, so the substring match above
-        # double-counts it as a second row (same port, different PID).
-        # The wrapper is never the actual server — its argv[0] basename
-        # is the only reliable way to filter it out without missing the
-        # case where caffeinate is launched via an absolute path.
-        if cmd and os.path.basename(cmd[0]) == "caffeinate":
+        serve_index = serve_subcommand_index(cmd)
+        if serve_index is None:
             continue
 
         # Extract model arg and --port flag. argparse accepts options
@@ -13017,7 +13348,7 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
         port = "8000"  # serve's default
         served = None  # --served-model-name value, if any (issue #2353)
         try:
-            i = cmd.index("serve") + 1
+            i = serve_index + 1
             # Pre-PR this loop ``break``ed on the first positional, so a
             # ``rapid-mlx serve qwen3.5-4b-4bit --port 8005`` ended with
             # port="8000" because the positional model token came before
@@ -14254,7 +14585,10 @@ def chat_command(args):
         # in the user's terminal. Otherwise the serve subprocess swallows
         # the bar into the log file and `rapid-mlx chat` looks frozen for
         # several minutes on first run with a fresh model.
-        _ensure_model_downloaded(args.model)
+        _ensure_model_downloaded(
+            args.model,
+            **_automatic_mtp_prefetch_options(args),
+        )
 
         # GH #719: ``NamedTemporaryFile(...).name`` leaked one zero-byte
         # log per invocation if ANYTHING raised between path creation
@@ -14635,7 +14969,10 @@ def chat_command(args):
         #    running while we do this so a download failure leaves the user
         #    where they were.
         try:
-            _ensure_model_downloaded(resolved)
+            _ensure_model_downloaded(
+                resolved,
+                **_automatic_mtp_prefetch_options(args),
+            )
         except SystemExit:
             # A fatal pre-download condition aborted via sys.exit(1) — disk
             # gate, offline+uncached, or resolve timeout. Each path printed
@@ -15823,12 +16160,13 @@ def _connect_target(args, eps):
         print()
         print(f"  Python (OpenAI SDK)  →  {eps.openai_url}")
         print()
-        from rapid_mlx.connect import allows_api_key, package_install_command
+        from rapid_mlx.connect import allows_api_key, client_sdk_install_hint
 
         key_allowed = allows_api_key(
             eps.host, eps.scheme, getattr(args, "allow_insecure_api_key", False)
         )
-        print("     ", package_install_command("openai"))
+        print("  Install the SDK in your project's Python environment:")
+        print("     ", client_sdk_install_hint("openai"))
         print()
         if key_allowed:
             print(
@@ -16642,6 +16980,37 @@ def main():
             ):
                 _print_next_step()
         raise
+    if args.command == "pull":
+        if getattr(args, "json", False) and not getattr(args, "check", False):
+            parser.error("pull --json requires --check")
+        if getattr(args, "check", False) and any(
+            getattr(args, flag, False)
+            for flag in ("no_preflight", "request", "bits", "format", "with_ref2va")
+        ):
+            parser.error(
+                "pull --check cannot be combined with download selectors, --request or --no-preflight"
+            )
+    if getattr(args, "model", None):
+        from rapid_mlx.model_reference import reference_form
+
+        args._ref_form = reference_form(args.model)
+    # Normalize browser links before model telemetry, local-path validation,
+    # and shared alias resolution. Never retain the raw URL as an alias.
+    if (
+        getattr(args, "model", None)
+        and not (args.command == "pull" and getattr(args, "check", False))
+        and args.command not in ("doctor", "service", "system-one")
+    ):
+        from rapid_mlx.model_reference import normalize_model_reference
+
+        try:
+            args.model = normalize_model_reference(
+                args.model, notice=lambda line: print(f"  {line}", file=sys.stderr)
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+
     quiet_transport_loggers(
         _resolve_serve_log_level(getattr(args, "log_level", None))
         if hasattr(args, "log_level")
@@ -16765,7 +17134,11 @@ def main():
             # free of ANSI redraw sequences so the next app cannot expose
             # partial color frames above the banner.
             color = "NO_COLOR" not in os.environ and args.command != "launch"
-            print(render_banner(_version, color=color))
+            truecolor = os.environ.get("COLORTERM", "").lower() in {
+                "truecolor",
+                "24bit",
+            }
+            print(render_banner(_version, color=color, truecolor=truecolor))
             print()
     except Exception:
         # The banner is decorative; never let a rendering hiccup block the
@@ -16800,6 +17173,12 @@ def main():
         _start_quiet_lifecycle(
             "bare", no_telemetry=bool(getattr(args, "no_telemetry", False))
         )
+
+    if args.command == "pull" and getattr(args, "check", False):
+        from rapid_mlx.byom.reference_check import check_command
+
+        check_command(args)
+        return
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Select a complete, policy-ranked chat model before normal resolution.
@@ -16846,7 +17225,7 @@ def main():
         # Discovery is a fail-silent hint, so it must not bypass the gate's
         # authoritative is_repo_cached check or confirmation thresholds.
         # Complete cached choices normally pass without downloading; the
-        # cold-cache starter (~3.1 GB) remains below the 10 GiB confirmation
+        # cold-cache starter (~1.6 GB) remains below the 10 GiB confirmation
         # threshold. A cache that changes after discovery is rechecked by the
         # existing gate, just as for an explicitly named model.
         # Non-interactive sessions keep the notice TTY-only and retain the

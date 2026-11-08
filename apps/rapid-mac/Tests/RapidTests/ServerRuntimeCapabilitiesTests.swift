@@ -11,11 +11,13 @@ struct ServerRuntimeCapabilitiesTests {
         usage: rapid-mlx serve [-h] [--resident-memory-limit-gb RESIDENT_MEMORY_LIMIT_GB]
                                [--resident-model-idle-ttl RESIDENT_MODEL_IDLE_TTL]
                                [--idle-unload-seconds IDLE_UNLOAD_SECONDS]
+                               [--audio-lane-idle-ttl AUDIO_LANE_IDLE_TTL]
         """)
 
         #expect(capabilities.supportsResidentMemoryLimitGB)
         #expect(capabilities.supportsResidentModelIdleTTL)
         #expect(capabilities.supportsPrimaryIdleUnload)
+        #expect(capabilities.supportsAudioLaneIdleUnload)
     }
 
     @Test("serve help without resident flags disables both residency arguments")
@@ -27,6 +29,7 @@ struct ServerRuntimeCapabilitiesTests {
         #expect(!capabilities.supportsResidentMemoryLimitGB)
         #expect(!capabilities.supportsResidentModelIdleTTL)
         #expect(!capabilities.supportsPrimaryIdleUnload)
+        #expect(!capabilities.supportsAudioLaneIdleUnload)
     }
 
     @Test("resident launch flags are omitted for older runtimes")
@@ -59,9 +62,10 @@ struct ServerRuntimeCapabilitiesTests {
                         "--resident-model-idle-ttl", ttl]
             #expect(ServerManager.residentLaunchFlags(
                 memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: setting
-            ) == base + (setting > 0 ? ["--idle-unload-seconds", String(setting)] : []))
+            ) == base + (setting > 0 ? ["--idle-unload-seconds", String(setting), "--audio-lane-idle-ttl", String(setting)] : []))
             var older = ServerRuntimeCapabilities.allKnown
             older.supportsPrimaryIdleUnload = false
+            older.supportsAudioLaneIdleUnload = false
             #expect(ServerManager.residentLaunchFlags(
                 memoryCeilingGB: 14, capabilities: older, idleSetting: setting
             ) == ["--resident-memory-limit-gb", "14", "--resident-model-idle-ttl", "1800"])
@@ -82,6 +86,17 @@ struct ServerRuntimeCapabilitiesTests {
         var expected = ServerRuntimeCapabilities.allKnown
         expected.supportsPrimaryIdleUnload = false
         #expect(await ServerRuntimeCapabilities.probe(binary: old) == expected)
+    }
+
+    @Test("audio TTL capability is independent of primary unload")
+    func probeAudioIdleUnloadMarker() async throws {
+        let old = try makeRuntimeScript(audioIdleUnload: false)
+        var expected = ServerRuntimeCapabilities.allKnown
+        expected.supportsAudioLaneIdleUnload = false
+        #expect(await ServerRuntimeCapabilities.probe(binary: old) == expected)
+        #expect(!ServerManager.residentLaunchFlags(
+            memoryCeilingGB: 14, capabilities: expected, idleSetting: 300
+        ).contains("--audio-lane-idle-ttl"))
     }
 
     @Test("probe reads the selected runtime serve help")
@@ -504,6 +519,7 @@ struct ServerRuntimeCapabilitiesTests {
 
     private func makeRuntimeScript(
         primaryIdleUnload: Bool = true,
+        audioIdleUnload: Bool = true,
         splitIdleUnloadMarker: Bool = false,
         helpPaddingLines: Int = 0,
         helpExitStatus: Int = 0,
@@ -544,6 +560,7 @@ struct ServerRuntimeCapabilitiesTests {
           done
           echo '--resident-memory-limit-gb'
           echo '--resident-model-idle-ttl'
+          \(audioIdleUnload ? "echo '--audio-lane-idle-ttl'" : ":")
           \(idleUnloadCommand)
           echo '--enable-local-search'
           echo '--local-search-dir'

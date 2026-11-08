@@ -1088,3 +1088,105 @@ def test_unmeasured_request_omits_timing(first, arrival, tokens):
     request._arrival_monotonic = arrival
     request.output_token_ids = tokens
     assert ModelPerformanceLedger.timing_metrics_for_request(request, 16.0) is None
+
+
+def test_continuous_lane_cannot_reuse_ordinary_execution_reference():
+    from types import SimpleNamespace
+
+    from rapid_mlx.execution_reference import LoadReceipt, observe_plain_steps
+
+    scheduler = _scheduler()
+    request = _running_request(scheduler, "unsupported-continuous-reference")
+    batch = SimpleNamespace(uids=[1], _step=lambda: ([5], [0.0]))
+    state = observe_plain_steps(
+        SimpleNamespace(_generation_batch=batch),
+        {"request": request},
+        {1: "request"},
+        LoadReceipt("mlx-community/Qwen3.5-35B-A3B-8bit"),
+    )
+    state["method"] = "none"
+    batch._step()
+    scheduler.config.mtp_continuous_batching = True
+    outputs, _ = scheduler._process_batch_responses([_terminal_response()])
+    reference = outputs[0].execution_reference
+    assert reference["status"] == "unknown"
+    assert reference["method"] == "unknown"
+    assert reference["backend"] == "unknown"
+    assert reference["config_key"] is None
+
+
+@pytest.mark.requires_mlx
+async def test_concurrent_cold_start_after_host_warmup_loads_once(monkeypatch):
+    import asyncio
+    import threading
+
+    from rapid_mlx.engine import batched
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    callers = []
+    loads = []
+
+    async def prepare():
+        callers.append(1)
+        if len(callers) == 2:
+            entered.set()
+        await release.wait()
+
+    async def load():
+        # The actual LLM loader's final EngineCore.start does not yield.
+        loads.append(1)
+
+    monkeypatch.setattr(batched, "prepare_execution_host", prepare)
+    engine = object.__new__(batched.BatchedEngine)
+    engine._loaded = False
+    engine._is_mllm = False
+    engine._model_name = "fixture"
+    engine._guided_requests_lock = threading.Lock()
+    engine._validate_lane_capabilities = lambda: None
+    engine._start_llm = load
+    tasks = [asyncio.create_task(engine.start()) for _ in range(2)]
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert loads == [1]
+    assert engine._loaded
+
+
+@pytest.mark.requires_mlx
+async def test_cancelled_host_warmup_leaves_engine_retryable(monkeypatch):
+    import asyncio
+    import threading
+
+    from rapid_mlx.engine import batched
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    loads = []
+
+    async def prepare():
+        entered.set()
+        await release.wait()
+
+    async def load():
+        loads.append(1)
+
+    monkeypatch.setattr(batched, "prepare_execution_host", prepare)
+    engine = object.__new__(batched.BatchedEngine)
+    engine._loaded = False
+    engine._is_mllm = False
+    engine._model_name = "fixture"
+    engine._guided_requests_lock = threading.Lock()
+    engine._validate_lane_capabilities = lambda: None
+    engine._start_llm = load
+    task = asyncio.create_task(engine.start())
+    await asyncio.wait_for(entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not engine._loaded and loads == []
+    release.set()
+    await engine.start()
+    assert engine._loaded and loads == [1]

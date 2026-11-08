@@ -1349,6 +1349,16 @@ def _add_serve_parser(
             "reloads it. 0 disables primary idle unload (default: 0)."
         ),
     )
+    serve_parser.add_argument(
+        "--audio-lane-idle-ttl",
+        type=float,
+        default=0.0,
+        help=(
+            "Release idle STT, alignment and TTS lane models after this many "
+            "seconds, keeping audio routes online and reloading on demand. "
+            "0 disables audio idle unload (default: 0)."
+        ),
+    )
     # Paged cache options (experimental)
     serve_parser.add_argument(
         "--use-paged-cache",
@@ -2422,6 +2432,12 @@ def _add_models_parser(
         "cache (alias, HF repo, size on disk, last modified).",
     )
     models_parser.add_argument(
+        "--inspect-local",
+        action="append",
+        metavar="DIRECTORY",
+        help="Offline inspection of an existing chat checkpoint (requires --json; up to 32 directories). Does not import or download files.",
+    )
+    models_parser.add_argument(
         "--json",
         action="store_true",
         default=False,
@@ -2499,6 +2515,16 @@ def _add_pull_parser(
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
     pull_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check metadata and memory fit without downloading",
+    )
+    pull_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With --check, print one schema-v1 JSON verdict",
+    )
+    pull_parser.add_argument(
         "--with-ref2va",
         action="store_true",
         help="Pika H3 Flex only: also download the Ref2VA second transformer and adapter, about 69 GB",
@@ -2544,8 +2570,8 @@ def _add_pull_parser(
         action="store_true",
         default=False,
         help=(
-            "Skip the pre-download check for models outside the Rapid-MLX "
-            "catalog (format and architecture)."
+            "Skip catalog memory admission and the pre-download format and "
+            "architecture check for models outside the Rapid-MLX catalog."
         ),
     )
 

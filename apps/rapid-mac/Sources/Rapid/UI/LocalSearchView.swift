@@ -6,6 +6,9 @@ struct LocalSearchView: View {
     @Bindable var model: LocalSearchViewModel
     let onStartModel: @MainActor () async -> Bool
     var onOpenSettings: () -> Void = {}
+    var onAskFolder: (LocalSearchFolder) -> Void = { _ in }
+    var folderChatAvailable: Bool = false
+    var onFolderChatSettings: () -> Void = {}
     @Environment(DownloadManager.self) private var downloads
     @State private var selectedShortcuts: Set<LocalSearchFolderShortcut> = [.desktop, .documents, .downloads]
     @State private var confirmingRestart = false
@@ -269,6 +272,16 @@ struct LocalSearchView: View {
                                 }
                                 .multilineTextAlignment(.leading)
                                 Spacer()
+                                Button {
+                                    if folderChatAvailable { onAskFolder(folder) }
+                                    else { onFolderChatSettings() }
+                                } label: {
+                                    Label(String(localized: "Ask this folder…"), systemImage: "text.bubble")
+                                }
+                                .buttonStyle(.rapidSecondary)
+                                .disabled(folder.state == .missing || folder.state == .error || folder.state == .unknown)
+                                .help(folderChatAvailable ? String(localized: "Ask using saved passages from this folder. Tools are off; retrieved passages are saved with the chat.") : String(localized: "Enable Built-in Agent Harness (Experimental) in Settings to use folder chat."))
+                                .accessibilityIdentifier("LocalSearch.Folder.\(index).Ask")
                                 Button { Task { await model.reindex(folder.id) } } label: { Image(systemName: "arrow.clockwise") }
                                     .buttonStyle(.rapidTertiary)
                                     .accessibilityLabel(String(localized: "Reindex \(LocalSearchPath.folderTitle(folder.path))"))

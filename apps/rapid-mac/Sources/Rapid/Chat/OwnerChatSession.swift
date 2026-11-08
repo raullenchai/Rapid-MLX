@@ -62,7 +62,7 @@ actor OwnerChatSession {
     private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     private func publish() { let value = snapshot(); for observer in observers.values { observer.yield(value) } }
 
-    func submit(text: String, target: Target, attachments: [(name: String, data: Data)] = [], onConversation: @Sendable (String) async -> Void = { _ in }) async throws {
+    func submit(text: String, target: Target, attachments: [(name: String, data: Data)] = [], localSearch: FolderChatScope? = nil, onConversation: @Sendable (String) async -> Void = { _ in }, onAuthority: @Sendable (String, UUID?, String?) async throws -> Void = { _, _, _ in }) async throws {
         guard task == nil, !preparing else { throw SessionError.busy }
         preparing = true
         stoppedWhilePreparing = false
@@ -71,12 +71,20 @@ actor OwnerChatSession {
         let client = try await clientProvider()
         try checkPreparation()
         self.client = client
+        if localSearch != nil {
+            guard attachments.isEmpty, try await client.supportsFolderChat() else {
+                throw ChatOwnerTurnRejection(message: String(localized: "Update the chat owner to use folder chat."))
+            }
+        }
+        try checkPreparation()
+        let storeUUID = try await client.ownerStoreUUID()
+        try checkPreparation()
         let conversation: ChatWireJSON
         if let conversationID { conversation = try await client.conversation(id: conversationID) }
         else { conversation = try await client.createConversation(workspace: workspace.path) }
-        try checkPreparation()
         guard case .object(let object) = conversation, case .string(let id) = object["id"] else { throw SessionError.invalidConversation }
         conversationID = id
+        try await onAuthority(id, storeUUID, nil)
         await onConversation(id)
         try checkPreparation()
         guard case .string(let branch) = object["branch_id"],
@@ -90,8 +98,12 @@ actor OwnerChatSession {
             attachmentIDs.append(try await client.uploadAttachment(conversationID: id, name: attachment.name, data: attachment.data))
             try checkPreparation()
         }
+        if localSearch != nil || object["local_search"] != nil { try await client.setFolderScope(conversationID: id, scope: localSearch) }
+        try checkPreparation()
         let turnID = UUID().uuidString.lowercased()
-        let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, attachmentIDs: attachmentIDs, inferenceURL: target.url.absoluteString, model: target.model, approvals: .default, inferenceAPIKey: target.bearer)
+        let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, attachmentIDs: attachmentIDs, inferenceURL: target.url.absoluteString, model: target.model, actionTools: localSearch == nil, approvals: .default, inferenceAPIKey: target.bearer, localSearch: localSearch)
+        try await onAuthority(id, storeUUID, turnID)
+        try checkPreparation()
         reducer = ChatTurnReducer(turnID: turnID); unavailable = [:]; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
     }
@@ -159,6 +171,15 @@ actor OwnerChatSession {
         if reducer?.projection.terminal != nil { state = .finished; publish() }
         task = nil
     }
+    /// Captured while the completed projection is current; reading never owns a turn.
+    func completedGenerationReader() -> CompletedGenerationReader? {
+        guard let client, let conversationID, let projection = reducer?.projection,
+              projection.terminal?.outcome == .completed,
+              let messageID = projection.terminal?.finalMessageID else { return nil }
+        return CompletedGenerationReader(client: client, conversationID: conversationID,
+                                         turnID: projection.turnID, messageID: messageID)
+    }
+
     private static func isPermanent(_ error: Error) -> Bool {
         if error is ChatOwnerTurnRejection { return true }
         if let error = error as? ChatTurnClientError {
@@ -208,5 +229,18 @@ actor OwnerChatSession {
     }
     private static func number(_ value: ChatWireJSON?) -> Double? {
         switch value { case .integer(let n): Double(n); case .number(let n): n; default: nil }
+    }
+}
+
+struct CompletedGenerationReader: Sendable {
+    let client: any ChatTurnClient
+    let conversationID: String
+    let turnID: String
+    let messageID: String
+    func read() async -> SavedGenerationMetrics? {
+        guard !Task.isCancelled,
+              let saved = try? await client.generationMetrics(conversationID: conversationID, turnID: turnID),
+              !Task.isCancelled, saved.turnID == turnID, saved.messageID == messageID else { return nil }
+        return saved
     }
 }

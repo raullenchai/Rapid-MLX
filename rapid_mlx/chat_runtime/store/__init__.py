@@ -379,6 +379,12 @@ class Store(ActionLedger, Subruns):
                     )
                 ],
             )
+            scope = db.execute(
+                "SELECT value FROM metadata WHERE key=?",
+                ("folder-scope:" + conversation_id,),
+            ).fetchone()
+            if scope is not None:
+                result["local_search"] = json.loads(scope[0])
             return result
 
         return await self.writer.call(get)
@@ -430,6 +436,7 @@ class Store(ActionLedger, Subruns):
             "workspace",
             "action_tools",
             "approvals",
+            "local_search",
         )
         clean = {key: request[key] for key in names if key in request}
         if clean.get("workspace") is not None:
@@ -437,6 +444,8 @@ class Store(ActionLedger, Subruns):
         else:
             # Keep v1 request hashes replayable after the additive migration.
             clean.pop("workspace", None)
+        if clean.get("local_search") is None:
+            clean.pop("local_search", None)  # Preserve existing v1 request hashes.
         digest = fingerprint(clean)
 
         def begin(db):
@@ -509,6 +518,7 @@ class Store(ActionLedger, Subruns):
                     "max_tokens",
                     "temperature",
                     "context_tokens",
+                    "local_search",
                 )
                 if key in clean
             }
@@ -585,7 +595,17 @@ class Store(ActionLedger, Subruns):
 
         return await self.writer.call(replay)
 
-    def _finish(self, db, turn_id, outcome, parts, usage, error_code, messages):
+    def _finish(
+        self,
+        db,
+        turn_id,
+        outcome,
+        parts,
+        usage,
+        error_code,
+        messages,
+        execution_metrics=None,
+    ):
         turn = self._turn(db, turn_id)
         if turn["status"] != "running":
             row = db.execute(
@@ -651,6 +671,21 @@ class Store(ActionLedger, Subruns):
                 )
             final_id = head
             self._advance(db, turn["branch_id"], branch["revision"], head)
+        if outcome == "completed" and final_id and execution_metrics is not None:
+            from ..execution_metrics import GenerationMetrics
+
+            metrics = GenerationMetrics.model_validate(execution_metrics).model_dump(
+                exclude_none=True
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                (
+                    "execution_turn:" + turn_id,
+                    encode(
+                        {"turn_id": turn_id, "message_id": final_id, "metrics": metrics}
+                    ),
+                ),
+            )
         self._finish_subruns(db, turn_id, outcome)
         self._interrupt_operations(db, turn_id)
         usage = clean_usage(usage)
@@ -723,13 +758,45 @@ class Store(ActionLedger, Subruns):
         return await self.writer.call(save)
 
     async def finish_turn(
-        self, turn_id, outcome, parts=None, usage=None, error_code=None, messages=None
+        self,
+        turn_id,
+        outcome,
+        parts=None,
+        usage=None,
+        error_code=None,
+        messages=None,
+        execution_metrics=None,
     ):
         return await self.writer.call(
             lambda db: self._finish(
-                db, turn_id, outcome, parts or [], usage or {}, error_code, messages
+                db,
+                turn_id,
+                outcome,
+                parts or [],
+                usage or {},
+                error_code,
+                messages,
+                execution_metrics,
             )
         )
+
+    async def execution_metrics(self, conversation_id, turn_id):
+        def read(db):
+            self._live(db, conversation_id)
+            turn = self._turn(db, turn_id)
+            if turn["conversation_id"] != conversation_id:
+                raise ValueError("turn does not belong to conversation")
+            if turn["status"] != "completed":
+                return None
+            row = db.execute(
+                "SELECT value FROM metadata WHERE key=?", ("execution_turn:" + turn_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            saved = json.loads(row[0])
+            return saved if saved["message_id"] == turn["final_message_id"] else None
+
+        return await self.writer.call(read)
 
     async def recover_interrupted(self):
         def recover(db):
@@ -808,27 +875,117 @@ class Store(ActionLedger, Subruns):
         digest = hashlib.sha256(content).hexdigest()
         name = Path(name).name[:200] or "attachment.txt"
 
-        def put(db):
-            self._live(db, conversation_id)
-            target = self.blob_dir / digest
-            if not target.exists():
-                atomic_write(target, content)
-            attachment = {
-                "id": uid(),
-                "conversation_id": conversation_id,
-                "digest": digest,
-                "name": name,
-                "size": len(content),
-                "created_at": now(),
-                "mime": mime,
-            }
-            db.execute(
-                "INSERT INTO attachments VALUES(?,?,?,?,?,?,?)",
-                tuple(attachment.values()),
+        return await self.writer.call(
+            lambda db: self._put_attachment(
+                db, conversation_id, name, content, mime, digest
             )
-            return attachment
+        )
 
-        return await self.writer.call(put)
+    def _put_attachment(self, db, conversation_id, name, content, mime, digest):
+        self._live(db, conversation_id)
+        name = Path(name).name[:200] or "attachment.txt"
+        target = self.blob_dir / digest
+        if not target.exists():
+            atomic_write(target, content)
+        attachment = {
+            "id": uid(),
+            "conversation_id": conversation_id,
+            "digest": digest,
+            "name": name,
+            "size": len(content),
+            "created_at": now(),
+            "mime": mime,
+        }
+        db.execute(
+            "INSERT INTO attachments VALUES(?,?,?,?,?,?,?)",
+            tuple(attachment.values()),
+        )
+        return attachment
+
+    async def save_grounding(self, turn_id, context):
+        """Freeze one admitted catalogue and source receipts in the existing journal."""
+        from ..folder_chat import source_title
+
+        def save(db):
+            turn = self._turn(db, turn_id)
+            self._live(db, turn["conversation_id"])
+            if turn["status"] != "running":
+                raise Conflict("turn already ended")
+            settings = turn["settings"]
+            if "grounding" in settings:
+                return settings["grounding"]
+            saved = json.loads(encode(context))
+            for source in saved["metadata"]["sources"]:
+                content = source["text"].encode("utf-8")
+                if len(content) > 16 * 1024 or b"\x00" in content:
+                    raise ValueError("invalid grounded source")
+                attachment = self._put_attachment(
+                    db,
+                    turn["conversation_id"],
+                    source["title"],
+                    content,
+                    "text/plain",
+                    hashlib.sha256(content).hexdigest(),
+                )
+                self._event(
+                    db,
+                    turn_id,
+                    {
+                        "type": "source",
+                        "source_id": f"local-search:{turn_id}:{source['id']}",
+                        "call_id": f"local-search:{turn_id}",
+                        "title": source_title(source),
+                        "attachment_id": attachment["id"],
+                        "url": None,
+                    },
+                )
+            settings["grounding"] = saved
+            db.execute(
+                "UPDATE turns SET settings=? WHERE id=?", (encode(settings), turn_id)
+            )
+            return saved
+
+        return await self.writer.call(save)
+
+    async def set_folder_scope(self, conversation_id, scope):
+        """Conversation preferences reuse the existing owner metadata lifecycle."""
+
+        def save(db):
+            self._live(db, conversation_id)
+            key = "folder-scope:" + conversation_id
+            if scope is None:
+                db.execute("DELETE FROM metadata WHERE key=?", (key,))
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                    (key, encode(scope)),
+                )
+            self._changed(db)
+
+        await self.writer.call(save)
+
+    async def preview_attachment(self, conversation_id, attachment_id):
+        """Bounded read of the saved excerpt, with the existing ownership check."""
+
+        def read(db):
+            self._live(db, conversation_id)
+            row = db.execute(
+                "SELECT * FROM attachments WHERE id=? AND conversation_id=?",
+                (attachment_id, conversation_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("attachment not authorized")
+            if row["mime"] != "text/plain":
+                raise ValueError("not a text snapshot")
+            text = self._attachment_bytes(row).decode("utf-8")
+            return {
+                "id": row["id"],
+                "name": row["name"],
+                "text": text[:65536],
+                "truncated": len(text) > 65536,
+            }
+
+        return await self.writer.call(read)
 
     async def read_attachment(
         self, conversation_id, attachment_id, offset=0, limit=16384

@@ -159,6 +159,20 @@ final class GoldenStage {
         return last ? matches.last : matches.first
     }
 
+    /// Optional private review artifact from this owned off-screen stage.
+    func writeScreenshot(to url: URL, presentation: Bool = false) throws {
+        let view = presentation ? (stageWindows().last?.contentView ?? host) : host
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            throw StageError(description: "Could not allocate review screenshot")
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw StageError(description: "Could not encode review screenshot")
+        }
+        try png.write(to: url)
+    }
+
     // MARK: - Driving
 
     func press(_ identifier: String) throws {

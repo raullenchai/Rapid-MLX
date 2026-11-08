@@ -4,6 +4,33 @@ import Testing
 
 @Suite("Workload-specific result metrics")
 struct CommunityBenchmarkMetricsTests {
+    @Test("Every image explanation uses the saved protocol schedule", arguments: [
+        ("rapid-image-speed", 20), ("rapid-image-speed-4step-nocfg", 4),
+        ("rapid-image-speed-8step-nocfg", 8), ("rapid-image-speed-28step-nocfg", 28),
+        ("rapid-image-speed-28step-cfg3p5", 28), ("rapid-image-speed-12step-cfg10p25", 12)
+    ])
+    func imageScheduleCopy(protocolID: String, steps: Int) throws {
+        let json = Self.imageRun.replacingOccurrences(
+            of: "\"task_type\":\"image_generation\"",
+            with: "\"task_type\":\"image_generation\",\"protocol_id\":\"\(protocolID)\",\"protocol_version\":1"
+        )
+        let caption = CommunityBenchmarkMetrics.metricSet(for: try Self.decode(json), workload: .image).headlineCaption
+        #expect(caption == "One measured 1024 × 1024 render at \(steps) steps, after a warm-up render.")
+        #expect(CommunityBenchmarkMetrics.protocolDescription(for: .image, protocolID: protocolID)
+            == "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and \(steps) steps")
+        #expect(CommunityBenchmarkMetrics.imageMethodDetail(protocolID: protocolID)
+            == "1024 × 1024 at \(steps) steps, fixed prompt and seed")
+    }
+
+    @Test("Missing and unknown protocols never invent a step count", arguments: [nil, "custom-image", "rapid-image-speed-4step-unknown"] as [String?])
+    func unknownImageScheduleCopy(protocolID: String?) {
+        #expect(CommunityBenchmarkMetrics.imageHeadlineCaption(protocolID: protocolID)
+            == "One measured 1024 × 1024 render, after a warm-up render.")
+        #expect(CommunityBenchmarkMetrics.imageMethodDetail(protocolID: protocolID)
+            == "1024 × 1024, fixed prompt and seed")
+        #expect(!CommunityBenchmarkMetrics.protocolDescription(for: .image, protocolID: protocolID).contains("steps"))
+    }
+
     /// Two text cases × five completed rounds, with `peak_active_memory_mib`
     /// on every round — the shape `benchmark results --json` writes today.
     private static let textRun = #"""

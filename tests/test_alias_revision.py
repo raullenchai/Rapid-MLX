@@ -336,6 +336,7 @@ def test_ensure_pin_survives_metadata_failure_and_download_failure(monkeypatch, 
     )
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize("mirror_ok", [True, False])
 @pytest.mark.parametrize("name,pin", [(ALIAS, PIN), (UNPINNED, None)])
 def test_pull_uses_revision_override_in_existing_pipeline(

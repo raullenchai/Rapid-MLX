@@ -12,7 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import (
@@ -25,6 +32,8 @@ from pydantic_ai.models import Model
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from rapid_mlx.api.models import LocalSearchGroundingRequest
+
 from .context import (
     ContextManager,
     ContextSynthesisUnavailableError,
@@ -32,6 +41,7 @@ from .context import (
     context_event,
 )
 from .events import Envelope
+from .execution_metrics import final_generation_metrics
 from .history import _project_messages
 from .model_client import ModelClients, inference_url
 from .presentation import ToolPresentation
@@ -86,6 +96,19 @@ class TurnRequest(BaseModel):
     context_tokens: int = Field(default=32768, ge=512, le=131072)
     mode: Literal["append", "regenerate"] = "append"
     inference_api_key: SecretStr | None = Field(default=None, exclude=True)
+    local_search: LocalSearchGroundingRequest | None = None
+
+    @model_validator(mode="after")
+    def folder_qa(self):
+        if self.local_search is not None:
+            if self.attachment_ids or (
+                self.mode != "regenerate"
+                and (not self.text.strip() or len(self.text) > 8192)
+            ):
+                raise ValueError(
+                    "folder chat requires a text-only question of 1–8192 characters"
+                )
+        return self
 
     @field_validator("inference_url")
     @classmethod
@@ -218,6 +241,9 @@ class Runtime:
         self.web_tools = (web_tools or WebTools()) if web_enabled else None
         self.agent = chat_agent(chat_instructions)
         self.synthesis_agent = chat_agent(synthesis_instructions, tools=False)
+        # Folder history composes owner and source policies into one leading
+        # system message; adding Agent instructions would create a second one.
+        self.folder_agent = chat_agent(None, tools=False)
         self._presentations: dict[str, ToolPresentation] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._signals: dict[str, asyncio.Event] = {}
@@ -265,6 +291,30 @@ class Runtime:
             else:
                 existing, created = await self.store.begin_turn(request.model_dump())
                 return existing, created
+            if request.local_search is not None:
+                from .folder_chat import text_history
+
+                rows = await self.store.branch_messages(request.branch_id)
+                if request.mode == "regenerate":
+                    latest = next(
+                        (
+                            index
+                            for index in range(len(rows) - 1, -1, -1)
+                            if rows[index]["role"] == "user"
+                        ),
+                        None,
+                    )
+                    if latest is not None:
+                        rows = rows[: latest + 1]
+                if request.mode != "regenerate":
+                    rows = [
+                        *rows,
+                        {
+                            "role": "user",
+                            "parts": [{"type": "text", "text": request.text}],
+                        },
+                    ]
+                text_history(rows)
             ids = request.attachment_ids
             if request.mode == "regenerate":
                 rows = await self.store.branch_messages(request.branch_id)
@@ -578,6 +628,9 @@ class Runtime:
             history = _project_messages(
                 rows, current_id=current_id, attachments=manager.attachments
             )
+            if request.local_search is not None:
+                await self._run_folder(request, rows, deps, model, usage, human_text)
+                return
             deps.context_budget = max(
                 128,
                 request.context_tokens
@@ -713,6 +766,7 @@ class Runtime:
                     "completed",
                     messages=_durable_messages(new_messages),
                     usage=combined_usage(),
+                    execution_metrics=final_generation_metrics(new_messages),
                 )
         except asyncio.CancelledError:
             await self.delegation.cancel_turn(tid)
@@ -727,10 +781,22 @@ class Runtime:
                 error = error.error
             # Exception messages may contain credentials, prompts, or reasoning.
             logger.error("Chat generation failed: %s", type(error).__name__)
-            fallback = _localized(
-                human_text,
-                "我未能完成这次回答。已完成的操作和已有回答已保存，请继续或重试。",
-                "I couldn't complete this answer. Completed actions and partial answers are saved; please continue or try again.",
+            from .folder_chat import CHINESE_ERRORS, FolderChatError
+
+            fallback = (
+                _localized(
+                    human_text,
+                    CHINESE_ERRORS.get(
+                        error.code, CHINESE_ERRORS["local_search_unavailable"]
+                    ),
+                    error.message,
+                )
+                if isinstance(error, FolderChatError)
+                else _localized(
+                    human_text,
+                    "我未能完成这次回答。已完成的操作和已有回答已保存，请继续或重试。",
+                    "I couldn't complete this answer. Completed actions and partial answers are saved; please continue or try again.",
+                )
             )
             await self._emit(
                 tid,
@@ -746,13 +812,145 @@ class Runtime:
                 "error",
                 messages=_durable_messages(new_messages),
                 usage=combined_usage(),
-                error_code="generation_failed",
+                error_code=error.code
+                if isinstance(error, FolderChatError)
+                else "generation_failed",
             )
         finally:
             await self.delegation.cancel_turn(tid)
             self.delegation.release_turn(tid)
             self.actions.release_turn(tid)
             self._signals.setdefault(tid, asyncio.Event()).set()
+
+    async def _run_folder(self, request, rows, deps, model, usage, human_text):
+        from rapid_mlx.local_search.grounding import ABSTENTION
+
+        from .folder_chat import (
+            FolderChatError,
+            model_history,
+            prepared_context,
+            text_history,
+        )
+        from .token_budget import TokenCounter
+
+        tid = request.turn_id
+        saved = (await self.store.get_turn(tid))["settings"].get("grounding")
+        if saved is None:
+            messages = text_history(rows)
+            result, folders = await self.clients.folder_results(
+                request.inference_url,
+                request.local_search,
+                messages[-1].content,
+                request.inference_api_key.get_secret_value()
+                if request.inference_api_key
+                else None,
+            )
+            saved = await self.store.save_grounding(
+                tid, prepared_context(messages, result, folders, request.local_search)
+            )
+        self._signals.setdefault(tid, asyncio.Event()).set()
+        metadata = saved["metadata"]
+        if metadata["status"] == "no_matches":
+            answer = _localized(
+                human_text,
+                "在所选文件夹的已索引内容中没有找到匹配的片段，无法根据此文件夹回答这个问题。",
+                ABSTENTION,
+            )
+            if metadata["indexing"]:
+                answer += _localized(
+                    human_text,
+                    "\n\n索引仍在建立中，部分文件尚未包含在搜索结果中。",
+                    "\n\nIndexing is still in progress; some files are not searchable yet.",
+                )
+            await self._emit(
+                tid,
+                {
+                    "type": "text.delta",
+                    "part_id": "folder-no-matches",
+                    "text": answer,
+                },
+            )
+            await self.store.finish_turn(
+                tid,
+                "completed",
+                messages=_durable_messages([ModelResponse(parts=[TextPart(answer)])]),
+                usage=usage,
+            )
+            return
+        # No tool execution or context-compaction path may reinterpret sources.
+        deps.web = None
+        deps.workspace = None
+        deps.action_tools = False
+        deps.delegation = None
+        deps.actions = None
+        counter = TokenCounter(self.clients, request)
+        budget = max(
+            128,
+            request.context_tokens
+            - min(request.max_tokens, request.context_tokens // 4)
+            - 128,
+        )
+
+        async def prepare(_ctx, context):
+            if context.model_request_parameters.function_tools:
+                raise FolderChatError(
+                    "local_search_tools_forbidden", "Folder chat does not allow tools."
+                )
+            measured = await counter.measure(
+                context.messages, context.model_request_parameters
+            )
+            if measured["estimated"]:
+                raise FolderChatError(
+                    "local_search_token_count_unavailable",
+                    "Could not verify the folder context size. Update or reconnect to the local server, then retry.",
+                )
+            if measured["used_tokens"] > budget:
+                raise FolderChatError(
+                    "local_search_context_too_large",
+                    "This folder chat exceeds its context budget. Start a new folder chat or ask a narrower question.",
+                )
+            notice = (
+                "Keyword search" if metadata["mode"] == "keyword" else "Folder search"
+            )
+            if metadata["indexing"]:
+                notice += " · indexing is still in progress"
+            if metadata["truncated"]:
+                notice += " · some sources did not fit"
+            await self._emit(tid, context_event(measured, budget, notice=notice))
+            return context
+
+        deps.prepare_context = prepare
+        deps.token_counter = counter
+        history = model_history(saved, build_instructions(deps, set(), synthesis=True))
+        final, messages, consumed = await self._attempt(
+            self.folder_agent,
+            model,
+            history,
+            deps,
+            {
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "extra_body": {
+                    "chat_template_kwargs": {"enable_thinking": request.thinking}
+                },
+            },
+            0,
+        )
+        for key in usage:
+            usage[key] += getattr(consumed, key, 0)
+        if not final.strip():
+            raise FolderChatError(
+                "local_search_empty_answer",
+                "The model returned no answer. Try a narrower question or another local model.",
+            )
+        await self._emit(tid, {"type": "usage", **usage})
+        await self.store.finish_turn(
+            tid,
+            "completed",
+            messages=_durable_messages(messages),
+            usage=usage,
+            execution_metrics=final_generation_metrics(messages),
+        )
 
     async def _attempt(self, agent, model, history, deps, settings, attempt):
         history = list(history)

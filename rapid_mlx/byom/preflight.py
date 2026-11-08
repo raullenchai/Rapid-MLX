@@ -132,6 +132,7 @@ class Inspection:
     # Anonymously readable (not gated, not private): only such repos may be
     # named in a support request.
     public: bool = False
+    download_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,50 @@ def is_runtime_weight(name: str) -> bool:
     return (
         "/" not in name and lower.startswith("model") and lower.endswith(".safetensors")
     )
+
+
+# Folder names that denote another quantization of the same model
+# (``4-bit``, ``8bit``, ``mxfp4``, ``q4_k``...). Other nested checkpoints may
+# be components the root model needs (the ``mtp/`` head sidecar, encoders),
+# so only these are ever skipped.
+_VARIANT_DIR = re.compile(
+    r"(?i)^(?:\d+(?:\.\d+)?[-_]?bits?|q\d+(?:[-_]\w+)?|mx?fp\d+|nvfp\d+"
+    r"|bf16|int\d+|w\d+a\d+|dwq|oq\d+\w*)$"
+)
+
+
+def nested_checkpoint_dirs(files: Iterable[str]) -> tuple[str, ...]:
+    """Sibling quantizations shipped next to a root checkpoint.
+
+    Some repos publish a full checkpoint at the root plus one folder per
+    alternative quantization (``4-bit/``, ``8-bit/``...). The loader only
+    reads the root, so those folders must not be downloaded or priced.
+    Empty unless the root itself is a checkpoint.
+    """
+    names = set(files)
+    if "config.json" not in names or not any(is_runtime_weight(n) for n in names):
+        return ()
+    dirs: set[str] = set()
+    for name in names:
+        top, sep, rest = name.partition("/")
+        if (
+            sep
+            and _VARIANT_DIR.match(top)
+            and f"{top}/config.json" in names
+            and rest.lower().endswith(".safetensors")
+        ):
+            dirs.add(top)
+    return tuple(sorted(dirs))
+
+
+def nested_checkpoint_ignore_patterns(files: Iterable[str]) -> list[str] | None:
+    """``ignore_patterns`` that skip :func:`nested_checkpoint_dirs`, or ``None``."""
+    dirs = nested_checkpoint_dirs(files)
+    return [f"{d}/*" for d in dirs] or None
+
+
+def in_nested_checkpoint(name: str, dirs: Iterable[str]) -> bool:
+    return any(name.startswith(f"{d}/") for d in dirs)
 
 
 def _has_suffix(files: Iterable[str], suffix: str) -> bool:
@@ -229,6 +274,53 @@ def _dict_literal_keys(source_file: Path, name: str) -> set[str] | None:
     return None
 
 
+def _pyc_dict_keys(compiled_file: Path, name: str) -> set[str] | None:
+    """Keys of a module-level ``name = {...}`` str-keyed dict in a ``.pyc``.
+
+    The Desktop bundle ships site-packages sourceless, so the literal is read
+    from the module's bytecode (compiled by this same interpreter) instead.
+    """
+    import dis
+    import marshal
+
+    # Tiny evaluator for the opcodes a constant dict literal compiles to;
+    # anything unexpected (not bytecode, not a literal) yields ``None``.
+    stack: list[Any] = []
+    try:
+        code = marshal.loads(compiled_file.read_bytes()[16:])
+        for ins in dis.get_instructions(code):
+            op, arg = ins.opname, ins.arg or 0
+            if op in ("EXTENDED_ARG", "NOP", "CACHE"):
+                continue
+            if op == "LOAD_CONST":
+                stack.append(ins.argval)
+            elif op == "BUILD_MAP":
+                items = stack[len(stack) - 2 * arg :] if arg else []
+                del stack[len(stack) - 2 * arg :]
+                stack.append(dict(zip(items[::2], items[1::2])))
+            elif op == "BUILD_CONST_KEY_MAP":
+                keys = stack.pop()
+                values = stack[len(stack) - arg :]
+                del stack[len(stack) - arg :]
+                stack.append(dict(zip(keys, values, strict=True)))
+            elif op == "MAP_ADD" and arg == 1:
+                value, key = stack.pop(), stack.pop()
+                stack[-1][key] = value
+            elif op == "DICT_UPDATE" and arg == 1:
+                update = stack.pop()
+                stack[-1].update(update)
+            elif op == "STORE_NAME" and ins.argval == name:
+                value = stack[-1] if stack else None
+                if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+                    return set(value)
+                return None
+            else:
+                stack = []
+    except (OSError, EOFError, ValueError, TypeError, AttributeError, IndexError):
+        return None
+    return None
+
+
 def _module_names(directory: Path) -> set[str]:
     names: set[str] = set()
     try:
@@ -238,9 +330,10 @@ def _module_names(directory: Path) -> set[str]:
     for entry in entries:
         if entry.name.startswith(("_", ".")):
             continue
-        if entry.suffix == ".py":
+        # ``.pyc``: sourceless modules in the Desktop bundle.
+        if entry.suffix in (".py", ".pyc"):
             names.add(entry.stem)
-        elif (entry / "__init__.py").is_file():
+        elif (entry / "__init__.py").is_file() or (entry / "__init__.pyc").is_file():
             names.add(entry.name)
     return names
 
@@ -259,7 +352,10 @@ def _installed_types(package: str, model_dirs: tuple[str, ...]) -> set[str] | No
     root = _package_dir(package)
     if root is None:
         return None
-    remapped = _dict_literal_keys(root / "utils.py", "MODEL_REMAPPING")
+    if (root / "utils.py").is_file():
+        remapped = _dict_literal_keys(root / "utils.py", "MODEL_REMAPPING")
+    else:
+        remapped = _pyc_dict_keys(root / "utils.pyc", "MODEL_REMAPPING")
     if remapped is None:
         return None
     names: set[str] = set(remapped)
@@ -445,14 +541,25 @@ def card_license(card: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def inspect_hub(repo_id: str) -> Inspection | None:
+def inspect_hub(repo_id: str, *, raise_errors: bool = False) -> Inspection | None:
     """Metadata for a Hub repo, or ``None`` when it cannot be read."""
     try:
         from huggingface_hub import model_info
 
         info = _call_with_deadline(model_info, repo_id, files_metadata=True)
     except Exception:
+        if raise_errors:
+            raise
         return None
+    from rapid_mlx.telemetry.model_id import _revoke_proof, note_hub_fetch
+
+    if (
+        getattr(info, "private", None) is False
+        and getattr(info, "gated", None) is False
+    ):
+        note_hub_fetch(repo_id)
+    elif getattr(info, "private", None) is True or getattr(info, "gated", None):
+        _revoke_proof(repo_id)
     siblings = getattr(info, "siblings", None) or []
     files = tuple(
         name
@@ -461,6 +568,7 @@ def inspect_hub(repo_id: str) -> Inspection | None:
     )
     from rapid_mlx._download_gate import _sibling_size
 
+    nested_dirs = nested_checkpoint_dirs(files)
     weight_bytes = sum(
         _sibling_size(s) for s in siblings if is_runtime_weight(s.rfilename)
     )
@@ -487,6 +595,12 @@ def inspect_hub(repo_id: str) -> Inspection | None:
         quantized_from=quantized_from(hub_tags(info)),
         license=card_license(getattr(info, "card_data", None)),
         tags=hub_tags(info),
+        download_bytes=sum(
+            _sibling_size(s)
+            for s in siblings
+            if not in_nested_checkpoint(s.rfilename, nested_dirs)
+        )
+        or None,
         public=getattr(info, "private", None) is False
         and getattr(info, "gated", None) is False,
     )
@@ -1210,7 +1324,7 @@ def _same_task_fitting_pick(
 def _check_catalog_memory_fit(args: Any) -> None:
     try:
         if (
-            args.command != "serve"
+            args.command not in ("serve", "pull")
             or getattr(args, "no_preflight", False)
             or getattr(args, "disk_stream", False)
             or os.path.exists(args.model)
@@ -1224,6 +1338,8 @@ def _check_catalog_memory_fit(args: Any) -> None:
         if profile is None:
             return
         cached = _cache_runnability(profile.hf_path) is True
+        if args.command == "pull" and cached:
+            return
         ram = physical_ram_bytes()
         # The public wrapper delegates through the private name for compatibility.
         recommended = mlx_recommended_working_set_bytes()
@@ -1233,7 +1349,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
             recommended_working_set_bytes=recommended,
             cached=cached,
         )
-        if result is None:
+        if result is None or (args.command == "pull" and result.kind != "memory_floor"):
             return
         budget = result.budget_bytes or _working_set_budget(ram, None)
         footprint = result.footprint_bytes
@@ -1262,7 +1378,10 @@ def _check_catalog_memory_fit(args: Any) -> None:
         )
     print("  Nothing was downloaded.", file=sys.stderr)
     if pick:
-        print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)
+        print(
+            f"  A model that fits this Mac: rapid-mlx {args.command} {pick}",
+            file=sys.stderr,
+        )
         try:
             import rapid_mlx.cli as cli_mod
 
@@ -1295,7 +1414,10 @@ def _check_catalog_memory_fit(args: Any) -> None:
             file=sys.stderr,
         )
     print(
-        "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
+        "    (To download anyway, for example to move the files to a bigger Mac, "
+        "re-run with --no-preflight.)\n"
+        if args.command == "pull"
+        else "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
         file=sys.stderr,
     )
     _emit_rejection(args, PreflightRejectedError(INSUFFICIENT_MEMORY))
@@ -1306,6 +1428,36 @@ def _check_catalog_memory_fit(args: Any) -> None:
     raise exc
 
 
+def evaluate_inspection(
+    inspection: Inspection, *, refuse_oversize: bool
+) -> tuple[Inspection, Verdict | None]:
+    """Apply the shared verdict, confirming Hub architecture refusals from config."""
+    supported = supported_model_types()
+    verdict = evaluate(
+        inspection,
+        refuse_oversize=refuse_oversize,
+        supported=supported,
+        ram_bytes=physical_ram_bytes(),
+    )
+    if verdict.failure == UNSUPPORTED_ARCHITECTURE and not inspection.is_local:
+        full = _fetch_hub_config(inspection.ref, inspection.revision)
+        if full is None:
+            return inspection, None
+        confirmed = architecture_supported(
+            full, supported, chat_template=inspection.has_chat_template
+        )
+        if confirmed is None:
+            return inspection, None
+        inspection = replace(inspection, config=full)
+        verdict = evaluate(
+            inspection,
+            refuse_oversize=refuse_oversize,
+            supported=supported,
+            ram_bytes=verdict.ram_bytes,
+        )
+    return inspection, verdict
+
+
 def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
     """Run the preflight for ``serve``/``pull`` args; exit 1 on a rejection.
 
@@ -1314,7 +1466,10 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
     check prints a short summary before the download starts.
     """
     funnel = _funnel()
-    funnel.begin((getattr(args, "_original_alias", None), getattr(args, "model", None)))
+    funnel.begin(
+        (getattr(args, "_original_alias", None), getattr(args, "model", None)),
+        ref_form=getattr(args, "_ref_form", None),
+    )
     if args.command == "pull" and gguf_format_requested(getattr(args, "format", None)):
         print(f"\n  Error: {GGUF_FORMAT_MESSAGE}", file=sys.stderr)
         _emit_rejection(args, PreflightRejectedError(UNSUPPORTED_FORMAT))
@@ -1339,38 +1494,18 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         return
     if is_local:
         _note_uncataloged_serve(args)
-    supported = supported_model_types()
-    # ``pull`` is storage-only and may target another Mac, and ``--disk-stream``
-    # serves MoE experts from disk; only a plain ``serve`` refuses a checkpoint
-    # whose weights alone exceed this machine's memory.
-    verdict = evaluate(
+    display_inspection, verdict = evaluate_inspection(
         inspection,
         refuse_oversize=args.command == "serve"
         and not getattr(args, "disk_stream", False),
-        supported=supported,
-        ram_bytes=physical_ram_bytes(),
     )
-    display_inspection, display_verdict = inspection, verdict
-    if verdict.failure == UNSUPPORTED_ARCHITECTURE and not inspection.is_local:
-        # The Hub's config summary omits fields that route a model to other
-        # loaders; confirm against the real config.json before refusing.
-        full = _fetch_hub_config(ref, inspection.revision)
-        confirmed = (
-            None
-            if full is None
-            else architecture_supported(
-                full, supported, chat_template=inspection.has_chat_template
-            )
-        )
-        if confirmed is not False:
-            if confirmed is True:
-                funnel.set_preflight("passed")
-            return
-        assert full is not None
-        display_inspection = replace(inspection, config=full)
-        full_type = full.get("model_type")
-        if isinstance(full_type, str) and full_type:
-            display_verdict = replace(verdict, model_type=full_type)
+    if verdict is None:
+        return
+    if display_inspection is not inspection and verdict.architecture_supported is True:
+        # Preserve the existing CLI's silent full-config confirmation path.
+        funnel.set_preflight("passed")
+        return
+    display_verdict = verdict
     if verdict.failure is not None:
         from rapid_mlx.byom.alternatives import suggest
 
@@ -1381,7 +1516,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
                     inspection,
                     verdict,
                     command=args.command,
-                    supported=supported,
+                    supported=supported_model_types(),
                     ram_bytes=verdict.ram_bytes or physical_ram_bytes(),
                     targets=suggested,
                 )

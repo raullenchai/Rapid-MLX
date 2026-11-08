@@ -11,7 +11,7 @@ func ownerProjectionApprovals(_ projection: ChatTurnProjection, unavailable: Set
 }
 
 /// Converts sanitized owner state to transcript rows; reasoning is never copied.
-func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID, createdAt: Date) -> [ChatMessage] {
+func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID, createdAt: Date, generation: SavedGenerationMetrics? = nil) -> [ChatMessage] {
     func rowID(_ key: String) -> UUID {
         let bytes = Array(SHA256.hash(data: Data("\(projection.turnID):\(key)".utf8)).prefix(16))
         return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
@@ -50,11 +50,19 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
         rows.append(ChatMessage(id: rowID("permission:" + permission.opID), role: .tool, content: "Waiting for approval", status: .streaming, toolCallID: permission.opID, createdAt: createdAt))
     }
     for source in projection.sources {
+        let isFolderSource = source.sourceID.hasPrefix("local-search:" + projection.turnID + ":") && source.attachmentID != nil && source.url == nil
         let detail = source.url ?? source.attachmentID ?? ""
-        rows.append(ChatMessage(id: rowID("source:" + source.sourceID), role: .system, content: detail.isEmpty ? source.title : "\(source.title): \(detail)", wireVisibility: .transcriptOnly, createdAt: createdAt))
+        var row = ChatMessage(id: rowID("source:" + source.sourceID), role: .system, content: isFolderSource ? source.title : (detail.isEmpty ? source.title : "\(source.title): \(detail)"), wireVisibility: .transcriptOnly, createdAt: createdAt)
+        if isFolderSource { row.ownerSource = source }
+        rows.append(row)
     }
-    if let context = projection.context, context.compacted {
+    if let context = projection.context, context.compacted || (projection.sources.contains { $0.sourceID.hasPrefix("local-search:" + projection.turnID + ":") } && !context.notice.isEmpty) {
         rows.append(ChatMessage(id: rowID("context"), role: .system, content: context.notice.isEmpty ? "Context compacted." : context.notice, wireVisibility: .transcriptOnly, createdAt: createdAt))
+    }
+    if terminal?.outcome == .completed, let generation, generation.turnID == projection.turnID,
+       generation.messageID == terminal?.finalMessageID,
+       let index = rows.lastIndex(where: { $0.role == .assistant && !$0.content.isEmpty }) {
+        rows[index].generationMetrics = generation.metrics
     }
     return rows
 }

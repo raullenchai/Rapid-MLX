@@ -37,6 +37,25 @@ import Testing
 @MainActor
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
+    @Test("Section priority is Quickstart, Recommended, then remaining models")
+    func deduplicatesEverySection() {
+        let entries = ["starter", "fast", "other", "STARTER", "other"].map {
+            ModelEntry(alias: $0, hfRepo: nil, sizeOnDisk: nil, cached: false)
+        }
+        let quickstart = ModelPickerBar.uniqueSectionEntries([entries[0]], excluding: [])
+        let recommended = ModelPickerBar.uniqueSectionEntries(
+            Array(entries.prefix(2)), excluding: quickstart.map(\.alias)
+        )
+        let remaining = ModelPickerBar.dedupedAllEntries(
+            filtered: entries, quickstartAlias: quickstart.first?.alias,
+            recommendedAliases: recommended.map(\.alias)
+        )
+        #expect(quickstart.map(\.alias) == ["starter"])
+        #expect(recommended.map(\.alias) == ["fast"])
+        #expect(remaining.map(\.alias) == ["other"])
+        #expect(ModelPickerBar.dedupedAllEntries(filtered: entries, quickstartAlias: nil).count == 3)
+    }
+
 
     @Test("Unavailable and empty model states share recovery actions")
     func emptyMenuStatesIncludeRecoveryActions() throws {
@@ -87,12 +106,20 @@ struct ModelPickerBarSectionOrderTests {
         #expect(rows.lowerBound < end)
         try #require(button.lowerBound >= end,
                      "Browse button must render outside and after the entire state switch")
-        // Only router availability may gate the shared trailing entry.
+        // Add from HF shows for rows and both downloaded-empty states; Browse
+        // remains outside that gate so every recovery state has a destination.
         let trailingPrefix = String(menu[end..<button.lowerBound])
-        #expect(trailingPrefix.range(
-            of: #"^\s*if let settingsRouter\s*\{\s*Divider\(\)\s*$"#,
-            options: .regularExpression
-        ) != nil)
+        #expect(trailingPrefix.contains("if let settingsRouter {"))
+        #expect(trailingPrefix.contains("ModelPickerBar.AddFromHF"))
+        #expect(trailingPrefix.contains(
+            "if state == .rows || state == .noDownloadedModels || state == .noVisibleModels {"
+        ))
+        var trailingDepth = 0
+        for character in trailingPrefix {
+            if character == "{" { trailingDepth += 1 }
+            if character == "}" { trailingDepth -= 1 }
+        }
+        #expect(trailingDepth == 1, "Only router availability may gate Browse all models")
     }
 
     @Test("Oversized aliases are separated from runnable All models")
@@ -331,32 +358,21 @@ struct ModelPickerBarSectionOrderTests {
         }
     }
 
-    @Test("Dedup follows the hardware-specific Quickstart alias")
+    @Test("Dedup removes the fitting LFM starter and preserves the Qwen alternative")
     func dedupUsesRenderedHardwareStarter() {
-        let compact = QuickstartCoordinator.baselineChoice(
-            hardware: hardware(ramGB: 8)
-        ).alias
-        let standard = QuickstartCoordinator.baselineChoice(
-            hardware: hardware(ramGB: 16)
-        ).alias
-        let filtered = [
-            entry(compact, hfRepo: "mlx-community/LFM2.5-2.6B-MLX-4bit", cached: false),
-            entry(standard, hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit", cached: false),
-        ]
-
-        let compactAliases = Set(ModelPickerBar.dedupedAllEntries(
-            filtered: filtered,
-            quickstartAlias: compact
-        ).map(\.alias))
-        #expect(!compactAliases.contains(compact))
-        #expect(compactAliases.contains(standard))
-
-        let standardAliases = Set(ModelPickerBar.dedupedAllEntries(
-            filtered: filtered,
-            quickstartAlias: standard
-        ).map(\.alias))
-        #expect(!standardAliases.contains(standard))
-        #expect(standardAliases.contains(compact))
+        for ram in [4.0, 8, 16, 32, 64] {
+            let starter = QuickstartCoordinator.baselineChoice(hardware: hardware(ramGB: ram)).alias
+            let alternative = QuickstartCoordinator.visionChoice.alias
+            let filtered = [
+                entry(starter, hfRepo: "fixture/starter", cached: false),
+                entry(alternative, hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit", cached: false),
+            ]
+            let aliases = Set(ModelPickerBar.dedupedAllEntries(
+                filtered: filtered, quickstartAlias: starter
+            ).map(\.alias))
+            #expect(!aliases.contains(starter))
+            #expect(aliases.contains(alternative))
+        }
     }
 
     private func hardware(ramGB: Double) -> MacHardware {

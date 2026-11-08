@@ -59,13 +59,23 @@ def write_model(
     return directory
 
 
-def snapshot(cache, repo, **kwargs):
+def snapshot(cache, repo, *, subfolder=None, **kwargs):
     root = cache / ("models--" + repo.replace("/", "--"))
     revision = ma.resolve_revision(repo) or "a" * 40
-    directory = write_model(root / "snapshots" / revision, **kwargs)
+    snapshot_dir = root / "snapshots" / revision
+    directory = write_model(
+        snapshot_dir / subfolder if subfolder else snapshot_dir, **kwargs
+    )
     (root / "refs").mkdir()
     (root / "refs" / "main").write_text(revision)
     return directory
+
+
+def snapshot_starter(cache, **kwargs):
+    """Cache the first-run starter as a real download lays it out."""
+    profile = ma.list_profiles()[first_run.FIRST_RUN_MODEL]
+    snapshot(cache, profile.hf_path, subfolder=profile.subfolder, **kwargs)
+    return profile.hf_path
 
 
 def local(model="org/chat", *, alias=None, fit="yes", mtime=0, external=False):
@@ -93,8 +103,7 @@ def test_empty_and_catalog_cache(cache):
     assert lm.discover_runnable_chat_models() == []
     assert cli._cached_models_json_payload()["cached"] == []
     assert lm.select_default_local_model() is None
-    repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
-    snapshot(cache, repo)
+    snapshot_starter(cache)
     found = lm.discover_runnable_chat_models()
     assert len(found) == 1
     assert found[0].model == first_run.FIRST_RUN_MODEL
@@ -103,13 +112,15 @@ def test_empty_and_catalog_cache(cache):
     assert lm.select_default_local_model().model == first_run.FIRST_RUN_MODEL
     assert first_run.select_chat_default() == (first_run.FIRST_RUN_MODEL, True)
     row = cli._cached_models_json_payload()["cached"][0]
-    assert row["chat_ready"] is True
-    assert row["chat_fit"] == "yes"
+    assert row["state"] == "ok"
+    # The starter's subfolder artifact is not judged by repo-level discovery,
+    # so it stays catalog-eligible without a certified verdict.
+    assert row["chat_ready"] is None
+    assert row["chat_fit"] is None
 
 
 def test_serve_cached_catalog(cache, monkeypatch, capsys, stub_serve_port_resolution):
-    repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
-    snapshot(cache, repo)
+    repo = snapshot_starter(cache)
     args = capture_cli(monkeypatch, ["serve"])
     assert args.model == repo
     assert args._original_alias == first_run.FIRST_RUN_MODEL
@@ -454,7 +465,7 @@ def test_unreadable_or_unverified_chat(cache, monkeypatch, failure):
 
 
 def test_catalog_oversize_dropped(cache):
-    snapshot(cache, ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path)
+    snapshot_starter(cache)
     assert lm.discover_runnable_chat_models(ram_bytes=4) == []
 
 
@@ -479,7 +490,7 @@ def test_decoder_architecture_required(cache, architectures):
 
 
 def test_cached_starter_does_not_scan_again(cache, monkeypatch):
-    snapshot(cache, ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path)
+    snapshot_starter(cache)
     monkeypatch.setattr(
         lm, "select_default_local_model", lambda: pytest.fail("cached starter wins")
     )
@@ -531,8 +542,7 @@ def test_attached_base_url_skips_discovery(cache, monkeypatch):
 def test_explicit_model_and_telemetry_marker(
     cache, monkeypatch, capsys, stub_serve_port_resolution
 ):
-    repo = ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path
-    snapshot(cache, repo)
+    repo = snapshot_starter(cache)
     monkeypatch.setenv("RAPID_MLX_AUTO_SELECTED", "1")
     monkeypatch.setattr(
         lm,
@@ -555,7 +565,7 @@ def test_first_catalog_alias_wins(cache, monkeypatch):
 
 
 def test_catalog_draft_never_offered(cache, monkeypatch):
-    snapshot(cache, ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path)
+    snapshot_starter(cache)
 
     def reject(_):
         raise ma.DraftModelNotServableError("draft only")
@@ -565,7 +575,7 @@ def test_catalog_draft_never_offered(cache, monkeypatch):
 
 
 def test_chat_cached_starter_notice(cache, monkeypatch, capsys):
-    snapshot(cache, ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path)
+    snapshot_starter(cache)
     capture_cli(monkeypatch, ["chat"], tty=True)
     out = capsys.readouterr().out
     assert f"using {first_run.FIRST_RUN_MODEL} (already downloaded)." in out
@@ -663,7 +673,8 @@ def test_cataloged_checkpoint_must_be_loadable(cache, config_update):
 
 
 def test_incomplete_cached_starter_does_not_block_other_local_model(cache):
-    starter = snapshot(cache, ma.list_profiles()[first_run.FIRST_RUN_MODEL].hf_path)
+    profile = ma.list_profiles()[first_run.FIRST_RUN_MODEL]
+    starter = snapshot(cache, profile.hf_path, subfolder=profile.subfolder)
     (starter / "tokenizer.json").unlink()
     snapshot(cache, "org/chat")
     assert lm.catalog_model_ready(first_run.FIRST_RUN_MODEL) is False

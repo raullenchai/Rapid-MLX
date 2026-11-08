@@ -1601,23 +1601,13 @@ enum DevSnapshot {
             quickstart.catalogFilter = .cached
         }
 
-        // 2e — Review download for an uncached model, opened from the
-        // catalogue. Primary reads Download & start; Back names the catalogue.
-        capture("review-uncached", catalog: catalog, loaded: true) {
+        // Only incompatible models have a detail screen before download.
+        capture("incompatible-memory", catalog: catalog, loaded: true) {
             quickstart._testingReset()
             quickstart.advanceToChooseModel()
             quickstart.beginBrowsingCatalog()
-            quickstart.select(uncachedChoice)
-            quickstart.beginReviewDownload(origin: .catalogue)
-        }
-
-        // 2e — Review for a model already on disk. Primary reads Start existing
-        // model, and no download size is quoted as a cost.
-        capture("review-cached", catalog: catalog, loaded: true) {
-            quickstart._testingReset()
-            quickstart.advanceToChooseModel()
-            quickstart.select(cachedChoice)
-            quickstart.beginReviewDownload(origin: .shortlist)
+            quickstart.select(QuickstartCoordinator.choice(forAlias: "qwen3-235b-4bit"))
+            quickstart.beginIncompatibleModelReview(origin: .catalogue)
         }
 
         // Back restoration — the state the user lands in after Review → Back
@@ -1631,8 +1621,8 @@ enum DevSnapshot {
             quickstart.catalogSort = .nameAscending
             quickstart.select(uncachedChoice)
             quickstart.rememberCatalogAnchor(uncachedChoice.alias)
-            quickstart.beginReviewDownload(origin: .catalogue)
-            quickstart.backFromReviewDownload()
+            quickstart.beginIncompatibleModelReview(origin: .catalogue)
+            quickstart.backFromIncompatibleModelReview()
         }
 
         // Back restoration onto the shortlist, where a catalogue pick has to

@@ -62,13 +62,13 @@ enum ModelMeter {
     /// The short label for the compact meter — shorter than
     /// ``BenchScores.Axis.label`` ("General & Reasoning" → "Accuracy")
     /// because the row column is narrow.
-    static func shortLabel(for axis: BenchScores.Axis) -> String {
+    static func shortLabel(for axis: BenchScores.Axis, bundle: Bundle = .main) -> String {
         switch axis {
-        case .generalReasoning: return "Accuracy"
-        case .code:             return "Code"
-        case .tool:             return "Tool"
-        case .ifeval:           return "Instructions"
-        case .speed:            return "Speed"
+        case .generalReasoning: return String(localized: "Accuracy", bundle: bundle)
+        case .code:             return String(localized: "Code", bundle: bundle)
+        case .tool:             return String(localized: "Tool", bundle: bundle)
+        case .ifeval:           return String(localized: "Instructions", bundle: bundle)
+        case .speed:            return String(localized: "Speed", bundle: bundle)
         }
     }
 

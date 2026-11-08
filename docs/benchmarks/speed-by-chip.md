@@ -79,3 +79,89 @@ summary; add `--log-level INFO` (or set `RAPID_MLX_LOG_LEVEL`) to see them.
 With `--json`, stdout contains exactly one JSON document; progress goes to stderr.
 Results are stored under `$RAPID_MLX_HOME/benchmarks` when `RAPID_MLX_HOME` is
 set. Older results under `~/.rapid-mlx/benchmarks` remain readable.
+
+## Offline expectations in Desktop and the CLI
+
+The recommended model picker, Settings, `rapid-mlx models`, and the System
+section of `rapid-mlx doctor` use the bundled `decode_expectations.json` snapshot.
+The snapshot groups the exact model repository, chip generation and tier, and
+speculative method. MTP references additionally match the recorded draft depth
+and embedded head in the exact target repository on the ordinary serving lane.
+External-drafter, native/dedicated-backend, and unidentifiable configurations
+remain unavailable; their method name alone cannot prove the catalog default.
+A measured range requires at least three distinct submitted
+runs. Short and long cases are first reduced to one median per submission; the
+displayed range is the interquartile range of those medians. The sample count
+and sampled RAM span appear alongside it. Results outside that RAM span are not
+presented as measured expectations. “Smooth” (median at least 30 tok/s), “usable”
+(at least 10), and “tight” describe measured reference responsiveness only.
+
+An MTP-off measurement is never the expected range for an MTP-on default. When
+there are too few compatible samples, the expected range says **unavailable**;
+an explicitly labelled MTP-off reference can still help explain the hardware.
+Sparse samples, unknown hardware, unsupported configurations, and insufficient
+RAM retain honest gaps. Download bytes are not active weight bytes and cannot
+establish a theoretical decode ceiling: repositories can contain vision towers,
+draft assets, and non-weight data. The product therefore does not invent a
+numerical estimate or MTP speedup for those gaps. No model is loaded and no
+network request is made to show these references. Compact labels identify the
+method; picker/Settings help and structured CLI output preserve sample scope.
+
+### Details after a chat response
+
+Desktop's **Generation details** disclosure preserves the selected successful
+model response's server decode timing and execution facts with that answer.
+It uses the executed public repository and configuration, together with the
+inference host's chip variant and RAM frozen in the same terminal response.
+Changing the picker or viewing history on another Mac does not relabel a saved
+result. A loopback URL or tunnel does not establish which machine ran inference.
+
+A matching measured reference is informational: it shows the middle 50% of
+compatible submissions and their sample count/RAM span. It is not a prediction
+interval or a diagnosis that a slower response is broken. Unknown/mixed
+execution, missing host facts, unsupported configurations and unmatched
+chip/RAM scopes show no matching reference. Older servers remain usable and
+simply omit these optional details. No model downloads or leaderboard requests
+are needed to display them.
+
+The displayed server decode rate is `1000 / mean_itl_ms`, when there are at
+least two generated tokens and a valid frozen interval. This measures the
+intervals between engine-generated tokens, including reasoning/stop tokens;
+it is distinct from visible characters, client wall time and time to first
+token. Owner tool/retry/subagent totals remain separate from the selected final
+model generation. Failed/cancelled/partial responses and no-evidence folder
+abstentions do not acquire a successful generation record.
+
+API clients can read optional `metrics.execution_host` (`chip`, `memory_bytes`)
+alongside terminal `metrics.execution_reference` and timing. Supported local
+execution captures hardware once per process; unsupported/distributed/unknown
+execution and failed probes omit it. Cached replay preserves the original host
+or its absence. Owner clients first require `generation_metrics_v1` from the
+authenticated capabilities response, then read
+`GET /v1/rapid/chat/conversations/{conversation_id}/turns/{turn_id}/execution-metrics`.
+The bounded `generation` object is null when unavailable; otherwise it contains
+`turn_id`, the successful final `message_id`, and the same generation `metrics`.
+It is saved atomically with successful completion and cannot be read after
+owner conversation deletion. The existing strict event/source wire remains
+unchanged. Arbitrary provider metadata and private local model paths are not
+part of this record.
+
+Release maintainers refresh the bundled snapshot from a complete public
+`/api/benchmarks/atomic/contributions` export, following cursors until
+`complete` is true, then run:
+
+```bash
+python scripts/refresh_decode_expectations.py --input complete-export.json --refreshed-at YYYY-MM-DD
+pytest tests/test_decode_expectations.py
+```
+
+The generator emits aggregate fields only: no contributor identity, submission
+identifier, local path, or raw prompt enters the product bundle. Commit the
+snapshot with the release and regenerate the shared golden vectors when values
+change. The Desktop assembler copies that same physical Python-package file;
+there is no separately maintained Desktop dataset or runtime fetch.
+
+This is a partial implementation of chip-specific expectations. The current
+snapshot does **not** establish a measured default-MTP range for
+base-M4 9B or 27B. More matching default-configuration submissions are needed;
+these gaps are not evidence that the faster-chip measurements apply to base M4.

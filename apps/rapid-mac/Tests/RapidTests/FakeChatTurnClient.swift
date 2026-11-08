@@ -12,6 +12,35 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    private var generationGate: (@Sendable () async -> Void)?
+    func setGenerationGate(_ value: @escaping @Sendable () async -> Void) { generationGate = value }
+    private var savedGeneration: GenerationMetrics?
+    private var generationMessageID = "final"
+    private(set) var generationReads = 0
+    func setGeneration(_ value: GenerationMetrics, messageID: String) { savedGeneration = value; generationMessageID = messageID }
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? {
+        generationReads += 1
+        let snapshot = savedGeneration
+        let messageID = generationMessageID
+        await generationGate?()
+        return snapshot.map { SavedGenerationMetrics(turnID: turnID, messageID: messageID, metrics: $0) }
+    }
+
+    private(set) var sourcePreviewCalls: [(String, String)] = []
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview {
+        sourcePreviewCalls.append((conversationID, attachmentID))
+        return FolderSourcePreview(id: attachmentID, name: "policy.txt", text: "The refund window is 30 days.\nSaved evidence, not the current file.", truncated: false)
+    }
+    var capabilityGate: (@Sendable () async -> Void)?
+    var scopeGate: (@Sendable () async -> Void)?
+    func setFolderGate(capability: Bool, gate: @escaping @Sendable () async -> Void) {
+        if capability { capabilityGate = gate } else { scopeGate = gate }
+    }
+    var folderChatSupported = false
+    private(set) var folderScopes: [FolderChatScope?] = []
+    func enableFolderChat() { folderChatSupported = true }
+    func supportsFolderChat() async throws -> Bool { await capabilityGate?(); return folderChatSupported }
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { folderScopes.append(scope); await scopeGate?() }
     var distinctUploadIDs = false
     func enableDistinctUploadIDs() { distinctUploadIDs = true }
     var uploadError: ChatAttachmentUploadError?

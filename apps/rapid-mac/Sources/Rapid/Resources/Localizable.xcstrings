@@ -2,6 +2,1406 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "This checkpoint directory changed. Open it again to confirm its location." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点目录已更改。请重新打开以确认其位置。"
+          }
+        }
+      }
+    },
+    "Existing checkpoints" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现有检查点"
+          }
+        }
+      }
+    },
+    "Open existing checkpoint…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开现有检查点…"
+          }
+        }
+      }
+    },
+    "Checking checkpoint…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查检查点…"
+          }
+        }
+      }
+    },
+    "Use a supported chat checkpoint where it is. Downloads keep their current location." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直接使用原位置的受支持聊天检查点。下载位置保持不变。"
+          }
+        }
+      }
+    },
+    "Remove reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除引用"
+          }
+        }
+      }
+    },
+    "Removing a reference leaves the checkpoint files unchanged. Only available, supported checkpoints appear in the model list." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除引用不会更改检查点文件。模型列表仅显示可用且受支持的检查点。"
+          }
+        }
+      }
+    },
+    "Open existing checkpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开现有检查点"
+          }
+        }
+      }
+    },
+    "Choose a complete chat checkpoint directory. Files stay in their current location." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择完整的聊天检查点目录。文件将保留在原位置。"
+          }
+        }
+      }
+    },
+    "Open checkpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开检查点"
+          }
+        }
+      }
+    },
+    "Remove an existing checkpoint reference before adding another." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先移除一个现有检查点引用，再添加其他引用。"
+          }
+        }
+      }
+    },
+    "The engine could not inspect this directory. Update the engine and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎无法检查此目录。请更新引擎后重试。"
+          }
+        }
+      }
+    },
+    "Choose an existing checkpoint directory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择现有的检查点目录。"
+          }
+        }
+      }
+    },
+    "This checkpoint contains links outside the selected directory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点包含指向所选目录之外的链接。"
+          }
+        }
+      }
+    },
+    "This directory is missing complete MLX checkpoint weights." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此目录缺少完整的 MLX 检查点权重。"
+          }
+        }
+      }
+    },
+    "This checkpoint needs a tokenizer vocabulary and chat template." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点需要分词器词表和聊天模板。"
+          }
+        }
+      }
+    },
+    "This checkpoint is not a supported chat model for this engine and Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点不是当前引擎和 Mac 支持的聊天模型。"
+          }
+        }
+      }
+    },
+    "The checkpoint metadata or runtime could not be verified. Check the files and engine installation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法验证检查点元数据或运行环境。请检查文件及引擎安装。"
+          }
+        }
+      }
+    },
+    "Sampled RAM: %g GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "样本内存：%g GB"
+          }
+        }
+      }
+    },
+    "Executed model: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行模型：%@"
+          }
+        }
+      }
+    },
+    "Multiple execution methods" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用了多种执行方式"
+          }
+        }
+      }
+    },
+    "MTP on (up to %d draft tokens)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已开启 MTP（最多 %d 个草稿词元）"
+          }
+        }
+      }
+    },
+    "Execution configuration: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行配置：%@"
+          }
+        }
+      }
+    },
+    "Generation details" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成详情"
+          }
+        }
+      }
+    },
+    "Server decode: %.1f tok/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器生成速度：%.1f 词元/秒"
+          }
+        }
+      }
+    },
+    "Server time to first token: %.0f ms" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器首词元时间：%.0f 毫秒"
+          }
+        }
+      }
+    },
+    "Execution host: %@ · %g GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行主机：%@ · %g GB"
+          }
+        }
+      }
+    },
+    "Measured reference: %.0f–%.0f tok/s · n=%d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实测参考：%.0f–%.0f 词元/秒 · 样本数=%d"
+          }
+        }
+      }
+    },
+    "Sampled RAM: %g–%g GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "样本内存：%g–%g GB"
+          }
+        }
+      }
+    },
+    "Reference shows the middle 50% of submitted measurements, not a performance guarantee." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "参考范围为提交测量的中间 50%，并非性能保证。"
+          }
+        }
+      }
+    },
+    "No matching measured reference for this execution." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无与本次执行匹配的实测参考。"
+          }
+        }
+      }
+    },
+    "%lld deletions pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项删除待处理。"
+          }
+        }
+      }
+    },
+    "Couldn't read pending server deletions. Local history was kept." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取待处理的对话服务器删除请求。已保留本地历史记录。"
+          }
+        }
+      }
+    },
+    "Removed from history. Server deletion is pending because its conversation ID wasn't received." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。由于未收到对话标识，服务器端删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Removed from history. Confirm the connected server before deleting older history." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。删除旧历史记录前，请确认当前连接的对话服务器。"
+          }
+        }
+      }
+    },
+    "Removed from history. Reconnect the original chat server to finish deletion." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。请重新连接原对话服务器以完成删除。"
+          }
+        }
+      }
+    },
+    "Removed from history. A server turn is still active; stop it before retrying deletion." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。服务器端仍有正在运行的回合，请先停止再重试删除。"
+          }
+        }
+      }
+    },
+    "Removed from history. Server deletion is pending. Reconnect and retry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。服务器端删除仍待处理，请重新连接后重试。"
+          }
+        }
+      }
+    },
+    "Couldn't inspect the connected server. Deletion remains pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查当前连接的对话服务器。删除仍待处理。"
+          }
+        }
+      }
+    },
+    "The connected server changed. Deletion remains pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接的对话服务器已更改。删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Couldn't save the server deletion request. Conversation was kept." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存服务器端删除请求。已保留对话。"
+          }
+        }
+      }
+    },
+    "Couldn't save local removal. Server deletion remains pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存本地移除结果。服务器端删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Removed from history. Server deletion is pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。服务器端删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Review connected server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查连接的对话服务器"
+          }
+        }
+      }
+    },
+    "Delete from this chat server?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要从此对话服务器删除吗？"
+          }
+        }
+      }
+    },
+    "Delete from server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从服务器端删除"
+          }
+        }
+      }
+    },
+    "Connected server storage:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接的服务器存储："
+          }
+        }
+      }
+    },
+    "Engine Metal memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎 Metal 内存"
+          }
+        }
+      }
+    },
+    "Active allocations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活跃分配"
+          }
+        }
+      }
+    },
+    "Allocator cache" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分配器缓存"
+          }
+        }
+      }
+    },
+    "Peak allocations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "峰值分配"
+          }
+        }
+      }
+    },
+    "Live counters for the inference engine, in decimal GB. These are not separate totals for model weights or the prefix cache, and should not be added to system memory use. A dash means the engine has no current measurement." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理引擎的实时计数，单位为十进制 GB。这些数值不是模型权重或前缀缓存各自的总量，不应与系统内存用量相加。短横线表示引擎当前没有测量值。"
+          }
+        }
+      }
+    },
+    "Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = reference benchmark on recorded hardware · Untested = no compatible result recorded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "质量 = 已发布基准，按行标注（准确率 / 代码 / 工具 / 指令）· 速度 = 在记录硬件上测得的参考基准 · 未测试 = 尚无兼容结果记录。"
+          }
+        }
+      }
+    },
+    "configuration unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无配置参考"
+          }
+        }
+      }
+    },
+    "Expected decode range unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无预期生成速度范围"
+          }
+        }
+      }
+    },
+    "Expected decode unavailable: below catalog RAM requirement" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无预期生成速度：低于目录中的内存要求"
+          }
+        }
+      }
+    },
+    "MTP on" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MTP 已开启"
+          }
+        }
+      }
+    },
+    "MTP off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MTP 已关闭"
+          }
+        }
+      }
+    },
+    "smooth" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "流畅"
+          }
+        }
+      }
+    },
+    "usable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用"
+          }
+        }
+      }
+    },
+    "%@ tok/s measured · %@ · %@ (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实测 %@ 词元/秒 · %@ · %@（%@）"
+          }
+        }
+      }
+    },
+    "n=%d, %g–%g GB sampled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 次提交，采样内存 %g–%g GB"
+          }
+        }
+      }
+    },
+    "%@ · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %@"
+          }
+        }
+      }
+    },
+    "; MTP-off reference %@ tok/s (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "；MTP 关闭时参考速度 %@ 词元/秒（%@）"
+          }
+        }
+      }
+    },
+    "%@ tok/s · %@ · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 词元/秒 · %@ · %@"
+          }
+        }
+      }
+    },
+    "Search or paste a Hugging Face link" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索模型或粘贴 Hugging Face 链接"
+          }
+        }
+      }
+    },
+    "From Hugging Face" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自 Hugging Face"
+          }
+        }
+      }
+    },
+    "HUGGING FACE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HUGGING FACE"
+          }
+        }
+      }
+    },
+    "Add from Hugging Face…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从 Hugging Face 添加…"
+          }
+        }
+      }
+    },
+    "Checking format and size…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查格式和大小…"
+          }
+        }
+      }
+    },
+    "community upload, not tested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区上传，未经测试"
+          }
+        }
+      }
+    },
+    "Download anyway" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍然下载"
+          }
+        }
+      }
+    },
+    "Couldn't check this model. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查此模型。请重试。"
+          }
+        }
+      }
+    },
+    "Couldn't find the model checker. Restart Rapid-MLX and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "找不到模型检查程序。请重启 Rapid-MLX 后重试。"
+          }
+        }
+      }
+    },
+    "This model may need more memory than this Mac has." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型需要的内存可能超出此 Mac 的内存。"
+          }
+        }
+      }
+    },
+    "Needs about %lld GB memory; this Mac has %lld GB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %lld GB 内存；此 Mac 有 %lld GB。"
+          }
+        }
+      }
+    },
+    "Kept in memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "常驻内存"
+          }
+        }
+      }
+    },
+    "Code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代码"
+          }
+        }
+      }
+    },
+    "Tool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工具"
+          }
+        }
+      }
+    },
+    "Instructions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "指令遵循"
+          }
+        }
+      }
+    },
+    "Accuracy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确率"
+          }
+        }
+      }
+    },
+    "Vision" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视觉"
+          }
+        }
+      }
+    },
+    "%@: %@, %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@：%@，%@"
+          }
+        }
+      }
+    },
+    "Prompt processing batch size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示词处理批次大小"
+          }
+        }
+      }
+    },
+    "Maximum concurrent requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大并发请求数"
+          }
+        }
+      }
+    },
+    "GPU memory budget" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU 内存预算"
+          }
+        }
+      }
+    },
+    "Reuse prompt prefixes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复用提示词前缀"
+          }
+        }
+      }
+    },
+    "Attention cache precision" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "注意力缓存精度"
+          }
+        }
+      }
+    },
+    "Additional engine setting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他引擎设置"
+          }
+        }
+      }
+    },
+    "Tokens processed together while reading a prompt. Larger batches can use more memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取提示词时每批处理的词元数。批次越大，可能使用越多内存。"
+          }
+        }
+      }
+    },
+    "The most requests the model can process at once." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型可同时处理的最大请求数。"
+          }
+        }
+      }
+    },
+    "The share of GPU memory available to the engine." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎可使用的 GPU 内存比例。"
+          }
+        }
+      }
+    },
+    "Reuses earlier work when requests begin with the same text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当请求以相同文本开头时，复用之前的计算结果。"
+          }
+        }
+      }
+    },
+    "The precision used to store attention history. Lower precision saves memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存储注意力历史记录所用的精度。较低精度可节省内存。"
+          }
+        }
+      }
+    },
+    "An engine setting reported by this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型报告的一项引擎设置。"
+          }
+        }
+      }
+    },
+    "image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像"
+          }
+        }
+      }
+    },
+    "video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频"
+          }
+        }
+      }
+    },
+    "Downloading or loading the audio model…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载或加载音频模型…"
+          }
+        }
+      }
+    },
+    "Audio mode" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频模式"
+          }
+        }
+      }
+    },
+    "Audio unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频功能不可用"
+          }
+        }
+      }
+    },
+    "The bundled engine could not be found. The rest of Rapid-MLX remains available." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "找不到内置引擎。Rapid-MLX 的其他功能仍可使用。"
+          }
+        }
+      }
+    },
+    "No model in this build supports %@. Audio models can be managed in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此版本中没有支持%@的模型。可在设置中管理音频模型。"
+          }
+        }
+      }
+    },
+    "Create spoken audio with a model and one of its built-in voices." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用模型及其内置音色生成语音。"
+          }
+        }
+      }
+    },
+    "Voices and generated audio come from this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音色和生成的音频均来自此模型。"
+          }
+        }
+      }
+    },
+    "Each model ships its own set — preview before choosing." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个模型都有自己的音色，请先试听再选择。"
+          }
+        }
+      }
+    },
+    "Load voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载音色"
+          }
+        }
+      }
+    },
+    "Reload the voice list from the running model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从运行中的模型重新加载音色列表。"
+          }
+        }
+      }
+    },
+    "Applied when the audio is generated." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成音频时应用。"
+          }
+        }
+      }
+    },
+    "Stop playback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止播放"
+          }
+        }
+      }
+    },
+    "Play speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "播放语音"
+          }
+        }
+      }
+    },
+    "Save speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存语音"
+          }
+        }
+      }
+    },
+    "Couldn't play the audio: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法播放音频：%@"
+          }
+        }
+      }
+    },
+    "Loading voices…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载音色…"
+          }
+        }
+      }
+    },
+    "Start the model to list voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模型以查看音色列表"
+          }
+        }
+      }
+    },
+    "Choose a voice" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择音色"
+          }
+        }
+      }
+    },
+    "The download finished, but Rapid couldn't find the model on disk. Try downloading it again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载已完成，但 Rapid 在磁盘上找不到模型。请重新下载。"
+          }
+        }
+      }
+    },
+    "Couldn't save the audio: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存音频：%@"
+          }
+        }
+      }
+    },
+    "Couldn't play the voice preview: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法播放音色试听：%@"
+          }
+        }
+      }
+    },
+    "Stop %@ preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止试听%@"
+          }
+        }
+      }
+    },
+    "Preview %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "试听%@"
+          }
+        }
+      }
+    },
+    "Close — Esc" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭 — Esc"
+          }
+        }
+      }
+    },
+    "Microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风"
+          }
+        }
+      }
+    },
+    "Accessibility" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "辅助功能"
+          }
+        }
+      }
+    },
+    "Completed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已完成"
+          }
+        }
+      }
+    },
+    "Not completed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未完成"
+          }
+        }
+      }
+    },
+    "recommended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推荐"
+          }
+        }
+      }
+    },
+    "Generate image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成图像"
+          }
+        }
+      }
+    },
+    "Add connector" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加连接器"
+          }
+        }
+      }
+    },
+    "Edit “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑“%@”"
+          }
+        }
+      }
+    },
+    "Debug builds only. These actions erase real state on this Mac — they are not sandboxed and there is no undo." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅限调试版本。这些操作会清除此 Mac 上的实际数据，不受沙盒保护，且无法撤销。"
+          }
+        }
+      }
+    },
+    "dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音转文字"
+          }
+        }
+      }
+    },
+    "speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文字转语音"
+          }
+        }
+      }
+    },
+    "One measured 1024 × 1024 render at %lld steps, after a warm-up render." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预热渲染后，以 %lld 步完成一次 1024 × 1024 实测渲染。"
+          }
+        }
+      }
+    },
+    "One measured 1024 × 1024 render, after a warm-up render." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预热渲染后，完成一次 1024 × 1024 实测渲染。"
+          }
+        }
+      }
+    },
+    "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and %lld steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 次预热 + 1 次 1024×1024 实测渲染 · 固定提示词、种子和 %lld 步"
+          }
+        }
+      }
+    },
+    "1 warm-up + 1 measured 1024×1024 render · fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 次预热 + 1 次 1024×1024 实测渲染 · 固定提示词和种子"
+          }
+        }
+      }
+    },
+    "1024 × 1024 at %lld steps, fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1024 × 1024，%lld 步，固定提示词和种子"
+          }
+        }
+      }
+    },
+    "1024 × 1024, fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1024 × 1024，固定提示词和种子"
+          }
+        }
+      }
+    },
+    "Not available on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上不可用"
+          }
+        }
+      }
+    },
+    "Unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不可用"
+          }
+        }
+      }
+    },
     "Stop Generating" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3212,12 +4612,12 @@
         }
       }
     },
-    "Idle chat models are unloaded while the local API stays online; the next request reloads them. The server still stops if a dictation or speech model is idle, or if the runtime is too old for idle unload." : {
+    "Idle models are unloaded while the local API stays online; the next request reloads them. Older runtimes may stop the server to release idle models." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "闲置的聊天模型会被卸载，本地 API 保持在线，下一次请求会重新载入。若听写或语音模型闲置，或运行时版本过旧不支持闲置卸载，服务器仍会停止。"
+            "value" : "闲置模型会被卸载，本地 API 保持在线，下一次请求会重新载入。旧版运行时可能需要停止服务器以释放闲置模型。"
           }
         }
       }
@@ -4250,22 +5650,12 @@
         }
       }
     },
-    "REVIEW DOWNLOAD" : {
+    "MODEL COMPATIBILITY" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看下载详情"
-          }
-        }
-      }
-    },
-    "Review download" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "查看下载详情"
+            "value" : "模型兼容性"
           }
         }
       }
@@ -7787,6 +9177,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "快速提问"
+          }
+        }
+      }
+    },
+    "Powered by MTPLX" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 MTPLX 驱动"
           }
         }
       }
@@ -23239,12 +24639,12 @@
         }
       }
     },
-    "← Back to review download" : {
+    "← Back to model details" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "← 返回下载详情"
+            "value" : "← 返回模型详情"
           }
         }
       }
@@ -23445,6 +24845,206 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "视频参考：%@–%@ 秒。"
+          }
+        }
+      }
+    },
+    "Fast everyday chat and tools. Text only." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fast everyday chat and tools. Text only."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速处理日常聊天和工具任务。仅支持文本。"
+          }
+        }
+      }
+    },
+    "Smarter, and understands images. Twice the download." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smarter, and understands images. Twice the download."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更智能，也能理解图像。下载大小为两倍。"
+          }
+        }
+      }
+    },
+    "Smarter. Twice the download. Reads images on Macs with 32 GB or more." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smarter. Twice the download. Reads images on Macs with 32 GB or more."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更智能，下载大小为两倍。在 32 GB 及以上内存的 Mac 上可读取图像。"
+          }
+        }
+      }
+    },
+    "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed)." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型无法读取图像。切换到 Qwen 3.5 4B 以添加照片（如有需要，将下载模型）。"
+          }
+        }
+      }
+    },
+    "Switch to Qwen 3.5 4B" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch to Qwen 3.5 4B"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到 Qwen 3.5 4B"
+          }
+        }
+      }
+    },
+    "Ask this folder…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "询问此文件夹…"
+          }
+        }
+      }
+    },
+    "Ask using saved passages from this folder. Tools are off; retrieved passages are saved with the chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用此文件夹已保存的片段提问。工具已关闭，检索到的片段会随对话保存。"
+          }
+        }
+      }
+    },
+    "Enable Built-in Agent Harness (Experimental) in Settings to use folder chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在设置中启用“内置智能体框架（实验性）”，以使用文件夹对话。"
+          }
+        }
+      }
+    },
+    "Update the chat owner to use folder chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请更新对话服务以使用文件夹对话。"
+          }
+        }
+      }
+    },
+    "Folder chat uses saved folder passages. Remove attachments before sending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件夹对话使用已保存的文件夹片段。请先移除附件再发送。"
+          }
+        }
+      }
+    },
+    "Remove folder from this chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此对话移除文件夹"
+          }
+        }
+      }
+    },
+    "Uses indexed passages only. Tools are off. Retrieved passages are saved with this chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅使用已索引的片段。工具已关闭，检索到的片段会随此对话保存。"
+          }
+        }
+      }
+    },
+    "Saved passage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存的片段"
+          }
+        }
+      }
+    },
+    "Saved with this answer. The original file may have changed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随此回答保存。原文件可能已经更改。"
+          }
+        }
+      }
+    },
+    "Preview shortened." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览已缩短。"
+          }
+        }
+      }
+    },
+    "Could not open this saved passage. Reconnect to the chat owner and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开此已保存的片段。请重新连接对话服务后重试。"
+          }
+        }
+      }
+    },
+    "Open the passage saved with this answer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开随此回答保存的片段"
           }
         }
       }

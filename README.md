@@ -181,7 +181,7 @@ or read the [protocol and privacy details](https://github.com/raullenchai/Rapid-
 rapid-mlx chat
 ```
 
-With no model named, `rapid-mlx chat` uses a chat model already on this Mac — the `qwen3.5-4b-4bit` starter if present, otherwise the best fit for this Mac's memory — without another download. If none is downloaded yet, it downloads the `qwen3.5-4b-4bit` starter (~3.1 GB) before opening the REPL. Type `/help` for slash commands, `/exit` to quit.
+With no model named, `rapid-mlx chat` uses a chat model already on this Mac — the `lfm2.5-2.6b-4bit` starter if present, otherwise the best fit for this Mac's memory — without another download. If none is downloaded yet, it downloads the `lfm2.5-2.6b-4bit` starter (~1.6 GB) before opening the REPL. Type `/help` for slash commands, `/exit` to quit.
 
 **2. Or serve it for use from other apps:**
 
@@ -761,6 +761,31 @@ keys are never collected, and no per-person profile is built. See
 
 ---
 
+## Contributing: AI-written PRs welcome
+
+**We encourage you to use AI to write your pull request.** Point Claude Code,
+Codex, Cursor, Copilot or any other coding agent at an issue and send us what
+it produces. Most of Rapid-MLX is built this way, and we review AI-written PRs
+the same as hand-written ones.
+
+What we ask in return:
+
+1. **Say how AI helped.** The PR template has a short disclosure section, such
+   as "Claude wrote it, I ran the tests". No prompt transcripts needed.
+2. **Prove it works.** Include the test you added or the command you ran and
+   its output. A real reproduction beats a long description.
+3. **Keep it focused.** One fix or feature per PR is easier to review and
+   merge.
+4. **Understand what you submit.** Be ready to explain why the change is
+   needed and what it touches.
+
+Good first targets: new model support, tool-call parsers, bug reproductions,
+docs and translations. Pick any [open issue](https://github.com/raullenchai/Rapid-MLX/issues),
+then follow [CONTRIBUTING.md](https://github.com/raullenchai/Rapid-MLX/blob/main/CONTRIBUTING.md)
+for setup and checks.
+
+---
+
 ## Contributors
 
 Every avatar here shipped something in Rapid-MLX — model support, tool-call parsers, fixes, docs, and benchmark submissions. Thank you.
@@ -812,6 +837,7 @@ Try it with a local inference server:
 ```bash
 python -m pip install rapid-mlx
 rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port 18800
+# Model page URLs work too: rapid-mlx serve https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit --port 18800
 # In another terminal:
 rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood
 rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood --resume last

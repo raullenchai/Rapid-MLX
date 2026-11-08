@@ -15,7 +15,9 @@ import SwiftUI
 /// state (a copy that just succeeded goes ready-green).
 struct QuietIconButton: View {
     let symbol: String
-    /// Spoken label. Also the tooltip unless ``help`` overrides it.
+    /// Resolved, localized spoken label. Also the tooltip unless ``help``
+    /// overrides it. Unlike SwiftUI's Button, this String does not localize
+    /// literals; check-localization.py guards callers.
     let label: String
     var help: String? = nil
     /// Overrides the resting colour — for transient success states.
@@ -44,6 +46,7 @@ struct QuietIconButton: View {
         // ax-exempt: callers attach action/entity-specific identifiers to this wrapper
         Button(action: action) {
             Image(systemName: symbol)
+                .accessibilityHidden(true)
                 .font(.system(size: symbolSize, weight: .medium))
                 .foregroundStyle(foreground)
                 // These buttons are overwhelmingly toggles — copy/checkmark,
@@ -82,8 +85,8 @@ struct SheetCloseButton: View {
     var body: some View {
         QuietIconButton(
             symbol: "xmark",
-            label: "Close",
-            help: "Close — Esc",
+            label: String(localized: "Close"),
+            help: String(localized: "Close — Esc"),
             action: action
         )
         .accessibilityIdentifier("Sheet.Close")

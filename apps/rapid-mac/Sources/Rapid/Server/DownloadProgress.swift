@@ -75,9 +75,16 @@ final class DownloadProgress {
     }
 
     private(set) var phase: Phase = .idle
-    /// Most recently started file in a per-file pull. Several files may be
-    /// active concurrently; the caption names the latest one announced.
-    private(set) var currentFile: String?
+    /// Only name a file when a per-file tick proves it is still transferring.
+    /// `[current]` announces worker starts, not the active transfer: concurrent
+    /// workers can finish a small file while larger files continue silently.
+    /// Aggregate-only pullers therefore show overall progress instead.
+    var currentFile: String? {
+        if case .downloading(let file, _, _, let percent, _, _) = phase, percent < 100 {
+            return file
+        }
+        return nil
+    }
 
     /// Wall-clock of the most recent recognised progress tick (any of
     /// `.fetching`, `.downloading`, `.preparing`). The overlay uses
@@ -286,7 +293,6 @@ final class DownloadProgress {
     /// into the next.
     func reset() {
         phase = .idle
-        currentFile = nil
         lastTickAt = .distantPast
         bytesDownloaded = nil
         totalBytes = nil
@@ -454,7 +460,8 @@ final class DownloadProgress {
         guard trimmed.utf8.count <= Self.maxProgressLineBytes else { return false }
 
         if trimmed.hasPrefix("[current] ") {
-            currentFile = String(trimmed.dropFirst("[current] ".count))
+            // Liveness only: worker starts cannot identify the file currently
+            // transferring once several workers are running concurrently.
             lastTickAt = Date()
             return true
         }

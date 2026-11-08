@@ -7,6 +7,7 @@ import Foundation
 /// Probe the actual CLI before spawn so a stale runtime does
 /// not reject newer desktop-only flags during argument parsing.
 struct ServerRuntimeCapabilities: Equatable, Sendable {
+    var supportsAudioLaneIdleUnload: Bool = false
     var supportsPrimaryIdleUnload: Bool = false
     var supportsLocalSearch: Bool = false
     var supportsResidentMemoryLimitGB: Bool
@@ -18,6 +19,7 @@ struct ServerRuntimeCapabilities: Equatable, Sendable {
     )
 
     static let allKnown = ServerRuntimeCapabilities(
+        supportsAudioLaneIdleUnload: true,
         supportsPrimaryIdleUnload: true,
         supportsLocalSearch: true,
         supportsResidentMemoryLimitGB: true,
@@ -26,6 +28,7 @@ struct ServerRuntimeCapabilities: Equatable, Sendable {
 
     static func parse(serveHelp text: String) -> ServerRuntimeCapabilities {
         ServerRuntimeCapabilities(
+            supportsAudioLaneIdleUnload: text.contains("--audio-lane-idle-ttl"),
             supportsPrimaryIdleUnload: text.contains("--idle-unload-seconds"),
             supportsLocalSearch: text.contains("--enable-local-search") && text.contains("--local-search-dir"),
             supportsResidentMemoryLimitGB: text.contains("--resident-memory-limit-gb"),
@@ -125,6 +128,7 @@ struct ServerRuntimeCapabilities: Equatable, Sendable {
         let stdoutCapabilities = stdoutReader.capabilities
         let stderrCapabilities = stderrReader.capabilities
         return ServerRuntimeCapabilities(
+            supportsAudioLaneIdleUnload: stdoutCapabilities.supportsAudioLaneIdleUnload || stderrCapabilities.supportsAudioLaneIdleUnload,
             supportsPrimaryIdleUnload: stdoutCapabilities.supportsPrimaryIdleUnload || stderrCapabilities.supportsPrimaryIdleUnload,
             supportsLocalSearch: (stdoutCapabilities.supportsLocalSearch || stderrCapabilities.supportsLocalSearch),
             supportsResidentMemoryLimitGB:
@@ -200,11 +204,12 @@ private final class RuntimeProbeCancellation: @unchecked Sendable {
 
 private final class RuntimeProbeOutputReader: @unchecked Sendable {
     private static let memoryLimitMarker = Data("--resident-memory-limit-gb".utf8)
+    private static let audioIdleUnloadMarker = Data("--audio-lane-idle-ttl".utf8)
     private static let primaryIdleUnloadMarker = Data("--idle-unload-seconds".utf8)
     private static let idleTTLMarker = Data("--resident-model-idle-ttl".utf8)
     private static let searchMarker = Data("--enable-local-search".utf8)
     private static let searchDirectoryMarker = Data("--local-search-dir".utf8)
-    private static let maximumMarkerLength = [primaryIdleUnloadMarker.count, memoryLimitMarker.count, idleTTLMarker.count, searchMarker.count, searchDirectoryMarker.count].max()!
+    private static let maximumMarkerLength = [audioIdleUnloadMarker.count, primaryIdleUnloadMarker.count, memoryLimitMarker.count, idleTTLMarker.count, searchMarker.count, searchDirectoryMarker.count].max()!
 
     private let handle: FileHandle
     private let fileDescriptor: Int32
@@ -242,6 +247,7 @@ private final class RuntimeProbeOutputReader: @unchecked Sendable {
     ) -> ServerRuntimeCapabilities {
         var supportsMemoryLimit = false
         var supportsIdleTTL = false
+        var supportsAudioIdleUnload = false
         var supportsPrimaryIdleUnload = false
         var supportsSearch = false
         var supportsSearchDirectory = false
@@ -280,8 +286,9 @@ private final class RuntimeProbeOutputReader: @unchecked Sendable {
             var chunk = [UInt8](repeating: 0, count: 4_096)
             let byteCount = read(fileDescriptor, &chunk, chunk.count)
             if byteCount > 0 {
-                if !supportsPrimaryIdleUnload || !supportsMemoryLimit || !supportsIdleTTL || !supportsSearch || !supportsSearchDirectory {
+                if !supportsAudioIdleUnload || !supportsPrimaryIdleUnload || !supportsMemoryLimit || !supportsIdleTTL || !supportsSearch || !supportsSearchDirectory {
                     let bytes = markerTail + Data(chunk[0..<byteCount])
+                    supportsAudioIdleUnload = supportsAudioIdleUnload || bytes.range(of: Self.audioIdleUnloadMarker) != nil
                     supportsPrimaryIdleUnload = supportsPrimaryIdleUnload || bytes.range(of: Self.primaryIdleUnloadMarker) != nil
                     supportsSearch = supportsSearch || bytes.range(of: Self.searchMarker) != nil
                     supportsSearchDirectory = supportsSearchDirectory || bytes.range(of: Self.searchDirectoryMarker) != nil
@@ -302,6 +309,7 @@ private final class RuntimeProbeOutputReader: @unchecked Sendable {
         }
 
         return ServerRuntimeCapabilities(
+            supportsAudioLaneIdleUnload: supportsAudioIdleUnload,
             supportsPrimaryIdleUnload: supportsPrimaryIdleUnload,
             supportsLocalSearch: supportsSearch && supportsSearchDirectory,
             supportsResidentMemoryLimitGB: supportsMemoryLimit,

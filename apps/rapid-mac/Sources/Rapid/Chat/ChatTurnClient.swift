@@ -8,6 +8,12 @@ typealias ChatTurnEventHandler = @Sendable (ChatWireEnvelope) async throws -> Vo
 protocol ChatTurnClient: Sendable {
     func createConversation(workspace: String) async throws -> ChatWireJSON
     func conversation(id: String) async throws -> ChatWireJSON
+    func ownerStoreUUID() async throws -> UUID?
+    func deleteConversation(id: String) async throws
+    func supportsFolderChat() async throws -> Bool
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics?
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String
     func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
     func stream(turnID: String, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
@@ -20,7 +26,21 @@ protocol ChatTurnClient: Sendable {
     func undo(conversationID: String, operationID: String) async throws -> ChatWireJSON
 }
 
+struct FolderSourcePreview: Decodable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let text: String
+    let truncated: Bool
+}
+
 extension ChatTurnClient {
+    func ownerStoreUUID() async throws -> UUID? { nil }
+    func deleteConversation(id: String) async throws { throw ChatTurnClientError.invalidResponse }
+    func supportsFolderChat() async throws -> Bool { false }
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? { nil }
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { throw ChatTurnClientError.invalidResponse }
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview { throw ChatTurnClientError.invalidResponse }
+
     func createConversation(workspace: String) async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
     func conversation(id: String) async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
 }
@@ -54,18 +74,21 @@ enum ChatTurnClientError: Error, Equatable {
 actor URLSessionChatTurnClient: ChatTurnClient {
     private let endpoint: URL
     private let bearer: String
+    private let requestTimeout: TimeInterval
     private let session: URLSession
     private let redirectDelegate = ChatOwnerRedirectDelegate()
 
-    init(endpoint: URL, bearer: String, session: URLSession? = nil) throws {
+    init(endpoint: URL, bearer: String, session: URLSession? = nil, requestTimeout: TimeInterval = 180) throws {
         guard ["http", "https"].contains(endpoint.scheme?.lowercased()),
               endpoint.host != nil, endpoint.user == nil, endpoint.password == nil,
               endpoint.query == nil, endpoint.fragment == nil,
+              requestTimeout.isFinite, requestTimeout > 0,
               !bearer.isEmpty, !bearer.contains("\r"), !bearer.contains("\n") else {
             throw ChatTurnClientError.invalidEndpoint
         }
         self.endpoint = endpoint
         self.bearer = bearer
+        self.requestTimeout = requestTimeout
         if let session {
             self.session = session
         } else {
@@ -84,6 +107,57 @@ actor URLSessionChatTurnClient: ChatTurnClient {
 
     func conversation(id: String) async throws -> ChatWireJSON {
         try await json(["conversations", id])
+    }
+
+    func ownerStoreUUID() async throws -> UUID? {
+        let response: ChatWireJSON = try await json(["capabilities"])
+        guard case .object(let value) = response, case .string(let raw) = value["store_uuid"], let id = UUID(uuidString: raw) else { throw ChatTurnClientError.invalidResponse }
+        return id
+    }
+
+    func deleteConversation(id: String) async throws {
+        let request = try makeRequest(["conversations", id], method: "DELETE")
+        let (_, response) = try await session.data(for: request, delegate: redirectDelegate)
+        guard let http = response as? HTTPURLResponse else { throw ChatTurnClientError.invalidResponse }
+        guard http.statusCode == 204 else { throw ChatTurnClientError.http(status: http.statusCode) }
+    }
+
+    func supportsFolderChat() async throws -> Bool {
+        let response: ChatWireJSON = try await json(["capabilities"])
+        guard case .object(let value) = response,
+              case .object(let capabilities) = value["capabilities"] else { return false }
+        return capabilities["grounded_folder_chat_v1"] == .bool(true)
+    }
+
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? {
+        let capabilities: ChatWireJSON = try await json(["capabilities"], timeout: 5)
+        guard case .object(let value) = capabilities, case .object(let fields) = value["capabilities"],
+              fields["generation_metrics_v1"] == .bool(true) else { return nil }
+        let response: ChatWireJSON = try await json(["conversations", conversationID, "turns", turnID, "execution-metrics"], timeout: 5)
+        guard case .object(let body) = response, let generation = body["generation"], generation != .null else { return nil }
+        let data = try JSONEncoder().encode(generation)
+        let saved = try JSONDecoder().decode(SavedGenerationMetrics.self, from: data)
+        guard saved.turnID == turnID else { throw ChatTurnClientError.invalidResponse }
+        return saved
+    }
+
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws {
+        let body = try JSONEncoder().encode(FolderScopeBody(localSearch: scope))
+        let _: ChatWireJSON = try await json(["conversations", conversationID, "local-search"], method: "PUT", body: body)
+    }
+    private struct FolderScopeBody: Encodable {
+        let localSearch: FolderChatScope?
+        enum CodingKeys: String, CodingKey { case localSearch = "local_search" }
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            if let localSearch { try container.encode(localSearch, forKey: .localSearch) }
+            else { try container.encodeNil(forKey: .localSearch) }
+        }
+    }
+
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview {
+        let value: ChatWireJSON = try await json(["conversations", conversationID, "attachments", attachmentID])
+        return try JSONDecoder().decode(FolderSourcePreview.self, from: JSONEncoder().encode(value))
     }
 
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String {
@@ -208,7 +282,7 @@ actor URLSessionChatTurnClient: ChatTurnClient {
             }
             url.appendPathComponent(component)
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 180)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: requestTimeout)
         request.httpMethod = method
         request.httpBody = body
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
@@ -227,8 +301,9 @@ actor URLSessionChatTurnClient: ChatTurnClient {
         guard http.mimeType?.lowercased() == contentType else { throw ChatTurnClientError.invalidResponse }
     }
 
-    private func json<T: Decodable>(_ path: [String], method: String = "GET", body: Data? = nil) async throws -> T {
-        let request = try makeRequest(path, method: method, body: body)
+    private func json<T: Decodable>(_ path: [String], method: String = "GET", body: Data? = nil, timeout: TimeInterval? = nil) async throws -> T {
+        var request = try makeRequest(path, method: method, body: body)
+        if let timeout { request.timeoutInterval = timeout }
         let (data, response) = try await session.data(for: request, delegate: redirectDelegate)
         try validate(response, contentType: "application/json")
         return try JSONDecoder().decode(T.self, from: data)

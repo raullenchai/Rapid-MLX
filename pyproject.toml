@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "1.0.1"
+version = "1.0.2"
 description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents; up to 4× faster decoding than Apple's MLX (mlx-lm) on the same weights."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -627,6 +627,7 @@ rapid_mlx = [
     "utils/kimi_tokenizer/LICENSE",
     "utils/kimi_tokenizer/PROVENANCE.md",
     "model_recommendations.json",
+    "decode_expectations.json",
     "audio/aliases.json",
     "catalog/schemas/*.json",
     # Telemetry v2 event registry -- the single source of truth the Python

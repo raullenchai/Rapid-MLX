@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Chat model selection grouped into Quickstart, Recommended,
@@ -12,7 +13,7 @@ import SwiftUI
 /// action opens Settings > Model management.
 struct ModelPickerBar: View {
     nonisolated static func liveContextWindow(for alias: String, profile: ServerModelProfile?) -> Int? {
-        guard let profile, profile.id.caseInsensitiveCompare(alias) == .orderedSame else { return nil }
+        guard let profile, ModelReference.matches(profile.id, alias) else { return nil }
         return profile.contextWindow
     }
     @Bindable var server: ServerManager
@@ -260,8 +261,13 @@ struct ModelPickerBar: View {
             from: hardware.recommendedPicks,
             catalog: visibleEntries
         )
+        let entries = Self.uniqueSectionEntries(
+            visibleEntries, excluding: quickstartEntry().map { [$0.alias] } ?? []
+        )
+        var seen = Set<String>()
         return resolved.compactMap { item in
-            guard let entry = visibleEntries.first(where: { $0.alias == item.pick.alias }) else {
+            guard seen.insert(item.pick.alias.lowercased()).inserted,
+                  let entry = entries.first(where: { $0.alias.caseInsensitiveCompare(item.pick.alias) == .orderedSame }) else {
                 return nil
             }
             return (item.pick, entry, item.isPrimary)
@@ -457,10 +463,21 @@ struct ModelPickerBar: View {
         case .rows:
             quickstartSection
             recommendedSection
+            huggingFaceSection
             allAliasesSection
         }
         if let settingsRouter {
             Divider()
+            // Empty states included: a first-time user adds their first model here.
+            if state == .rows || state == .noDownloadedModels || state == .noVisibleModels {
+                Button("Add from Hugging Face…") {
+                    settingsRouter.addFromHuggingFace(clipboard: NSPasteboard.general.string(forType: .string)) {
+                        openWindow(id: "settings")
+                    }
+                }
+                .accessibilityLabel(String(localized: "Add from Hugging Face…"))
+                .accessibilityIdentifier("ModelPickerBar.AddFromHF")
+            }
             ModelPickerBrowseAllModelsButton(router: settingsRouter) {
                 openWindow(id: "settings")
             }
@@ -701,10 +718,12 @@ struct ModelPickerBar: View {
         let quickstartAlias = quickstartEntry()?.alias
         if quickstartAlias != nil { return true }
         if !recommendedPickRows().isEmpty { return true }
+        if !huggingFaceEntries.isEmpty { return true }
         let filtered = visibleEntries
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartAlias: quickstartAlias
+            quickstartAlias: quickstartAlias,
+            recommendedAliases: recommendedPickRows().map { $0.entry.alias } + huggingFaceEntries.map(\.alias)
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         return !partition.fits.isEmpty || !partition.notFit.isEmpty
@@ -813,18 +832,20 @@ struct ModelPickerBar: View {
         return String(localized: "Quickstart: \(ModelDisplayName.name(for: alias)), \(downloaded). \(quickstartSubtitle).")
     }
 
-    /// Pure helper for the "All models" dedup. When the Quickstart
-    /// row is being rendered above, strip the Quickstart alias from
-    /// the All-models list so the same alias never appears in two
-    /// sections. Lifted out of ``allAliasesSection`` so a
-    /// ``ModelPickerBarSectionOrderTests`` case can pin the
-    /// invariant directly without standing up a SwiftUI host.
+    /// Remove aliases already rendered by Quickstart or Recommended, then
+    /// keep one row per remaining alias before partitioning by hardware fit.
     static func dedupedAllEntries(
         filtered: [ModelEntry],
-        quickstartAlias: String?
+        quickstartAlias: String?,
+        recommendedAliases: [String] = []
     ) -> [ModelEntry] {
-        guard let quickstartAlias else { return filtered }
-        return filtered.filter { $0.alias != quickstartAlias }
+        uniqueSectionEntries(filtered, excluding: (quickstartAlias.map { [$0] } ?? []) + recommendedAliases)
+    }
+
+    /// Keep the first row for an alias, after higher-priority sections claim it.
+    static func uniqueSectionEntries(_ entries: [ModelEntry], excluding aliases: [String]) -> [ModelEntry] {
+        var seen = Set(aliases.map(ModelReference.key))
+        return entries.filter { seen.insert(ModelReference.key($0.alias)).inserted }
     }
 
     /// Order the "All models" list: downloaded (cached) aliases first,
@@ -892,7 +913,8 @@ struct ModelPickerBar: View {
         // "select this alias" semantics.
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartAlias: quickstartEntry()?.alias
+            quickstartAlias: quickstartEntry()?.alias,
+            recommendedAliases: recommendedPickRows().map { $0.entry.alias } + huggingFaceEntries.map(\.alias)
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         let sorted = ModelPickerBar.orderedAllModels(partition.fits)
@@ -908,6 +930,27 @@ struct ModelPickerBar: View {
             Section("Not fit for this Mac") {
                 ForEach(notFit) { entry in
                     aliasButton(entry, notFit: true)
+                }
+            }
+        }
+    }
+
+    static func huggingFaceSectionEntries(_ entries: [ModelEntry], excluding aliases: [String]) -> [ModelEntry] {
+        orderedAllModels(uniqueSectionEntries(entries.filter(\.isFromHuggingFace), excluding: aliases))
+    }
+
+    private var huggingFaceEntries: [ModelEntry] {
+        Self.huggingFaceSectionEntries(visibleEntries,
+            excluding: (quickstartEntry().map { [$0.alias] } ?? []) + recommendedPickRows().map { $0.entry.alias })
+    }
+
+    @ViewBuilder
+    private var huggingFaceSection: some View {
+        let entries = huggingFaceEntries
+        if !entries.isEmpty {
+            Section("From Hugging Face") {
+                ForEach(entries) { entry in
+                    aliasButton(entry)
                 }
             }
         }
@@ -973,7 +1016,7 @@ struct ModelPickerBar: View {
         // Tagline = "best pick / faster alternative" + the measured
         // capability and (where we have it) tok/s. Surfaced as the row's
         // NSMenuItem tooltip via ``.help(_)`` and its accessibility label.
-        let tagline = ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary)
+        let tagline = ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary, repoID: entry.hfRepo, hardware: hardware)
         // The tagline rides the row's native NSMenuItem tooltip via
         // ``.help(_)`` (below) — the reliable way to expose it inside the
         // open dropdown, since a SwiftUI ``.popover`` attached to a row
@@ -1001,7 +1044,7 @@ struct ModelPickerBar: View {
         // standard-benchmark meters live in "All models" (Settings), so
         // the recommendation never shows two conflicting sets of numbers
         // for the same model.
-        .help(entry.alias + "\n" + tagline)
+        .help(entry.alias + "\n" + tagline + "\n" + DecodeExpectations.summary(alias: entry.alias, repoID: entry.hfRepo, hardware: hardware))
         .accessibilityLabel(row.accessibilityLabel)
     }
 
@@ -1014,7 +1057,7 @@ struct ModelPickerBar: View {
 
     /// Tooltip / caption tagline for a recommended row: whether it's the
     /// best pick or the faster alternative, plus the measured capability
-    /// and (where a local measurement exists) decode tok/s. A pick with a
+    /// and a chip/configuration-specific decode reference when available. A pick with a
     /// ``caveat`` (e.g. a chat specialist) shows that word in place of the
     /// capability %. Pure so tests can pin the copy without a SwiftUI host.
     /// The one spelling of a recommendation's capability score, shared with
@@ -1023,20 +1066,15 @@ struct ModelPickerBar: View {
         String(localized: "\(pct)% capability")
     }
 
-    static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> String {
+    static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool, repoID: String? = nil, hardware: MacHardware = .detect()) -> String {
         let lead = isPrimary ? String(localized: "Best pick for your Mac") : String(localized: "Faster, lighter alternative")
         var parts = [lead]
         if let caveat = pick.caveat {
-            if let tps = pick.tokensPerSec {
-                parts.append("~\(Int(tps.rounded())) tok/s")
-            }
             parts.append(caveat)
         } else {
             parts.append(capabilityText(pick.capabilityPct))
-            if let tps = pick.tokensPerSec {
-                parts.append("~\(Int(tps.rounded())) tok/s")
-            }
         }
+        parts.append(DecodeExpectations.summary(alias: pick.alias, repoID: repoID, hardware: hardware, compact: true))
         return parts.joined(separator: " · ")
     }
 
@@ -1074,7 +1112,7 @@ struct ModelPickerBar: View {
     ) -> String {
         let validFallback = fallbackAlias.flatMap { fallback in
             catalog.first(where: {
-                $0.alias.caseInsensitiveCompare(fallback) == .orderedSame
+                ModelReference.matches($0.alias, fallback)
                     && ModelSelectionPurpose.chat.accepts($0)
             })?.alias
         }
@@ -1082,13 +1120,13 @@ struct ModelPickerBar: View {
             return validFallback ?? ""
         }
         if catalog.contains(where: {
-            $0.alias.caseInsensitiveCompare(currentAlias) == .orderedSame
+            ModelReference.matches($0.alias, currentAlias)
                 && ModelSelectionPurpose.chat.accepts($0)
         }) {
             return currentAlias
         }
         guard knownNonChatAliases.contains(where: {
-            $0.caseInsensitiveCompare(currentAlias) == .orderedSame
+            ModelReference.matches($0, currentAlias)
         }) else {
             return currentAlias
         }

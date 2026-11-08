@@ -137,6 +137,7 @@ def test_desktop_suppresses_resolved_text_only_degrade_warning(
     assert capsys.readouterr().err == ""
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_is_storage_only_and_never_emits_serve_failure(monkeypatch) -> None:
     from rapid_mlx import cli
 

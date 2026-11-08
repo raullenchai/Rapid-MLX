@@ -23,6 +23,7 @@ rapid-mlx serve qwen3.5-4b-4bit --port 8000
 
 Short aliases (see `rapid-mlx models`) work everywhere a model name is
 accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
+You can also paste a model page URL: `rapid-mlx serve https://huggingface.co/mlx-community/Qwen3.5-9B-abliterated-4bit` (also works with `chat`/`run` and `pull`; URL revisions use the default branch or catalog pin).
 
 ### An external model cache cannot be read
 
@@ -138,6 +139,19 @@ usage and may reject a request with HTTP 503.
 Primary standby applies to Chat Completions, legacy Completions, Responses,
 and Anthropic Messages/counting. `/v1/embeddings` has an independent engine
 selected by `--embedding-model`; it neither wakes nor uses the primary model.
+
+### Health probe access logs
+
+At the default `INFO` log level, successful (2xx) `GET` and `HEAD`
+requests to `/healthz` and `/livez` are omitted from Uvicorn's access log,
+including requests with query strings. Non-2xx probe responses (including
+`503` during draining), other request paths and methods, and application
+logs remain visible. This does not change probe responses or readiness.
+
+Use `--log-level DEBUG` to include successful probe access records when
+diagnosing monitoring traffic. Raising the level to `WARNING` also hides
+ordinary request and application INFO logs, so it is not needed just to
+quiet successful probes.
 
 ## API Endpoints
 
@@ -573,6 +587,8 @@ POST /v1/messages
 ```
 
 Anthropic-compatible endpoint that allows tools like Claude Code and OpenCode to connect directly to rapid-mlx. Internally it translates Anthropic requests to OpenAI format, runs inference through the engine, and converts the response back to Anthropic format.
+
+For `thinking: {"type": "adaptive"}` without `output_config.effort`, the reasoning cap uses `--default-reasoning-effort`, falling back to `medium` (2048 tokens) when unset. Explicit `output_config.effort` takes precedence; `max` leaves reasoning uncapped whether explicit or configured as the server default, while enabled thinking with `budget_tokens` and disabled thinking retain their existing behavior.
 
 Capabilities:
 - Non-streaming and streaming responses (SSE)

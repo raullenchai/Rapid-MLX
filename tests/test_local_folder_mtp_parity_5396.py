@@ -277,3 +277,23 @@ def test_missing_sidecar_copy(model, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert f"rapid-mlx pull {sidecar}" in err
     assert f"rapid-mlx pull {model}" not in err
+    assert err.count("Automatic MTP skipped:") == 1
+    assert args.spec_decode == "none"
+    assert args.mtp_sidecar is None
+    assert args._speculative_config_explicit is False
+    assert not getattr(args, "_auto_mtp_deferred", False)
+
+
+def test_local_folder_uses_cached_separate_sidecar(model, monkeypatch, capsys):
+    sidecar = model / "cached-sidecar"
+    sidecar.mkdir()
+    (sidecar / "model.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(cli, "_cached_mtp_sidecar", lambda _: str(sidecar))
+    args = _args(model=str(model), _original_alias="qwen3.5-9b-4bit")
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.spec_decode == "mtp"
+    assert args.mtp_sidecar == str(sidecar)
+    assert args._speculative_config_explicit is False
+    assert not getattr(args, "_auto_mtp_deferred", False)
+    assert cli._drop_unavailable_mtp_head(args) is False
+    assert not capsys.readouterr().err

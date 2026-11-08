@@ -33,7 +33,7 @@ import Foundation
 ///
 /// 2026-08-05: swapped from ``bonsai-1.7b-2bit``. It now stays in lock-step
 /// with ``QuickstartCoordinator.lowMemoryChoice``: the hardware-fit automatic
-/// starter is larger, while the bundle remains the explicit low-memory and
+/// starter is LFM2.5 2.6B where it fits, while the bundle remains the low-memory and
 /// airgapped escape hatch.
 ///
 /// Bonsai was chosen (#1092) on a tool-call eval: 6/6 clean

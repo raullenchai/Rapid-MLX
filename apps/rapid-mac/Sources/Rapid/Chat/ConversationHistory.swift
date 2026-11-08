@@ -95,6 +95,10 @@ struct ChatConversation: Identifiable, Codable, Equatable {
 
     var backend: ChatBackend? = nil
     var ownerConversationID: String? = nil
+    var ownerStoreUUID: UUID? = nil
+    var ownerTurnID: String? = nil
+    var folderChatScope: FolderChatScope? = nil
+    var folderChatTitle: String? = nil
 
     init(
         id: UUID,
@@ -112,7 +116,11 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         customInstructions: String? = nil,
         folderID: UUID? = nil,
         backend: ChatBackend? = nil,
-        ownerConversationID: String? = nil
+        ownerConversationID: String? = nil,
+        ownerStoreUUID: UUID? = nil,
+        ownerTurnID: String? = nil,
+        folderChatScope: FolderChatScope? = nil,
+        folderChatTitle: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -142,6 +150,10 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         self.folderID = folderID
         self.backend = backend
         self.ownerConversationID = ownerConversationID
+        self.ownerStoreUUID = ownerStoreUUID
+        self.ownerTurnID = ownerTurnID
+        self.folderChatScope = folderChatScope
+        self.folderChatTitle = folderChatTitle
     }
 
     /// Hand-written so a history file written before pin/archive shipped
@@ -155,7 +167,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         case id, title, messages, branches, activeLeafID, branchChoices
         case createdAt, updatedAt, isPinned, isArchived, hasCustomTitle
         case hasGeneratedTitle
-        case customInstructions, folderID, backend, ownerConversationID
+        case customInstructions, folderID, backend, ownerConversationID, ownerStoreUUID, ownerTurnID, folderChatScope, folderChatTitle
     }
 
     /// Hand-written to match ``init(from:)``'s string-keyed
@@ -202,6 +214,10 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         try c.encodeIfPresent(folderID, forKey: .folderID)
         try c.encodeIfPresent(backend, forKey: .backend)
         try c.encodeIfPresent(ownerConversationID, forKey: .ownerConversationID)
+        try c.encodeIfPresent(ownerStoreUUID, forKey: .ownerStoreUUID)
+        try c.encodeIfPresent(ownerTurnID, forKey: .ownerTurnID)
+        try c.encodeIfPresent(folderChatScope, forKey: .folderChatScope)
+        try c.encodeIfPresent(folderChatTitle, forKey: .folderChatTitle)
     }
 
     init(from decoder: Decoder) throws {
@@ -250,6 +266,10 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         folderID = try c.decodeIfPresent(UUID.self, forKey: .folderID)
         backend = try c.decodeIfPresent(ChatBackend.self, forKey: .backend)
         ownerConversationID = try c.decodeIfPresent(String.self, forKey: .ownerConversationID)
+        ownerStoreUUID = try c.decodeIfPresent(UUID.self, forKey: .ownerStoreUUID)
+        ownerTurnID = try c.decodeIfPresent(String.self, forKey: .ownerTurnID)
+        folderChatScope = try c.decodeIfPresent(FolderChatScope.self, forKey: .folderChatScope)
+        folderChatTitle = try c.decodeIfPresent(String.self, forKey: .folderChatTitle)
     }
 }
 
@@ -377,6 +397,21 @@ enum ConversationStore {
             )
             // Chat transcripts stay owner-only (0600), including during the atomic write.
             try? OwnerOnlyFile.writeAtomically(data, to: url)
+        }
+    }
+
+    /// Admission waits for authority identifiers to reach disk before submitting a turn.
+    /// Share the normal serial writer so an older transcript cannot overwrite them.
+    static func saveAuthority(_ conversations: [ChatConversation], to override: URL? = nil) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            writeQueue.async {
+                do {
+                    let url = fileURL(override: override)
+                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try OwnerOnlyFile.writeAtomically(JSONEncoder().encode(conversations), to: url)
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
         }
     }
 

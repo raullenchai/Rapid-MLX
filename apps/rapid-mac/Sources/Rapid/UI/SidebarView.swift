@@ -853,8 +853,12 @@ struct SidebarView: View {
                         .foregroundStyle(model.isHoldingMemory && model.pinned ? RapidTheme.brandAmber : .secondary)
                         .opacity(model.isHoldingMemory ? 1 : 0.5)
                         .frame(width: 12)
+                        // VoiceOver would read the symbol name ("Lock", "circle"): name the
+                        // meaningful lock, hide the decorative dot.
+                        .accessibilityLabel(String(localized: "Kept in memory"))
+                        .accessibilityHidden(!(model.isHoldingMemory && model.pinned))
                     Text(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
-                        .help(model.displayName(preferredAlias: preferredAlias))
+                        .help(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
                         .font(RapidFont.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)

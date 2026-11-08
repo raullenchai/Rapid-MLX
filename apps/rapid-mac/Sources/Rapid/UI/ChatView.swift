@@ -183,6 +183,40 @@ struct PhotoCapabilityNotice: Equatable {
         let unavailableMessage: String?
     }
 
+    static let imageModelAlias = "qwen3.5-4b-4bit"
+    static let imageModelHint = String(localized: "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed).")
+
+    /// Matches `vision_min_memory_gb` for this alias in the engine catalog;
+    /// below it the engine serves the model text-only.
+    static let imageModelMinimumRAMGB: Double = 32
+
+    static var imageModelFitsThisMac: Bool {
+        MacHardware.detect().physicalRAMGB >= imageModelMinimumRAMGB
+    }
+
+    /// Hints that only say "this model has no vision". Runtime-specific
+    /// remedies (speculative decoding, memory, runtime) are never replaced.
+    static let textOnlyModelHints: Set<String> = Set(
+        [ImageInputAvailability.PhotoHint.legacyModel, .textCheckpoint, .genericTextLane]
+            .map { $0.localized(in: .main) }
+    )
+
+    mutating func rejectImageInput(
+        availability: Availability,
+        alias: String,
+        imageModelFits: Bool = imageModelFitsThisMac
+    ) {
+        guard !availability.supportsImageInput else { return }
+        let textOnlyModel = availability.unavailableMessage.map(Self.textOnlyModelHints.contains) ?? true
+        let hint = alias != Self.imageModelAlias && imageModelFits && textOnlyModel
+            ? Self.imageModelHint
+            : availability.unavailableMessage
+                ?? ImageInputAvailability.PhotoHint.legacyModel.localized(in: .main)
+        present(hint, availability: availability)
+    }
+
+    var offersImageModelSwitch: Bool { message == Self.imageModelHint }
+
     private(set) var message: String?
     private var presentedAvailability: Availability?
 
@@ -581,6 +615,7 @@ struct ChatView: View {
                         toolResults: toolResults,
                         ownerApprovals: viewModel.ownerApprovals,
                         onOwnerApproval: { viewModel.resolveOwnerPermission(opID: $0, allow: $1) },
+                        onFolderSource: { try await viewModel.folderSourcePreview($0) },
                         assistantHasContent: message.role == .assistant
                             ? !message.content.isEmpty
                             : nil,
@@ -803,10 +838,47 @@ struct ChatView: View {
 
     // MARK: - Compose bar
 
+    private var ownerDeletionNotice: some View {
+        let deletion = viewModel.ownerDeletions
+        let count = deletion.intents.count
+        let message = (deletion.notice ?? String(localized: "Removed from history. Server deletion is pending."))
+            + (count > 1 ? "\n" + String.localizedStringWithFormat(String(localized: "%lld deletions pending."), count) : "")
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+            InlineNotice(message: message, tone: .info,
+                         actionTitle: deletion.persistenceUnavailable ? nil : String(localized: "Retry"), actionIdentifier: "Chat.OwnerDeletion.Retry",
+                         action: { Task { await deletion.retry() } })
+            if deletion.intents.contains(where: { $0.storeUUID == nil && $0.conversationID != nil }) {
+                Button(String(localized: "Review connected server")) { Task { await deletion.inspectLegacy() } }
+                    .buttonStyle(.link)
+                    .accessibilityIdentifier("Chat.OwnerDeletion.Review")
+            }
+        }
+        .disabled(deletion.busy)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Chat.OwnerDeletion.Pending")
+        .confirmationDialog(String(localized: "Delete from this chat server?"), isPresented: Binding(
+            get: { deletion.confirmation != nil }, set: { if !$0 { deletion.confirmation = nil } }
+        ), titleVisibility: .visible) {
+            if let confirmation = deletion.confirmation {
+                Button(String(localized: "Delete from server"), role: .destructive) { Task { await deletion.confirmLegacy(confirmation) } }
+                    .accessibilityIdentifier("Chat.OwnerDeletion.Confirm")
+            }
+            Button(String(localized: "Cancel"), role: .cancel) { deletion.confirmation = nil }
+                .accessibilityIdentifier("Chat.OwnerDeletion.Cancel")
+        } message: {
+            if let confirmation = deletion.confirmation {
+                Text(confirmation.title + "\n" + String(localized: "Connected server storage:") + " " + confirmation.storeUUID.uuidString)
+            }
+        }
+    }
+
     private var composeBar: some View {
         let loadStatus = loadStatus
         let downloadJob = downloads.job(for: alias)
         return VStack(spacing: RapidTheme.Space.sm) {
+            if !viewModel.ownerDeletions.intents.isEmpty || viewModel.ownerDeletions.persistenceUnavailable {
+                ownerDeletionNotice.frame(maxWidth: contentMaxWidth).frame(maxWidth: .infinity)
+            }
             // Exactly one notice slot. While the model is not ready the
             // readiness banner owns it — it already folds the failure
             // message in, so rendering the raw error underneath would be
@@ -847,7 +919,17 @@ struct ChatView: View {
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             } else if let message = photoCapabilityNotice.message {
-                InlineNotice(message: message, tone: .info)
+                InlineNotice(
+                    message: message, tone: .info,
+                    actionTitle: photoCapabilityNotice.offersImageModelSwitch
+                        ? String(localized: "Switch to Qwen 3.5 4B") : nil,
+                    actionIdentifier: "ChatView.Attachments.SwitchToVision",
+                    action: {
+                        photoCapabilityNotice.dismiss()
+                        alias = PhotoCapabilityNotice.imageModelAlias
+                        onUserModelSelection(PhotoCapabilityNotice.imageModelAlias)
+                    }
+                )
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             }
@@ -893,6 +975,23 @@ struct ChatView: View {
                     .padding(.top, RapidTheme.Space.xs)
                     .padding(.horizontal, RapidTheme.Space.xs)
                     .transition(.opacity)
+                }
+                if let title = viewModel.folderChatTitle {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Label(title, systemImage: "folder").lineLimit(1)
+                            Button { viewModel.removeFolderChatScope() } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).disabled(viewModel.isStreaming)
+                                .accessibilityLabel(String(localized: "Remove folder from this chat"))
+                                .accessibilityIdentifier("Chat.RemoveFolderScope")
+                        }
+                        Text(String(localized: "Uses indexed passages only. Tools are off. Retrieved passages are saved with this chat."))
+                            .font(.rapid(.caption)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8).background(RapidTheme.hairline.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("Chat.FolderScope")
                 }
                 if attachmentDraft.hasAttachments {
                     attachmentStrip
@@ -986,7 +1085,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(
-                viewModel.isStreaming || attachmentDraft.isImportingFiles
+                viewModel.isStreaming || attachmentDraft.isImportingFiles || viewModel.folderChatScope != nil
             )
             .help("Add photos or files")
             .accessibilityLabel("Add attachments")
@@ -1710,14 +1809,14 @@ struct ChatView: View {
     }
 
     private func rejectImageInputForCurrentModel() {
-        let message = imageInputUnavailableMessage
-            ?? String(localized: "This model doesn't support photos. Choose a vision-capable model to add one.")
         // The newest attempt owns the single notice slot. Leaving an older
         // attachment error in place would make VoiceOver announce one fact
         // while sighted users keep seeing another.
         attachmentDraft.notice = nil
-        photoCapabilityNotice.present(message, availability: photoAvailability)
-        VoiceOverAnnouncer.announce(message)
+        photoCapabilityNotice.rejectImageInput(availability: photoAvailability, alias: alias)
+        if let message = photoCapabilityNotice.message {
+            VoiceOverAnnouncer.announce(message)
+        }
     }
 
     /// The shared lifecycle gate for every path that would start a turn:
@@ -1755,6 +1854,11 @@ private struct MessageRow: View {
     var toolResults: [String: ChatMessage] = [:]
     var ownerApprovals: [String: ChatViewModel.OwnerApproval] = [:]
     var onOwnerApproval: (String, Bool) -> Void = { _, _ in }
+    var onFolderSource: (ChatWireSource) async throws -> FolderSourcePreview = { _ in throw ChatTurnClientError.invalidResponse }
+    @State private var sourcePresented = false
+    @State private var sourcePreview: FolderSourcePreview?
+    @State private var sourceError: String?
+
     /// The authoritative body is deliberately not part of `message` while it
     /// streams. This one-bit projection changes only when content first lands.
     var assistantHasContent: Bool? = nil
@@ -1808,6 +1912,33 @@ private struct MessageRow: View {
         }
         .sheet(isPresented: $selectTextPresented) {
             SelectTextSheet(text: SelectTextSheet.selectableText(for: selectableText))
+        }
+        .sheet(isPresented: $sourcePresented) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(message.ownerSource?.title ?? String(localized: "Saved passage")).font(.headline)
+                    Spacer()
+                    Button(String(localized: "Done")) { sourcePresented = false }
+                        .buttonStyle(.rapidSecondary)
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("chat.sourcePreview.done")
+                }
+                Text(String(localized: "Saved with this answer. The original file may have changed."))
+                    .font(.rapid(.caption)).foregroundStyle(.secondary)
+                if let sourcePreview {
+                    ScrollView { Text(sourcePreview.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    if sourcePreview.truncated { Text(String(localized: "Preview shortened.")).font(.rapid(.caption)) }
+                } else if let sourceError { Text(sourceError).textSelection(.enabled) }
+                else { ProgressView() }
+            }
+            .padding(20).frame(minWidth: 480, idealWidth: 640, minHeight: 280, idealHeight: 440)
+            .background(RapidTheme.surfaceCanvas)
+            .accessibilityIdentifier("Chat.SavedSourcePreview")
+            .task {
+                guard let source = message.ownerSource else { return }
+                do { sourcePreview = try await onFolderSource(source) }
+                catch { sourceError = String(localized: "Could not open this saved passage. Reconnect to the chat owner and try again.") }
+            }
         }
     }
 
@@ -2101,6 +2232,14 @@ private struct MessageRow: View {
                 Text(stats)
                     .font(.rapid(.caption))
                     .foregroundStyle(.tertiary)
+            }
+            if let metrics = message.generationMetrics {
+                DisclosureGroup(String(localized: "Generation details")) {
+                    Text(metrics.detailText).font(.rapid(.caption)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .accessibilityIdentifier("Chat.GenerationDetails")
+                .font(.rapid(.caption)).foregroundStyle(.secondary)
             }
             if showsAssistantActions {
                 assistantActions
@@ -2435,10 +2574,22 @@ private struct MessageRow: View {
     // MARK: System
 
     private var systemNote: some View {
-        Text(message.content)
-            .font(.rapid(.footnote))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .center)
+        Group {
+            if let source = message.ownerSource {
+                Button {
+                    sourcePreview = nil; sourceError = nil; sourcePresented = true
+                } label: {
+                    Label("[\(source.sourceID.split(separator: ":").last.map(String.init) ?? "?")] \(source.title)", systemImage: "doc.text.magnifyingglass")
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "Open the passage saved with this answer"))
+                .accessibilityIdentifier("Chat.SavedSource.\(source.sourceID)")
+            } else { Text(message.content) }
+        }
+        .font(.rapid(.footnote))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: message.ownerSource == nil ? .center : .leading)
     }
 }
 

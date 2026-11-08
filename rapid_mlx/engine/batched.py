@@ -37,6 +37,7 @@ from ..api.utils import (
     is_mllm_model,
     validate_serving_lane_reason,
 )
+from ..execution_host import capture_local_execution_host, prepare_execution_host
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
 from ..prompt_token_reuse import (
@@ -1856,6 +1857,10 @@ class BatchedEngine(BaseEngine):
         if self._is_mllm:
             await self._start_mllm()
         else:
+            await prepare_execution_host()
+            # Another cold-start caller may finish while warmup yields.
+            if self._loaded:
+                return
             await self._start_llm()
 
         with self._guided_requests_lock:
@@ -1893,6 +1898,7 @@ class BatchedEngine(BaseEngine):
         import concurrent.futures
 
         from ..engine_core import _init_mlx_step_thread
+        from ..engine_startup_errors import startup_failure_boundary
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from ..models.mllm import MLXMultimodalLM, TextOnlyCheckpointError
         from ..scheduler import SchedulerConfig
@@ -1953,7 +1959,10 @@ class BatchedEngine(BaseEngine):
         # block — see the memory-release note below.
         degrade_reason: str | None = None
         try:
-            self._mllm_instance = self._model_load_executor.submit(_load_mllm).result()
+            with startup_failure_boundary("weights_load"):
+                self._mllm_instance = self._model_load_executor.submit(
+                    _load_mllm
+                ).result()
         except Exception as e:
             # ANY load failure tears down the mllm-step worker FIRST so its
             # thread never leaks — this runs whether we degrade or re-raise
@@ -2270,6 +2279,7 @@ class BatchedEngine(BaseEngine):
         import concurrent.futures
 
         from ..engine_core import AsyncEngineCore, EngineConfig, _init_mlx_step_thread
+        from ..engine_startup_errors import startup_failure_boundary
         from ..scheduler import SchedulerConfig
         from ..utils.tokenizer import load_model_with_fallback
 
@@ -2321,15 +2331,16 @@ class BatchedEngine(BaseEngine):
             # combination and lazy loading bypasses
             # load_model_with_fallback's fallback branches entirely (see
             # its docstring).
-            self._model, self._tokenizer, checkpoint_source = (
-                self._model_load_executor.submit(
-                    _load_lazy_and_install_disk_stream,
-                    self._model_name,
-                    tokenizer_config,
-                    getattr(self, "_disk_stream_cache_gb", 1.0),
-                    getattr(self, "_chat_template_id", None),
-                ).result()
-            )
+            with startup_failure_boundary("weights_load"):
+                self._model, self._tokenizer, checkpoint_source = (
+                    self._model_load_executor.submit(
+                        _load_lazy_and_install_disk_stream,
+                        self._model_name,
+                        tokenizer_config,
+                        getattr(self, "_disk_stream_cache_gb", 1.0),
+                        getattr(self, "_chat_template_id", None),
+                    ).result()
+                )
         else:
             load_kwargs = {"tokenizer_config": tokenizer_config}
             if chat_template_id := getattr(self, "_chat_template_id", None):
@@ -2338,14 +2349,15 @@ class BatchedEngine(BaseEngine):
                 getattr(self._scheduler_config, "spec_decode", "none") == "dspark"
             ):
                 load_kwargs["enable_dspark"] = True
-            self._model, self._tokenizer, checkpoint_source = (
-                self._model_load_executor.submit(
-                    load_model_with_fallback,
-                    self._model_name,
-                    return_source=True,
-                    **load_kwargs,
-                ).result()
-            )
+            with startup_failure_boundary("weights_load"):
+                self._model, self._tokenizer, checkpoint_source = (
+                    self._model_load_executor.submit(
+                        load_model_with_fallback,
+                        self._model_name,
+                        return_source=True,
+                        **load_kwargs,
+                    ).result()
+                )
 
             # Fuse MoE gate+up expert projections: one gather_qmm launch
             # instead of two per MoE layer per token, bit-exact (see
@@ -2459,13 +2471,14 @@ class BatchedEngine(BaseEngine):
             # timeout that converts a stuck HF/DNS load into a
             # clean startup ``RuntimeError`` instead of an
             # indefinite hang.
-            _apply_mtp_dispatch(
-                model=self._model,
-                model_name=self._model_name,
-                scheduler_config=sc,
-                executor=self._model_load_executor,
-                checkpoint_source=checkpoint_source,
-            )
+            with startup_failure_boundary("draft_attach"):
+                _apply_mtp_dispatch(
+                    model=self._model,
+                    model_name=self._model_name,
+                    scheduler_config=sc,
+                    executor=self._model_load_executor,
+                    checkpoint_source=checkpoint_source,
+                )
 
         # Resolve the per-model Metal budget on the model-owning worker
         # after the weights are materialized (#2858, #170). The logic lives
@@ -2492,12 +2505,29 @@ class BatchedEngine(BaseEngine):
         # Create async engine and hand it the EXISTING model-load executor
         # so all subsequent MLX work (forward passes, cache materialization,
         # eval) runs on the same worker thread that owns the model weights.
-        self._engine = AsyncEngineCore(
+        loaded_engine = AsyncEngineCore(
             model=self._model,
             tokenizer=self._tokenizer,
             config=engine_config,
         )
+        self._engine = loaded_engine
         self._bind_prompt_host_cache(self._engine)
+
+        # Freeze a safe source mapping on this loaded scheduler before serving.
+        # Unsupported load lanes retain no execution reference.
+        if not getattr(self, "_enable_disk_stream", False):
+            from ..execution_reference import freeze_load_receipt
+
+            holder = getattr(self._model, "language_model", self._model)
+            receipt = freeze_load_receipt(
+                checkpoint_source,
+                head_container=getattr(
+                    holder, "_rapid_mlx_mtp_weights_container", None
+                ),
+            )
+            scheduler = getattr(loaded_engine.engine, "scheduler", None)
+            if scheduler is not None:
+                scheduler._execution_load_receipt = receipt
 
         # #2858 acceptance: a model must not report healthy while every
         # request deterministically 503s under the resolved cap. The
@@ -3494,6 +3524,8 @@ class BatchedEngine(BaseEngine):
             spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
             prompt_compression=getattr(output, "prompt_compression", None),
             timing_metrics=getattr(output, "timing_metrics", None),
+            execution_reference=getattr(output, "execution_reference", None),
+            execution_host=capture_local_execution_host(output),
         )
 
     async def stream_generate(
@@ -3648,6 +3680,8 @@ class BatchedEngine(BaseEngine):
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
+                    execution_reference=getattr(output, "execution_reference", None),
+                    execution_host=capture_local_execution_host(output),
                 )
             return
 
@@ -3761,6 +3795,8 @@ class BatchedEngine(BaseEngine):
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     prompt_compression=getattr(output, "prompt_compression", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
+                    execution_reference=getattr(output, "execution_reference", None),
+                    execution_host=capture_local_execution_host(output),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -4571,6 +4607,8 @@ class BatchedEngine(BaseEngine):
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics if finished else None,
+            execution_reference=source.execution_reference if finished else None,
+            execution_host=source.execution_host if finished else None,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -4592,6 +4630,8 @@ class BatchedEngine(BaseEngine):
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics,
+            execution_reference=source.execution_reference,
+            execution_host=source.execution_host,
         )
 
     def _finalize_output_router(
@@ -4728,6 +4768,8 @@ class BatchedEngine(BaseEngine):
                         finished=True,
                         finish_reason=output.finish_reason,
                         timing_metrics=output.timing_metrics,
+                        execution_reference=output.execution_reference,
+                        execution_host=output.execution_host,
                     )
                 else:
                     routed_outputs.append(finalized)

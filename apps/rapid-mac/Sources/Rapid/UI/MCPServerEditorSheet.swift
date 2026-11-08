@@ -77,7 +77,7 @@ struct MCPServerEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
             SectionHeader(
-                original == nil ? "Add connector" : "Edit “\(original?.name ?? "")”",
+                original == nil ? String(localized: "Add connector") : String(localized: "Edit “\(original?.name ?? "")”"),
                 emphasis: .section
             )
 

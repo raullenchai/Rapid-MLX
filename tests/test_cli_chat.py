@@ -151,9 +151,9 @@ def test_chat_disable_prefix_cache_flag_is_registered():
     assert captured[0].disable_prefix_cache is True
 
 
-def test_chat_no_model_defaults_to_qwen35_4b(hub_online_env):
+def test_chat_no_model_defaults_to_first_run_starter(hub_online_env):
     """`rapid-mlx chat` (no model) on a COLD cache routes chat_command with
-    the first-run starter (qwen3.5-4b-4bit).
+    the first-run starter (lfm2.5-2.6b-4bit).
 
     Goes through the real ``cli.main()`` so a parser-wiring regression
     (e.g. dropping ``nargs='?'`` or changing the sentinel default) fails the
@@ -181,8 +181,8 @@ def test_chat_no_model_defaults_to_qwen35_4b(hub_online_env):
     # signals the starter plumbed through. The canonical alias is the one
     # we documented as the default; confirm via the round-trip name.
     assert (
-        args.model == "qwen3.5-4b-4bit"
-        or getattr(args, "_original_alias", None) == "qwen3.5-4b-4bit"
+        args.model == "lfm2.5-2.6b-4bit"
+        or getattr(args, "_original_alias", None) == "lfm2.5-2.6b-4bit"
     )
     assert args._model_was_explicit is False
 
@@ -1964,7 +1964,9 @@ def test_chat_model_switch_refuses_draft_before_download(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda model: downloaded.append(model)
+        cli,
+        "_ensure_model_downloaded",
+        lambda model, *, auto_mtp=True: downloaded.append(model),
     )
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
 
@@ -3819,7 +3821,9 @@ def test_harness_reuses_one_command_server_start_and_cleanup(
         assert model == args.model
 
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda model: calls.append("model")
+        cli,
+        "_ensure_model_downloaded",
+        lambda model, *, auto_mtp=True: calls.append("model"),
     )
     monkeypatch.setattr(cli, "_spawn_chat_server", spawn)
     monkeypatch.setattr(
@@ -3857,7 +3861,9 @@ def test_harness_preflight_fails_before_model_download_or_spawn(
 
     monkeypatch.setattr(importlib, "import_module", import_module)
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda *_: pytest.fail("must not download")
+        cli,
+        "_ensure_model_downloaded",
+        lambda *_, auto_mtp=True: pytest.fail("must not download"),
     )
     monkeypatch.setattr(
         cli, "_spawn_chat_server", lambda *_, **__: pytest.fail("must not spawn")

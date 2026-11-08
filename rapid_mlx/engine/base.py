@@ -112,6 +112,10 @@ class GenerationOutput:
     timing_metrics: dict[str, float] | None = None
     # Internal request-local metadata, never serialized as model output.
     prompt_parse_context: PromptParseContext | None = None
+    # Request-local terminal execution facts; never process-wide defaults.
+    execution_reference: dict | None = None
+    # Frozen only at the local engine boundary; replay never probes a new host.
+    execution_host: dict | None = None
 
 
 def _callable_accepts_kwarg(func: Any, name: str, inspect_mod: Any) -> bool:

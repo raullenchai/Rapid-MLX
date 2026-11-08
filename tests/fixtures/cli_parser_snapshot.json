@@ -2212,7 +2212,7 @@
        "const": null,
        "default": null,
        "dest": "model",
-       "help": "Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name). When omitted, uses a chat model already on this Mac (the qwen3.5-4b-4bit starter if present, otherwise the best fit for this Mac's memory); if none is downloaded yet, downloads the qwen3.5-4b-4bit starter (~3.1 GB) once.",
+       "help": "Model alias (e.g. lfm2.5-2.6b-4bit) or HF repo (org/name). When omitted, uses a chat model already on this Mac (the lfm2.5-2.6b-4bit starter if present, otherwise the best fit for this Mac's memory); if none is downloaded yet, downloads the lfm2.5-2.6b-4bit starter (~1.6 GB) once.",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -3754,6 +3754,21 @@
        "type": null
       },
       {
+       "class": "argparse._AppendAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "inspect_local",
+       "help": "Offline inspection of an existing chat checkpoint (requires --json; up to 32 directories). Does not import or download files.",
+       "metavar": "DIRECTORY",
+       "nargs": null,
+       "option_strings": [
+        "--inspect-local"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -3822,6 +3837,7 @@
        "dests": [
         "help",
         "cached",
+        "inspect_local",
         "json",
         "search",
         "modality"
@@ -3909,6 +3925,36 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "check",
+       "help": "Check metadata and memory fit without downloading",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--check"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "With --check, print one schema-v1 JSON verdict",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "with_ref2va",
        "help": "Pika H3 Flex only: also download the Ref2VA second transformer and adapter, about 69 GB",
        "metavar": null,
@@ -3970,7 +4016,7 @@
        "const": true,
        "default": false,
        "dest": "no_preflight",
-       "help": "Skip the pre-download check for models outside the Rapid-MLX catalog (format and architecture).",
+       "help": "Skip catalog memory admission and the pre-download format and architecture check for models outside the Rapid-MLX catalog.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -3998,6 +4044,8 @@
        "description": null,
        "dests": [
         "help",
+        "check",
+        "json",
         "with_ref2va",
         "bits",
         "format",
@@ -4189,7 +4237,7 @@
        "const": null,
        "default": null,
        "dest": "model",
-       "help": "Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name). When omitted, uses a chat model already on this Mac (the qwen3.5-4b-4bit starter if present, otherwise the best fit for this Mac's memory); if none is downloaded yet, downloads the qwen3.5-4b-4bit starter (~3.1 GB) once.",
+       "help": "Model alias (e.g. lfm2.5-2.6b-4bit) or HF repo (org/name). When omitted, uses a chat model already on this Mac (the lfm2.5-2.6b-4bit starter if present, otherwise the best fit for this Mac's memory); if none is downloaded yet, downloads the lfm2.5-2.6b-4bit starter (~1.6 GB) once.",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
@@ -5934,6 +5982,21 @@
        "type": "builtins.float"
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 0.0,
+       "dest": "audio_lane_idle_ttl",
+       "help": "Release idle STT, alignment and TTS lane models after this many seconds, keeping audio routes online and reloading on demand. 0 disables audio idle unload (default: 0).",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--audio-lane-idle-ttl"
+       ],
+       "required": false,
+       "type": "builtins.float"
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -7155,6 +7218,7 @@
         "resident_model_idle_ttl",
         "lazy_load",
         "idle_unload_seconds",
+        "audio_lane_idle_ttl",
         "use_paged_cache",
         "paged_cache_block_size",
         "max_cache_blocks",

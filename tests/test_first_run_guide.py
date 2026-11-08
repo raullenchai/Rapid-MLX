@@ -6,7 +6,7 @@ Covers the ``rapid_mlx/first_run.py`` helpers and their three wiring points in
 
   * P0-1 — ``chat`` / ``run`` with no model → starter auto-select in
     ``main()`` (the known-good starter alias chosen, notice printed only on a
-    TTY; the standard download gate is left untouched — the ~3.1 GB starter is
+    TTY; the standard download gate is left untouched — the ~1.6 GB starter is
     under its 10 GiB confirm threshold — and non-interactive sessions fall
     through to that gate exactly as before this feature).
   * P0-2 — bare ``rapid-mlx`` now lives in ``rapid_mlx/front_door.py`` and is
@@ -368,7 +368,7 @@ def test_autoselected_starter_uses_standard_download_gate(hub_online_env):
     # confirmation, so it flows through ``estimate_repo_size_bytes`` +
     # ``confirm_or_abort`` exactly like an explicit model. (The "small model →
     # no prompt" decision belongs to confirm_or_abort's own 10 GiB threshold,
-    # covered in test_download_gate — the ~3.1 GB starter is under it, so the
+    # covered in test_download_gate — the ~1.6 GB starter is under it, so the
     # gate stays silent for it on its own, but the size is still checked.)
     # The redundant round-trip's *latency* is what we hide — behind a
     # "Resolving…" spinner, NOT by skipping the check.
@@ -406,3 +406,15 @@ def test_explicit_uncached_model_still_confirms(hub_online_env):
     # Control: an explicitly-typed, uncached model DOES hit the confirm gate.
     confirm, _dispatched = _run_main_gate_probe(["chat", "qwen3.5-9b-4bit"])
     assert confirm.called is True
+
+
+def test_cached_known_aliases_omits_draft_sidecars(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_hub_model
+
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda repo: True)
+    rows = [
+        (resolve_hub_model(alias), 100, 1)
+        for alias in ("qwen3.5-4b-mtp-4bit", "qwen3.5-4b-4bit")
+    ]
+    assert fr.cached_known_aliases(rows) == [("qwen3.5-4b-4bit", 1)]

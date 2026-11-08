@@ -386,7 +386,7 @@ def test_explicit_port_preflight_precedes_model_download(
     failure = SystemExit(1)
     events: list[str] = []
 
-    def fail_model_download(_model):
+    def fail_model_download(_model, *, auto_mtp=True):
         events.append("download")
 
     def resolve_port(*_args, **_kwargs):
@@ -428,7 +428,9 @@ def stub_heavy_serve_deps(monkeypatch):
     # deliberately reload ``rapid_mlx.cli`` and replace the package attribute;
     # re-importing it here would patch that new object while the file-level
     # ``cli`` reference below still invokes the old one.
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda model, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_listen_fd_port", lambda _fd: 8000)

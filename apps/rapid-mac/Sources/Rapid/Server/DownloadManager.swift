@@ -392,7 +392,7 @@ final class DownloadManager {
     ) -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        guard ModelCatalog.isSafeAlias(trimmed) else {
+        guard ModelCatalog.isSafeModelReference(trimmed) else {
             if trimmed.utf8.count <= ModelCatalog.maxAliasBytes {
                 let job = Job(alias: trimmed, hfPath: hfPath, totalBytes: totalBytes, source: source)
                 job.failureKind = .downloadFailed
@@ -894,9 +894,23 @@ final class DownloadManager {
         alias: String,
         transient: Bool = true
     ) -> Bool {
-        guard transient, let delay = Self.retryDelay(after: job.retryAttempt) else {
+        let raw = Self.terminalPullFailure(stderrorLines: stderrTails[alias] ?? [])
+        let kind = FailureDiagnoser.downloadFailureKind(raw: raw, usingMirror: job.source == .mirror)
+        // A previous network error in the tail must not turn a permanent
+        // failure into a retry or a source switch.
+        let cause = FailureDiagnoser.downloadFailureCause(raw: raw, kind: kind)
+        guard cause != .diskFull, cause != .integrity, cause != .notFound,
+              !FailureDiagnoser.hasDownloadAuthSignal(raw),
+              !raw.lowercased().contains("gated"),
+              !raw.lowercased().contains("hf auth login") else { return false }
+
+        let switchToHF = job.source == .mirror && !job.forceMirror
+            && (kind == .downloadSourceUnavailable || (transient && job.retryAttempt >= 1))
+        guard transient || switchToHF,
+              let delay = Self.retryDelay(after: job.retryAttempt) else {
             return false
         }
+        let nextSource: DownloadSource = switchToHF ? .huggingFace : job.source
         job.retryDelaySeconds = delay
         job.isStalled = true
         let originalID = job.instanceID
@@ -907,9 +921,12 @@ final class DownloadManager {
                   self.jobs[alias]?.instanceID == originalID else { return }
             self.retryTasks.removeValue(forKey: alias)
             self.jobs.removeValue(forKey: alias)
+            if switchToHF {
+                print("[download] \(alias) mirror failed; retrying from Hugging Face")
+            }
             _ = self.startDownload(
                 alias: alias, hfPath: job.hfPath, totalBytes: job.totalBytes,
-                source: job.source, forceMirror: job.forceMirror,
+                source: nextSource, forceMirror: job.forceMirror,
                 retryAttempt: job.retryAttempt + 1, retryingJob: job
             )
         }
@@ -1243,6 +1260,7 @@ final class DownloadManager {
         hfPath: String? = nil,
         totalBytes: Int64? = nil,
         source: DownloadSource = .mirror,
+        forceMirror: Bool = false,
         retryAttempt: Int = 0
     ) -> Job {
         let job = Job(
@@ -1250,6 +1268,7 @@ final class DownloadManager {
             hfPath: hfPath,
             totalBytes: totalBytes,
             source: source,
+            forceMirror: forceMirror,
             retryAttempt: retryAttempt,
             downloadEndpoint: endpointPreference()
         )
@@ -1272,10 +1291,12 @@ final class DownloadManager {
         alias: String,
         status: Int32,
         reason: Process.TerminationReason,
-        wasCancelling: Bool = false
+        wasCancelling: Bool = false,
+        wasStalled: Bool = false
     ) {
         let process = Process()
         processes[alias] = process
+        if wasStalled { stalledProcesses[alias] = process }
         handleExit(
             alias: alias,
             process: process,

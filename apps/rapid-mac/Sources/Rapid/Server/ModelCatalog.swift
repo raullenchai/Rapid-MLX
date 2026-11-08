@@ -484,7 +484,8 @@ enum ModelCatalog {
     /// explicit value to pin behaviour without touching UserDefaults.
     static func load(
         binary: URL,
-        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL(),
+        openedPaths: [String] = OpenedCheckpoints.paths()
     ) async -> [ModelEntry] {
         async let availableTask: (
             entries: [(String, String?)],
@@ -540,6 +541,8 @@ enum ModelCatalog {
                 availableResult.profiles[entry.alias]?.allowsLegacyRecommendationPolicy ?? false
             return enriched
         }
+
+        entries = await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary, hubCacheOverride: hubCacheOverride)
 
         // Sort: cached first, then alphabetic within each group. The
         // user is most likely to pick something they already have on
@@ -949,7 +952,7 @@ enum ModelCatalog {
         var entries: [(String, String?)] = []
         var profiles: [String: CatalogProfileCapability] = [:]
         var speculative: [String: SpeculativeDecodingPreset] = [:]
-        for row in textRows {
+        for row in textRows where row["standalone"] as? Bool != false {
             guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
             entries.append((alias, sanitizedHuggingFaceRepo(row["hf_path"] as? String)))
             if let isBuiltin = row["is_builtin"] as? Bool,
@@ -1000,7 +1003,7 @@ enum ModelCatalog {
                 )
             }
         }
-        var excluded: Set<String> = []
+        var excluded = nonStandaloneAliases(root)
         for key in ["audio", "video", "image"] {
             for row in root[key] as? [[String: Any]] ?? [] {
                 if let alias = row["alias"] as? String, isSafeAlias(alias) {
@@ -1009,6 +1012,16 @@ enum ModelCatalog {
             }
         }
         return (entries, excluded, speculative, profiles)
+    }
+
+    /// The engine owns draft detection; preserve rows in JSON for inventory consumers.
+    private static func nonStandaloneAliases(_ root: [String: Any]) -> Set<String> {
+        Set(["text", "audio", "video", "image"].flatMap { key in
+            (root[key] as? [[String: Any]] ?? []).compactMap { row -> String? in
+                guard row["standalone"] as? Bool == false else { return nil }
+                return row["alias"] as? String
+            }
+        })
     }
 
     /// Prefer the atomic alias + registry-model graph when a new sidecar
@@ -1337,7 +1350,8 @@ enum ModelCatalog {
                 isTextOnly: isTextOnly
             ))
         }
-        return entries
+        let hidden = nonStandaloneAliases(root)
+        return entries.filter { !hidden.contains($0.alias) }
     }
 
     private static func isSHA256Address(_ value: String) -> Bool {
@@ -1435,7 +1449,8 @@ enum ModelCatalog {
     /// multiply subprocess work by the number of modalities.
     static func productEntries(
         binary: URL,
-        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL(),
+        openedPaths: [String] = OpenedCheckpoints.paths()
     ) async -> [ModelEntry]? {
         async let modelsJSON = runRapidMlxResult(
             binary: binary, args: ["models", "--json"]
@@ -1451,12 +1466,13 @@ enum ModelCatalog {
         else {
             return nil
         }
-        return mergeAtomicAndCached(
+        let entries = mergeAtomicAndCached(
             atomic: atomic,
             cached: await cachedTask,
             excluded: projection.excluded,
             speculative: projection.speculative
         )
+        return await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary, hubCacheOverride: hubCacheOverride)
     }
 
     /// Preserve the user-owned cache surface while atomic aliases drive
@@ -2289,6 +2305,7 @@ enum ModelCatalog {
                 invalidRows += 1
                 continue
             }
+            if row["standalone"] as? Bool == false { continue rowLoop }
             guard let state = row["state"] as? String,
                   let repo = sanitizedHuggingFaceRepo(row["repo"] as? String),
                   let bytes = row["size_bytes"] as? NSNumber,
@@ -2420,6 +2437,12 @@ enum ModelCatalog {
         }
     }
 
+    /// A name `rapid-mlx pull` / delete may act on: a catalog alias, or an
+    /// uncataloged Hugging Face `owner/name` repo added from a pasted link.
+    static func isSafeModelReference(_ value: String) -> Bool {
+        isSafeAlias(value) || (value.contains("/") && sanitizedHuggingFaceRepo(value) == value)
+    }
+
     static func sanitizedHuggingFaceRepo(_ repo: String?) -> String? {
         guard let repo else { return nil }
         let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2510,6 +2533,16 @@ enum ModelCatalog {
                 ambient: ProcessInfo.processInfo.environment,
                 hubCacheOverride: hubCacheOverride
             )
+            if args.first == "pull" {
+                // `pull --check` is a user-initiated Hugging Face check, not a
+                // background catalog probe: let the user's telemetry consent
+                // decide (the sidecar role already marks it as Desktop), so
+                // drop the #1415 probe opt-out and keep any ambient value.
+                task.environment?["DO_NOT_TRACK"] = ProcessInfo.processInfo.environment["DO_NOT_TRACK"]
+                var env = task.environment ?? [:]
+                ModelDownloadEndpointPreference.apply(ModelDownloadEndpointPreference.storedEndpoint(), env: &env)
+                task.environment = env
+            }
             let stdout = Pipe()
             let stderr = Pipe()
             task.standardOutput = stdout
@@ -2518,8 +2551,8 @@ enum ModelCatalog {
             // a race — the ``drainGroup.enter`` calls happened AFTER
             // ``task.run()``. A fast-exit child (``rapid-mlx ls``
             // <5 ms) would fire the termination handler BEFORE the
-            // drainers entered the group; ``drainGroup.wait`` with
-            // zero entries returns immediately, the continuation
+            // drainers entered the group; a group notification with
+            // zero entries fires immediately, the continuation
             // resumes with empty stdout, and the picker shows an
             // empty catalog.
             //
@@ -2551,15 +2584,16 @@ enum ModelCatalog {
             }
 
             task.terminationHandler = { _ in
-                drainGroup.wait()
-                processRegistry.remove(task)
-                processBox.clear(task)
-                if resumedBox.tryConsume() {
-                    let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
-                    continuation.resume(returning: RapidMlxResult(
-                        stdout: text,
-                        succeeded: task.terminationStatus == 0
-                    ))
+                drainGroup.notify(queue: .global(qos: .utility)) {
+                    processRegistry.remove(task)
+                    processBox.clear(task)
+                    if resumedBox.tryConsume() {
+                        let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
+                        continuation.resume(returning: RapidMlxResult(
+                            stdout: text,
+                            succeeded: task.terminationStatus == 0
+                        ))
+                    }
                 }
             }
 
@@ -2574,21 +2608,25 @@ enum ModelCatalog {
             } catch {
                 try? stdout.fileHandleForWriting.close()
                 try? stderr.fileHandleForWriting.close()
-                drainGroup.wait()
-                processRegistry.remove(task)
-                processBox.clear(task)
-                if resumedBox.tryConsume() {
-                    continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                // A cooperative task must suspend while global pipe readers
+                // finish; synchronously waiting here can starve those readers.
+                drainGroup.notify(queue: .global(qos: .utility)) {
+                    processRegistry.remove(task)
+                    processBox.clear(task)
+                    if resumedBox.tryConsume() {
+                        continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                    }
                 }
                 return
             }
             guard launched else {
                 try? stdout.fileHandleForWriting.close()
                 try? stderr.fileHandleForWriting.close()
-                drainGroup.wait()
-                processBox.clear(task)
-                if resumedBox.tryConsume() {
-                    continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                drainGroup.notify(queue: .global(qos: .utility)) {
+                    processBox.clear(task)
+                    if resumedBox.tryConsume() {
+                        continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                    }
                 }
                 return
             }
@@ -2633,6 +2671,48 @@ enum ModelCatalog {
             }
         }
         return data
+    }
+
+    /// Uses the same bounded, cancellable subprocess runner as catalog probes.
+    static func checkHuggingFace(reference: String, binary: URL) async throws -> HuggingFaceModelCheck {
+        let result = await runRapidMlxResult(
+            binary: binary, args: ["pull", reference, "--check", "--json"],
+            hubCacheOverride: ModelsFolderPreference.validatedOverrideURL()
+        )
+        try Task.checkCancellation()
+        guard result.succeeded else { throw CocoaError(.executableRuntimeMismatch) }
+        let check = try JSONDecoder().decode(HuggingFaceModelCheck.self, from: Data(result.stdout.utf8))
+        guard check.schema == 1 else { throw CocoaError(.coderReadCorrupt) }
+        return check
+    }
+
+    static func inspectLocalCheckpoints(paths: [String], binary: URL,
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()) async throws -> [LocalCheckpointCheck] {
+        guard !paths.isEmpty, paths.count <= OpenedCheckpoints.limit else { throw LocalCheckpointError.limit }
+        let args = ["models", "--json"] + paths.flatMap { ["--inspect-local", $0] }
+        let result = await runRapidMlxResult(binary: binary, args: args, hubCacheOverride: hubCacheOverride)
+        try Task.checkCancellation()
+        guard result.succeeded else { throw LocalCheckpointError.unavailable }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let envelope = try? decoder.decode(LocalCheckpointEnvelope.self, from: Data(result.stdout.utf8)),
+              envelope.schema == 1, envelope.localCheckpoints.count == paths.count,
+              zip(envelope.localCheckpoints, paths).allSatisfy({ $0.requestedPath == $1 }) else {
+            throw LocalCheckpointError.unavailable
+        }
+        return envelope.localCheckpoints.map { check in
+            if check.ready && check.path != check.requestedPath { return check.rejecting("identity_changed") }
+            if check.ready && !check.certified { return check.rejecting("inspection_failed") }
+            return check
+        }
+    }
+
+    private static func addingOpenedCheckpoints(_ entries: [ModelEntry], paths: [String], binary: URL, hubCacheOverride: URL?) async -> [ModelEntry] {
+        guard !paths.isEmpty else { return entries }
+        guard let checks = try? await inspectLocalCheckpoints(paths: paths, binary: binary, hubCacheOverride: hubCacheOverride) else {
+            return entries.filter { !paths.contains($0.alias) }
+        }
+        return OpenedCheckpoints.merging(entries, checks: checks)
     }
 
     static func _testingRunRapidMlx(binary: URL, args: [String]) async -> String {

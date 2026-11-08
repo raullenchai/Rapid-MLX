@@ -175,6 +175,29 @@ def _benchmark_host_memory(request, monkeypatch):
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_hub_sibling_listing(monkeypatch):
+    """Mocked pull journeys have no Hub: report no sibling quant folders.
+
+    ``pull`` lists the repo to skip per-quantization folders and fails closed
+    when it cannot; tests covering that listing call the helper directly.
+    """
+    monkeypatch.setattr("rapid_mlx.cli._nested_checkpoint_ignore", lambda *_a: None)
+
+
+@pytest.fixture
+def ample_pull_disk_space(monkeypatch):
+    """Keep mocked pull journeys independent of the runner's free disk.
+
+    Offline pulls can still price large payloads from packaged manifests.
+    Keep the real disk gate active with explicit capacity; admission tests
+    supply their own capacity instead. RAM is isolated separately above.
+    """
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._cache_disk_space", lambda: ("test cache", 1 << 50)
+    )
+
+
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
 
 
@@ -323,6 +346,7 @@ def _posthog_transport_guard_assertion():
 _SERVER_SERVE_CONFIG_GLOBALS = (
     "_alias_recommended_sampling",
     "_api_key",
+    "_audio_lane_idle_ttl",
     "_body_receive_timeout_seconds",
     "_context_length",
     "_default_frequency_penalty",
@@ -660,6 +684,7 @@ def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
     try:
         from rapid_mlx.telemetry import (
             build_gate,
+            byom_funnel,
             consent_runtime,
             model_events,
             posthog_sender,
@@ -690,6 +715,8 @@ def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
     model_events._reset_for_tests()
     server_start._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
+    # The BYOM funnel context (ref_form, preflight) is a process singleton too.
+    byom_funnel._reset_for_tests()
     # Server lane latches are process singletons too: a pending/emitted model
     # event from one test must not suppress the next test's lifecycle event.
     _reset_server_telemetry_latches()
@@ -703,6 +730,7 @@ def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
     model_events._reset_for_tests()
     server_start._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
+    byom_funnel._reset_for_tests()
 
 
 # One-time availability probe for the Apple-only ``mlx`` runtime. Nothing

@@ -675,13 +675,28 @@ def _runtime_python_path() -> Path:
                 context_cwd = Path(process.cwd()).resolve()
             except Exception:
                 return None
-            try:
-                serve_index = cmdline.index("serve")
-            except ValueError:
-                return None
+            from rapid_mlx.serve_process import serve_subcommand_index
+
+            serve_index = serve_subcommand_index(cmdline)
+            # Doctor additionally accepts a verified installed cli.py file;
+            # unlike discovery this selects an interpreter, not a server PID.
+            if serve_index is None:
+                if not (
+                    len(cmdline) >= 3
+                    and cmdline[2] == "serve"
+                    and Path(cmdline[1]).name == "cli.py"
+                    and Path(cmdline[1]).parent.name == "rapid_mlx"
+                    and _is_installed_rapid_mlx_module(Path(cmdline[1]))
+                ):
+                    return None
+                serve_index = 2
             command = cmdline[:serve_index]
-            if not command:
-                return None
+            while command[-1] in {
+                "--no-banner",
+                "--no-telemetry",
+                "--disable-version-check",
+            }:
+                command = command[:-1]
             entry_argument = command[-1]
             entry = Path(entry_argument)
             module_entry = _module_command_entry(command)
@@ -1662,6 +1677,17 @@ def section_system() -> Section:
             CheckStatus.OK,
             detail=f"chip={chip} ram_gb={ram_gb}",
         )
+        if ram_gb:
+            from rapid_mlx.decode_expectations import chip_name, expectation, summary
+            from rapid_mlx.model_aliases import resolve_profile
+            from rapid_mlx.recommendations import recommendation_tier
+
+            for pick in recommendation_tier(ram_gb, validate_catalog=False).picks:
+                s.add(
+                    f"{pick.alias}: {summary(expectation(pick.alias, chip_name(chip), ram_gb, repo_id=getattr(resolve_profile(pick.alias), 'hf_path', None)))}",
+                    CheckStatus.OK,
+                    detail="Offline decode reference; not an environment health test",
+                )
     elif platform.system() == "Darwin":
         s.add(
             "Non-Apple-Silicon Mac — MLX requires arm64",

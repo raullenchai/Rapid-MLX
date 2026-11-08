@@ -172,7 +172,9 @@ def _stub_heavy_serve_deps(monkeypatch) -> dict:
     monkeypatch.setattr(
         _version_check, "print_staleness_warning_if_any", lambda **_kwargs: None
     )
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda model, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")

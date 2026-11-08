@@ -382,8 +382,8 @@ class AnthropicOutputConfig(BaseModel):
 # Per-Anthropic-spec mapping from ``effort`` to a concrete reasoning
 # token budget (upstream vLLM PR #42396 / Anthropic SDK v0.22). Kept
 # module-scoped so tests can import + assert against the same mapping
-# the adapter uses. ``None`` means "no cap" (the default Anthropic
-# behavior when the client omits ``output_config`` entirely).
+# the adapter uses. ``None`` means "no cap". Adaptive thinking without
+# explicit effort uses the server's default effort, falling back to medium.
 ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS: dict[str, int | None] = {
     "low": 512,
     "medium": 2048,

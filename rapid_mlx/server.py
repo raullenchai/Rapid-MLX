@@ -212,6 +212,7 @@ _resident_idle_ttl_seconds: float = 0.0
 _resident_gpu_memory_utilization: float | None = None
 _primary_lazy_load: bool = False
 _primary_idle_unload_seconds: float = 0.0
+_audio_lane_idle_ttl: float = 0.0
 _primary_model_lifecycle: PrimaryModelLifecycle | None = None
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
@@ -1132,7 +1133,22 @@ async def lifespan(app: FastAPI):
     # at this point lies when the subsequent bind fails. The shared Uvicorn
     # startup seam calls ``print_ready_banner`` after listener creation.
 
-    yield
+    from .routes.audio import audio_lane_idle_loop
+
+    audio_idle_task = (
+        asyncio.create_task(audio_lane_idle_loop(_audio_lane_idle_ttl))
+        if _audio_lane_idle_ttl > 0
+        else None
+    )
+    try:
+        yield
+    finally:
+        if audio_idle_task is not None:
+            audio_idle_task.cancel()
+            try:
+                await audio_idle_task
+            except asyncio.CancelledError:
+                pass
 
     # Shutdown: stop accepting "ready" before tearing things down.
     # R15 Sven B2 (task #306): also flip ``draining`` so /healthz

@@ -156,8 +156,40 @@ final class ChatViewModel {
     /// inject a real URLSession or thread a mock through both layers.
     private var client: ChatStreamClient
     private let chatBackendConfig: ChatBackendConfig
+    let ownerDeletions: OwnerConversationDeletion
     private let ownerWorkspace: URL
     private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
+    private(set) var folderChatScope: FolderChatScope?
+    private(set) var folderChatTitle: String?
+    var folderChatAvailable: Bool { chatBackendConfig.harnessEnabled }
+
+    func folderSourcePreview(_ source: ChatWireSource) async throws -> FolderSourcePreview {
+        guard let id = conversations.first(where: { $0.id == activeConversationID })?.ownerConversationID,
+              let attachmentID = source.attachmentID, source.url == nil,
+              source.sourceID.hasPrefix("local-search:") else { throw ChatTurnClientError.invalidResponse }
+        if let ownerClientFactory { return try await ownerClientFactory().sourcePreview(conversationID: id, attachmentID: attachmentID) }
+        guard let connection = try await ChatOwnerConnection.connectIfEnabled(backend: .ownerV1) else { throw ChatOwnerConnectionError.ownerUnavailable }
+        do {
+            let client = try await connection.reconnect()
+            let preview = try await client.sourcePreview(conversationID: id, attachmentID: attachmentID)
+            await connection.close()
+            return preview
+        } catch { await connection.close(); throw error }
+    }
+
+    func startFolderChat(folderID: String, title: String) {
+        guard folderChatAvailable else { return }
+        newConversation()
+        folderChatScope = FolderChatScope(folderIDs: [folderID])
+        folderChatTitle = title
+    }
+    func removeFolderChatScope() {
+        guard !isStreaming else { return }
+        folderChatScope = nil
+        folderChatTitle = nil
+        persistActive(touching: false)
+    }
+
     private var ownerSessions: [UUID: OwnerChatSession] = [:]
     private var ownerConnections: [UUID: ChatOwnerConnection] = [:]
     struct OwnerApproval {
@@ -442,6 +474,7 @@ final class ChatViewModel {
         self.chatBackendConfig = chatBackendConfig ?? ChatBackendConfig()
         self.ownerClientFactory = ownerClientFactory
         self.ownerWorkspace = ownerWorkspace
+        self.ownerDeletions = OwnerConversationDeletion(url: persistsConversations ? OwnerConversationDeletion.companionURL(for: conversationStoreURL) : nil, clientProvider: ownerClientFactory ?? { try await ChatOwnerConnection.existingDeletionClient() })
         self.tools = tools
         self.toolDefaults = toolDefaults
         self.sampling = sampling
@@ -465,9 +498,10 @@ final class ChatViewModel {
         let loaded = persistsConversations
             ? ConversationStore.load(from: conversationStoreURL)
             : []
-        let repaired = Self.repairInterruptedStreams(loaded)
+        let deletionIDs = Set(ownerDeletions.intents.map(\.id))
+        let repaired = Self.repairInterruptedStreams(loaded.filter { !deletionIDs.contains($0.id) })
         self.conversations = repaired.conversations
-        if persistsConversations && repaired.changed {
+        if persistsConversations && (repaired.changed || repaired.conversations.count != loaded.count) {
             ConversationStore.save(repaired.conversations, to: conversationStoreURL)
         }
         self.folders = persistsConversations
@@ -478,6 +512,11 @@ final class ChatViewModel {
                 from: ConversationDraftStore.companionURL(forConversationStore: conversationStoreURL)
             ).pruned(keeping: Set(conversations.map(\.id)))
         }
+        ownerDeletions.commitLocalRemoval = { [weak self] in
+            guard let self else { throw OwnerConversationDeletion.Failure.unavailable }
+            if self.persistsConversations { try await ConversationStore.saveAuthority(self.conversations, to: self.conversationStoreURL) }
+        }
+        ownerDeletions.scheduleRetry()
     }
 
     /// The folder file that sits beside whichever conversation store is in
@@ -556,6 +595,8 @@ final class ChatViewModel {
                 touching: touching,
                 at: now
             ) { conversation in
+                conversation.folderChatScope = folderChatScope
+                conversation.folderChatTitle = folderChatTitle
                 conversation.messages = messages
                 conversation.branches = branchedAway
                 conversation.activeLeafID = leaf
@@ -591,7 +632,8 @@ final class ChatViewModel {
                     createdAt: now,
                     updatedAt: now,
                     customInstructions: Self.normalizedInstruction(conversationInstructions),
-                    backend: chatBackendConfig.chatBackend == .ownerV1 ? .ownerV1 : nil
+                    backend: chatBackendConfig.chatBackend == .ownerV1 ? .ownerV1 : nil,
+                    folderChatScope: folderChatScope, folderChatTitle: folderChatTitle
                 ),
                 at: 0
             )
@@ -1115,6 +1157,8 @@ final class ChatViewModel {
         branchChoices = conv.branchChoices
         adoptTree(conv.allMessages, activeLeafID: conv.activeLeafID ?? conv.messages.last?.id)
         conversationInstructions = conv.customInstructions ?? ""
+        folderChatScope = conv.folderChatScope
+        folderChatTitle = conv.folderChatTitle
         activeConversationID = id
         lastError = nil
         lastFailureKind = nil
@@ -1123,6 +1167,14 @@ final class ChatViewModel {
 
     /// Deletes a conversation and all document extracts in its full branch tree.
     func deleteConversation(_ id: UUID) {
+        if let row = conversations.first(where: { $0.id == id }), row.backend == .ownerV1 {
+            do {
+                try ownerDeletions.enqueue(OwnerDeletionIntent(id: id, conversationID: row.ownerConversationID, storeUUID: row.ownerStoreUUID, turnID: row.ownerTurnID))
+            } catch {
+                lastError = String(localized: "Couldn't save the server deletion request. Conversation was kept.")
+                return
+            }
+        }
         if id == activeConversationID { discardOwnerSessions() }
         cancelTitleTask(for: id)
         var attachmentIDs: Set<UUID> = []
@@ -1145,6 +1197,8 @@ final class ChatViewModel {
             treeShapeVersion += 1
             branchChoices.removeAll()
             conversationInstructions = ""
+            folderChatScope = nil
+            folderChatTitle = nil
             activeConversationID = UUID()
             isStreaming = false          // messages now empty → persistActive no-ops
             lastError = nil
@@ -1156,6 +1210,7 @@ final class ChatViewModel {
         saveDrafts()
         saveConversations()
         documentCache.remove(contentsOf: attachmentIDs)
+        ownerDeletions.scheduleRetry()
     }
 
     // MARK: - In-memory message storage
@@ -1308,6 +1363,8 @@ final class ChatViewModel {
         treeShapeVersion += 1
         branchChoices.removeAll()
         conversationInstructions = ""
+        folderChatScope = nil
+        folderChatTitle = nil
         activeConversationID = UUID()
         lastError = nil
         lastFailureKind = nil
@@ -1400,6 +1457,10 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
+        if folderChatScope != nil && (!imageAttachments.isEmpty || !fileAttachments.isEmpty) {
+            lastError = String(localized: "Folder chat uses saved folder passages. Remove attachments before sending.")
+            return
+        }
         if isOwnerBackedChat && !chatBackendConfig.harnessEnabled {
             lastError = "Turn on the experimental harness in Settings to continue this chat."
             return
@@ -1547,6 +1608,21 @@ final class ChatViewModel {
         }
     }
 
+    private func captureOwnerAuthority(localID: UUID, ownerID: String, store: UUID?, turn: String?) async throws {
+        if let index = conversations.firstIndex(where: { $0.id == localID }) {
+            if let old = conversations[index].ownerConversationID, old != ownerID { throw OwnerConversationDeletion.Failure.identityChanged }
+            if let old = conversations[index].ownerStoreUUID, old != store { throw OwnerConversationDeletion.Failure.identityChanged }
+            let newlyCreated = conversations[index].ownerConversationID == nil
+            conversations[index].ownerConversationID = ownerID
+            if newlyCreated || conversations[index].ownerStoreUUID != nil { conversations[index].ownerStoreUUID = store }
+            if let turn { conversations[index].ownerTurnID = turn }
+            if persistsConversations { try await ConversationStore.saveAuthority(conversations, to: conversationStoreURL) }
+        } else {
+            try ownerDeletions.capture(localID: localID, conversationID: ownerID, storeUUID: store, turnID: turn)
+            ownerDeletions.scheduleRetry()
+        }
+    }
+
     private func sendViaOwner(text: String, alias: String, placeholderIndex: Int, epoch: Int) async {
         chatBackendConfig.onDisabled = { [weak self] in
             guard let self else { return }
@@ -1586,19 +1662,17 @@ final class ChatViewModel {
             let attachments = images + userFiles.map { file in
                 (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
             }
-            try await session.submit(text: text, target: target, attachments: attachments) { [weak self] id in
-                await MainActor.run {
-                    guard let self, let index = self.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-                    self.conversations[index].ownerConversationID = id
-                    self.saveConversations()
-                }
-            }
+            ownerDeletions.scheduleRetry()
+            try await session.submit(text: text, target: target, attachments: attachments, localSearch: folderChatScope, onAuthority: { [weak self] id, store, turn in
+                try await self?.captureOwnerAuthority(localID: conversationID, ownerID: id, store: store, turn: turn)
+            })
             if Task.isCancelled { try? await session.stop() }
             let snapshots = await session.snapshots()
             if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
                 conversations[index].ownerConversationID = await session.ownerConversationID()
                 saveConversations()
             }
+            var completedGeneration: (CompletedGenerationReader, UUID)?
             for await snapshot in snapshots {
                 guard !Task.isCancelled, epoch == conversationEpoch else { break }
                 guard let projection = snapshot.projection else { continue }
@@ -1610,7 +1684,11 @@ final class ChatViewModel {
                 guard let index = messages.firstIndex(where: { $0.id == placeholder.id }) else { break }
                 messages.replaceSubrange(index..<messages.count, with: rows)
                 treeShapeVersion += 1
-                if snapshot.state == .finished { break }
+                if snapshot.state == .finished {
+                    if let row = rows.last(where: { $0.role == .assistant && $0.status == .complete && !$0.content.isEmpty }),
+                       let reader = await session.completedGenerationReader() { completedGeneration = (reader, row.id) }
+                    break
+                }
                 if case .failed = snapshot.state { break }
             }
             guard epoch == conversationEpoch else { return }
@@ -1619,6 +1697,12 @@ final class ChatViewModel {
             }
             isStreaming = false
             persistActive()
+            if let (reader, rowID) = completedGeneration {
+                Task { [weak self] in
+                    guard let saved = await reader.read() else { return }
+                    self?.applyCompletedGeneration(saved, conversationID: conversationID, ownerConversationID: reader.conversationID, rowID: rowID)
+                }
+            }
         } catch {
             guard epoch == conversationEpoch else { return }
             if error is CancellationError {
@@ -1631,6 +1715,28 @@ final class ChatViewModel {
             }
             isStreaming = false
             persistActive()
+        }
+    }
+
+    /// Optional metadata updates one immutable row, never a live projection/tail.
+    func applyCompletedGeneration(_ saved: SavedGenerationMetrics, conversationID: UUID, ownerConversationID: String, rowID: UUID) {
+        guard let conversation = conversations.firstIndex(where: { $0.id == conversationID }),
+              conversations[conversation].ownerConversationID == ownerConversationID else { return }
+        if activeConversationID == conversationID {
+            if let row = messages.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                messages[row].generationMetrics = saved.metrics
+                persistActive(touching: false)
+            } else if let row = branchedAway.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                branchedAway[row].generationMetrics = saved.metrics
+                persistActive(touching: false)
+            }
+        } else {
+            if let row = conversations[conversation].messages.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                conversations[conversation].messages[row].generationMetrics = saved.metrics
+            } else if let row = conversations[conversation].branches.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                conversations[conversation].branches[row].generationMetrics = saved.metrics
+            } else { return }
+            saveConversations()
         }
     }
 
@@ -2767,7 +2873,7 @@ final class ChatViewModel {
     func regenerateLast(usingAlias newAlias: String) async {
         guard !isOwnerBackedChat else { return }
         guard !isStreaming else { return }
-        let trimmed = newAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ModelReference.normalized(newAlias)
         guard !trimmed.isEmpty else { return }
         // The user's regeneration intent supersedes optional work even when
         // bringing up the replacement model takes time or ultimately fails.
@@ -4015,6 +4121,7 @@ Your previous draft refused the question by claiming you lack real-time access o
         // both fields may stay nil — non-conforming servers and
         // mid-stream cancellations leave them empty and the
         // stats caption falls back to the char-count estimate.
+        var capturedGenerationMetrics: GenerationMetrics?
         var capturedPromptTokens: Int?
         var capturedCompletionTokens: Int?
         // The instant the first GENERATED token lands, on whichever channel
@@ -4071,6 +4178,8 @@ Your previous draft refused the question by claiming you lack real-time access o
                 case .toolCalls(let calls):
                     capturedCalls = calls
                     current.toolCalls = calls
+                case .executionMetrics(let metrics):
+                    capturedGenerationMetrics = metrics
                 case .usage(let prompt, let completion):
                     capturedPromptTokens = prompt
                     capturedCompletionTokens = completion
@@ -4311,6 +4420,12 @@ Your previous draft refused the question by claiming you lack real-time access o
         // Skipped only when the message ended up ``.failed`` (a
         // crashed mid-stream "produced" 1.7 s and 41 chars but
         // that's noise, not throughput).
+        if current.status == .complete {
+            current.generationMetrics = capturedGenerationMetrics.flatMap { value in
+                capturedCompletionTokens == value.executionReference.completionTokens ? value : nil
+            }
+            writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
+        }
         if current.status == .complete && !current.content.isEmpty {
             let elapsed = streamStart.duration(to: client.now()).seconds
             current.stats = MessageStats(

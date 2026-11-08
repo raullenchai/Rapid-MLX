@@ -1205,6 +1205,7 @@ class TestGenerationOutputFieldOrder:
         # All optional fields take their defaults.
         assert out.raw_text == ""
         assert out.reasoning_text == ""
+        assert out.execution_reference is None
         assert out.prompt_tokens == 0
         assert out.completion_tokens == 0
 
@@ -1237,6 +1238,7 @@ class TestGenerationOutputFieldOrder:
         # New fields default to empty when not passed.
         assert out.raw_text == ""
         assert out.reasoning_text == ""
+        assert out.execution_reference is None
 
     def test_field_order_appends_new_fields_at_end(self):
         """Make the rule machine-checkable: new fields added after
@@ -1277,11 +1279,14 @@ class TestGenerationOutputFieldOrder:
             "timing_metrics",
             # Internal prompt evidence preserves all prior positional slots.
             "prompt_parse_context",
+            # Execution evidence is optional and preserves every prior slot.
+            "execution_reference",
+            "execution_host",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "
             f"→ matched_stop → spec_decode_metrics → prompt_compression "
-            f"→ timing_metrics → prompt_parse_context) "
+            f"→ timing_metrics → prompt_parse_context → execution_reference) "
             f"to preserve "
             f"positional-arg compatibility "
             f"for the pre-v0.6.65 surface. Current trailing fields "

@@ -36,16 +36,16 @@ struct DiskSpaceProbeTests {
         let gib: Int64 = 1024 * 1024 * 1024
 
         #expect(QuickstartView.requiredDiskBytes(
-            for: QuickstartCoordinator.compactDefaultChoice
-        ) == 4 * gib)
+            for: QuickstartCoordinator.visionChoice
+        ) == 6 * gib)
         #expect(QuickstartView.requiredDiskBytes(
             for: QuickstartCoordinator.defaultChoice
-        ) == 6 * gib)
+        ) == 4 * gib)
         #expect(QuickstartView.requiredDiskBytes(
             for: QuickstartCoordinator.lowMemoryChoice
         ) == 2 * gib)
-        #expect(QuickstartCoordinator.defaultChoice.downloadBytes == 3_061_121_321)
-        #expect(QuickstartCoordinator.compactDefaultChoice.downloadBytes == 1_601_103_345)
+        #expect(QuickstartCoordinator.defaultChoice.downloadBytes == 1_601_103_345)
+        #expect(QuickstartCoordinator.visionChoice.downloadBytes == 3_061_121_321)
     }
 
     // MARK: - Decision truth table

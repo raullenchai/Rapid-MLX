@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
+from ..config import get_config
 from .anthropic_models import (
     ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
     AnthropicContentBlock,
@@ -392,8 +393,8 @@ def anthropic_to_openai(
         enable_thinking=request.enable_thinking,
         chat_template_kwargs=chat_template_kwargs or None,
         # Pick 1 (this PR) — upstream vLLM PR #20859 + #42396 backport.
-        # Translates ``output_config.effort`` (or legacy
-        # ``thinking.budget_tokens``) into a per-request reasoning cap
+        # Translates ``output_config.effort``, adaptive defaults, or legacy
+        # ``thinking.budget_tokens`` into a per-request reasoning cap
         # on the OpenAI surface.
         reasoning_max_tokens=_resolve_reasoning_max_tokens(request),
     )
@@ -404,10 +405,14 @@ def _resolve_reasoning_max_tokens(request: AnthropicRequest) -> int | None:
 
     Precedence (first wins):
       1. ``output_config.effort`` — newer Anthropic SDK shape (v0.22,
-         upstream vLLM PR #42396). ``max`` and unset both mean "no cap".
-      2. ``thinking.budget_tokens`` — legacy v0.20 shape (upstream vLLM
+         upstream vLLM PR #42396). ``max`` means "no cap".
+      2. ``thinking.type=adaptive`` — map the server's configured default
+         reasoning effort, or ``medium`` when unset, through the effort
+         mapping. A configured ``max`` remains uncapped. Ignore legacy
+         ``budget_tokens`` in this mode.
+      3. ``thinking.budget_tokens`` — legacy v0.20 shape (upstream vLLM
          PR #20859). Verbatim integer budget.
-      3. ``None`` — no cap, model decides.
+      4. ``None`` — disabled thinking or no cap specified, model decides.
 
     Returning ``None`` keeps the OpenAI-side request unchanged so the
     existing global ``cfg.thinking_token_budget`` semantic (additive
@@ -422,9 +427,16 @@ def _resolve_reasoning_max_tokens(request: AnthropicRequest) -> int | None:
         )
     if isinstance(request.thinking, dict):
         thinking_type = request.thinking.get("type")
+        if thinking_type == "adaptive":
+            effort = get_config().default_reasoning_effort or "medium"
+            if effort not in ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS:
+                # ``none`` / ``minimal`` have no Anthropic tier; use the
+                # smallest cap rather than falling through to uncapped.
+                effort = "low"
+            return ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS.get(effort)
         budget = request.thinking.get("budget_tokens")
         if (
-            thinking_type not in ("disabled", "adaptive")
+            thinking_type != "disabled"
             and isinstance(budget, int)
             and not isinstance(budget, bool)
             and budget >= 1
