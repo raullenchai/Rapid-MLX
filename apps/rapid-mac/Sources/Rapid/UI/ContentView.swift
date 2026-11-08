@@ -203,6 +203,7 @@ struct ContentView: View {
     /// "this alias is not downloaded" from "we don't know yet", which
     /// are different sentences and different next steps.
     @State private var catalogLoaded: Bool = false
+    @State private var catalogDiscoveryFailure: CachedModelDiscoveryFailure?
     /// Cache generation represented by ``catalogEntries``.
     @State private var catalogGeneration: UInt = 0
     /// FU-1: persisted opt-out for the launch-time auto-start path.
@@ -1190,12 +1191,18 @@ struct ContentView: View {
     private func refreshCatalogSnapshot() async {
         guard let binary = server.binaryPath else { return }
         let generation = downloads.cacheGeneration
-        await Self.ensureStartupModelLinks(generation: generation)
-        guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
-        var loaded = await ModelCatalogCache.shared.entries(
-            binary: binary,
-            generation: generation
-        )
+        let discovery = await CachedModelDiscovery.discover(
+            cacheURL: BundledModel.userHFCacheURL(
+                environment: ProcessInfo.processInfo.environment,
+                preferredOverride: CachedModelDiscovery.requestedOverrideURL()
+            )
+        ) {
+            // Keep healthy-path ordering: installed Quickstart weights must
+            // have their cache links before the inventory is captured.
+            await Self.ensureStartupModelLinks(generation: generation)
+            return await ModelCatalogCache.shared.entries(binary: binary, generation: generation)
+        }
+        var loaded = discovery.entries
         guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
         if loaded.isEmpty,
            case .pendingCatalog = restoredChatAlias,
@@ -1208,10 +1215,13 @@ struct ContentView: View {
             )
             guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
         }
+        let cacheFailure = await ModelCatalogCache.shared.discoveryFailure
+        catalogDiscoveryFailure = discovery.failure ?? cacheFailure
         catalogEntries = loaded
         catalogGeneration = generation
         catalogLoaded = true
         if case .pendingCatalog = restoredChatAlias,
+           catalogDiscoveryFailure == nil,
            !loaded.isEmpty || catalogRestoreRetryAttempted {
             await restorePersistedSession(
                 catalog: loaded,
@@ -1558,6 +1568,13 @@ struct ContentView: View {
             cachedModels: catalogEntries,
             catalogLoaded: catalogLoaded,
             catalogGeneration: catalogGeneration,
+            discoveryFailure: catalogDiscoveryFailure,
+            onRetryDiscovery: {
+                Task {
+                    await ModelCatalogCache.shared.invalidate()
+                    await refreshCatalogSnapshot()
+                }
+            },
             onSkip: {
                 modelChoiceRecoveryRequested = false
                 quickstartDismissedThisSession = true
@@ -1990,7 +2007,7 @@ struct ContentView: View {
         if let suppliedCatalog {
             sessionCatalog = suppliedCatalog
         } else if let binary = server.binaryPath {
-            sessionCatalog = await ModelCatalogCache.shared.entries(
+            sessionCatalog = await ModelCatalogCache.shared.freshEntries(
                 binary: binary,
                 generation: downloads.cacheGeneration
             )
@@ -2045,9 +2062,11 @@ struct ContentView: View {
     }
 
     private static func ensureStartupModelLinks(generation: UInt) async {
-        await startupModelLinkMaintenance.run(generation: generation) {
-            _ = BundledModel.installBundledSnapshotSymlink()
-            _ = QuickstartModel.installAllSnapshotSymlinks()
+        try? await DiscoveryDeadline.run {
+            await startupModelLinkMaintenance.run(generation: generation) {
+                _ = BundledModel.installBundledSnapshotSymlink()
+                _ = QuickstartModel.installAllSnapshotSymlinks()
+            }
         }
     }
 

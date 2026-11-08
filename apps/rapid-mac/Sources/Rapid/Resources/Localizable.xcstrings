@@ -2,6 +2,40 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Couldn't read cached models" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't read cached models"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取已缓存的模型"
+          }
+        }
+      }
+    },
+    "Rapid needs permission to read models on %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid needs permission to read models on %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 需要权限才能读取 %@ 上的模型"
+          }
+        }
+      }
+    },
     "This checkpoint directory changed. Open it again to confirm its location." : {
       "localizations" : {
         "zh-Hans" : {

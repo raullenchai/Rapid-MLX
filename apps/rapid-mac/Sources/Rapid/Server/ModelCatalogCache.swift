@@ -32,18 +32,31 @@ import Foundation
 actor ModelCatalogCache {
     static let shared = ModelCatalogCache()
 
-    typealias Loader = @Sendable (URL, URL?) async -> [ModelEntry]
+    typealias Loader = @Sendable (URL, URL?) async throws -> [ModelEntry]
     private let loader: Loader
     private let cacheTTL: TimeInterval
+    private let discoveryTimeout: TimeInterval
+    private let volumeResolver: @Sendable (URL) -> String?
+    private let requestedOverride: @Sendable () -> URL?
+    private let directoryProbe: ModelsFolderPreference.DirectoryProbe
+    private(set) var discoveryFailure: CachedModelDiscoveryFailure?
 
     init(
         loader: @escaping Loader = { binary, override in
             await ModelCatalog.load(binary: binary, hubCacheOverride: override)
         },
-        ttl: TimeInterval = ModelCatalogCache.ttl
+        ttl: TimeInterval = ModelCatalogCache.ttl,
+        discoveryTimeout: TimeInterval = 10,
+        volumeResolver: @escaping @Sendable (URL) -> String? = CachedModelDiscovery.externalVolumeName,
+        requestedOverride: @escaping @Sendable () -> URL? = { CachedModelDiscovery.requestedOverrideURL() },
+        directoryProbe: @escaping ModelsFolderPreference.DirectoryProbe = ModelsFolderPreference.isDirectory
     ) {
         self.loader = loader
         self.cacheTTL = ttl
+        self.discoveryTimeout = discoveryTimeout
+        self.volumeResolver = volumeResolver
+        self.requestedOverride = requestedOverride
+        self.directoryProbe = directoryProbe
     }
 
     /// Backstop for out-of-band changes (see above).
@@ -108,7 +121,7 @@ actor ModelCatalogCache {
     nonisolated static func seed(generation: UInt) -> [ModelEntry]? {
         guard let snap = readMirror(),
               snap.generation == generation,
-              snap.overridePath == ModelsFolderPreference.validatedOverrideURL()?.path,
+              snap.overridePath == CachedModelDiscovery.requestedOverrideURL()?.path,
               Date().timeIntervalSince(snap.fetchedAt) < ttl
         else { return nil }
         return snap.entries
@@ -141,7 +154,7 @@ actor ModelCatalogCache {
         let binaryPath: String
         let generation: UInt
         let overridePath: String?
-        let task: Task<[ModelEntry], Never>
+        let task: Task<CachedModelDiscoveryResult, Never>
 
         func matches(binaryPath: String, generation: UInt, overridePath: String?) -> Bool {
             self.binaryPath == binaryPath
@@ -173,7 +186,7 @@ actor ModelCatalogCache {
     /// real load, joining an in-flight one with matching inputs rather than
     /// starting a second.
     func entries(binary: URL, generation: UInt) async -> [ModelEntry] {
-        let override = ModelsFolderPreference.validatedOverrideURL()
+        let override = requestedOverride()
         let overridePath = override?.path
         let binaryPath = binary.path
 
@@ -207,7 +220,7 @@ actor ModelCatalogCache {
             // Publish the synchronous mirror before returning to callers that
             // immediately start a model from this catalog result.
             await finish(inFlight)
-            return loaded
+            return loaded.entries
         }
         let entry = startLoad(
             binary: binary, override: override, binaryPath: binaryPath,
@@ -215,7 +228,7 @@ actor ModelCatalogCache {
         )
         let loaded = await entry.task.value
         await finish(entry)
-        return loaded
+        return loaded.entries
     }
 
     /// An authoritative catalog read for lifecycle decisions that must not use
@@ -226,7 +239,7 @@ actor ModelCatalogCache {
     /// picker responsive, but it is not evidence for those mutations. Join a
     /// matching refresh when one exists; otherwise start one and await it.
     func freshEntries(binary: URL, generation: UInt) async -> [ModelEntry] {
-        let override = ModelsFolderPreference.validatedOverrideURL()
+        let override = requestedOverride()
         let overridePath = override?.path
         let binaryPath = binary.path
 
@@ -236,7 +249,7 @@ actor ModelCatalogCache {
                overridePath: overridePath
            ),
            Date().timeIntervalSince(snapshot.fetchedAt) < cacheTTL {
-            return snapshot.entries
+            return discoveryFailure == nil ? snapshot.entries : []
         }
 
         if let inFlight,
@@ -246,7 +259,7 @@ actor ModelCatalogCache {
            ) {
             let loaded = await inFlight.task.value
             await finish(inFlight)
-            return loaded
+            return loaded.failure == nil ? loaded.entries : []
         }
         let entry = startLoad(
             binary: binary, override: override, binaryPath: binaryPath,
@@ -254,7 +267,7 @@ actor ModelCatalogCache {
         )
         let loaded = await entry.task.value
         await finish(entry)
-        return loaded
+        return loaded.failure == nil ? loaded.entries : []
     }
 
     /// Start (and register) a load, replacing any in-flight one with different
@@ -266,8 +279,16 @@ actor ModelCatalogCache {
         generation: UInt, overridePath: String?
     ) -> InFlight {
         let loader = self.loader
-        let task = Task<[ModelEntry], Never> {
-            await loader(binary, override)
+        let timeout = discoveryTimeout
+        let volumeResolver = self.volumeResolver
+        let directoryProbe = self.directoryProbe
+        let task = Task<CachedModelDiscoveryResult, Never> {
+            await CachedModelDiscovery.discoverCatalog(
+                timeout: timeout, requestedOverride: override,
+                directoryProbe: directoryProbe, volumeResolver: volumeResolver
+            ) { validatedOverride in
+                try await loader(binary, validatedOverride)
+            }
         }
         nextInFlightID &+= 1
         let entry = InFlight(
@@ -286,12 +307,13 @@ actor ModelCatalogCache {
         let loaded = await entry.task.value
         guard let current = inFlight, current.id == entry.id else { return }
         snapshot = Snapshot(
-            entries: loaded,
+            entries: loaded.entries,
             generation: entry.generation,
             fetchedAt: Date(),
             overridePath: entry.overridePath,
             binaryPath: entry.binaryPath
         )
+        discoveryFailure = loaded.failure
         Self.writeMirror(snapshot)
         inFlight = nil
     }
@@ -300,6 +322,8 @@ actor ModelCatalogCache {
     /// want the next read to be authoritative without waiting on the
     /// generation counter to propagate.
     func invalidate() {
+        inFlight?.task.cancel()
+        discoveryFailure = nil
         snapshot = nil
         inFlight = nil
         Self.writeMirror(nil)
@@ -317,7 +341,7 @@ actor ModelCatalogCache {
     private func isFresh(_ snapshot: Snapshot, binary: URL, generation: UInt) -> Bool {
         guard snapshotMatchesInputs(
             snapshot, binaryPath: binary.path, generation: generation,
-            overridePath: ModelsFolderPreference.validatedOverrideURL()?.path
+            overridePath: requestedOverride()?.path
         ) else { return false }
         return Date().timeIntervalSince(snapshot.fetchedAt) < cacheTTL
     }

@@ -10469,11 +10469,16 @@ def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
         from huggingface_hub.constants import HF_HUB_CACHE
     except Exception:
         HF_HUB_CACHE = os.path.expanduser("~/.cache/huggingface/hub")
-    if not os.path.isdir(HF_HUB_CACHE):
+    # isdir() suppresses EPERM/EACCES, which makes denied removable-volume
+    # access look like an empty cache to Desktop. Enumerate directly so callers
+    # can surface permission failures; only a missing/non-directory cache is empty.
+    try:
+        names = os.listdir(HF_HUB_CACHE)
+    except (FileNotFoundError, NotADirectoryError):
         return []
     rows_by_index: dict[int, tuple[str, int, float]] = {}
     relocated: list[tuple[int, str, str]] = []
-    for name in os.listdir(HF_HUB_CACHE):
+    for name in names:
         if not name.startswith("models--"):
             continue
         # ``models--org--name`` → ``org/name``. Some legacy entries are

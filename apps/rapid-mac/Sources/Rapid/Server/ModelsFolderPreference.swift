@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// User preference: an explicit folder where Rapid keeps the models it
@@ -37,6 +38,39 @@ import Foundation
 /// drive the validity + unplugged-drive fallback branches without
 /// touching the real ``UserDefaults.standard`` or the live filesystem.
 enum ModelsFolderPreference {
+    typealias DirectoryProbe = @Sendable (URL) throws -> Bool
+
+    /// Unlike fileExists, this preserves permission errors from stat().
+    static func isDirectory(_ url: URL) throws -> Bool {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return info.st_mode & S_IFMT == S_IFDIR
+    }
+
+    /// Discovery retains the missing/non-directory fallback policy, but must
+    /// not silently scan a different cache when the saved folder is denied.
+    /// Call only inside the discovery worker: even stat() can await consent.
+    static func discoveryOverrideURL(
+        _ requested: URL?,
+        directoryProbe: DirectoryProbe = isDirectory
+    ) throws -> URL? {
+        guard let requested else { return nil }
+        do {
+            return try directoryProbe(requested) ? requested : nil
+        } catch {
+            let error = error as NSError
+            if error.domain == NSPOSIXErrorDomain,
+               [Int(ENOENT), Int(ENOTDIR)].contains(error.code) { return nil }
+            if error.domain == NSCocoaErrorDomain,
+               [CocoaError.fileNoSuchFile.rawValue, CocoaError.fileReadNoSuchFile.rawValue].contains(error.code) {
+                return nil
+            }
+            throw error
+        }
+    }
+
     /// UserDefaults key holding the user's chosen models folder as an
     /// absolute path. Absent / blank means "use the default location".
     static let storageKey = "rapid.models.folderOverride"

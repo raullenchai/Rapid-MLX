@@ -1378,6 +1378,8 @@ struct QuickstartView: View {
     /// Generation that produced ``cachedModels``. Catalog hints carry this
     /// source identity so an entry cannot outlive the snapshot that proved it.
     var catalogGeneration: UInt = 0
+    var discoveryFailure: CachedModelDiscoveryFailure?
+    var onRetryDiscovery: () -> Void = {}
 
     /// This Mac, read once per view lifetime. Same pattern and same source as
     /// ``ModelPickerBar`` and ``SettingsModelManagementPanel``, so onboarding's
@@ -1443,15 +1445,36 @@ struct QuickstartView: View {
     /// Test seam: override the pre-flight free-bytes probe so the
     /// unit / integration test suite can drive the low-disk-warning
     /// transition without touching real free space. Defaults to the
-    /// production ``DiskSpaceProbe.freeBytesForHFCache`` helper.
+    /// production ``DiskSpaceProbe.freeBytesForHFCache`` helper, run by the
+    /// timed background task below.
     ///
     /// Returns the free bytes the caller should compare against
     /// ``DiskSpaceProbe.quickstartRequiredBytes``. ``nil`` means "probe
     /// failed / no signal" and degrades to ``Decision.ok`` (no warning).
-    var freeBytesProbe: () -> Int64? = { DiskSpaceProbe.freeBytesForHFCache() }
+    var freeBytesProbe: (() -> Int64?)? = nil
+    @State private var measuredFreeBytes: Int64?
+    private func availableFreeBytes() -> Int64? {
+        if let freeBytesProbe { return freeBytesProbe() }
+        return measuredFreeBytes
+    }
 
     var body: some View {
-        content
+        VStack(spacing: 0) {
+            if let discoveryFailure {
+                InlineNotice(message: discoveryFailure.message, tone: .error,
+                             actionTitle: String(localized: "Retry"),
+                             actionIdentifier: "Quickstart.CacheDiscovery.Retry",
+                             action: onRetryDiscovery)
+                    .padding()
+            }
+            content
+        }
+            .task {
+                guard freeBytesProbe == nil else { return }
+                measuredFreeBytes = try? await DiscoveryDeadline.run {
+                    DiskSpaceProbe.freeBytesForHFCache()
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RapidTheme.canvas)
             // Establish the RAM-only baseline synchronously before welcome
@@ -1624,7 +1647,7 @@ struct QuickstartView: View {
                 // starts bearing on the decision (Paper 05.1 frames 03/04).
                 freeSpace: coordinator.step == .welcome
                     ? nil
-                    : freeBytesProbe().map { DownloadProgress.formatBytes($0) }
+                    : availableFreeBytes().map { DownloadProgress.formatBytes($0) }
             )
         }
     }
@@ -2047,7 +2070,7 @@ struct QuickstartView: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                 }
                 transientFact(String(localized: "Free on cache volume")) {
-                    if let free = freeBytesProbe() {
+                    if let free = availableFreeBytes() {
                         Text(Self.formatBytesForBanner(free))
                             .scaledSystemFont(13, design: .monospaced)
                             .foregroundStyle(RapidTheme.textPrimary)
@@ -2969,7 +2992,7 @@ struct QuickstartView: View {
                         cached: cached,
                         cachedModels: cachedModels,
                         hardware: hardware,
-                        freeBytes: freeBytesProbe(),
+                        freeBytes: availableFreeBytes(),
                         runsHere: runsHere
                     ))
                     .padding(.top, 26)
@@ -4699,7 +4722,7 @@ struct QuickstartView: View {
         }
         QuickstartView.applyPreflightDecision(
             decision: DiskSpaceProbe.decide(
-                freeBytes: freeBytesProbe(),
+                freeBytes: availableFreeBytes(),
                 requiredBytes: Self.requiredDiskBytes(for: coordinator.selection)
             ),
             coordinator: coordinator,
