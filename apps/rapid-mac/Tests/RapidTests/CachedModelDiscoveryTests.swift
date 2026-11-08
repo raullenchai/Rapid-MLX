@@ -48,6 +48,17 @@ struct CachedModelDiscoveryTests {
     @MainActor
     private func assertStarterCanDownload(_ entries: [ModelEntry]) {
         let starter = QuickstartCoordinator.defaultChoice.alias
+        let hardware = MacHardware(brandString: "Test Mac", family: .m3, tier: .base,
+                                   physicalRAMBytes: 8 * 1_073_741_824, memoryBandwidthGBs: 100)
+        let coordinator = QuickstartCoordinator()
+        coordinator.settleDefaultChoice(hardware: hardware, catalog: entries)
+        #expect(coordinator.selection.alias == starter)
+        let fallback = ModelPickerBar.quickstartEligibleDefault(
+            catalog: entries, eligible: true, targetAlias: coordinator.selection.alias
+        )
+        #expect(ModelPickerBar.normalizedChatSelection(
+            currentAlias: "", catalog: entries, knownNonChatAliases: [], fallbackAlias: fallback
+        ) == starter)
         let state = QuickstartView.catalogState(catalog: entries, loaded: true)
         let primary = OnboardingModelSelection.primary(
             selection: starter,
@@ -256,6 +267,47 @@ struct CachedModelDiscoveryTests {
         #expect(try ModelsFolderPreference.discoveryOverrideURL(file.appendingPathComponent("child")) == nil)
         #expect(try ModelsFolderPreference.discoveryOverrideURL(root.appendingPathComponent("missing")) == nil)
         #expect(try ModelsFolderPreference.discoveryOverrideURL(nil) == nil)
+    }
+
+    @Test("Golden-flow legacy catalog and ls fallback are successful discovery")
+    func goldenFlowLegacyCatalog() async throws {
+        let package = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fake = package.appendingPathComponent("scripts/fake-rapid-mlx.sh")
+        let cache = ModelCatalogCache(requestedOverride: { nil })
+        let chat = await cache.entries(binary: fake, generation: 0)
+        #expect(await cache.discoveryFailure == nil)
+        #expect(chat.contains { $0.alias == "fake-alias" && $0.cached })
+        let result = await CachedModelDiscovery.discoverCatalog(requestedOverride: nil) { override in
+            if let atomic = await ModelCatalog.productEntries(
+                binary: fake, hubCacheOverride: override, openedPaths: []
+            ) { return atomic }
+            return await ModelCatalog.load(binary: fake, hubCacheOverride: override, openedPaths: [])
+        }
+        #expect(result.failure == nil)
+        #expect(result.entries.contains { $0.alias == "fake-alias" && $0.cached })
+    }
+
+    @Test("Successful empty legacy cache is not a discovery failure")
+    func emptyLegacyCache() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = root.appendingPathComponent("rapid-mlx")
+        // Older sidecars can reject JSON but successfully report an empty ls.
+        try Data("""
+        #!/bin/sh
+        case "$*" in
+          "models --cached --json") echo 'unknown option --json' >&2; exit 2 ;;
+          "ls") echo 'No models cached yet.'; echo 'warning: legacy sidecar' >&2 ;;
+          *) echo '{"text": []}' ;;
+        esac
+
+        """.utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let cache = ModelCatalogCache(requestedOverride: { nil })
+        #expect(await cache.entries(binary: script, generation: 0).isEmpty)
+        #expect(await cache.discoveryFailure == nil)
     }
 
     @Test("CLI stderr permission failure reaches discovery state")

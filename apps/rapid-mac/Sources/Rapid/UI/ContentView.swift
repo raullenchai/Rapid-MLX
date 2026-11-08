@@ -1576,6 +1576,13 @@ struct ContentView: View {
                 }
             },
             onSkip: {
+                // Skip hands the visible starter to the composer even when
+                // discovery failed or the picker's own refresh is pending.
+                // This selects a download target; it does not certify a cache
+                // hit or resolve a persisted session from failed discovery.
+                if ModelDisplayName.isUnresolved(alias) {
+                    alias = quickstart.selection.alias
+                }
                 modelChoiceRecoveryRequested = false
                 quickstartDismissedThisSession = true
                 // Skip keeps its existing meaning — no completion flag — but

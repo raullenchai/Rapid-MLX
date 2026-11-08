@@ -1460,6 +1460,11 @@ enum ModelCatalog {
             hubCacheOverride: hubCacheOverride
         )
         let json = await modelsJSON
+        // Join the inventory even when this sidecar lacks the atomic catalog.
+        // Leaving an unawaited async let cancels it: on the legacy JSON -> ls
+        // path that cancellation would poison discovery's failure recorder
+        // before Settings can load the compatible catalog.
+        let cached = await cachedTask
         guard json.succeeded,
               let atomic = parseAtomicModelEntriesJSON(json.stdout),
               let projection = parseAvailableJSON(json.stdout)
@@ -1468,7 +1473,7 @@ enum ModelCatalog {
         }
         let entries = mergeAtomicAndCached(
             atomic: atomic,
-            cached: await cachedTask,
+            cached: cached,
             excluded: projection.excluded,
             speculative: projection.speculative
         )
