@@ -158,6 +158,7 @@ class Endpoint:
     server: Server | None = None
     follow: bool = False
     model: str | None = None
+    # Hint history only; auth must be re-probed on every refresh.
     skipped_auth: list[Server] = field(default_factory=list)
     # Hint history only: a replacement server may reuse a rejected port.
     skipped_non_chat: dict[int, NonChatModelError] = field(default_factory=dict)
@@ -319,6 +320,13 @@ def skipped_auth_hint(server: Server, agent: str) -> str:
 
 def non_chat_server(port: int, model: str | None = None) -> NonChatModelError | None:
     """Exclude only observed non-chat metadata; loading servers stay eligible."""
+    return _probe_chat_eligibility(port, model)[0]
+
+
+def _probe_chat_eligibility(
+    port: int, model: str | None = None
+) -> tuple[NonChatModelError | None, bool]:
+    """Return (rejection, conclusive), distinguishing chat from failed probes."""
     from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
     url = f"http://localhost:{port}/v1"
@@ -333,10 +341,10 @@ def non_chat_server(port: int, model: str | None = None) -> NonChatModelError | 
         with urllib.request.urlopen(request, timeout=0.25) as response:
             payload = json.loads(response.read())
     except (OSError, ValueError):
-        return None
+        return None, False
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):
-        return None
+        return None, False
     entries = [
         m
         for m in models
@@ -347,8 +355,8 @@ def non_chat_server(port: int, model: str | None = None) -> NonChatModelError | 
     if matching and any(not non_chat_kind(m) for m in entries):
         entries = matching
     if entries and all(non_chat_kind(m) for m in entries):
-        return NonChatModelError(url, preferred_model(entries))
-    return None
+        return NonChatModelError(url, preferred_model(entries)), True
+    return None, bool(entries)
 
 
 def resolve_endpoint(
@@ -362,10 +370,10 @@ def resolve_endpoint(
 ) -> Endpoint:
     default = "http://localhost:8000/v1"
     healthy, answered = _default_endpoint_ready()
-    skipped = (
-        list(skipped_auth or []) if not os.environ.get("RAPID_MLX_API_KEY") else []
-    )
-    rejected: dict[int, bool] = {s.port: True for s in skipped if s.port is not None}
+    skipped = list(skipped_auth or [])
+    # Cache only within this scan. Hint history must not reject a replacement
+    # listener or a server whose auth configuration has changed.
+    rejected: dict[int, bool] = {}
 
     def missing_key(port: int) -> bool:
         if port not in rejected:
@@ -374,15 +382,19 @@ def resolve_endpoint(
 
     non_chat = dict(skipped_non_chat or {})
     checked: dict[int, bool] = {}
-    verified = verified_non_chat or {}
+    verified = verified_non_chat if verified_non_chat is not None else {}
     scanned = scan_servers() if verified else None
     owners = {s.port: s.pid for s in scanned or [] if s.listening}
 
     def incompatible(port: int) -> bool:
         if port not in checked:
-            error = non_chat_server(port, model)
+            error, conclusive = _probe_chat_eligibility(port, model)
+            if conclusive and error is None:
+                verified.pop(port, None)
             checked[port] = error is not None or (
-                port in verified and owners.get(port) == verified[port]
+                not conclusive
+                and port in verified
+                and owners.get(port) == verified[port]
             )
             if error is not None:
                 if port not in non_chat:

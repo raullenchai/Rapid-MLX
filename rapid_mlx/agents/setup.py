@@ -810,7 +810,13 @@ def wait_for_server(
     endpoint: Endpoint | None = None,
 ) -> str:
     """Allow live local startup to finish; bound other verification failures."""
-    from .server_discovery import Progress, non_chat_server, pid_alive, server_for_url
+    from .server_discovery import (
+        Progress,
+        non_chat_server,
+        pid_alive,
+        requires_missing_key,
+        server_for_url,
+    )
 
     deadline = time.monotonic() + timeout
     grace = time.monotonic() + min(2.0, timeout)
@@ -843,7 +849,10 @@ def wait_for_server(
             if reselection_error is not None and time.monotonic() >= deadline:
                 retry_selection(reselection_error)
             if server is None and (
-                any(s.port == 8000 for s in endpoint.skipped_auth)
+                (
+                    any(s.port == 8000 for s in endpoint.skipped_auth)
+                    and requires_missing_key(8000)
+                )
                 or (
                     8000 in endpoint.skipped_non_chat
                     and non_chat_server(8000, endpoint.model) is not None

@@ -1197,9 +1197,19 @@ def test_auto_setup_reselects_when_starting_server_begins_requiring_auth(
         cli.agents_command(args("codex", port=None))
     assert exc.value.code == 1
     output = capsys.readouterr().out
-    assert "No Rapid-MLX server" in output
+    # A fresh timeout is inconclusive, so discovery may retry this listener;
+    # full verification must still reject its observed authentication failure.
+    assert (
+        "authentication failed" if discovery_times_out else "No Rapid-MLX server"
+    ) in output
     assert "Server on :62801 requires an API key" in output
-    assert events == [("failed", "server_not_running", "codex")]
+    assert events == [
+        (
+            "failed",
+            "server_not_ready" if discovery_times_out else "server_not_running",
+            "codex",
+        )
+    ]
 
 
 def test_public_default_health_does_not_bypass_auth_filter(monkeypatch):
@@ -1272,6 +1282,92 @@ def fake_model_server(monkeypatch, listings):
 
 
 @pytest.mark.parametrize("port", [8000, 18403])
+def test_refresh_adopts_chat_replacing_auth_server(monkeypatch, capsys, port):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        discovery, "_default_endpoint_ready", lambda: (port == 8000, port == 8000)
+    )
+    servers = [discovery.Server(123, port, "chat", listening=True)]
+    monkeypatch.setattr(discovery, "scan_servers", lambda: servers)
+    fake_model_server(monkeypatch, {port: [{"id": "chat", "modality": "text"}]})
+    original_response = discovery.urllib.request.urlopen
+    protected = True
+
+    def response(request, **kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if protected and f":{port}/" in url:
+            raise urllib.error.HTTPError(url, 401, "auth", {}, BytesIO())
+        return original_response(request, **kwargs)
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    endpoint = discovery.Endpoint("http://localhost:8000/v1", follow=True)
+    for _ in range(2):
+        endpoint.refresh()
+        assert endpoint.server is None
+    assert capsys.readouterr().out.count(f"Server on :{port}") == 1
+
+    protected = False
+    servers[:] = [discovery.Server(456, port, "chat", listening=True)]
+    endpoint.refresh()
+    assert endpoint.base_url == f"http://localhost:{port}/v1"
+    if port != 8000:
+        assert endpoint.server == servers[0]
+    assert (
+        setup.wait_for_server(
+            endpoint.base_url, "default", agent="codex", endpoint=endpoint
+        )
+        == "chat"
+    )
+    assert f"Server on :{port}" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("port", [8000, 18403])
+@pytest.mark.parametrize("fresh", ["chat", "timeout", "malformed", "empty"])
+def test_refresh_reconsiders_verified_non_chat(monkeypatch, capsys, port, fresh):
+    monkeypatch.setattr(
+        discovery, "_default_endpoint_ready", lambda: (port == 8000, port == 8000)
+    )
+    server = discovery.Server(123, port, "model", listening=True)
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [server])
+    fake_model_server(monkeypatch, {port: [NON_CHAT_MODELS[0]]})
+    endpoint = discovery.resolve_endpoint()
+    # Full verification has a longer timeout than discovery and can remember
+    # a rejection even when the next short discovery probe is inconclusive.
+    endpoint.verified_non_chat[port] = server.pid
+    assert capsys.readouterr().out.count("Skipping") == 1
+
+    if fresh == "chat":
+        fake_model_server(monkeypatch, {port: [{"id": "chat", "modality": "text"}]})
+    elif fresh == "timeout":
+
+        def timeout(*_a, **_kw):
+            raise TimeoutError()
+
+        monkeypatch.setattr(discovery.urllib.request, "urlopen", timeout)
+    else:
+        payload = b"invalid" if fresh == "malformed" else b'{"data": []}'
+        monkeypatch.setattr(
+            discovery.urllib.request, "urlopen", lambda *_a, **_kw: BytesIO(payload)
+        )
+
+    endpoint.refresh()
+    if fresh == "chat":
+        assert endpoint.base_url == f"http://localhost:{port}/v1"
+        assert port not in endpoint.verified_non_chat
+        assert (
+            setup.wait_for_server(
+                endpoint.base_url, "default", agent="codex", endpoint=endpoint
+            )
+            == "chat"
+        )
+    else:
+        assert endpoint.server is None
+        assert endpoint.verified_non_chat[port] == server.pid
+    assert "Skipping" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("port", [8000, 18403])
 def test_refresh_selects_chat_replacing_non_chat_on_same_port(
     clock, monkeypatch, capsys, port
 ):
@@ -1320,13 +1416,13 @@ def test_refresh_reprobes_non_chat_without_repeating_hint(monkeypatch, capsys, p
     )
     fake_model_server(monkeypatch, {port: [NON_CHAT_MODELS[0]]})
     probes = []
-    original_probe = discovery.non_chat_server
+    original_probe = discovery._probe_chat_eligibility
 
     def probe(port, model):
         probes.append(port)
         return original_probe(port, model)
 
-    monkeypatch.setattr(discovery, "non_chat_server", probe)
+    monkeypatch.setattr(discovery, "_probe_chat_eligibility", probe)
     endpoint = discovery.Endpoint("http://localhost:8000/v1", follow=True)
     for _ in range(3):
         endpoint.refresh()
