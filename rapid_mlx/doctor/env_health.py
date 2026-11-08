@@ -456,9 +456,11 @@ def _editable_rapid_mlx_source_root() -> Path | None:
     try:
         # Search only installed metadata, never cwd/PYTHONPATH dist-info.
         distribution = next(
-            _im.Distribution.discover(
-                name="rapid-mlx",
-                path=[str(root) for root in _TRUSTED_SYS_PATH_ROOTS],
+            iter(
+                _im.Distribution.discover(
+                    name="rapid-mlx",
+                    path=[str(root) for root in _TRUSTED_SYS_PATH_ROOTS],
+                )
             ),
             None,
         )
