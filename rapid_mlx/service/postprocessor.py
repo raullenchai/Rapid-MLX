@@ -4185,7 +4185,13 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
-            elif not getattr(self.tool_parser, "_undeclared_dropped", 0):
+            elif not (
+                getattr(self.tool_parser, "_undeclared_dropped", 0)
+                or getattr(self.tool_parser, "_ambiguous_parameter_rejected", False)
+                is True
+            ):
+                # An explicit rejection is authoritative. A cross-format scan
+                # could otherwise execute example calls inside rejected values.
                 # Cross-format fallback. The configured streaming parser is bound to
                 # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
                 # scans every known format and recovers calls the per-parser path

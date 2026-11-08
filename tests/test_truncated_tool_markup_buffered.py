@@ -689,6 +689,11 @@ def test_streaming_unchanged_against_base():
                                 # skip_reasoning_parsing for the request-local
                                 # owner; test_selected_owner pins its output.
                                 "extract_tool_calls",
+                                # #5636 rejects ambiguous undeclared-parameter
+                                # splicing; test_qwen3coder_undeclared_parameter
+                                # pins its streaming and final output.
+                                "finalize_legacy_raw_stream",
+                                "_parse_xml_function_call",
                             }
                         )
                     ]
