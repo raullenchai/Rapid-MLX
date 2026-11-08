@@ -6,7 +6,9 @@ extension ModelDisplayName {
     nonisolated static func repositoryName(for alias: String) -> String? {
         let parts = alias.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty }),
-              !alias.contains(where: { $0.isWhitespace }) else { return nil }
+              !alias.contains(where: { $0.isWhitespace }),
+              // `./model`, `../model` and `~/model` are local paths, not orgs.
+              !parts[0].hasPrefix("."), !parts[0].hasPrefix("~") else { return nil }
         return String(parts[1])
     }
 

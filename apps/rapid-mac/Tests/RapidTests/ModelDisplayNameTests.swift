@@ -36,7 +36,7 @@ struct ModelDisplayNameTests {
         #expect(ModelDisplayName.compactName(for: repo) == name)
         #expect(ModelDisplayName.name(for: repo) == repo)
         #expect(ModelDisplayName.compactName(for: repo, among: ["other/" + name]) == repo)
-        for path in ["/local/model", "org/repo/subfolder", "https://huggingface.co/org/repo"] {
+        for path in ["/local/model", "org/repo/subfolder", "https://huggingface.co/org/repo", "./model", "../model", "~/model"] {
             #expect(ModelDisplayName.repositoryName(for: path) == nil)
         }
     }
