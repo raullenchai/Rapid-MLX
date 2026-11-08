@@ -3,6 +3,7 @@
 
 import ast
 import copy
+import logging
 import os
 import time
 from collections import Counter
@@ -1049,6 +1050,25 @@ def test_parked_target_failure_settles_committed_head_history(private, prefetch)
     assert cache.offset == (0 if private else committed)
     assert env["parked_head_rows"] == []
     assert env["head_pending"] is None
+
+
+def test_parked_settlement_failure_preserves_original_error():
+    env, cache = _generation_harness(8, [0] * 8)
+    generated = env["run"]()
+    next(generated)
+    next(generated)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("target forward failed")
+
+    def settle_fail():
+        raise ValueError("head settlement failed")
+
+    env["_step_backbone"] = fail
+    env["_finish_head"] = settle_fail
+    env["logger"] = logging.getLogger("test_mtp_head_history")
+    with pytest.raises(RuntimeError, match="target forward failed"):
+        next(generated)
 
 
 def test_fixed_park_eventually_discovers_profitable_deeper_acceptance():

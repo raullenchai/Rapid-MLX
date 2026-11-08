@@ -2227,6 +2227,13 @@ def mtp_generate_step(
         # Failures between yields must settle deferred committed history too.
         # _finish_head discards request-private server history and flushes
         # caller-owned caches so they remain reusable after a target error.
+        # Settlement is best-effort: it must never replace the original error.
         if rebuild_head_history:
-            _finish_head()
+            try:
+                _finish_head()
+            except Exception:
+                logger.warning(
+                    "[MTP] failed to settle deferred head history after an error",
+                    exc_info=True,
+                )
         raise
