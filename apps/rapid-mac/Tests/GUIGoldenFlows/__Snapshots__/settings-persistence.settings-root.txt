@@ -96,7 +96,7 @@ AXApplication title="Rapid-MLX"
         AXHeading desc="Disk overview" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText id="Settings.ModelManagement.StorageSummary" value=text enabled=true
-        AXStaticText id="Settings.ModelManagement.LargestModel" value=text enabled=true
+        AXStaticText id="Settings.ModelManagement.LargestModel" help="<model>" value=text enabled=true
         AXHeading desc="Preferences" enabled=true
         AXCheckBox subrole=AXToggle id="Settings.Models.ShowAllModelsToggle" desc="Show small models in the picker" help="Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat." value=bool:false enabled=true
         AXCheckBox subrole=AXToggle id="Settings.Models.AutoStartOnLaunchToggle" desc="Auto-start model on launch" help="When off, opening Rapid-MLX will not load a model until you start one manually from the picker." value=bool:true enabled=true

@@ -4,6 +4,43 @@ import Testing
 
 @Suite("Model display names")
 struct ModelDisplayNameTests {
+    @MainActor
+    @Test(arguments: ["NousResearch/Arete-27B", "SomeOrg/Frobnicator-7B"])
+    func repositoryNamesStayLiteral(repo: String) {
+        let shortName = String(repo.split(separator: "/")[1])
+        #expect(ModelDisplayName.name(for: repo) == repo)
+        #expect(ModelDisplayName.compactName(for: repo) == shortName)
+        #expect(ModelPickerBar.aliasButtonTitle(alias: repo, bucket: .midOrLarger).hasPrefix(repo))
+    }
+
+    @Test func compactCatalogNamesAreUnchanged() {
+        for alias in ["qwen3.5-4b-4bit", "lfm2.5-1b-4bit", "flux-schnell", "whisper-large-v3-turbo", "Custom title"] {
+            #expect(ModelDisplayName.compactName(for: alias) == ModelDisplayName.name(for: alias))
+        }
+        // A catalog alias resolving to the same repository is not another org.
+        #expect(ModelDisplayName.compactName(for: "org/Arete-27B", among: ["qwen3.5-4b-4bit"]) == "Arete-27B")
+    }
+
+    @Test func compactRepoCollisionsIncludeOrganization() {
+        let repos = ["NousResearch/Arete-27B", "other/Arete-27B", "third/Other-27B"]
+        for repo in repos.prefix(2) {
+            #expect(ModelDisplayName.compactName(for: repo, among: repos) == repo)
+        }
+        #expect(ModelDisplayName.compactName(for: repos[2], among: repos) == "Other-27B")
+        #expect(ModelDisplayName.compactName(for: repos[0], among: [repos[0], repos[0]]) == "Arete-27B")
+    }
+
+    @Test func veryLongRepoNamesRemainWholeForLayoutToTruncate() {
+        let name = "Arete-" + String(repeating: "Long-Variant-", count: 40) + "27B-4bit"
+        let repo = "VeryLongOrganization/" + name
+        #expect(ModelDisplayName.compactName(for: repo) == name)
+        #expect(ModelDisplayName.name(for: repo) == repo)
+        #expect(ModelDisplayName.compactName(for: repo, among: ["other/" + name]) == repo)
+        for path in ["/local/model", "org/repo/subfolder", "https://huggingface.co/org/repo", "./model", "../model", "~/model"] {
+            #expect(ModelDisplayName.repositoryName(for: path) == nil)
+        }
+    }
+
     // Pin the existing formatter before adding the unknown-family fallback.
     @Test(arguments: [
         ("qwen3.5-4b-4bit", "Qwen 3.5 · 4B"),

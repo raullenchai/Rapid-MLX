@@ -339,11 +339,13 @@ struct SettingsModelManagementPanel: View {
                     BrandIcon(alias: entry.alias)
                     VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                         HStack(spacing: RapidTheme.Space.xs) {
-                            Text(entry.alias.components(separatedBy: "/").last ?? entry.alias)
+                            Text(ModelDisplayName.compactName(for: entry.alias, among: catalog.map(\.alias)))
+                                .help(entry.alias)
+                                .accessibilityLabel(entry.alias)
                                 .font(RapidFont.bodyEmphasis)
                                 .foregroundStyle(RapidTheme.textPrimary)
                                 .lineLimit(1)
-                                .truncationMode(.middle)
+                                .truncationMode(ModelDisplayName.repositoryName(for: entry.alias) == nil ? .middle : .tail)
                                 .accessibilityIdentifier("Settings.ModelManagement.HFRow.Name")
                             badgePill(String(localized: "HUGGING FACE"), color: RapidTheme.textSecondary)
                         }
@@ -659,11 +661,13 @@ struct SettingsModelManagementPanel: View {
                         Text("Largest")
                             .font(RapidFont.caption)
                             .foregroundStyle(RapidTheme.textSecondary)
-                        Text(ModelDisplayName.name(for: largest.alias))
+                        Text(ModelDisplayName.compactName(for: largest.alias, among: catalog.map(\.alias)))
+                            .help(largest.alias)
+                            .accessibilityLabel(ModelDisplayName.name(for: largest.alias))
                             .font(RapidFont.bodyEmphasis)
                             .foregroundStyle(RapidTheme.textPrimary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(ModelDisplayName.repositoryName(for: largest.alias) == nil ? .middle : .tail)
                         Spacer(minLength: RapidTheme.Space.sm)
                         Text(largest.size?.displayText ?? "")
                             .font(RapidFont.metric)
@@ -1523,12 +1527,13 @@ struct SettingsModelManagementPanel: View {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 HStack(spacing: RapidTheme.Space.xs) {
-                    Text(ModelDisplayName.name(for: entry.alias))
+                    Text(ModelDisplayName.compactName(for: entry.alias, among: catalog.map(\.alias)))
                         .help(entry.alias)
+                        .accessibilityLabel(ModelDisplayName.name(for: entry.alias))
                         .font(RapidFont.bodyEmphasis)
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(ModelDisplayName.repositoryName(for: entry.alias) == nil ? .middle : .tail)
                     if entry.isFromHuggingFace {
                         badgePill(String(localized: "HUGGING FACE"), color: RapidTheme.textSecondary)
                     } else {
@@ -1568,12 +1573,13 @@ struct SettingsModelManagementPanel: View {
         HStack(spacing: RapidTheme.Space.sm) {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                Text(ModelDisplayName.name(for: entry.alias))
+                Text(ModelDisplayName.compactName(for: entry.alias, among: catalog.map(\.alias)))
                     .help(entry.alias)
+                    .accessibilityLabel(ModelDisplayName.name(for: entry.alias))
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(ModelDisplayName.repositoryName(for: entry.alias) == nil ? .middle : .tail)
                 if capability == .audio, let audioCapability = entry.audioCapability {
                     Text(audioCapabilityLabel(audioCapability))
                         .font(RapidFont.caption)
@@ -1589,7 +1595,8 @@ struct SettingsModelManagementPanel: View {
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textTertiary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(.tail)
+                        .help(repo)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
