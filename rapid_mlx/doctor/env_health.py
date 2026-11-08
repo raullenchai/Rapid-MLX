@@ -432,11 +432,16 @@ def _module_available(
         if real_import:
             if not _module_origin_is_trusted(module):
                 return False
+            trusted_roots = _TRUSTED_SYS_PATH_ROOTS
+            if module == "rapid_mlx":
+                source_root = _editable_rapid_mlx_source_root()
+                if source_root is not None:
+                    trusted_roots = (*trusted_roots, source_root)
             return _runtime_module_importable(
                 Path(sys.executable).absolute(),
                 "PIL.Image" if module == "PIL" else module,
                 None,
-                trusted_roots=_TRUSTED_SYS_PATH_ROOTS,
+                trusted_roots=trusted_roots,
                 exercise=module == "PIL",
             )
         return _iu.find_spec(module) is not None
@@ -444,6 +449,53 @@ def _module_available(
         return False
     except (Exception, SystemExit):
         return False
+
+
+def _editable_rapid_mlx_source_root() -> Path | None:
+    """Authenticate this checkout against editable metadata in trusted roots."""
+    try:
+        # Search only installed metadata, never cwd/PYTHONPATH dist-info.
+        distribution = next(
+            _im.Distribution.discover(
+                name="rapid-mlx",
+                path=[str(root) for root in _TRUSTED_SYS_PATH_ROOTS],
+            ),
+            None,
+        )
+        if distribution is None:
+            return None
+        direct = json.loads(distribution.read_text("direct_url.json") or "null")
+        if not isinstance(direct, dict):
+            return None
+        info = direct.get("dir_info")
+        if not isinstance(info, dict) or info.get("editable") is not True:
+            return None
+        url = urllib.parse.urlsplit(direct["url"])
+        if (
+            url.scheme != "file"
+            or url.netloc not in {"", "localhost"}
+            or url.query
+            or url.fragment
+        ):
+            return None
+        source_root = Path(urllib.parse.unquote(url.path))
+        if not source_root.is_absolute():
+            return None
+        source_root = source_root.resolve()
+        expected_init = source_root / "rapid_mlx" / "__init__.py"
+        package_root = Path(__file__).resolve().parents[1]
+        spec = _iu.find_spec("rapid_mlx")
+        if (
+            source_root != package_root.parent
+            or not expected_init.is_file()
+            or spec is None
+            or not spec.origin
+            or Path(spec.origin).resolve() != expected_init.resolve()
+        ):
+            return None
+        return source_root
+    except (OSError, ValueError, TypeError, KeyError, ImportError):
+        return None
 
 
 def _module_origin_is_trusted(module: str) -> bool:
