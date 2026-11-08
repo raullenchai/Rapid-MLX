@@ -1330,6 +1330,8 @@ def test_refresh_reconsiders_verified_non_chat(monkeypatch, capsys, port, fresh)
     )
     server = discovery.Server(123, port, "model", listening=True)
     monkeypatch.setattr(discovery, "scan_servers", lambda: [server])
+    # PID 123 is a fixture identity; do not depend on the host's process table.
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
     fake_model_server(monkeypatch, {port: [NON_CHAT_MODELS[0]]})
     endpoint = discovery.resolve_endpoint()
     # Full verification has a longer timeout than discovery and can remember
