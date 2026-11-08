@@ -305,6 +305,11 @@
       "hf_path": "Pika-Labs/Pika-H3-Flex",
       "reason": "license: MiniMax H3 Community License (Model Derivative; NOTICE attribution required) restricts redistribution by territory; serve from the upstream Hub only",
       "since": "2026-11-02"
+    },
+    {
+      "hf_path": "ornith-ai/Ornith-1.5-122B-MLX-4bit",
+      "reason": "large variant; HF fallback; mirror cost not justified",
+      "since": "2026-11-07"
     }
   ]
 }
