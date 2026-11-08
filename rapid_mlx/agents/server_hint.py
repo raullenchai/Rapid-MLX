@@ -15,6 +15,8 @@ _LOCAL_HOSTS = {"localhost": None, "127.0.0.1": None, "::1": "::1"}
 class ServerNotRunningError(RuntimeError):
     """Nothing is listening at the configured server address."""
 
+    cause = "connection_refused"
+
 
 def is_connection_refused(exc: BaseException) -> bool:
     """True when *exc* means no process is listening at the address.

@@ -50,8 +50,8 @@ def events(monkeypatch):
     def configured(agent):
         recorded.append(("configured", agent))
 
-    def failed(error_class, agent):
-        recorded.append(("configure_failed", error_class, agent))
+    def failed(error_class, agent, cause=None):
+        recorded.append(("configure_failed", error_class, agent, cause))
 
     for module in (agent_telemetry, setup, adapter):
         if hasattr(module, "track_agent_configured"):
@@ -180,7 +180,9 @@ def test_verify_server_refused_remote_endpoint_is_still_a_failure(monkeypatch, e
     with pytest.raises(RuntimeError, match="server is not ready") as raised:
         setup.verify_server("http://192.168.1.5:8000/v1", "m", agent="continue")
     assert not isinstance(raised.value, ServerNotRunningError)
-    assert events == [("configure_failed", "server_not_ready", "continue")]
+    assert events == [
+        ("configure_failed", "server_not_ready", "continue", "remote_unreachable")
+    ]
 
 
 def test_verify_server_other_connection_failure_is_still_tracked(monkeypatch, events):
@@ -191,7 +193,9 @@ def test_verify_server_other_connection_failure_is_still_tracked(monkeypatch, ev
     with pytest.raises(RuntimeError, match="server is not ready") as raised:
         setup.verify_server("http://127.0.0.1:8000/v1", "m", agent="continue")
     assert not isinstance(raised.value, ServerNotRunningError)
-    assert events == [("configure_failed", "server_not_ready", "continue")]
+    assert events == [
+        ("configure_failed", "server_not_ready", "continue", "startup_timeout")
+    ]
 
 
 # --- first-class flow ------------------------------------------------------
@@ -224,7 +228,9 @@ def test_first_class_no_server_without_model_fails(
     assert exc.value.code == 1
     assert not continue_config.exists()
     assert base_url in capsys.readouterr().out
-    assert events == [("configure_failed", "server_not_running", "continue")]
+    assert events == [
+        ("configure_failed", "server_not_running", "continue", "connection_refused")
+    ]
 
 
 def test_first_class_setup_with_live_server_reports_check(
@@ -274,7 +280,9 @@ def test_generic_setup_without_model_refuses_with_start_command(
     assert f"No Rapid-MLX server on http://127.0.0.1:{port}" in output
     assert f"rapid-mlx agents codex --setup --yes --base-url {base_url}" in output
     assert "Traceback" not in output
-    assert events == [("configure_failed", "server_not_running", "codex")]
+    assert events == [
+        ("configure_failed", "server_not_running", "codex", "connection_refused")
+    ]
 
 
 def test_generic_refusal_omits_default_base_url(

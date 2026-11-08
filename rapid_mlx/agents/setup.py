@@ -59,11 +59,19 @@ class ModelNotAdvertisedError(RuntimeError):
     """The server answered but not with the requested model."""
 
 
-class ServerLoadingError(RuntimeError):
+class ServerReadinessError(RuntimeError):
+    """A failed readiness probe with a privacy-safe telemetry cause."""
+
+    def __init__(self, message: str, cause: str = "other") -> None:
+        super().__init__(message)
+        self.cause = cause
+
+
+class ServerLoadingError(ServerReadinessError):
     """The startup health probe returned HTTP 503 while loading."""
 
 
-class ServerAuthenticationError(RuntimeError):
+class ServerAuthenticationError(ServerReadinessError):
     """The endpoint rejected the caller's credentials."""
 
 
@@ -731,16 +739,28 @@ def verify_server(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read())
     except urllib.error.HTTPError as exc:
+        cause = (
+            "model_not_loaded"
+            if checking_health and exc.code == 503
+            else "http_auth"
+            if exc.code in (401, 403)
+            else "http_error"
+        )
         if track_failure:
-            track_agent_configure_failed("server_not_ready", agent)
+            track_agent_configure_failed("server_not_ready", agent, cause)
         if checking_health and exc.code == 503:
-            raise ServerLoadingError(f"health returned HTTP 503 at {root}") from exc
+            raise ServerLoadingError(
+                f"health returned HTTP 503 at {root}", cause
+            ) from exc
         if exc.code in (401, 403):
             raise ServerAuthenticationError(
                 f"server authentication failed at {root}: HTTP {exc.code}; "
-                "check RAPID_MLX_API_KEY"
+                "check RAPID_MLX_API_KEY",
+                cause,
             ) from exc
-        raise RuntimeError(f"server is not ready at {root}: HTTP {exc.code}") from exc
+        raise ServerReadinessError(
+            f"server is not ready at {root}: HTTP {exc.code}", cause
+        ) from exc
     except (
         urllib.error.URLError,
         TimeoutError,
@@ -753,9 +773,20 @@ def verify_server(
             # the caller (a config saved for a not-yet-started server is a
             # normal first-run order), so the caller owns the telemetry.
             raise ServerNotRunningError(f"no server is running at {root}") from exc
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        cause = (
+            "remote_unreachable"
+            if not is_local_base_url(base_url)
+            and isinstance(exc, (urllib.error.URLError, OSError))
+            else "startup_timeout"
+            if isinstance(reason, TimeoutError)
+            else "other"
+        )
         if track_failure:
-            track_agent_configure_failed("server_not_ready", agent)
-        raise RuntimeError(f"server is not ready at {root}: {exc}") from exc
+            track_agent_configure_failed("server_not_ready", agent, cause)
+        raise ServerReadinessError(
+            f"server is not ready at {root}: {exc}", cause
+        ) from exc
     models = payload.get("data", []) if isinstance(payload, dict) else []
     if not isinstance(models, list):
         models = []
@@ -830,12 +861,12 @@ def wait_for_server(
         nonlocal reselection_error
         reselection_error = exc
         if time.monotonic() >= deadline:
-            track_agent_configure_failed(
-                "model_not_advertised"
-                if isinstance(exc, NonChatModelError)
-                else "server_not_ready",
-                agent,
-            )
+            if isinstance(exc, NonChatModelError):
+                track_agent_configure_failed("model_not_advertised", agent)
+            else:
+                track_agent_configure_failed(
+                    "server_not_ready", agent, getattr(exc, "cause", "other")
+                )
             raise exc
         time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
 
@@ -860,9 +891,10 @@ def wait_for_server(
             ):
                 raise ServerNotRunningError("no accessible server is running")
         if server is not None and not pid_alive(server.pid):
-            track_agent_configure_failed("server_not_ready", agent)
-            raise RuntimeError(
-                f"server at {base_url} exited during startup; check the serve output"
+            track_agent_configure_failed("server_not_ready", agent, "process_exited")
+            raise ServerReadinessError(
+                f"server at {base_url} exited during startup; check the serve output",
+                "process_exited",
             )
         try:
             if endpoint is not None and endpoint.verified_non_chat:
@@ -955,14 +987,15 @@ def wait_for_server(
                 ):
                     track_agent_configure_failed("model_not_advertised", agent)
                     raise reselection_error from exc
-                track_agent_configure_failed("server_not_ready", agent)
+                cause = getattr(exc, "cause", "other")
+                track_agent_configure_failed("server_not_ready", agent, cause)
                 error_type = (
                     ServerAuthenticationError
                     if isinstance(exc, ServerAuthenticationError)
-                    else RuntimeError
+                    else ServerReadinessError
                 )
                 raise error_type(
-                    f"server did not become ready at {base_url}: {exc}"
+                    f"server did not become ready at {base_url}: {exc}", cause
                 ) from exc
             time.sleep(0.25)
 

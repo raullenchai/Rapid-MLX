@@ -15856,7 +15856,7 @@ def agents_command(args):
             except KeyboardInterrupt:
                 print("\n  Setup cancelled; nothing was written.")
                 sys.exit(130)
-            except ServerNotRunningError:
+            except ServerNotRunningError as exc:
                 if requested_model:
                     offline = True
                     if needs_ctx:
@@ -15867,7 +15867,9 @@ def agents_command(args):
                     from rapid_mlx.agents.isolated import SUPPORTED
                     from rapid_mlx.agents.telemetry import track_agent_configure_failed
 
-                    track_agent_configure_failed("server_not_running", profile.name)
+                    track_agent_configure_failed(
+                        "server_not_running", profile.name, exc.cause
+                    )
                     print(
                         f"\n  No Rapid-MLX server on {base_url} (and no rapid-mlx serve is starting)."
                     )

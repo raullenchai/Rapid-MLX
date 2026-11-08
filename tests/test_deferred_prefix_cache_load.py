@@ -45,6 +45,9 @@ def test_deferred_load_prefix_cache_runs_off_event_loop(monkeypatch):
     monkeypatch.setattr(_server_mod, "_load_prefix_cache_from_disk", _slow_load)
 
     async def _drive():
+        # Each asyncio.run owns a fresh, lazy default executor. Keep its
+        # construction/thread startup outside the cache-load timing window.
+        await asyncio.to_thread(lambda: None)
         ticks: list[float] = []
         t0 = _time.monotonic()
 

@@ -325,6 +325,8 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
                 "extra_recovery",
                 "failure_stage",
                 "failure_subtype",
+                # Agent readiness cause is failure-only diagnostic context.
+                "cause",
                 "suggestion",
                 "support_request",
             }

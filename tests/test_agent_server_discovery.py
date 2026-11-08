@@ -108,7 +108,7 @@ def test_offline_setup(clock, events, configs, monkeypatch, capsys, agent, model
         assert not list(configs.rglob("config.toml"))
         assert not list(configs.rglob("opencode.json"))
         assert not (configs / ".claude/settings.json").exists()
-        assert events == [("failed", "server_not_running", agent)]
+        assert events == [("failed", "server_not_running", agent, "connection_refused")]
         assert "http://localhost:8462" in capsys.readouterr().out
     assert clock[0] < 3
 
@@ -142,7 +142,9 @@ def test_startup_lifetime(clock, events, configs, monkeypatch, capsys, agent, ou
             cli.agents_command(args(agent))
         assert exc.value.code == (130 if outcome == "cancel" else 1)
         assert events == (
-            [] if outcome == "cancel" else [("failed", "server_not_ready", agent)]
+            []
+            if outcome == "cancel"
+            else [("failed", "server_not_ready", agent, "process_exited")]
         )
         assert not list(configs.rglob("config.toml"))
         assert not list(configs.rglob("opencode.json"))
@@ -291,7 +293,16 @@ def test_live_serve_does_not_unbound_verification_errors(
     with pytest.raises(RuntimeError, match="http://localhost:8462/v1") as raised:
         setup.wait_for_server("http://localhost:8462/v1", "tiny-model", agent="codex")
     assert clock[0] == 60
-    assert events == [("failed", "server_not_ready", "codex")]
+    cause = (
+        "http_auth"
+        if failure in (401, 403)
+        else "http_error"
+        if isinstance(failure, int)
+        else "startup_timeout"
+        if failure == "timeout"
+        else "other"
+    )
+    assert events == [("failed", "server_not_ready", "codex", cause)]
     if failure in (401, 403):
         assert "authentication failed" in str(raised.value)
         assert "RAPID_MLX_API_KEY" in str(raised.value)
@@ -439,7 +450,7 @@ def test_foreign_unhealthy_listener_keeps_bounded_failure(clock, events, monkeyp
     with pytest.raises(RuntimeError, match="8462"):
         setup.wait_for_server("http://localhost:8462/v1", "tiny-model", agent="codex")
     assert clock[0] == 60
-    assert events == [("failed", "server_not_ready", "codex")]
+    assert events == [("failed", "server_not_ready", "codex", "other")]
 
 
 def test_unknown_port_follows_listener_only_for_implicit_endpoint(monkeypatch):
@@ -994,7 +1005,7 @@ def test_auto_setup_skips_inaccessible_server(
     assert "rapid-mlx serve" in output
     assert "Using the Rapid-MLX server" not in output
     assert not list(configs.rglob("config.toml"))
-    assert events == [("failed", "server_not_running", "codex")]
+    assert events == [("failed", "server_not_running", "codex", "connection_refused")]
 
 
 @pytest.mark.parametrize("explicit", ["port", "url"])
@@ -1208,6 +1219,7 @@ def test_auto_setup_reselects_when_starting_server_begins_requiring_auth(
             "failed",
             "server_not_ready" if discovery_times_out else "server_not_running",
             "codex",
+            "http_auth" if discovery_times_out else "connection_refused",
         )
     ]
 
@@ -1923,6 +1935,7 @@ def test_reselection_always_checks_readiness_deadline(
             "failed",
             "model_not_advertised" if failure == "non_chat" else "server_not_ready",
             "codex",
+            *(("other",) if failure == "auth" else ()),
         )
     ]
 

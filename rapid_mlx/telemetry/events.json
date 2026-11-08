@@ -362,6 +362,13 @@
         "service", "bare", "other"
       ]
     },
+    "agent_failure_cause": {
+      "_about": "Coarse readiness failure detail, from status codes and exception types only. Never endpoint, model, path or exception text.",
+      "values": [
+        "process_exited", "startup_timeout", "http_auth", "http_error",
+        "connection_refused", "remote_unreachable", "model_not_loaded", "other"
+      ]
+    },
     "agent_error_class": {
       "_about": [
         "The failure modes rapid_mlx/agents/setup.py can actually reach:",
@@ -894,7 +901,11 @@
       "twin_of": "agent_configured",
       "props": {
         "agent": {"kind": "enum", "enum": "agent", "required": false},
-        "error_class": {"kind": "enum", "enum": "agent_error_class", "required": true}
+        "error_class": {"kind": "enum", "enum": "agent_error_class", "required": true},
+        "cause": {
+          "kind": "enum", "enum": "agent_failure_cause", "required": false,
+          "only_when": {"error_class": ["server_not_ready", "server_not_running"]}
+        }
       }
     },
     "telemetry_opted_out": {

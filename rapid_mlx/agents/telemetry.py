@@ -25,7 +25,9 @@ def track_agent_configured(agent: str) -> None:
         return
 
 
-def track_agent_configure_failed(error_class: str, agent: str | None = None) -> None:
+def track_agent_configure_failed(
+    error_class: str, agent: str | None = None, cause: str | None = None
+) -> None:
     """Record one failed agent configuration with closed registry labels."""
     try:
         from rapid_mlx.telemetry.track import track
@@ -33,6 +35,11 @@ def track_agent_configure_failed(error_class: str, agent: str | None = None) -> 
         props = {"error_class": error_class}
         if agent is not None:
             props["agent"] = _telemetry_agent(agent)
+        if cause is not None:
+            from rapid_mlx.telemetry.registry import load_registry
+
+            allowed = load_registry()["enums"]["agent_failure_cause"]["values"]
+            props["cause"] = cause if cause in allowed else "other"
         track("agent_configure_failed", props)
     except Exception:
         return
