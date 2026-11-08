@@ -2559,9 +2559,6 @@ enum ModelCatalog {
         let processBox = CatalogProcessBox()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<RapidMlxResult, Never>) in
-            // Process launch may itself touch a protected executable/volume.
-            // Keep setup off the cooperative executor as well as pipe reads.
-            let admitted = DiscoveryBlockingIO.shared.submit {
             let task = Process()
             task.executableURL = binary
             task.arguments = args
@@ -2679,11 +2676,6 @@ enum ModelCatalog {
             try? stderr.fileHandleForWriting.close()
             processBox.terminateIfCancelled()
             processRegistry.terminateIfShuttingDown(task)
-            }
-            if !admitted {
-                DiscoveryProbeFailure.current?.record(DiscoveryDeadline.Expired())
-                continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
-            }
             }
         } onCancel: {
             processBox.cancel()
