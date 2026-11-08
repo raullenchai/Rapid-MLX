@@ -1460,6 +1460,11 @@ enum ModelCatalog {
             hubCacheOverride: hubCacheOverride
         )
         let json = await modelsJSON
+        // Join the inventory even when this sidecar lacks the atomic catalog.
+        // Leaving an unawaited async let cancels it: on the legacy JSON -> ls
+        // path that cancellation would poison discovery's failure recorder
+        // before Settings can load the compatible catalog.
+        let cached = await cachedTask
         guard json.succeeded,
               let atomic = parseAtomicModelEntriesJSON(json.stdout),
               let projection = parseAvailableJSON(json.stdout)
@@ -1468,7 +1473,7 @@ enum ModelCatalog {
         }
         let entries = mergeAtomicAndCached(
             atomic: atomic,
-            cached: await cachedTask,
+            cached: cached,
             excluded: projection.excluded,
             speculative: projection.speculative
         )
@@ -2130,18 +2135,33 @@ enum ModelCatalog {
         binary: URL,
         hubCacheOverride: URL?
     ) async -> [CachedModelInventoryEntry] {
-        let json = await runRapidMlx(
+        let json = await runRapidMlxResult(
             binary: binary,
             args: ["models", "--cached", "--json"],
             hubCacheOverride: hubCacheOverride
         )
-        if let structured = parseCachedJSON(json) { return structured }
-        let text = await runRapidMlx(
+        if json.succeeded, let structured = parseCachedJSON(json.stdout) { return structured }
+        if isPermissionFailure(json.stderr) {
+            DiscoveryProbeFailure.current?.record(CocoaError(.fileReadNoPermission))
+            return []
+        }
+        let text = await runRapidMlxResult(
             binary: binary,
             args: ["ls"],
             hubCacheOverride: hubCacheOverride
         )
-        return parseCached(text).map { ($0.0, $0.1, nil, ModelSize.legacy($0.2), nil, nil) }
+        if !text.succeeded {
+            DiscoveryProbeFailure.current?.record(
+                CocoaError(isPermissionFailure(text.stderr) ? .fileReadNoPermission : .fileReadUnknown)
+            )
+        }
+        return parseCached(text.stdout).map { ($0.0, $0.1, nil, ModelSize.legacy($0.2), nil, nil) }
+    }
+
+    private static func isPermissionFailure(_ stderr: String) -> Bool {
+        stderr.localizedCaseInsensitiveContains("permission") ||
+            stderr.contains("EPERM") || stderr.contains("EACCES") ||
+            stderr.localizedCaseInsensitiveContains("operation not permitted")
     }
 
     /// Parses the ``rapid-mlx models`` output. The format (v0.6.83) is a
@@ -2505,7 +2525,8 @@ enum ModelCatalog {
     /// the next write and never exit — the catalog task would hang
     /// the picker indefinitely. Drain stdout AND stderr concurrently
     /// via separate background reader tasks while the child runs.
-    private struct RapidMlxResult {
+    private struct RapidMlxResult: Sendable {
+        var stderr: String = ""
         let stdout: String
         let succeeded: Bool
     }
@@ -2517,6 +2538,23 @@ enum ModelCatalog {
         processRegistry: CatalogProcessRegistry = processRegistry,
         beforeLaunch: (@Sendable () -> Void)? = nil,
         afterLaunch: (@Sendable () -> Void)? = nil
+    ) async -> RapidMlxResult {
+        do {
+            return try await DiscoveryDeadline.runAsync {
+                await runRapidMlxUnbounded(binary: binary, args: args,
+                    hubCacheOverride: hubCacheOverride, processRegistry: processRegistry,
+                    beforeLaunch: beforeLaunch, afterLaunch: afterLaunch)
+            }
+        } catch {
+            DiscoveryProbeFailure.current?.record(error)
+            return RapidMlxResult(stdout: "", succeeded: false)
+        }
+    }
+
+    private static func runRapidMlxUnbounded(
+        binary: URL, args: [String], hubCacheOverride: URL?,
+        processRegistry: CatalogProcessRegistry,
+        beforeLaunch: (@Sendable () -> Void)?, afterLaunch: (@Sendable () -> Void)?
     ) async -> RapidMlxResult {
         let processBox = CatalogProcessBox()
         return await withTaskCancellationHandler {
@@ -2590,6 +2628,7 @@ enum ModelCatalog {
                     if resumedBox.tryConsume() {
                         let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
                         continuation.resume(returning: RapidMlxResult(
+                            stderr: String(data: stderrBox.data, encoding: .utf8) ?? "",
                             stdout: text,
                             succeeded: task.terminationStatus == 0
                         ))

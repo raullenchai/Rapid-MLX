@@ -25,6 +25,8 @@ struct SettingsPerformancePanel: View {
     /// True while the target resident model is being rebuilt.
     @State private var isReloading: Bool = false
     @State private var catalog: [ModelEntry] = []
+    @State private var discoveryFailure: CachedModelDiscoveryFailure?
+    @State private var catalogRefreshID = UUID()
     @State private var selectedAlias: String?
     @State private var applyError: String?
 
@@ -94,6 +96,17 @@ struct SettingsPerformancePanel: View {
                     emphasis: .page
                 )
                 MetalMemorySection()
+                if let discoveryFailure {
+                    InlineNotice(message: discoveryFailure.message, tone: .error,
+                                 actionTitle: String(localized: "Retry"),
+                                 actionIdentifier: "Settings.Performance.CacheDiscovery.Retry",
+                                 action: {
+                                     Task {
+                                         await ModelCatalogCache.shared.invalidate()
+                                         await refreshCatalog()
+                                     }
+                                 })
+                }
                 modelSection
                 if let alias = targetAlias {
                     if needsReload { reloadBanner(alias: alias) }
@@ -133,10 +146,7 @@ struct SettingsPerformancePanel: View {
             await server.refreshEffectiveRuntimeConfig()
         }
         .task(id: downloads.cacheGeneration) {
-            guard let binary = server.binaryPath else { return }
-            catalog = await ModelCatalogCache.shared.entries(
-                binary: binary, generation: downloads.cacheGeneration
-            )
+            await refreshCatalog()
             if selectedAlias == nil {
                 selectedAlias = server.servingAlias
                     ?? server.launchedChildAlias
@@ -148,6 +158,18 @@ struct SettingsPerformancePanel: View {
             launchedFlags = alias.map { perf.launchFlags(forAlias: $0) } ?? []
             applyError = nil
         }
+    }
+
+    private func refreshCatalog() async {
+        guard let binary = server.binaryPath else { return }
+        let refreshID = UUID()
+        catalogRefreshID = refreshID
+        let generation = downloads.cacheGeneration
+        let result = await ModelCatalogCache.shared.discoveryResult(binary: binary, generation: generation)
+        guard !Task.isCancelled, catalogRefreshID == refreshID,
+              generation == downloads.cacheGeneration else { return }
+        discoveryFailure = result.failure
+        catalog = result.entries
     }
 
     // MARK: - Sections

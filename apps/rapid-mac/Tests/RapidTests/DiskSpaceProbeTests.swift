@@ -18,6 +18,93 @@ import Testing
 @Suite("DiskSpaceProbe — Quickstart low-disk pre-flight")
 struct DiskSpaceProbeTests {
 
+    @Test("Download before the display measurement waits for a fresh off-main probe")
+    func earlyDownloadWaitsForProbe() async {
+        let coordinator = QuickstartCoordinator()
+        coordinator._testingReset()
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        var kickoffCount = 0
+        let download = Task { @MainActor in
+            await QuickstartView.preflightDownload(coordinator: coordinator, probe: {
+                #expect(!Thread.isMainThread)
+                started.signal()
+                release.wait()
+                return 1
+            }, onKickoff: { kickoffCount += 1 })
+        }
+        // Await the worker without blocking the main actor: it must stay free
+        // to render the pending state while statfs waits for permission.
+        let probeStarted = await Task.detached { waitBlocking(started, seconds: 2) }.value
+        #expect(probeStarted == .success)
+        #expect(kickoffCount == 0)
+        #expect(coordinator.phase == .idle)
+        release.signal()
+        await download.value
+        #expect(kickoffCount == 0)
+        #expect(coordinator.phase == .lowDiskWarning(
+            freeBytes: 1, requiredBytes: QuickstartView.requiredDiskBytes(for: coordinator.selection)
+        ))
+    }
+
+    @Test("A second Download action observes disk usage changed since the first")
+    func downloadsMeasureAgain() async {
+        let coordinator = QuickstartCoordinator()
+        coordinator._testingReset()
+        var kickoffCount = 0
+        await QuickstartView.preflightDownload(coordinator: coordinator,
+            probe: { Int64.max }, onKickoff: { kickoffCount += 1 })
+        #expect(kickoffCount == 1)
+        await QuickstartView.preflightDownload(coordinator: coordinator,
+            probe: { 1 }, onKickoff: { kickoffCount += 1 })
+        #expect(kickoffCount == 1)
+        #expect(coordinator.phase == .lowDiskWarning(
+            freeBytes: 1, requiredBytes: QuickstartView.requiredDiskBytes(for: coordinator.selection)
+        ))
+    }
+
+    @Test("Nil and timed-out disk probes preserve the pre-existing unknown-result policy")
+    func unknownCapacityPolicy() async {
+        let coordinator = QuickstartCoordinator()
+        coordinator._testingReset()
+        var kickoffCount = 0
+        await QuickstartView.preflightDownload(coordinator: coordinator,
+            probe: { nil }, onKickoff: { kickoffCount += 1 })
+        #expect(kickoffCount == 1)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let start = ContinuousClock.now
+        await QuickstartView.preflightDownload(coordinator: coordinator, timeout: 0.05,
+            probe: { release.wait(); return 0 }, onKickoff: { kickoffCount += 1 })
+        #expect(start.duration(to: .now) < .seconds(2))
+        #expect(kickoffCount == 2)
+        #expect(coordinator.phase == .idle)
+    }
+
+    @Test("Cancelling a pending disk preflight cannot start a download")
+    func cancelledPreflightDoesNotDownload() async {
+        let coordinator = QuickstartCoordinator()
+        coordinator._testingReset()
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        var kickoffCount = 0
+        let download = Task { @MainActor in
+            await QuickstartView.preflightDownload(coordinator: coordinator, probe: {
+                started.signal()
+                release.wait()
+                return Int64.max
+            }, onKickoff: { kickoffCount += 1 })
+        }
+        let probeStarted = await Task.detached { waitBlocking(started, seconds: 2) }.value
+        #expect(probeStarted == .success)
+        download.cancel()
+        await download.value
+        #expect(kickoffCount == 0)
+        #expect(coordinator.phase == .idle)
+    }
+
     // MARK: - Pinned threshold
 
     @Test("Quickstart required-bytes threshold is 2 GB (bonsai-1.7b-2bit re-derivation)")
@@ -476,4 +563,9 @@ struct DiskSpaceProbeTests {
         #expect(!card.contains("startQuickstart()"),
                 "lowDiskCard MUST NOT call startQuickstart() — that re-runs the probe and risks a warning loop if free space dropped further while the banner was visible.")
     }
+}
+
+/// Synchronous so the semaphore wait is legal from a detached task.
+private func waitBlocking(_ semaphore: DispatchSemaphore, seconds: Double) -> DispatchTimeoutResult {
+    semaphore.wait(timeout: .now() + seconds)
 }

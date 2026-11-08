@@ -77,6 +77,7 @@ struct ModelPickerBar: View {
     /// cannot relabel a stale entry with a newer download generation.
     @State private var catalogGeneration: UInt = 0
     @State private var loadingCatalog = false
+    @State private var discoveryFailure: CachedModelDiscoveryFailure?
     @State private var showCustom = false
     @State private var customDraft = ""
     /// v0.4.18: (i) popover next to the picker showing the selected
@@ -419,6 +420,7 @@ struct ModelPickerBar: View {
         let deleting: String?
         let servingAlias: String?
         let downloading: Set<String>
+        var discoveryFailure: CachedModelDiscoveryFailure? = nil
     }
 
     private var menuContentKey: MenuContentKey {
@@ -426,7 +428,8 @@ struct ModelPickerBar: View {
             catalog: catalog, loading: loadingCatalog, selectedAlias: alias,
             showAll: showAllModels, hardware: hardware, deleting: deleting,
             servingAlias: server.servingAlias,
-            downloading: Set(catalog.filter { downloads.isDownloading($0.alias) }.map(\.alias))
+            downloading: Set(catalog.filter { downloads.isDownloading($0.alias) }.map(\.alias)),
+            discoveryFailure: discoveryFailure
         )
     }
 
@@ -445,6 +448,21 @@ struct ModelPickerBar: View {
             ).isEmpty,
             hasVisibleRows: hasVisibleRows
         )
+        if let discoveryFailure {
+            Text(discoveryFailure.message)
+            Button("Retry") {
+                Task {
+                    await refreshCatalog(force: true)
+                }
+            }
+            .accessibilityIdentifier("ModelPickerBar.DiscoveryRetry")
+            if let starter = catalog.first(where: {
+                $0.alias == QuickstartCoordinator.baselineChoice(hardware: hardware).alias
+            }) {
+                quickstartRow(entry: starter)
+            }
+            Divider()
+        }
         switch state {
         case .loading:
             Text("Fetching models…")
@@ -2099,16 +2117,17 @@ struct ModelPickerBar: View {
         catalogRefreshGeneration &+= 1
         let refreshGeneration = catalogRefreshGeneration
         loadingCatalog = true
+        if force { await ModelCatalogCache.shared.invalidate() }
         defer {
             if catalogRefreshGeneration == refreshGeneration {
                 loadingCatalog = false
             }
         }
         // Route the catalog read through the shared cache (#1470) so re-entering
-        // settings does not re-spawn the lister subprocess. Keep the ``loaded``
-        // name so the phantom-alias filter below (``entries``) is unchanged.
+        // settings does not re-spawn the lister subprocess. Entries and failure
+        // must come from the same read, even if another surface retries.
         let generation = downloads.cacheGeneration
-        let loaded = await ModelCatalogCache.shared.entries(
+        let result = await ModelCatalogCache.shared.discoveryResult(
             binary: binary,
             generation: generation
         )
@@ -2122,9 +2141,10 @@ struct ModelPickerBar: View {
         // produce a missing row — never a selectable fake model, and
         // never a placeholder word promoted into ``alias`` by
         // ``recommendedDefault`` below.
-        let entries = ModelSelectionPurpose.chat.entries(in: loaded).filter {
+        let entries = ModelSelectionPurpose.chat.entries(in: result.entries).filter {
             !ModelDisplayName.isUnresolved($0.alias)
         }
+        discoveryFailure = result.failure
         self.catalog = entries
         catalogGeneration = generation
         let normalized = Self.normalizedChatSelection(

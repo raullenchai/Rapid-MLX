@@ -1378,6 +1378,8 @@ struct QuickstartView: View {
     /// Generation that produced ``cachedModels``. Catalog hints carry this
     /// source identity so an entry cannot outlive the snapshot that proved it.
     var catalogGeneration: UInt = 0
+    var discoveryFailure: CachedModelDiscoveryFailure?
+    var onRetryDiscovery: () -> Void = {}
 
     /// This Mac, read once per view lifetime. Same pattern and same source as
     /// ``ModelPickerBar`` and ``SettingsModelManagementPanel``, so onboarding's
@@ -1443,15 +1445,34 @@ struct QuickstartView: View {
     /// Test seam: override the pre-flight free-bytes probe so the
     /// unit / integration test suite can drive the low-disk-warning
     /// transition without touching real free space. Defaults to the
-    /// production ``DiskSpaceProbe.freeBytesForHFCache`` helper.
+    /// production ``DiskSpaceProbe.freeBytesForHFCache`` helper. Both the
+    /// display sample and each download action run it in a bounded worker.
     ///
     /// Returns the free bytes the caller should compare against
     /// ``DiskSpaceProbe.quickstartRequiredBytes``. ``nil`` means "probe
     /// failed / no signal" and degrades to ``Decision.ok`` (no warning).
-    var freeBytesProbe: () -> Int64? = { DiskSpaceProbe.freeBytesForHFCache() }
+    var freeBytesProbe: (@Sendable () -> Int64?)? = nil
+    @State private var downloadPreflightTask: Task<Void, Never>?
+    @State private var measuredFreeBytes: Int64?
+    private func availableFreeBytes() -> Int64? {
+        measuredFreeBytes
+    }
 
     var body: some View {
-        content
+        VStack(spacing: 0) {
+            if let discoveryFailure {
+                InlineNotice(message: discoveryFailure.message, tone: .error,
+                             actionTitle: String(localized: "Retry"),
+                             actionIdentifier: "Quickstart.CacheDiscovery.Retry",
+                             action: onRetryDiscovery)
+                    .padding()
+            }
+            content
+        }
+            .task {
+                let probe = freeBytesProbe ?? { DiskSpaceProbe.freeBytesForHFCache() }
+                measuredFreeBytes = try? await DiscoveryDeadline.run { probe() }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RapidTheme.canvas)
             // Establish the RAM-only baseline synchronously before welcome
@@ -1537,6 +1558,8 @@ struct QuickstartView: View {
                 foregroundMemoryRefreshTask = nil
             }
             .onDisappear {
+                downloadPreflightTask?.cancel()
+                downloadPreflightTask = nil
                 foregroundMemoryRefreshTask?.cancel()
                 foregroundMemoryRefreshTask = nil
             }
@@ -1624,7 +1647,7 @@ struct QuickstartView: View {
                 // starts bearing on the decision (Paper 05.1 frames 03/04).
                 freeSpace: coordinator.step == .welcome
                     ? nil
-                    : freeBytesProbe().map { DownloadProgress.formatBytes($0) }
+                    : availableFreeBytes().map { DownloadProgress.formatBytes($0) }
             )
         }
     }
@@ -2047,7 +2070,7 @@ struct QuickstartView: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                 }
                 transientFact(String(localized: "Free on cache volume")) {
-                    if let free = freeBytesProbe() {
+                    if let free = availableFreeBytes() {
                         Text(Self.formatBytesForBanner(free))
                             .scaledSystemFont(13, design: .monospaced)
                             .foregroundStyle(RapidTheme.textPrimary)
@@ -2969,7 +2992,7 @@ struct QuickstartView: View {
                         cached: cached,
                         cachedModels: cachedModels,
                         hardware: hardware,
-                        freeBytes: freeBytesProbe(),
+                        freeBytes: availableFreeBytes(),
                         runsHere: runsHere
                     ))
                     .padding(.top, 26)
@@ -4697,13 +4720,39 @@ struct QuickstartView: View {
             startCachedModel(cached)
             return
         }
-        QuickstartView.applyPreflightDecision(
+        downloadPreflightTask?.cancel()
+        downloadPreflightTask = Task { @MainActor in
+            await Self.preflightDownload(
+                coordinator: coordinator,
+                probe: freeBytesProbe ?? { DiskSpaceProbe.freeBytesForHFCache() },
+                onKickoff: { kickoffDownload() }
+            )
+        }
+    }
+
+    /// Each action measures current capacity off the main actor. Unknown results
+    /// retain the existing warn-only policy; no cached display value is evidence
+    /// that a fresh probe completed. Cancellation must never start a download.
+    @MainActor
+    static func preflightDownload(
+        coordinator: QuickstartCoordinator,
+        timeout: TimeInterval = 10,
+        probe: @escaping @Sendable () -> Int64?,
+        onKickoff: () -> Void
+    ) async {
+        let selection = coordinator.selection
+        let phase = coordinator.phase
+        let stage = coordinator.stage
+        let step2Stage = coordinator.step2Stage
+        let freeBytes = try? await DiscoveryDeadline.run(seconds: timeout) { probe() }
+        guard !Task.isCancelled, coordinator.selection == selection,
+              coordinator.phase == phase, coordinator.stage == stage,
+              coordinator.step2Stage == step2Stage else { return }
+        applyPreflightDecision(
             decision: DiskSpaceProbe.decide(
-                freeBytes: freeBytesProbe(),
-                requiredBytes: Self.requiredDiskBytes(for: coordinator.selection)
+                freeBytes: freeBytes, requiredBytes: requiredDiskBytes(for: selection)
             ),
-            coordinator: coordinator,
-            onKickoff: { kickoffDownload() }
+            coordinator: coordinator, onKickoff: onKickoff
         )
     }
 

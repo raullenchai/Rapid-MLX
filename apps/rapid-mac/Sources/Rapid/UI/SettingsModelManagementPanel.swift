@@ -54,6 +54,8 @@ struct SettingsModelManagementPanel: View {
     // whether the data was already cached.
     @State private var diskOverview = ModelManagementDiskOverviewState()
     @State private var catalog: [ModelEntry] = ModelCatalogCache.seed(generation: 0) ?? []
+    @State private var discoveryFailure: CachedModelDiscoveryFailure?
+    @State private var catalogRefreshID = UUID()
     @State private var loading: Bool = ModelCatalogCache.seed(generation: 0) == nil
     @State private var pendingDeletion: ModelEntry?
     @State private var lastError: String?
@@ -155,6 +157,12 @@ struct SettingsModelManagementPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             header
+            if let discoveryFailure {
+                InlineNotice(message: discoveryFailure.message, tone: .error,
+                             actionTitle: String(localized: "Retry"),
+                             actionIdentifier: "Settings.ModelManagement.CacheDiscovery.Retry",
+                             action: { Task { await refreshCatalog() } })
+            }
             capabilityTabs
             controlsRow
             if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1853,61 +1861,33 @@ struct SettingsModelManagementPanel: View {
     }
 
     private func refreshCatalog() async {
-        guard !Task.isCancelled else { return }
-        guard let binary = server.binaryPath else {
-            catalog = []
-            diskOverview.hasCompletedRefresh = true
-            loading = false
-            return
-        }
-        // One atomic snapshot drives every capability tab. This avoids four
-        // independent `models --json` calls and prevents tab-to-tab drift if a
-        // sidecar or catalog changes during refresh. Older sidecars fall
-        // through to the established per-surface compatibility loaders.
-        if let atomic = await Self.stableAtomicCatalogSnapshot(
-            currentGeneration: { downloads.cacheGeneration },
-            loader: { await ModelCatalog.productEntries(binary: binary, openedPaths: openedCheckpointPaths) }
-        ) {
-            guard !Task.isCancelled else { return }
-            catalog = atomic
-            reconcileCapability()
-            diskOverview.hasCompletedRefresh = true
-            loading = false
-            return
-        }
-        guard !Task.isCancelled else { return }
-        let generation = downloads.cacheGeneration
-        // Show a cached snapshot straight away and skip the spinner entirely —
-        // flashing "loading" over data we already have makes every visit to
-        // this panel feel like a cold start.
-        if let hit = await ModelCatalogCache.shared.cached(
-            binary: binary, generation: generation
-        ) {
-            async let image = ModelCatalog.imageEntries(binary: binary)
-            async let audio = ModelCatalog.audioEntries(binary: binary)
-            let entries = hit + (await image) + (await audio)
-            guard !Task.isCancelled else { return }
-            catalog = entries
-            reconcileCapability()
-            diskOverview.hasCompletedRefresh = true
-            loading = false
-            return
-        }
+        guard let binary = server.binaryPath else { loading = false; return }
+        let refreshID = UUID()
+        catalogRefreshID = refreshID
         loading = true
-        defer { loading = false }
-        // Chat catalog + image-gen aliases, managed side by side. The image
-        // rows carry ``kind == .image`` so the capability tabs keep them out of
-        // the chat list (and vice-versa).
-        let chat = await ModelCatalogCache.shared.entries(
-            binary: binary, generation: generation
-        )
-        async let image = ModelCatalog.imageEntries(binary: binary)
-        async let audio = ModelCatalog.audioEntries(binary: binary)
-        let entries = chat + (await image) + (await audio)
-        guard !Task.isCancelled else { return }
-        catalog = entries
-        diskOverview.hasCompletedRefresh = true
+        let generation = downloads.cacheGeneration
+        let paths = openedCheckpointPaths
+        let requestedOverride = CachedModelDiscovery.requestedOverrideURL()
+        let result = await CachedModelDiscovery.discoverCatalog(
+            requestedOverride: requestedOverride
+        ) { override in
+            if let atomic = await ModelCatalog.productEntries(binary: binary,
+                hubCacheOverride: override, openedPaths: paths) { return atomic }
+            async let chat = ModelCatalog.load(binary: binary, hubCacheOverride: override, openedPaths: paths)
+            async let image = ModelCatalog.imageEntries(binary: binary, hubCacheOverride: override)
+            async let audio = ModelCatalog.audioEntries(binary: binary, hubCacheOverride: override)
+            return await chat + image + audio
+        }
+        guard !Task.isCancelled, catalogRefreshID == refreshID else { return }
+        guard generation == downloads.cacheGeneration else {
+            await refreshCatalog()
+            return
+        }
+        discoveryFailure = result.failure
+        catalog = result.entries
         reconcileCapability()
+        diskOverview.hasCompletedRefresh = true
+        loading = false
     }
 
     /// Keep the selected capability tab valid after the catalog changes.
