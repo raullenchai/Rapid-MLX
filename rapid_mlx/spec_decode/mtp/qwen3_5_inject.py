@@ -1157,7 +1157,8 @@ def inject_mtp_support(
                 mtp_cache,
                 concat_order=mtp_concat_order,
             )
-            token = quantized_argmax(self.lm_head, mtp_out)
+            # Greedy chaining consumes only the final hidden row and token.
+            token = quantized_argmax(self.lm_head, mtp_out[:, -1:, :])
             if token is None:
                 return None
             return token, mtp_out

@@ -446,7 +446,7 @@ class DepthController:
     def frontier(self) -> int:
         return self.acc.frontier()
 
-    def pick_k(self) -> int:
+    def pick_k(self, *, refresh_park_costs: bool = True) -> int:
         """Return the draft depth for the upcoming step.
 
         The EV-optimal depth (capped at frontier+1 and at ``self.max_k``),
@@ -457,6 +457,10 @@ class DepthController:
         giving the new selection a full interval to settle. The chosen
         depth is recorded in ``self.scheduled`` for the next request's
         open to consume.
+
+        ``refresh_park_costs=False`` is for request-fixed cost curves: when
+        EV parks, omit full-band cost refresh while retaining outward
+        acceptance probes. Active EV choices keep their original exploration.
 
         Mirrors Go ``depthController.next`` (`speculate_depth.go:58-88`)
         with one 0.9.13 addition: an unconditional starvation-probe pass
@@ -505,7 +509,13 @@ class DepthController:
         # pick / bootstrap seed). See ``_apply_starvation_probe`` for
         # rationale; safe to run every round because it is a no-op until
         # its own counter overflows the interval.
-        depth = self._apply_starvation_probe(sel, depth)
+        if refresh_park_costs or sel > 0:
+            depth = self._apply_starvation_probe(sel, depth)
+        else:
+            # A fixed-cost park has no stale cost to refresh. Its outward
+            # probe still learns acceptance; leave active-depth exploration
+            # unchanged and restart its cadence if the EV choice resumes.
+            self._round_probe_last_sel = 0
 
         self.scheduled = depth
         return depth
