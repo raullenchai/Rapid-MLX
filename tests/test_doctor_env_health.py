@@ -1847,6 +1847,122 @@ def test_trusted_sys_path_roots_keep_wheel_site_packages(
     assert eh._module_origin_is_trusted("wheel_dependency_probe")
 
 
+@pytest.mark.parametrize("layout", ["uv-finder", "pth"])
+@pytest.mark.parametrize(
+    "metadata_case",
+    ["matching", "mismatch", "not-editable", "missing", "invalid", "cwd-metadata"],
+)
+def test_local_editable_import_authenticates_source(
+    tmp_path, monkeypatch, layout, metadata_case
+):
+    from rapid_mlx import dependency_repair
+
+    source = tmp_path / "checkout with spaces"
+    package = source / "rapid_mlx"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# editable package\n")
+    (source / "pyproject.toml").write_text("[project]\nname = 'rapid-mlx'\n")
+    site_root = tmp_path / "site-packages"
+    metadata = site_root / "rapid_mlx-1.0.dist-info"
+    metadata.mkdir(parents=True)
+    (metadata / "METADATA").write_text("Name: rapid-mlx\nVersion: 1.0\n")
+    (metadata / "direct_url.json").write_text(
+        json.dumps(
+            {
+                "url": (
+                    tmp_path / "other" if metadata_case == "mismatch" else source
+                ).as_uri(),
+                "dir_info": {"editable": metadata_case != "not-editable"},
+            }
+        )
+    )
+    if metadata_case == "missing":
+        (metadata / "direct_url.json").unlink()
+    elif metadata_case == "invalid":
+        (metadata / "direct_url.json").write_text("{broken json")
+    elif metadata_case == "cwd-metadata":
+        metadata.rename(source / metadata.name)
+    monkeypatch.chdir(source)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setattr(eh, "__file__", str(package / "doctor" / "env_health.py"))
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [
+            str(site_root),
+            "__editable__.rapid_mlx-1.0.finder.__path_hook__"
+            if layout == "uv-finder"
+            else str(source),
+        ],
+    )
+    monkeypatch.setattr(
+        eh, "_TRUSTED_SYS_PATH_ROOTS", tuple(eh._trusted_sys_path_roots())
+    )
+    real_find_spec = eh._iu.find_spec
+    spec = importlib.util.spec_from_file_location("rapid_mlx", package / "__init__.py")
+    monkeypatch.setattr(
+        eh._iu,
+        "find_spec",
+        lambda name: spec if name == "rapid_mlx" else real_find_spec(name),
+    )
+    monkeypatch.setattr(eh, "_probe_runtime", lambda *args: None)
+
+    # Run the actual isolated import script, not a mocked successful probe.
+    assert eh._module_available("rapid_mlx", real_import=True) is (
+        metadata_case == "matching"
+    )
+    monkeypatch.setattr(eh, "REQUIRED_PACKAGES", [("rapid-mlx", "rapid-mlx")])
+    monkeypatch.setattr(eh, "_safe_version", lambda *args: "1.0")
+    monkeypatch.setattr(eh, "_selected_runtime", lambda: (Path(sys.executable), False))
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda runtime: False)
+    monkeypatch.setattr(
+        eh, "_runtime_pip_command", lambda *args, **kwargs: "pip install"
+    )
+    monkeypatch.setattr(dependency_repair, "missing_modules", lambda: [])
+    monkeypatch.setattr(dependency_repair, "repair_argv", lambda: [])
+    section = eh.section_required_packages()
+    report = eh.Report(sections=[section])
+    assert report.exit_code == (0 if metadata_case == "matching" else 1)
+    if metadata_case == "matching":
+        assert section.checks[0].label == "rapid-mlx 1.0"
+        assert section.checks[0].status is eh.CheckStatus.OK
+    # An editable install must not authenticate sibling dependency shadows.
+    (source / "editable_dependency_shadow.py").write_text("raise AssertionError\n")
+    sys.path.insert(0, str(source))
+    assert not eh._module_available("editable_dependency_shadow", real_import=True)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/rapid-mlx",
+        "file://remote-host/checkout",
+        "file:///checkout?subdirectory=x",
+        "file:///checkout#egg=rapid-mlx",
+        "file:relative/checkout",
+    ],
+)
+def test_editable_source_root_rejects_non_local_absolute_urls(monkeypatch, url):
+    class _Dist:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps({"url": url, "dir_info": {"editable": True}})
+
+    monkeypatch.setattr(eh._im.Distribution, "discover", lambda **kwargs: [_Dist()])
+    assert eh._editable_rapid_mlx_source_root() is None
+
+
+def test_local_editable_import_rejects_cwd_package_shadow(tmp_path, monkeypatch):
+    shadow = tmp_path / "rapid_mlx" / "__init__.py"
+    shadow.parent.mkdir()
+    shadow.write_text("raise AssertionError('shadow executed')\n")
+    monkeypatch.chdir(tmp_path)
+    spec = importlib.util.spec_from_file_location("rapid_mlx", shadow)
+    monkeypatch.setattr(eh._iu, "find_spec", lambda name: spec)
+
+    assert not eh._module_available("rapid_mlx", real_import=True)
+
+
 def test_local_pillow_probe_rejects_source_tree_shadow_module(
     tmp_path,
     monkeypatch,
