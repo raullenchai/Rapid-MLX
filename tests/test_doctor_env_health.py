@@ -1932,6 +1932,26 @@ def test_local_editable_import_authenticates_source(
     assert not eh._module_available("editable_dependency_shadow", real_import=True)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/rapid-mlx",
+        "file://remote-host/checkout",
+        "file:///checkout?subdirectory=x",
+        "file:///checkout#egg=rapid-mlx",
+        "file:relative/checkout",
+    ],
+)
+def test_editable_source_root_rejects_non_local_absolute_urls(monkeypatch, url):
+    class _Dist:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps({"url": url, "dir_info": {"editable": True}})
+
+    monkeypatch.setattr(eh._im.Distribution, "discover", lambda **kwargs: [_Dist()])
+    assert eh._editable_rapid_mlx_source_root() is None
+
+
 def test_local_editable_import_rejects_cwd_package_shadow(tmp_path, monkeypatch):
     shadow = tmp_path / "rapid_mlx" / "__init__.py"
     shadow.parent.mkdir()
