@@ -1025,3 +1025,57 @@ def test_verify_keeps_first_committed_head_pair_without_replay(k, accepted, fuse
     assert seen.count(11) == 1
     assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 12 + accepted)]
     assert env["head_pending"] is None
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_parked_target_failure_settles_committed_head_history(private, prefetch):
+    env, cache = _generation_harness(8, [0] * 8, prefetch=prefetch)
+    if private:
+        env["server_bootstrap"] = (np.array([[[100.0]]]), np.zeros(64))
+    generated = env["run"]()
+    next(generated)
+    next(generated)
+    committed = env["ntoks"]
+    assert committed > 0
+    assert cache.offset == 0
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("target forward failed")
+
+    env["_step_backbone"] = fail
+    with pytest.raises(RuntimeError, match="target forward failed"):
+        next(generated)
+    assert cache.offset == (0 if private else committed)
+    assert env["parked_head_rows"] == []
+    assert env["head_pending"] is None
+
+
+def test_fixed_park_eventually_discovers_profitable_deeper_acceptance():
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        ACCEPTANCE_MIN_SAMPLES,
+        DEPTH_PROBE_INTERVAL_MAX,
+    )
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import request_depth_controller
+
+    costs = (1.0, 1.87, 2.49)
+    controller = request_depth_controller(costs, 2)
+    # K=1 earns 1.8/1.87 < 1; inherited acceptance makes K=2 look
+    # unprofitable too. Its actual second-position acceptance is perfect:
+    # (1 + .8 + .8) / 2.49 > 1.
+    for _ in range(ACCEPTANCE_MIN_SAMPLES):
+        controller.record(1, costs[1], [True])
+    controller.acc._rate[1] = 0.8
+    assert controller._selected() == 0
+    deeper = 0
+    for _ in range(4 * ACCEPTANCE_MIN_SAMPLES * DEPTH_PROBE_INTERVAL_MAX):
+        k = controller.pick_k(refresh_park_costs=False)
+        controller.record(k, costs[k], [True] * k)
+        # Hold K=1 unprofitable throughout; only deeper evidence can unpark.
+        controller.acc._rate[1] = 0.8
+        deeper += k == 2
+        if controller._selected() == 2:
+            break
+        assert controller._selected() == 0
+    assert deeper >= ACCEPTANCE_MIN_SAMPLES
+    assert controller._selected() == 2

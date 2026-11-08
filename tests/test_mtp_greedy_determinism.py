@@ -756,7 +756,8 @@ def test_adaptive_controller_still_learns_costs():
     assert controller.cost.cost(0) > 10.0
 
 
-def test_fixed_park_retains_only_outward_acceptance_exploration():
+def test_fixed_park_skips_redundant_cost_refresh_probes():
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import DEPTH_PROBE_INTERVAL_MAX
     from rapid_mlx.spec_decode.mtp.reproducible_depth import request_depth_controller
 
     controller = request_depth_controller((1.0, 1.87, 2.49), 2)
@@ -764,12 +765,13 @@ def test_fixed_park_retains_only_outward_acceptance_exploration():
         controller.record(1, 1.87, [False])
         controller.record(2, 2.49, [False])
     assert controller._selected() == 0
-    for _ in range(200):
+    for _ in range(4 * DEPTH_PROBE_INTERVAL_MAX):
         k = controller.pick_k(refresh_park_costs=False)
         controller.record(k, (1.0, 1.87, 2.49)[k], [False] if k else [])
     assert controller.starvation_probe_count == 0
     assert controller.k_histogram[0] > 150
     assert controller.k_histogram[1] > 0
+    assert controller.k_histogram[2] > 8
 
 
 def test_active_fixed_controller_retains_original_exploration():
