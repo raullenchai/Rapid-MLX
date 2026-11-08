@@ -455,6 +455,7 @@ struct ModelPickerBar: View {
                     await refreshCatalog(force: true)
                 }
             }
+            .accessibilityIdentifier("ModelPickerBar.DiscoveryRetry")
             if let starter = catalog.first(where: {
                 $0.alias == QuickstartCoordinator.baselineChoice(hardware: hardware).alias
             }) {
