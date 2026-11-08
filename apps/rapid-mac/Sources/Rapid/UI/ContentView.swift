@@ -1,29 +1,38 @@
 import SwiftUI
 
 actor StartupModelLinkMaintenanceCoordinator {
-    private var inFlight: (generation: UInt, id: UUID, task: Task<Void, Never>)?
+    private var inFlight: (generation: UInt, id: UUID, task: Task<Bool, Never>)?
     private var completedGeneration: UInt?
 
     func run(generation: UInt, _ operation: @escaping @Sendable () -> Void) async {
         if let completedGeneration, completedGeneration >= generation { return }
         if let current = inFlight {
-            await current.task.value
+            let succeeded = await current.task.value
             if inFlight?.id == current.id {
-                completedGeneration = max(completedGeneration ?? 0, current.generation)
+                if succeeded { completedGeneration = max(completedGeneration ?? 0, current.generation) }
                 inFlight = nil
             }
-            if !Task.isCancelled,
+            if succeeded, !Task.isCancelled,
                (completedGeneration ?? 0) < generation {
                 await run(generation: generation, operation)
             }
             return
         }
         let id = UUID()
-        let task = Task.detached(priority: .utility) { operation() }
+        let task = Task {
+            await withCheckedContinuation { continuation in
+                if !DiscoveryBlockingIO.shared.submit({
+                    operation()
+                    continuation.resume(returning: true)
+                }) {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
         inFlight = (generation, id, task)
-        await task.value
+        let succeeded = await task.value
         if inFlight?.id == id {
-            completedGeneration = max(completedGeneration ?? 0, generation)
+            if succeeded { completedGeneration = max(completedGeneration ?? 0, generation) }
             inFlight = nil
         }
     }
@@ -2078,7 +2087,7 @@ struct ContentView: View {
     }
 
     private static func ensureStartupModelLinks(generation: UInt) async {
-        try? await DiscoveryDeadline.run {
+        try? await DiscoveryDeadline.runAsync {
             await startupModelLinkMaintenance.run(generation: generation) {
                 _ = BundledModel.installBundledSnapshotSymlink()
                 _ = QuickstartModel.installAllSnapshotSymlinks()

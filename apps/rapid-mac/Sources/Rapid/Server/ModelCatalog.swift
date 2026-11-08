@@ -2141,9 +2141,7 @@ enum ModelCatalog {
             hubCacheOverride: hubCacheOverride
         )
         if json.succeeded, let structured = parseCachedJSON(json.stdout) { return structured }
-        if json.stderr.localizedCaseInsensitiveContains("permission") ||
-            json.stderr.contains("EPERM") || json.stderr.contains("EACCES") ||
-            json.stderr.localizedCaseInsensitiveContains("operation not permitted") {
+        if isPermissionFailure(json.stderr) {
             DiscoveryProbeFailure.current?.record(CocoaError(.fileReadNoPermission))
             return []
         }
@@ -2152,8 +2150,18 @@ enum ModelCatalog {
             args: ["ls"],
             hubCacheOverride: hubCacheOverride
         )
-        if !text.succeeded { DiscoveryProbeFailure.current?.record() }
+        if !text.succeeded {
+            DiscoveryProbeFailure.current?.record(
+                CocoaError(isPermissionFailure(text.stderr) ? .fileReadNoPermission : .fileReadUnknown)
+            )
+        }
         return parseCached(text.stdout).map { ($0.0, $0.1, nil, ModelSize.legacy($0.2), nil, nil) }
+    }
+
+    private static func isPermissionFailure(_ stderr: String) -> Bool {
+        stderr.localizedCaseInsensitiveContains("permission") ||
+            stderr.contains("EPERM") || stderr.contains("EACCES") ||
+            stderr.localizedCaseInsensitiveContains("operation not permitted")
     }
 
     /// Parses the ``rapid-mlx models`` output. The format (v0.6.83) is a
@@ -2532,7 +2540,7 @@ enum ModelCatalog {
         afterLaunch: (@Sendable () -> Void)? = nil
     ) async -> RapidMlxResult {
         do {
-            return try await DiscoveryDeadline.run {
+            return try await DiscoveryDeadline.runAsync {
                 await runRapidMlxUnbounded(binary: binary, args: args,
                     hubCacheOverride: hubCacheOverride, processRegistry: processRegistry,
                     beforeLaunch: beforeLaunch, afterLaunch: afterLaunch)
@@ -2551,6 +2559,9 @@ enum ModelCatalog {
         let processBox = CatalogProcessBox()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<RapidMlxResult, Never>) in
+            // Process launch may itself touch a protected executable/volume.
+            // Keep setup off the cooperative executor as well as pipe reads.
+            let admitted = DiscoveryBlockingIO.shared.submit {
             let task = Process()
             task.executableURL = binary
             task.arguments = args
@@ -2668,6 +2679,11 @@ enum ModelCatalog {
             try? stderr.fileHandleForWriting.close()
             processBox.terminateIfCancelled()
             processRegistry.terminateIfShuttingDown(task)
+            }
+            if !admitted {
+                DiscoveryProbeFailure.current?.record(DiscoveryDeadline.Expired())
+                continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+            }
             }
         } onCancel: {
             processBox.cancel()

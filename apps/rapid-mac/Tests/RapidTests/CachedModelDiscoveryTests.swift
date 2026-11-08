@@ -6,6 +6,91 @@ import Testing
 struct CachedModelDiscoveryTests {
     private let binary = URL(fileURLWithPath: "/fake/rapid-mlx")
 
+    @Test("A synchronous consent-blocked probe times out off the cooperative executor")
+    func blockedProbeDeadline() async {
+        let pool = DiscoveryBlockingIO(limit: 1)
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        var iterator = started.makeAsyncIterator()
+        let start = ContinuousClock.now
+        let probe = Task {
+            try await DiscoveryDeadline.run(seconds: 0.1, blockingIO: pool) {
+                #expect(!Thread.isMainThread)
+                signal.yield()
+                waitBlocking(gate)
+                return 42
+            }
+        }
+        _ = await iterator.next()
+        do {
+            _ = try await probe.value
+            Issue.record("Blocked probe should expire")
+        } catch {
+            #expect(error is DiscoveryDeadline.Expired)
+        }
+        #expect(start.duration(to: .now) < .seconds(2))
+    }
+
+    @Test("Retries retain blocked slots and fail promptly at the fixed probe cap")
+    func blockedProbeRetryCap() async {
+        let limit = 2
+        let pool = DiscoveryBlockingIO(limit: limit)
+        let gate = DispatchSemaphore(value: 0)
+        defer { for _ in 0..<limit { gate.signal() } }
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        var iterator = started.makeAsyncIterator()
+        // Fill every slot, leaving each operation blocked after its deadline.
+        for _ in 0..<limit {
+            let probe = Task {
+                try await DiscoveryDeadline.run(seconds: 0.1, blockingIO: pool) {
+                    signal.yield()
+                    waitBlocking(gate)
+                }
+            }
+            _ = await iterator.next()
+            do {
+                try await probe.value
+                Issue.record("Blocked probe should expire")
+            } catch { #expect(error is DiscoveryDeadline.Expired) }
+        }
+        let start = ContinuousClock.now
+        for _ in 0..<20 {
+            do {
+                try await DiscoveryDeadline.run(seconds: 0.5, blockingIO: pool) {
+                    Issue.record("Retry must not start more work while the cap is occupied")
+                    waitBlocking(gate)
+                }
+                Issue.record("Saturated probe queue should expire immediately")
+            } catch { #expect(error is DiscoveryDeadline.Expired) }
+        }
+        #expect(start.duration(to: .now) < .seconds(2))
+    }
+
+    @Test("Cancellation wins a blocked probe and ignores its late completion")
+    func cancelBlockedProbe() async {
+        let pool = DiscoveryBlockingIO(limit: 1)
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let (started, signal) = AsyncStream<Void>.makeStream()
+        var iterator = started.makeAsyncIterator()
+        let probe = Task {
+            try await DiscoveryDeadline.run(seconds: 30, blockingIO: pool) {
+                signal.yield()
+                waitBlocking(gate)
+                return 42
+            }
+        }
+        _ = await iterator.next()
+        let start = ContinuousClock.now
+        probe.cancel()
+        do {
+            _ = try await probe.value
+            Issue.record("Cancelled probe should throw")
+        } catch { #expect(error is CancellationError) }
+        #expect(start.duration(to: .now) < .seconds(2))
+    }
+
     /// Deliberately ignores cancellation, like a filesystem read blocked by
     /// an unanswered permission prompt. Released by the test after timeout.
     private actor Provider {
@@ -402,6 +487,29 @@ struct CachedModelDiscoveryTests {
         #expect(await cache.discoveryFailure == nil)
     }
 
+    @Test("Legacy ls permission stderr preserves volume-specific discovery failure",
+          arguments: ["Permission denied", "EPERM", "EACCES", "Operation not permitted"])
+    func legacyPermissionFailure(stderr: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = root.appendingPathComponent("rapid-mlx")
+        try Data("""
+        #!/bin/sh
+        case "$*" in
+          "models --cached --json") echo 'unknown option --json' >&2; exit 2 ;;
+          "ls") echo '\(stderr)' >&2; exit 1 ;;
+          *) echo '{"text": []}' ;;
+        esac
+
+        """.utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let cache = ModelCatalogCache(volumeResolver: { _ in "Models SSD" }, requestedOverride: { nil })
+        let result = await cache.discoveryResult(binary: script, generation: 0)
+        #expect(result.failure?.volumeName == "Models SSD")
+        await assertStarterCanDownload(result.entries)
+    }
+
     @Test("CLI stderr permission failure reaches discovery state")
     func cliPermissionFailure() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -415,4 +523,9 @@ struct CachedModelDiscoveryTests {
         #expect(await cache.discoveryFailure?.volumeName == "Models SSD")
         await assertStarterCanDownload(entries)
     }
+}
+
+/// Keep semaphore waits in synchronous closures on the blocking-I/O queue.
+private func waitBlocking(_ semaphore: DispatchSemaphore) {
+    semaphore.wait()
 }

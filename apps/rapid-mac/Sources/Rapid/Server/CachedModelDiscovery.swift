@@ -1,5 +1,36 @@
 import Foundation
 
+/// Admission is counted before dispatch, including queued work. A timed-out
+/// syscall retains its slot until it actually returns, so Retry cannot create
+/// an unbounded number of threads waiting for removable-volume consent.
+final class DiscoveryBlockingIO: @unchecked Sendable {
+    static let shared = DiscoveryBlockingIO()
+    static let defaultLimit = 4
+    private let queue = DispatchQueue(label: "rapid.discovery.blocking-io", qos: .utility, attributes: .concurrent)
+    private let lock = NSLock()
+    private let limit: Int
+    private var outstanding = 0
+
+    init(limit: Int = defaultLimit) { self.limit = limit }
+
+    @discardableResult
+    func submit(_ operation: @escaping @Sendable () -> Void) -> Bool {
+        lock.lock()
+        guard outstanding < limit else { lock.unlock(); return false }
+        outstanding += 1
+        lock.unlock()
+        queue.async {
+            defer {
+                self.lock.lock()
+                self.outstanding -= 1
+                self.lock.unlock()
+            }
+            operation()
+        }
+        return true
+    }
+}
+
 /// A deadline must not await a cancelled task: filesystem reads waiting for
 /// removable-volume consent do not necessarily cooperate with cancellation.
 enum DiscoveryDeadline {
@@ -7,13 +38,46 @@ enum DiscoveryDeadline {
 
     static func run<Value: Sendable>(
         seconds: TimeInterval = 10,
+        blockingIO: DiscoveryBlockingIO = .shared,
+        operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        let race = DiscoveryRace<Value>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                race.install(continuation)
+                let timer = Task.detached {
+                    do { try await Task.sleep(for: .seconds(seconds)) }
+                    catch { return }
+                    race.finish(.failure(Expired()))
+                }
+                race.setTasks([timer])
+                guard !race.isFinished else { return }
+                if !blockingIO.submit({
+                    guard !race.isFinished else { return }
+                    do { race.finish(.success(try operation())) }
+                    catch { race.finish(.failure(error)) }
+                }) {
+                    race.finish(.failure(Expired()))
+                }
+            }
+        } onCancel: {
+            race.finish(.failure(CancellationError()))
+        }
+    }
+
+    /// Only for suspending orchestration. Every synchronous filesystem probe
+    /// inside this closure must use run (or the bounded blocking-I/O queue).
+    static func runAsync<Value: Sendable>(
+        seconds: TimeInterval = 10,
         operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {
         let race = DiscoveryRace<Value>()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 race.install(continuation)
-                let worker = Task.detached {
+                guard !race.isFinished else { return }
+                // Inherit the failure recorder used by catalog subprocesses.
+                let worker = Task {
                     do { race.finish(.success(try await operation())) }
                     catch { race.finish(.failure(error)) }
                 }
@@ -35,6 +99,11 @@ private final class DiscoveryRace<Value: Sendable>: @unchecked Sendable {
     private var continuation: CheckedContinuation<Value, Error>?
     private var result: Result<Value, Error>?
     private var tasks: [Task<Void, Never>] = []
+
+    var isFinished: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return result != nil
+    }
 
     func install(_ continuation: CheckedContinuation<Value, Error>) {
         lock.lock()
@@ -117,9 +186,11 @@ enum CachedModelDiscovery {
             ),
             volumeResolver: volumeResolver
         ) {
-            let override = try ModelsFolderPreference.discoveryOverrideURL(
-                requestedOverride, directoryProbe: directoryProbe
-            )
+            let override = try await DiscoveryDeadline.run(seconds: timeout) {
+                try ModelsFolderPreference.discoveryOverrideURL(
+                    requestedOverride, directoryProbe: directoryProbe
+                )
+            }
             return try await provider(override)
         }
     }
@@ -131,7 +202,7 @@ enum CachedModelDiscovery {
         provider: @escaping @Sendable () async throws -> [ModelEntry]
     ) async -> CachedModelDiscoveryResult {
         do {
-            let entries = try await DiscoveryDeadline.run(seconds: timeout) {
+            let entries = try await DiscoveryDeadline.runAsync(seconds: timeout) {
                 let failures = DiscoveryProbeFailure()
                 let entries = try await DiscoveryProbeFailure.$current.withValue(failures) {
                     try await provider()
