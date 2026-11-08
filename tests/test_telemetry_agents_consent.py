@@ -329,11 +329,19 @@ def test_agent_setup_events_cover_success_and_all_failure_classes(
         },
         {
             "event": "agent_configure_failed",
-            "properties": {"agent": "continue", "error_class": "server_not_ready"},
+            "properties": {
+                "agent": "continue",
+                "error_class": "server_not_ready",
+                "cause": "other",
+            },
         },
         {
             "event": "agent_configure_failed",
-            "properties": {"agent": "continue", "error_class": "server_not_ready"},
+            "properties": {
+                "agent": "continue",
+                "error_class": "server_not_ready",
+                "cause": "model_not_loaded",
+            },
         },
         {
             "event": "agent_configure_failed",
@@ -483,6 +491,7 @@ def test_saved_first_class_config_with_dead_server_emits_only_failure(
             "properties": {
                 "agent": "continue",
                 "error_class": "server_not_ready",
+                "cause": "other",
             },
         }
     ]
@@ -1027,6 +1036,10 @@ def test_setup_without_server_or_model_tracks_not_running(
     assert [_event_view(item) for item in _items(loopback_telemetry)] == [
         {
             "event": "agent_configure_failed",
-            "properties": {"agent": "codex", "error_class": "server_not_running"},
+            "properties": {
+                "agent": "codex",
+                "error_class": "server_not_running",
+                "cause": "connection_refused",
+            },
         }
     ]
