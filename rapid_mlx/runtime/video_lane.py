@@ -81,6 +81,11 @@ def validate_video_request(
     image: Path | None,
 ) -> None:
     """Run family-specific validation before a video job is queued."""
+    hunyuan = getattr(engine, "_hunyuan_engine", None)
+    if hunyuan is not None:
+        hunyuan.validate_request(
+            width=width, height=height, num_frames=num_frames, image=image
+        )
     h3_engine = getattr(engine, "_minimax_engine", None)
     if h3_engine is not None:
         h3_engine.validate_request(
@@ -106,6 +111,12 @@ def _is_wan_name(model_name: str | None) -> bool:
     from ..video.wan import is_wan_model
 
     return is_wan_model(model_name)
+
+
+def _is_hunyuan_name(model_name: str | None) -> bool:
+    from ..video.hunyuan_video15 import is_hunyuan_video15_model
+
+    return is_hunyuan_video15_model(model_name)
 
 
 def _is_minimax_name(model_name: str | None) -> bool:
@@ -265,6 +276,28 @@ def video_runtime_issue(
 
     if _is_ltx25_name(model_name):
         return _ltx25_runtime_issue(provision=provision)
+    if _is_hunyuan_name(model_name):
+        missing = [
+            name
+            for name in (
+                "mlx",
+                "mlx_lm",
+                "transformers",
+                "safetensors",
+                "huggingface_hub",
+            )
+            if importlib.util.find_spec(name) is None
+        ]
+        if _resolve_ffmpeg() is None:
+            missing.append("ffmpeg")
+        if not missing:
+            return None
+        return VideoRuntimeIssue(
+            detail="HunyuanVideo 1.5 requires " + ", ".join(missing),
+            install_hint=optional_extra_install_hint("video", status="broken"),
+            status="broken",
+            marker_reason="runtime_dependency_missing",
+        )
     if _is_minimax_name(model_name):
         try:
             root = importlib.util.find_spec("mlx_vlm")
@@ -391,11 +424,18 @@ class VideoEngine:
                 )
             )
         )
+        if _is_hunyuan_name(model_name):
+            self.video_family = "hunyuan-video-1.5"
+        self._hunyuan_engine = None
         self._cog_engine = None
         self._wan_engine = None
         self._ltx25_engine = None
         self._minimax_engine = None
-        if self.video_family == "cogvideox-fun":
+        if self.video_family == "hunyuan-video-1.5":
+            from ..video.hunyuan_video15.backend import HunyuanVideo15Engine
+
+            self._hunyuan_engine = HunyuanVideo15Engine(model_name)
+        elif self.video_family == "cogvideox-fun":
             from ..video.engine import VideoGenerationEngine
 
             self._cog_engine = VideoGenerationEngine(model_name)
@@ -495,6 +535,34 @@ class VideoEngine:
             minimax_engine, "supports_last_frame", False
         ):
             raise VideoRuntimeError("last_frame is not supported by this model")
+        hunyuan = getattr(self, "_hunyuan_engine", None)
+        if hunyuan is not None:
+            from ..video.engine import VideoBackendUnavailableError
+
+            try:
+                hunyuan.validate_request(
+                    width=width, height=height, num_frames=num_frames, image=image
+                )
+                if conditioning_strength is not None:
+                    raise ValueError("HunyuanVideo 1.5 supports text-to-video only")
+                with self._generation_lock:
+                    hunyuan.generate_sync(
+                        output_path=output_path,
+                        prompt=prompt,
+                        width=width,
+                        height=height,
+                        frames=num_frames,
+                        fps=fps,
+                        seed=seed,
+                        negative_prompt=negative_prompt or "",
+                        guidance_scale=guidance_scale,
+                        cancel_token=cancel_token,
+                        on_progress=on_progress,
+                        on_loaded=self._emit_model_served,
+                    )
+            except (ValueError, VideoBackendUnavailableError) as exc:
+                raise VideoRuntimeError(str(exc)) from exc
+            return
         if minimax_engine is not None:
             from ..video.minimax_h3 import MiniMaxH3BackendError, MiniMaxH3RequestError
 
@@ -877,6 +945,8 @@ class VideoEngine:
         """Video weights load lazily; startup must not trigger a 40+ GB pull."""
 
     async def stop(self) -> None:
+        if getattr(self, "_hunyuan_engine", None) is not None:
+            await self._hunyuan_engine.close()
         minimax_engine = getattr(self, "_minimax_engine", None)
         if minimax_engine is not None:
             minimax_engine.stop()
