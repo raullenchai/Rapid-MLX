@@ -16,7 +16,7 @@ rapid_mlx/api/models.py 5
 rapid_mlx/api/reasoning_budget.py 3
 rapid_mlx/api/responses_adapter.py 4
 rapid_mlx/api/responses_models.py 2
-rapid_mlx/api/tool_calling.py 22
+rapid_mlx/api/tool_calling.py 17
 rapid_mlx/api/tool_grammar.py 1
 rapid_mlx/api/utils.py 5
 rapid_mlx/audio/processor.py 4
