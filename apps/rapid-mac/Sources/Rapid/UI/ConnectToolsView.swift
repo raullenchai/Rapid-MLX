@@ -240,6 +240,7 @@ struct ConnectToolsView: View {
             toolsSection(tools.filter { $0.action == .launch }, title: String(localized: "Terminal agents"), terminal: true)
             toolsSection(tools.filter { $0.action != .launch }, title: String(localized: "Editors and apps"), terminal: false)
             endpointSection
+            LANAccessPanel(server: server)
             claudeDesktopSection
 
             Button {
@@ -1000,10 +1001,12 @@ private enum TerminalAgentLauncher {
 }
 
 /// A labelled value with a trailing copy button; masks secrets by default.
-private struct CopyableRow: View {
+struct CopyableRow: View {
     let label: String
     let value: String
     var masked: Bool = false
+    var maskedDisplay: String? = nil
+    var identifierSuffix: String = ""
     /// Shown instead of the value when there is nothing real to show.
     /// Its presence also disables Copy — an empty clipboard write is a
     /// silent failure the user only discovers in their editor.
@@ -1020,7 +1023,7 @@ private struct CopyableRow: View {
     private var shown: String {
         guard hasValue else { return placeholder ?? "—" }
         guard masked, !reveal else { return value }
-        return String(repeating: "•", count: min(value.count, 16))
+        return maskedDisplay ?? String(repeating: "•", count: min(value.count, 16))
     }
 
     var body: some View {
@@ -1057,7 +1060,7 @@ private struct CopyableRow: View {
                 ) {
                     reveal.toggle()
                 }
-                .accessibilityIdentifier("ConnectTools.Reveal.\(label)")
+                .accessibilityIdentifier("ConnectTools.Reveal.\(label)\(identifierSuffix)")
             }
             QuietIconButton(
                 symbol: copied ? "checkmark" : "doc.on.doc",
@@ -1077,7 +1080,7 @@ private struct CopyableRow: View {
                 }
             }
             .disabled(!hasValue)
-            .accessibilityIdentifier("ConnectTools.Copy.\(label)")
+            .accessibilityIdentifier("ConnectTools.Copy.\(label)\(identifierSuffix)")
         }
         .padding(.horizontal, RapidTheme.Space.md)
         .frame(height: RapidTheme.ControlHeight.medium)

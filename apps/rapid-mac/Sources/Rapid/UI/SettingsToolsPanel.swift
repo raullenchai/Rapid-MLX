@@ -479,7 +479,7 @@ struct SettingsToolsPanel: View {
     private var embeddedAPISection: some View {
         SettingsSection(
             String(localized: "Embedded API security"),
-            subtitle: String(localized: "The Desktop engine always requires a bearer key and stays bound to 127.0.0.1. Choose when that key rotates.")
+            subtitle: String(localized: "The Desktop engine always requires a bearer key. Network access is off by default. Choose when the key rotates.")
         ) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 RapidSegmentedControl(
@@ -506,6 +506,7 @@ struct SettingsToolsPanel: View {
                     ],
                     accessibilityLabel: String(localized: "Embedded API key rotation")
                 )
+                .disabled(server.lanAccessEnabled || server.isChangingLANAccess)
                 .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.Lifetime")
 
                 Text(server.embeddedBearerLifetime.summary)
@@ -514,6 +515,8 @@ struct SettingsToolsPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 statusCopy
+
+                LANAccessPanel(server: server)
 
                 if server.embeddedBearerLifetime != .perLaunch {
                     Button("Rotate now") {

@@ -422,6 +422,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # — never selects a model, parser, or routing tier; it only
         # decides whether a request body is admitted at all.
         "RAPID_MLX_MAX_REQUEST_BYTES",
+        # Server-side: set by the desktop app when the user opts into LAN
+        # access. Enables the method+route allowlist for non-loopback peers
+        # in ``rapid_mlx/middleware/lan_inference.py``. Pure security
+        # boundary — never selects a model, parser, or routing tier.
+        "RAPID_MLX_LAN_INFERENCE_ONLY",
         # Path to the MCP server config file (formerly VLLM_MLX_MCP_CONFIG).
         # Plumbs ``--mcp-config`` from the CLI to the FastAPI lifespan and is
         # consumed only by ``rapid_mlx/mcp/config.py`` to discover MCP tool

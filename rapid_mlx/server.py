@@ -1558,6 +1558,11 @@ from .middleware.probe_fastpath import install_probe_fastpath_middleware  # noqa
 
 install_probe_fastpath_middleware(app)
 
+# LAN auth also wraps probe fast paths, which otherwise bypass dependencies.
+from .middleware.lan_inference import LANInferenceMiddleware  # noqa: E402
+
+app.add_middleware(LANInferenceMiddleware, router=app.router)
+
 # CORS configuration — configurable via --cors-origins CLI flag and the
 # ``RAPID_MLX_CORS_*`` env-var family (F-090 / F-091). The previous default
 # registered CORSMiddleware with ``allow_origins=["*"]`` and

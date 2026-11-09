@@ -847,6 +847,43 @@ final class ServerManager {
     /// than hardcoding a second copy of the literal.
     let host: String = "127.0.0.1"
 
+    // Internal clients always connect via loopback; only the listener changes.
+    private(set) var lanAccessEnabled = false
+    private(set) var isChangingLANAccess = false
+    private(set) var lanAccessError: String?
+
+    nonisolated static func persistedLANSecretMatches(
+        _ secret: String, store: any EmbeddedBearerCredentialStoring
+    ) -> Bool {
+        guard case .found(let credential) = store.loadCredential() else { return false }
+        return !secret.isEmpty && credential.secret == secret && credential.lifetime == .explicit
+    }
+
+    func setLANAccessEnabled(_ enabled: Bool) async {
+        guard !isChangingLANAccess, !isOperating, enabled != lanAccessEnabled else { return }
+        lanAccessError = nil
+        if enabled {
+            guard LANAccess.credential(store: bearerCredentialStore) != nil else {
+                lanAccessError = String(localized: "LAN access requires a persistent API key. The Keychain could not save or read the key. Unlock your Keychain and try again.")
+                return
+            }
+            setEmbeddedBearerLifetime(.explicit)
+        }
+        isChangingLANAccess = true
+        defer { isChangingLANAccess = false }
+        let runningAlias: String?
+        if case .ready(let alias) = state { runningAlias = alias } else { runningAlias = nil }
+        // Stop the old listener before changing the advertised mode.
+        if runningAlias != nil { await stop() }
+        lanAccessEnabled = enabled
+        sessionDefaults?.set(enabled, forKey: "rapid.lanAccess.enabled.v1")
+        if let runningAlias {
+            if !(await ensureServing(alias: runningAlias, hfPath: nil, residencyEligible: false)) {
+                lanAccessError = String(localized: "The API could not restart. Start the model again to apply the network setting.")
+            }
+        }
+    }
+
     /// The port the most recent ``start()`` actually bound rapid-mlx
     /// to. Initialised to ``PortSweep.defaultPort`` (7659) so callers
     /// reading this before the first spawn don't have to special-case
@@ -1297,6 +1334,7 @@ final class ServerManager {
                 : SystemKeychain()
         )
         self.embeddedBearerLifetime = Self.loadBearerLifetime(from: .standard)
+        self.lanAccessEnabled = UserDefaults.standard.bool(forKey: "rapid.lanAccess.enabled.v1")
         configureIdleModelRelease(IdleModelReleasePreference.value())
     }
 
@@ -1355,6 +1393,7 @@ final class ServerManager {
         self.embeddedBearerLifetime = Self.loadBearerLifetime(
             from: sessionDefaults ?? UserDefaults()
         )
+        self.lanAccessEnabled = sessionDefaults?.bool(forKey: "rapid.lanAccess.enabled.v1") ?? false
         self.binaryResolution = binaryPath.map {
             ServerLocator.Resolution(binary: $0, source: binarySource, version: nil)
         }
@@ -1371,6 +1410,7 @@ final class ServerManager {
     }
 
     func setEmbeddedBearerLifetime(_ lifetime: EmbeddedBearerLifetime) {
+        guard !lanAccessEnabled || lifetime == .explicit else { return }
         embeddedBearerLifetime = lifetime
         sessionDefaults?.set(lifetime.rawValue, forKey: "rapid.embeddedBearer.lifetime.v1")
         if lifetime == .perLaunch {
@@ -3074,11 +3114,17 @@ final class ServerManager {
                 return BearerSecret.generate()
             }
         )
-        guard !bearerMaterial.secret.isEmpty else {
+        guard !bearerMaterial.secret.isEmpty,
+              !lanAccessEnabled || (
+                embeddedBearerLifetime == .explicit && bearerMaterial.isPersisted && bearerMaterial.issue == nil
+                && Self.persistedLANSecretMatches(bearerMaterial.secret, store: bearerCredentialStore)
+              ) else {
             isOperating = false
             state = .crashed(
                 alias: trimmedAlias,
-                message: "Couldn't start the model securely. Restart Rapid-MLX; if this keeps happening, please file a bug."
+                message: lanAccessEnabled
+                    ? String(localized: "LAN access requires a persistent API key. The Keychain could not save or read the key. Unlock your Keychain and try again.")
+                    : "Couldn't start the model securely. Restart Rapid-MLX; if this keeps happening, please file a bug."
             )
             enqueueOnboardingEngineStartFailed(alias: trimmedAlias)
             return
@@ -3172,6 +3218,7 @@ final class ServerManager {
             alias: trimmedAlias,
             host: host,
             port: activePort,
+            lanInferenceOnly: lanAccessEnabled,
             extraFlags: extraFlags,
             // Issue #1716: resolved at spawn, not at construction — the user
             // can add their first connector long after the app launched, and
@@ -3291,6 +3338,7 @@ final class ServerManager {
                 // never enter the sidecar's address space.
                 environmentAdditions: Self.serveEnvironmentAdditions(
                     bearer: bearerMaterial.secret,
+                    lanInferenceOnly: lanAccessEnabled,
                     ambient: ProcessInfo.processInfo.environment,
                     // Issue #1412: the engine's server-oriented default may
                     // retain up to 20% of RAM in prefix-cache entries. The
@@ -5165,6 +5213,7 @@ final class ServerManager {
         alias: String,
         host: String,
         port: Int,
+        lanInferenceOnly: Bool = false,
         extraFlags: [String] = [],
         mcpConfigPath: String? = nil,
         videoOutputDirectory: String? = nil,
@@ -5183,7 +5232,7 @@ final class ServerManager {
         var args = [
             "serve",
             alias,
-            "--host", host,
+            "--host", lanInferenceOnly ? "0.0.0.0" : host,
             "--port", String(port),
             // Voice co-loading: mount the ``/v1/audio/*`` lane on EVERY spawned
             // server so speech (STT/TTS) can run side-by-side with the primary
@@ -5211,7 +5260,10 @@ final class ServerManager {
         // centrally from ``RAMBucketedDefault.launchFlags`` — only non-empty
         // when the alias is the recommended pick for THIS Mac's RAM — so a
         // hand-picked model on a larger Mac keeps its full capabilities.
-        args.append(contentsOf: extraFlags)
+        // Desktop never permits the CLI's unauthenticated public escape hatch.
+        args.append(contentsOf: extraFlags.filter {
+            $0 != "--allow-unauthenticated-public" && !$0.hasPrefix("--allow-unauthenticated-public=")
+        })
         if localSearchEnabled && capabilities.supportsLocalSearch {
             args.append(contentsOf: ["--enable-local-search", "--local-search-dir", localSearchDirectory])
         }
@@ -5486,6 +5538,7 @@ final class ServerManager {
     /// value back to ``nil`` when the drive is unplugged.
     nonisolated internal static func serveEnvironmentAdditions(
         bearer: String,
+        lanInferenceOnly: Bool = false,
         ambient: [String: String],
         physicalRAMBytes: UInt64 = 0,
         availableRAMBytes: UInt64 = 0,
@@ -5529,6 +5582,9 @@ final class ServerManager {
             home: env["HOME"]
         )
 
+        if lanInferenceOnly {
+            env["RAPID_MLX_LAN_INFERENCE_ONLY"] = "1"
+        }
         // Layer 2: desktop-injected, always.
         env = EngineProcessEnvironment.sidecar(env)
         if !bearer.isEmpty {
