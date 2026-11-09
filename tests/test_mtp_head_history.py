@@ -93,6 +93,7 @@ def _harness(legacy=False, fused=False):
         _restore_processor_state=lambda state: None,
         _timing_add=lambda *args: None,
         _launch_drafts=lambda result: result,
+        logger=logging.getLogger("test_mtp_head_history"),
     )
     # These nested functions use enclosing generator state. Executing them in
     # one namespace preserves that state without importing the MLX runtime.
@@ -100,6 +101,7 @@ def _harness(legacy=False, fused=False):
         "_trim_head",
         "_flush_head",
         "_discard_head_history",
+        "_settle_head_after_error",
         "_replay_parked_head",
         "_finish_head",
         "_park_head",
@@ -1017,6 +1019,25 @@ def test_failed_head_settlement_discards_history(fail_at):
     assert fresh.offset == 0
     assert env["head_pending"] is None
     assert env["parked_head_rows"] == []
+
+
+def test_draft_failure_keeps_error_when_recovery_settlement_fails():
+    env, _, _, _ = _harness()
+    env["head_pending"] = (np.full((1, 1, 1), 7.0), np.array([4]))
+
+    def draft_fail(*args, **kwargs):
+        raise RuntimeError("draft failed")
+
+    def settle_fail(*args, **kwargs):
+        raise ValueError("head settlement failed")
+
+    env["_step_mtp_chain"] = draft_fail
+    env["model"].mtp_forward = settle_fail
+    env["model"].make_mtp_cache = lambda: []
+    env["prompt_cache"] = None
+    with pytest.raises(RuntimeError, match="draft failed"):
+        env["_draft_chain_timed"]()
+    assert env["head_pending"] is None
 
 
 def test_probe_reset_allocation_failure_preserves_history():

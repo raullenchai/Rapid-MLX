@@ -715,6 +715,20 @@ def mtp_generate_step(
         else:
             _flush_head()
 
+    def _settle_head_after_error(settle):
+        """Best-effort settlement on an error path; never replaces that error.
+
+        A failed settlement has already discarded the head history, so only
+        draft acceptance is lost; the original exception keeps propagating.
+        """
+        try:
+            settle()
+        except BaseException:
+            logger.warning(
+                "[MTP] failed to settle deferred head history after an error",
+                exc_info=True,
+            )
+
     def _park_head(hidden, token):
         # Bound retained hidden rows and replay width on long parked runs.
         parked_head_rows.append((hidden, token))
@@ -1370,7 +1384,7 @@ def mtp_generate_step(
                 _trim_head((mtp_cache[0].offset if mtp_cache else 0) - head_start)
                 head_pending = saved_pending
                 parked_head_rows[:] = saved_parked
-                _flush_head()
+                _settle_head_after_error(_flush_head)
             raise
         finally:
             # Draft-side interventions shape q(d), but only target-verified,
@@ -1794,7 +1808,7 @@ def mtp_generate_step(
                         if not pending_is_prompt_lookup:
                             _trim_head(k_len)
                         head_pending = (head_seed, y)
-                        _flush_head()
+                        _settle_head_after_error(_flush_head)
                     _restore_processor_state(processor_boundary)
                     raise
                 # Verification computes every target row eagerly, but none is
@@ -1899,7 +1913,7 @@ def mtp_generate_step(
                         if not pending_is_prompt_lookup:
                             _trim_head(k_len)
                         head_pending = (head_seed, y)
-                        _flush_head()
+                        _settle_head_after_error(_flush_head)
                     _restore_processor_state(processor_boundary)
                     raise
 
@@ -2249,11 +2263,5 @@ def mtp_generate_step(
         # caller-owned caches so they remain reusable after a target error.
         # Settlement is best-effort: it must never replace the original error.
         if rebuild_head_history:
-            try:
-                _finish_head()
-            except BaseException:
-                logger.warning(
-                    "[MTP] failed to settle deferred head history after an error",
-                    exc_info=True,
-                )
+            _settle_head_after_error(_finish_head)
         raise
