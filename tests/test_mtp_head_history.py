@@ -70,6 +70,7 @@ def _harness(legacy=False, fused=False):
         _request_depth=None,
         _CACHE_CLEAR_INTERVAL=256,
         parked_head_rows=[],
+        head_discarded=False,
         mtp_cache=[cache],
         ntoks=1,
         generation_stream=None,
@@ -1065,6 +1066,23 @@ def test_draft_failure_keeps_error_when_discard_allocation_fails():
         env["_draft_chain_timed"]()
     assert caught.value is error
     assert env["head_pending"] is None
+
+
+def test_discard_allocates_once_across_nested_handlers():
+    env, cache, _, _ = _harness()
+    allocations = []
+
+    def make():
+        allocations.append(True)
+        return [type(cache)()]
+
+    env["model"].make_mtp_cache = make
+    env["_discard_head_history"]()
+    fresh = env["mtp_cache"][0]
+    env["_discard_head_history"]()
+    assert allocations == [True]
+    assert env["mtp_cache"][0] is fresh
+    assert env["prompt_cache"] == ["b0", "b1", fresh]
 
 
 def test_discard_allocation_failure_detaches_caller_head():

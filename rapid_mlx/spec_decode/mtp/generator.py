@@ -645,6 +645,7 @@ def mtp_generate_step(
     head_pending = None
     head_seed = None
     parked_head_rows: list[tuple[mx.array, mx.array]] = []
+    head_discarded = False
 
     def _trim_head(n):
         if getattr(model, "mtp_head_atomic_rollback", False):
@@ -676,9 +677,13 @@ def mtp_generate_step(
         a caller cache built without MTP entries, so dropping history costs
         acceptance, never correctness, and leaves no partial write behind.
         """
-        nonlocal mtp_cache, head_pending
+        nonlocal mtp_cache, head_pending, head_discarded
         head_pending = None
         parked_head_rows.clear()
+        if head_discarded:
+            # Every discard ends the generator; one attempt is enough.
+            return
+        head_discarded = True
         caller_tail = prompt_cache is not None and len(prompt_cache) > len(model.layers)
         if caller_tail:
             # Detach the old head first: if allocation fails, the caller keeps
