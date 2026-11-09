@@ -1992,3 +1992,85 @@ def test_lifecycle_command_respects_opt_out(monkeypatch):
     )
     cli._start_v2_lifecycle("chat")
     assert sender.items == []
+
+
+@pytest.mark.parametrize("trigger", ["launch", "day_rollover"])
+def test_desktop_opened_bridge_uses_posthog_contract(monkeypatch, trigger):
+    from rapid_mlx.telemetry.desktop_opened import report
+
+    sender = inject_sender(monkeypatch)
+    flushed = []
+    sender.flush = lambda timeout: flushed.append(timeout)
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    monkeypatch.setenv("RAPID_DESKTOP_APP_VERSION", "1.2.3")
+    report(trigger)
+    assert flushed == [2.0]
+    assert len(sender.items) == 1
+    item = sender.items[0]
+    assert item["event"] == "app_opened"
+    assert item["distinct_id"] == INSTALL_ID
+    props = item["properties"]
+    assert props["install_id"] == INSTALL_ID
+    assert props["surface"] == "desktop"
+    assert props["app_version"] == "1.2.3"
+    assert props["engine_version"] == "0.15.1"
+    assert props["trigger"] == trigger
+    assert props["$geoip_disable"] is True
+    assert props["$process_person_profile"] is False
+    assert "command" not in props
+
+
+def test_desktop_opened_bridge_is_inert_for_other_roles(monkeypatch):
+    from rapid_mlx.telemetry.desktop_opened import report
+
+    sender = inject_sender(monkeypatch)
+    report("launch")
+    assert sender.calls == 0
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_desktop_opened_bridge_reuses_live_consent_without_writes(
+    monkeypatch, tmp_path, enabled
+):
+    from rapid_mlx.telemetry.desktop_opened import report
+
+    sender = inject_sender(monkeypatch)
+    sender.flush = lambda timeout: None
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    monkeypatch.setattr(consent_runtime, "upload_allowed", REAL_UPLOAD_ALLOWED)
+    if enabled:
+        state.consent_path().parent.mkdir(parents=True, exist_ok=True)
+        state.consent_path().write_text(
+            "consent: true\nnotice_revision_seen: 1\nprompted_version: 1.0.0\n"
+        )
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    report("launch")
+    assert sender.calls == int(enabled)
+    assert {
+        str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    } == before
+
+
+@pytest.mark.parametrize(
+    "switch,value", [("DO_NOT_TRACK", "1"), ("RAPID_MLX_TELEMETRY", "0")]
+)
+def test_desktop_opened_bridge_honors_environment_opt_out(monkeypatch, switch, value):
+    from rapid_mlx.telemetry.desktop_opened import report
+
+    sender = inject_sender(monkeypatch)
+    sender.flush = lambda timeout: None
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    monkeypatch.setenv(switch, value)
+    monkeypatch.setattr(consent_runtime, "upload_allowed", REAL_UPLOAD_ALLOWED)
+    report("launch")
+    assert sender.calls == 0
+
+
+def test_desktop_opened_bridge_rejects_unregistered_trigger(monkeypatch):
+    from rapid_mlx.telemetry.desktop_opened import report
+
+    sender = inject_sender(monkeypatch)
+    sender.flush = lambda timeout: None
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
+    report("arbitrary free text")
+    assert sender.calls == 0

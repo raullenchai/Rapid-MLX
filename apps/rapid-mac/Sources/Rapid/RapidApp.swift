@@ -509,6 +509,7 @@ struct RapidApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     Task { await updater.refreshIfNeeded() }
+                    Task { await TelemetrySession.foregroundUsed() }
                 }
                 .task(id: server.servingAlias) {
                     // When the server transitions to ``.ready(alias)``,

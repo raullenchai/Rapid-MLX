@@ -752,8 +752,9 @@ Top three things that go wrong:
 
 **Privacy:** Anonymous, metadata-only telemetry is on by default in 0.15.0 and
 is documented in Settings → Privacy. The desktop app sends its events to
-rapidmlx.com's telemetry service, while the engine sends
-privacy-hardened batches to PostHog Cloud (US). Turn it off in Settings →
+rapidmlx.com's telemetry service. Desktop launch and daily foreground
+`app_opened` events use the engine's privacy-hardened PostHog Cloud (US) pipeline,
+even without a model running. Turn it off in Settings →
 Privacy, with `rapid-mlx telemetry off`, `RAPID_MLX_TELEMETRY=0`, or
 `DO_NOT_TRACK=1`. Prompts, completions, paths, IP addresses, locations, and API
 keys are never collected, and no per-person profile is built. See

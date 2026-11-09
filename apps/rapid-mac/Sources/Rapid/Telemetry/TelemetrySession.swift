@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Process-lifetime lifecycle reporter shared by the launch task, the
@@ -7,9 +8,29 @@ import Foundation
 @MainActor
 enum TelemetrySession {
     private static var startFired = false
+    private static var activityMonitor: Any?
+
+    /// Real input catches rollover while the app stays active across midnight.
+    /// Activation alone also counts; no background timer emits daily events.
+    static func foregroundUsed() async {
+        await DesktopAppOpenedReporter.shared.foregroundUsed()
+    }
 
     static func sendStartIfNeeded() async {
-        guard TelemetryConfig.isEnabled, !startFired else { return }
+        // Install even while opted out so a later Settings opt-in can start
+        // reporting on input without requiring a window activation/relaunch.
+        // The reporter gates every callback before reading or writing state.
+        if activityMonitor == nil {
+            activityMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]
+            ) { event in
+                Task { @MainActor in await foregroundUsed() }
+                return event
+            }
+        }
+        guard TelemetryConfig.isEnabled else { return }
+        await foregroundUsed()
+        guard !startFired else { return }
         startFired = true
         await TelemetryClient().send(.sessionStart(
             version: TelemetryClient.currentVersion(),

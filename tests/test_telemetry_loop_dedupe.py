@@ -874,9 +874,9 @@ def test_registry_has_no_new_server_start_or_app_opened_properties():
     registry = json.loads(
         (Path(rapid_mlx.__file__).parent / "telemetry" / "events.json").read_text()
     )
-    # The closed ``command`` enum was added later on purpose; it is not part
-    # of the dedupe ledger key (surface, version, install), see below.
-    assert set(registry["events"]["app_opened"]["props"]) == {"command"}
+    # Closed command and Desktop trigger enums are intentional additions;
+    # neither changes the CLI/server dedupe ledger key (surface, version, install).
+    assert set(registry["events"]["app_opened"]["props"]) == {"command", "trigger"}
     assert set(registry["events"]["server_start_state"]["props"]) == {
         "state",
         "model_type",

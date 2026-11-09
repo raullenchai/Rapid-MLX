@@ -523,3 +523,23 @@ def test_unknown_action_is_defensively_rejected(capsys):
     with pytest.raises(SystemExit, match="1"):
         cli.telemetry_command(_args("wat"))
     assert "Unknown telemetry action" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("trigger", ["launch", "day_rollover"])
+def test_desktop_opened_parser_and_dispatch(monkeypatch, trigger):
+    from rapid_mlx.telemetry import desktop_opened
+
+    reported = []
+    monkeypatch.setattr(desktop_opened, "report", reported.append)
+    args = cli.build_parser().parse_args(
+        ["telemetry", "desktop-opened", "--trigger", trigger]
+    )
+    cli.telemetry_command(args)
+    assert reported == [trigger]
+
+
+def test_desktop_opened_parser_rejects_free_text():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["telemetry", "desktop-opened", "--trigger", "arbitrary"]
+        )

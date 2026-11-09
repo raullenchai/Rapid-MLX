@@ -9706,6 +9706,7 @@
       },
       {
        "choices_help": {
+        "desktop-opened": "Report a consented Desktop foreground lifecycle event",
         "disable": "Alias for telemetry off",
         "enable": "Alias for telemetry on",
         "off": "Turn anonymous usage telemetry off",
@@ -9725,6 +9726,68 @@
        "nargs": "A...",
        "option_strings": [],
        "subcommands": {
+        "desktop-opened": {
+         "actions": [
+          {
+           "class": "argparse._HelpAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "help",
+           "help": "show this help message and exit",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "choices": [
+            "launch",
+            "day_rollover"
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": null,
+           "dest": "trigger",
+           "help": null,
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--trigger"
+           ],
+           "required": true,
+           "type": null
+          }
+         ],
+         "allow_abbrev": true,
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+         "defaults": {},
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse.HelpFormatter",
+         "groups": [
+          {
+           "description": null,
+           "dests": [],
+           "title": "positional arguments"
+          },
+          {
+           "description": null,
+           "dests": [
+            "help",
+            "trigger"
+           ],
+           "title": "options"
+          }
+         ],
+         "mutually_exclusive": [],
+         "prog": "rapid-mlx telemetry desktop-opened"
+        },
         "disable": {
          "actions": [
           {

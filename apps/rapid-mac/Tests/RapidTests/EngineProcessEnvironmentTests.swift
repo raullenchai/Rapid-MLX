@@ -59,6 +59,7 @@ struct EngineProcessEnvironmentTests {
             "Server/DownloadManager.swift": "process.executableURL = binary",
             "Server/ModelCatalog.swift": "task.executableURL = binary",
             "Server/IntegrationCatalog.swift": "process.executableURL = binary",
+            "Telemetry/DesktopAppOpenedReporter.swift": "process.executableURL = binary",
         ]
 
         for (relativePath, spawnNeedle) in expectedSites {
@@ -107,6 +108,7 @@ struct EngineProcessEnvironmentTests {
             "Server/DownloadManager.swift": 1,
             "Server/ModelCatalog.swift": 1,
             "Server/IntegrationCatalog.swift": 1,
+            "Telemetry/DesktopAppOpenedReporter.swift": 1,
         ]
         var classified = allowedNonEngineSites
         for (path, count) in auditedEngineLowLevelSites {
