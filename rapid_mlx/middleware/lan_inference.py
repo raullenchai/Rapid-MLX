@@ -20,6 +20,7 @@ from .auth import verify_api_key_for_scope
 _INFERENCE_ROUTES = {
     "GET": frozenset(
         {
+            "/connect",
             "/v1/models",
             "/v1/audio/voices",
             "/v1/videos",
@@ -111,6 +112,8 @@ class LANInferenceMiddleware:
             response = JSONResponse(
                 {"detail": "This route is available only on this Mac"}, status_code=403
             )
+        elif scope["method"] == "GET" and scope["path"] == "/connect":
+            return await self.app(scope, receive, send)
         else:
             try:
                 # Even probes and routes with no auth dependency require a key.

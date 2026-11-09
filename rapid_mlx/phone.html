@@ -1,0 +1,1311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Rapid" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Rapid · Phone</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font:
+          17px -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        --bg: #fff;
+        --fg: #202120;
+        --muted: #757873;
+        --surface: #f4f4f1;
+        --line: #e7e8e3;
+        --accent: #446b54;
+        --on-accent: #fff;
+        --error: #9b372c;
+        --error-bg: #fff1ed;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1b1c1b;
+          --fg: #eceee9;
+          --muted: #a1a59d;
+          --surface: #292b28;
+          --line: #393c36;
+          --accent: #bdd7c1;
+          --on-accent: #203326;
+          --error: #ffb4a8;
+          --error-bg: #382621;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        overflow: hidden;
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+        touch-action: manipulation;
+        border: 0;
+        background: transparent;
+        min-width: 44px;
+        min-height: 44px;
+        border-radius: 14px;
+      }
+      button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      button:hover:not(:disabled) {
+        filter: brightness(0.94);
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+      svg {
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        vertical-align: middle;
+      }
+      .app {
+        height: 100vh;
+        height: 100dvh;
+        max-width: 800px;
+        margin: auto;
+        display: flex;
+        flex-direction: column;
+        padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right))
+          0 max(12px, env(safe-area-inset-left));
+        min-width: 0;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        min-height: 70px;
+        flex-shrink: 0;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 20px;
+        font-weight: 650;
+        letter-spacing: -0.7px;
+        margin-right: 7px;
+      }
+      .mark {
+        color: var(--accent);
+        font-size: 27px;
+      }
+      .model-pill {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0 10px;
+        background: var(--surface);
+        border-radius: 24px;
+        min-width: 0;
+        max-width: 260px;
+        margin-right: auto;
+        font-size: 13px;
+        font-weight: 550;
+      }
+      .model-pill span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .model-pill svg {
+        width: 13px;
+        flex-shrink: 0;
+      }
+      .icon {
+        flex-shrink: 0;
+        color: var(--muted);
+      }
+      #scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        position: relative;
+        overflow-anchor: none;
+      }
+      .welcome {
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 32px 8px 60px;
+      }
+      .welcome .hero-mark {
+        font-size: 44px;
+        color: var(--accent);
+        margin-bottom: 20px;
+      }
+      .welcome h1 {
+        font-size: 29px;
+        letter-spacing: -1.1px;
+        font-weight: 600;
+        margin: 0 0 12px;
+      }
+      .welcome p {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 0 0 30px;
+      }
+      .suggestions {
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        max-width: 360px;
+      }
+      .suggestions button {
+        border: 1px solid var(--line);
+        padding: 10px 16px;
+        border-radius: 22px;
+        font-size: 14px;
+      }
+      #messages {
+        padding: 12px 10px 24px;
+        overflow-wrap: anywhere;
+      }
+      article {
+        margin: 0 0 28px;
+        line-height: 1.6;
+        min-width: 0;
+      }
+      article[data-role="user"] {
+        background: var(--surface);
+        border-radius: 23px 23px 6px 23px;
+        padding: 12px 18px;
+        max-width: 85%;
+        width: fit-content;
+        margin-left: auto;
+        white-space: pre-wrap;
+      }
+      article[data-role="assistant"] {
+        padding: 0 3px;
+      }
+      .answer p {
+        margin: 0 0 12px;
+        white-space: pre-wrap;
+      }
+      .answer h1,
+      .answer h2,
+      .answer h3,
+      .answer h4,
+      .answer h5,
+      .answer h6 {
+        font-size: 1.15em;
+        line-height: 1.4;
+        margin: 20px 0 10px;
+      }
+      .answer ul,
+      .answer ol {
+        padding-left: 24px;
+        margin: 8px 0 16px;
+      }
+      .answer code {
+        font:
+          14px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        background: var(--surface);
+        padding: 2px 5px;
+        border-radius: 5px;
+      }
+      .code-block {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        margin: 16px 0;
+        min-width: 0;
+      }
+      .code-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--surface);
+        padding-left: 14px;
+        font:
+          12px ui-monospace,
+          monospace;
+        color: var(--muted);
+      }
+      .code-head button {
+        font:
+          12px -apple-system,
+          sans-serif;
+        padding: 0 14px;
+      }
+      pre {
+        margin: 0;
+        padding: 16px;
+        max-width: 100%;
+        overflow-x: auto;
+        white-space: pre;
+        overscroll-behavior-x: contain;
+      }
+      pre code {
+        background: none !important;
+        padding: 0 !important;
+      }
+      .thinking {
+        color: var(--muted);
+        font-size: 14px;
+        margin-bottom: 16px;
+      }
+      .thinking summary {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        gap: 8px;
+      }
+      .thinking summary:before {
+        content: "›";
+        font-size: 20px;
+      }
+      .thinking[open] summary:before {
+        transform: rotate(90deg);
+      }
+      .thought-body {
+        white-space: pre-wrap;
+        border-left: 2px solid var(--line);
+        padding-left: 14px;
+      }
+      .streaming:after {
+        content: "";
+        display: inline-block;
+        width: 7px;
+        height: 14px;
+        border-radius: 3px;
+        background: var(--accent);
+        animation: pulse 1s infinite;
+        vertical-align: middle;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.3;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .streaming:after {
+          animation: none;
+        }
+      }
+      .composer-area {
+        flex-shrink: 0;
+        padding: 8px 2px max(10px, env(safe-area-inset-bottom));
+        background: var(--bg);
+      }
+      #chat {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        padding: 6px;
+      }
+      #composer {
+        background: transparent;
+        border: 0;
+        resize: none;
+        outline: none;
+        box-shadow: none;
+        line-height: 24px;
+        font-size: 17px;
+        padding: 10px 8px 10px 12px;
+        flex: 1;
+        width: 0;
+        min-height: 44px;
+        max-height: 164px;
+        overflow-y: auto;
+      }
+      #composer::placeholder {
+        color: var(--muted);
+      }
+      #send,
+      #stop {
+        background: var(--fg);
+        color: var(--bg);
+        border-radius: 50%;
+        width: 44px;
+        height: 44px;
+        flex-shrink: 0;
+      }
+      #stop svg {
+        fill: currentColor;
+        stroke: none;
+        width: 17px;
+      }
+      .footnote {
+        text-align: center;
+        color: var(--muted);
+        font-size: 11px;
+        margin: 9px 0 0;
+        letter-spacing: 0.1px;
+      }
+      .banner {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        background: var(--error-bg);
+        color: var(--error);
+        border-radius: 16px;
+        padding: 8px 12px;
+        margin: 0 2px 8px;
+        font-size: 14px;
+      }
+      .banner span {
+        flex: 1;
+      }
+      .banner button {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+      }
+      dialog {
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 26px 26px 0 0;
+        padding: 0 20px max(24px, env(safe-area-inset-bottom));
+        position: fixed;
+        inset: auto 0 0;
+        margin: 0 auto;
+        width: 100%;
+        max-width: 650px;
+        max-height: 85dvh;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
+      dialog::backdrop {
+        background: #0006;
+        backdrop-filter: blur(3px);
+      }
+      .sheet-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+        padding: 16px 0 8px;
+        z-index: 1;
+      }
+      .sheet-head h2 {
+        margin: 0;
+        font-size: 21px;
+        letter-spacing: -0.5px;
+      }
+      .sheet-head button {
+        font-size: 26px;
+        color: var(--muted);
+      }
+      .note {
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      label {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+        margin-top: 16px;
+      }
+      .copy-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .copy-row input {
+        min-width: 0;
+        flex: 1;
+      }
+      input {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+        width: 100%;
+        font-size: 16px;
+      }
+      .copy-row button,
+      #credentials button,
+      #forget {
+        font-size: 14px;
+        color: var(--accent);
+        padding: 10px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        margin-top: 12px;
+      }
+      .card a {
+        color: var(--fg);
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        min-height: 44px;
+        text-decoration: none;
+      }
+      .card a:after {
+        content: "↗";
+        margin-left: auto;
+        color: var(--muted);
+      }
+      .card p {
+        font-size: 14px;
+        color: var(--muted);
+        line-height: 1.5;
+        margin: 3px 0 0;
+      }
+      #model-options button {
+        display: flex;
+        text-align: left;
+        align-items: center;
+        width: 100%;
+        padding: 14px;
+        border-radius: 14px;
+        overflow-wrap: anywhere;
+        margin: 4px 0;
+      }
+      #model-options button[aria-pressed="true"] {
+        background: var(--surface);
+        color: var(--accent);
+      }
+      #model-options button[aria-pressed="true"]:after {
+        content: "✓";
+        margin-left: auto;
+        padding-left: 12px;
+      }
+      details summary {
+        cursor: pointer;
+        min-height: 44px;
+        padding: 12px 0;
+        font-size: 14px;
+      }
+      #manual {
+        margin-top: 8px;
+      }
+      @media (max-width: 360px) {
+        .brand {
+          font-size: 18px;
+          gap: 3px;
+          margin-right: 2px;
+        }
+        .model-pill {
+          font-size: 12px;
+          padding: 0 8px;
+        }
+        .welcome h1 {
+          font-size: 26px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">ϟ</span>Rapid
+        </div>
+        <button
+          id="model-button"
+          class="model-pill"
+          aria-label="Choose model"
+          aria-haspopup="dialog"
+          disabled
+        >
+          <span id="model-name">Connecting…</span
+          ><svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m7 10 5 5 5-5" />
+          </svg>
+        </button>
+        <button id="new-chat" class="icon" aria-label="New chat">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M19 13v6H5V5h6M14 4l6 6M12 12l8-8 2 2-8 8-4 1z" />
+          </svg>
+        </button>
+        <button
+          id="apps-button"
+          class="icon"
+          aria-label="Use an app"
+          aria-haspopup="dialog"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <circle cx="5" cy="12" r="1" />
+            <circle cx="12" cy="12" r="1" />
+            <circle cx="19" cy="12" r="1" />
+          </svg>
+        </button>
+      </header>
+      <div id="scroll">
+        <section id="welcome" class="welcome" aria-label="Start a conversation">
+          <div class="hero-mark" aria-hidden="true">ϟ</div>
+          <h1>What can I help with?</h1>
+          <p>Running on your Mac · private</p>
+          <div class="suggestions">
+            <button type="button">Explain something</button
+            ><button type="button">Help me write</button
+            ><button type="button">Make a plan</button
+            ><button type="button">Write some code</button>
+          </div>
+        </section>
+        <section
+          id="messages"
+          aria-label="Conversation"
+          role="log"
+          aria-live="off"
+        ></section>
+      </div>
+      <footer class="composer-area">
+        <div id="error" class="banner" role="alert" hidden>
+          <span id="error-text"></span
+          ><button id="retry" type="button" aria-label="Retry">Retry</button>
+        </div>
+        <form id="chat">
+          <textarea
+            id="composer"
+            rows="1"
+            aria-label="Message"
+            placeholder="Message Rapid"
+            enterkeyhint="send"
+          ></textarea
+          ><button id="send" aria-label="Send message" disabled>
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M12 19V5m-6 6 6-6 6 6" />
+            </svg></button
+          ><button id="stop" type="button" aria-label="Stop generating" hidden>
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <rect x="4" y="4" width="16" height="16" rx="3" />
+            </svg>
+          </button>
+        </form>
+        <p class="footnote">On your Mac. In your control.</p>
+        <span
+          id="status"
+          class="sr-only"
+          role="status"
+          aria-live="polite"
+        ></span>
+      </footer>
+    </main>
+    <dialog id="model-sheet" aria-labelledby="model-heading">
+      <div class="sheet-head">
+        <h2 id="model-heading">Choose a model</h2>
+        <button data-close="model-sheet" aria-label="Close model picker">
+          ×
+        </button>
+      </div>
+      <div id="model-options"></div>
+    </dialog>
+    <dialog id="apps-sheet" aria-labelledby="apps-heading">
+      <div class="sheet-head">
+        <h2 id="apps-heading">Use your favorite app</h2>
+        <button data-close="apps-sheet" aria-label="Close app setup">×</button>
+      </div>
+      <p class="note">
+        Your Mac, connected to the app you love. Add an OpenAI-compatible
+        connection with these details. These apps do not import this QR.
+      </p>
+      <label for="base">Base URL</label>
+      <div class="copy-row">
+        <input id="base" readonly /><button
+          data-copy="base"
+          aria-label="Copy Base URL"
+        >
+          Copy
+        </button>
+      </div>
+      <label for="key">API key</label>
+      <div class="copy-row">
+        <input id="key" type="password" readonly /><button
+          data-copy="key"
+          aria-label="Copy API key"
+        >
+          Copy
+        </button>
+      </div>
+      <div class="card">
+        <a
+          href="https://apps.apple.com/app/id6749840287"
+          target="_blank"
+          rel="noreferrer noopener"
+          >Conduit</a
+        >
+        <p>
+          Choose a direct OpenAI-compatible endpoint; paste the Base URL and API
+          key.
+        </p>
+      </div>
+      <div class="card">
+        <a
+          href="https://apps.apple.com/app/id6447545085"
+          target="_blank"
+          rel="noreferrer noopener"
+          >Pal Chat</a
+        >
+        <p>
+          Add a custom endpoint; paste the Base URL and API key, then choose
+          your model.
+        </p>
+      </div>
+      <div class="card">
+        <a
+          href="https://apps.apple.com/app/id6760984679"
+          target="_blank"
+          rel="noreferrer noopener"
+          >Chapper</a
+        >
+        <p>Add an OpenAI-compatible server; paste the Base URL and API key.</p>
+      </div>
+      <div class="card">
+        <a
+          href="https://apps.apple.com/app/id6761379499"
+          target="_blank"
+          rel="noreferrer noopener"
+          >OpenClient</a
+        >
+        <p>Add your server and key; the URL must include <code>/v1</code>.</p>
+      </div>
+
+      <p class="note">
+        Keep your Mac running and both devices on the same Wi-Fi. Local HTTP is
+        unencrypted. Treat the QR and key like a password. Chats and the key are
+        saved only in this browser; clearing website data removes them.
+      </p>
+      <p class="note">
+        In Safari: Share → Add to Home Screen for a full-screen chat. If the
+        saved app asks for a key, scan the QR again.
+      </p>
+      <details>
+        <summary>Connection key / forget this device</summary>
+        <form id="credentials">
+          <label for="manual">API key</label
+          ><input id="manual" type="password" autocomplete="off" /><button>
+            Save key
+          </button>
+        </form>
+        <button id="forget">Forget key and chat</button>
+      </details>
+    </dialog>
+    <script>
+      "use strict";
+      const $ = (id) => document.getElementById(id);
+      const read = (name) => {
+        try {
+          return localStorage.getItem("rapid." + name);
+        } catch {
+          return null;
+        }
+      };
+      const store = (name, value) => {
+        try {
+          localStorage.setItem("rapid." + name, value);
+        } catch {
+          $("status").textContent =
+            "Browser storage unavailable; this session will not be saved.";
+        }
+      };
+      let key =
+        new URLSearchParams(location.hash.slice(1)).get("k") ||
+        read("key") ||
+        "";
+      if (key) store("key", key);
+      history.replaceState(null, "", location.pathname);
+      $("base").value = location.origin + "/v1";
+      $("key").value = key;
+      let messages = [];
+      try {
+        const saved = JSON.parse(read("chat") || "[]");
+        if (Array.isArray(saved))
+          messages = saved
+            .filter(
+              (m) =>
+                m &&
+                ["user", "assistant"].includes(m.role) &&
+                typeof m.content === "string",
+            )
+            .map((m) => ({
+              role: m.role,
+              content: m.content,
+              thought: typeof m.thought === "string" ? m.thought : "",
+              seconds: Number.isFinite(m.seconds) ? m.seconds : 0,
+            }));
+      } catch {}
+      let controller = null,
+        model = "",
+        follow = true,
+        retryAction = null;
+      const save = () => store("chat", JSON.stringify(messages));
+      function errorBanner(message, action) {
+        $("error-text").textContent = message;
+        $("error").hidden = false;
+        retryAction = action;
+        $("retry").hidden = !action;
+      }
+      function clearError() {
+        $("error").hidden = true;
+        retryAction = null;
+      }
+      $("retry").onclick = () => {
+        const action = retryAction;
+        clearError();
+        action?.();
+      };
+      async function copyText(text) {
+        if (navigator.clipboard && isSecureContext)
+          return navigator.clipboard.writeText(text);
+        const field = document.createElement("textarea");
+        field.value = text;
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        const parent = document.querySelector("dialog[open]") || document.body;
+        parent.append(field);
+        field.focus();
+        field.select();
+        field.setSelectionRange(0, text.length);
+        try {
+          if (!document.execCommand("copy")) throw Error("Copy unavailable");
+        } finally {
+          field.remove();
+        }
+      }
+      // All model text stays in text nodes. Links remain text, including unsafe schemes.
+      function inline(parent, text) {
+        text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).forEach((part) => {
+          if (
+            (part.startsWith("`") && part.endsWith("`")) ||
+            (part.startsWith("**") && part.endsWith("**"))
+          ) {
+            const bold = part.startsWith("**"),
+              node = document.createElement(bold ? "strong" : "code");
+            node.textContent = part.slice(bold ? 2 : 1, bold ? -2 : -1);
+            parent.append(node);
+          } else parent.append(document.createTextNode(part));
+        });
+      }
+      function markdown(parent, text) {
+        text.split("```").forEach((part, i) => {
+          if (i % 2) {
+            const block = document.createElement("div"),
+              head = document.createElement("div"),
+              label = document.createElement("span"),
+              copy = document.createElement("button"),
+              pre = document.createElement("pre"),
+              code = document.createElement("code");
+            const match = part.match(/^([\w+#.-]*)\n/),
+              value = match ? part.slice(match[0].length) : part;
+            block.className = "code-block";
+            head.className = "code-head";
+            label.textContent = match?.[1] || "Code";
+            copy.textContent = "Copy";
+            copy.type = "button";
+            copy.setAttribute("aria-label", "Copy code");
+            copy.onclick = async () => {
+              try {
+                await copyText(value);
+                copy.textContent = "Copied";
+              } catch {
+                copy.textContent = "Select to copy";
+              }
+            };
+            code.textContent = value;
+            head.append(label, copy);
+            pre.append(code);
+            block.append(head, pre);
+            parent.append(block);
+            return;
+          }
+          let list = null;
+          part.split("\n").forEach((line) => {
+            const item = line.match(/^\s*([-*]|\d+\.)\s+(.*)/),
+              heading = line.match(/^(#{1,6})\s+(.*)/);
+            if (item) {
+              const tag = /\d/.test(item[1]) ? "ol" : "ul";
+              if (!list || list.localName !== tag) {
+                list = document.createElement(tag);
+                parent.append(list);
+              }
+              const li = document.createElement("li");
+              inline(li, item[2]);
+              list.append(li);
+            } else {
+              list = null;
+              if (!line.trim()) return;
+              const node = document.createElement(
+                heading ? "h" + heading[1].length : "p",
+              );
+              inline(node, heading ? heading[2] : line);
+              parent.append(node);
+            }
+          });
+        });
+      }
+      function scrollDown() {
+        if (follow) $("scroll").scrollTop = $("scroll").scrollHeight;
+      }
+      $("scroll").addEventListener(
+        "scroll",
+        () => {
+          const s = $("scroll");
+          follow = s.scrollHeight - s.scrollTop - s.clientHeight < 60;
+        },
+        { passive: true },
+      );
+      function renderMessage(m, article, streaming = false) {
+        const wasOpen = article.querySelector("details")?.open || false;
+        article.replaceChildren();
+        article.dataset.role = m.role;
+        article.setAttribute("aria-label", m.role === "user" ? "You" : "Rapid");
+        if (m.role === "user") {
+          article.textContent = m.content;
+          return;
+        }
+        if (m.thought) {
+          const details = document.createElement("details"),
+            summary = document.createElement("summary"),
+            body = document.createElement("div");
+          details.className = "thinking";
+          details.open = wasOpen;
+          summary.textContent =
+            streaming && m.thinking
+              ? "Thinking"
+              : "Thought for " + (m.seconds || 0) + "s";
+          body.className = "thought-body";
+          body.textContent = m.thought;
+          details.append(summary, body);
+          article.append(details);
+        }
+        const answer = document.createElement("div");
+        answer.className = "answer" + (streaming ? " streaming" : "");
+        markdown(answer, m.content);
+        article.append(answer);
+      }
+      function render() {
+        $("messages").replaceChildren();
+        $("welcome").hidden = messages.length > 0;
+        $("messages").hidden = messages.length === 0;
+        messages.forEach((m) => {
+          const article = document.createElement("article");
+          renderMessage(m, article);
+          $("messages").append(article);
+        });
+        scrollDown();
+      }
+      function controls() {
+        const active = !!controller;
+        $("send").hidden = active;
+        $("stop").hidden = !active;
+        $("send").disabled =
+          active || !key || !model || !$("composer").value.trim();
+        $("model-button").disabled = active || !model;
+        $("forget").disabled = active;
+        $("new-chat").disabled = active;
+      }
+      function grow() {
+        const c = $("composer");
+        c.style.height = "auto";
+        c.style.height = Math.min(c.scrollHeight, 164) + "px";
+        controls();
+      }
+      $("composer").addEventListener("input", grow);
+      // iOS keyboards resize the visual viewport independently of CSS viewport units.
+      if (window.visualViewport) {
+        const fitKeyboard = () => {
+          if (window.visualViewport.scale !== 1) return;
+          document.querySelector(".app").style.height =
+            window.visualViewport.height + "px";
+          scrollDown();
+        };
+        window.visualViewport.addEventListener("resize", fitKeyboard);
+        fitKeyboard();
+      }
+      $("composer").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          $("chat").requestSubmit();
+        }
+      });
+      document.querySelectorAll(".suggestions button").forEach(
+        (button) =>
+          (button.onclick = () => {
+            $("composer").value = button.textContent;
+            grow();
+            $("composer").focus();
+          }),
+      );
+      $("apps-button").onclick = () => $("apps-sheet").showModal();
+      $("model-button").onclick = () => $("model-sheet").showModal();
+      document
+        .querySelectorAll("[data-close]")
+        .forEach((b) => (b.onclick = () => $(b.dataset.close).close()));
+      document.querySelectorAll("dialog").forEach((d) =>
+        d.addEventListener("click", (e) => {
+          if (e.target === d) {
+            const r = d.getBoundingClientRect();
+            if (e.clientY < r.top || e.clientX < r.left || e.clientX > r.right)
+              d.close();
+          }
+        }),
+      );
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          headers: {
+            Authorization: "Bearer " + key,
+            "Content-Type": "application/json",
+          },
+          credentials: "omit",
+          redirect: "error",
+        });
+        if (!response.ok)
+          throw Error(
+            response.status === 401 || response.status === 403
+              ? "Key rejected. Scan the QR code on your Mac again."
+              : [429, 503].includes(response.status)
+                ? "Your Mac is busy. Try again in a moment."
+                : "Server error " + response.status + ". Try again.",
+          );
+        return response;
+      }
+      async function loadModels() {
+        clearError();
+        model = "";
+        if (!key) {
+          $("model-name").textContent = "Not connected";
+          errorBanner("Scan the QR code on your Mac again", loadModels);
+          controls();
+          return;
+        }
+        try {
+          const data = await (await api("/v1/models")).json();
+          $("model-options").replaceChildren();
+          // The server also returns short aliases as separate ids; prefer those initially.
+          const models = (data.data || []).filter(
+            (m) => typeof m.id === "string",
+          );
+          models.sort(
+            (a, b) => Number(a.id.includes("/")) - Number(b.id.includes("/")),
+          );
+          const choose = (m) => {
+            model = m.id;
+            $("model-name").textContent = m.alias || m.id.split("/").pop();
+            document
+              .querySelectorAll("#model-options button")
+              .forEach((b) =>
+                b.setAttribute(
+                  "aria-pressed",
+                  String(b.dataset.model === model),
+                ),
+              );
+            controls();
+          };
+          models.forEach((m) => {
+            const b = document.createElement("button");
+            b.textContent = m.alias || m.id.split("/").pop();
+            b.title = m.id;
+            b.dataset.model = m.id;
+            b.onclick = () => {
+              choose(m);
+              $("model-sheet").close();
+            };
+            $("model-options").append(b);
+          });
+          if (models.length) choose(models[0]);
+          else {
+            $("model-name").textContent = "No models";
+            errorBanner(
+              "No models available. Start a chat model on your Mac.",
+              loadModels,
+            );
+          }
+        } catch (e) {
+          $("model-name").textContent = "Not connected";
+          errorBanner(
+            e instanceof TypeError
+              ? "Cannot reach your Mac. Check your Wi-Fi and that Rapid is running."
+              : e.message,
+            loadModels,
+          );
+        }
+        controls();
+      }
+      $("credentials").onsubmit = (e) => {
+        e.preventDefault();
+        if (controller) return;
+        key = $("manual").value.trim();
+        store("key", key);
+        $("key").value = key;
+        $("manual").value = "";
+        loadModels();
+      };
+      $("forget").onclick = () => {
+        key = "";
+        messages = [];
+        store("key", "");
+        save();
+        $("key").value = "";
+        $("apps-sheet").close();
+        render();
+        loadModels();
+      };
+      $("new-chat").onclick = () => {
+        if (controller) return;
+        messages = [];
+        save();
+        follow = true;
+        render();
+        clearError();
+        $("composer").value = "";
+        grow();
+        $("composer").focus();
+      };
+      $("stop").onclick = () => controller?.abort();
+      // Incremental tag parsing retains partial delimiters across SSE chunks.
+      function thinkingParser(answer) {
+        let pending = "",
+          inside = false,
+          started = null;
+        const add = (text, thought) => {
+          if (!text) return;
+          if (thought) {
+            if (started === null) started = performance.now();
+            answer.thought = (answer.thought || "") + text;
+            answer.thinking = true;
+            answer.seconds = Math.max(
+              1,
+              Math.round((performance.now() - started) / 1000),
+            );
+          } else {
+            answer.content += text;
+            answer.thinking = false;
+          }
+        };
+        return {
+          reason(text) {
+            add(text, true);
+          },
+          content(text, flush = false) {
+            pending += text;
+            while (pending) {
+              const tag = inside ? "</think>" : "<think>",
+                at = pending.indexOf(tag);
+              if (at >= 0) {
+                add(pending.slice(0, at), inside);
+                pending = pending.slice(at + tag.length);
+                inside = !inside;
+                continue;
+              }
+              let keep = 0;
+              if (!flush)
+                for (let n = 1; n < tag.length; n++)
+                  if (pending.endsWith(tag.slice(0, n))) keep = n;
+              add(pending.slice(0, pending.length - keep), inside);
+              pending = pending.slice(pending.length - keep);
+              break;
+            }
+          },
+        };
+      }
+      async function send(retrying = false) {
+        if (controller || !key || !model) return;
+        if (!retrying) {
+          const content = $("composer").value.trim();
+          if (!content) return;
+          messages.push({ role: "user", content });
+          $("composer").value = "";
+          grow();
+        }
+        const requestMessages = messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+        const answer = {
+          role: "assistant",
+          content: "",
+          thought: "",
+          seconds: 0,
+        };
+        messages.push(answer);
+        const parser = thinkingParser(answer);
+        controller = new AbortController();
+        follow = true;
+        clearError();
+        controls();
+        render();
+        const article = $("messages").lastElementChild;
+        renderMessage(answer, article, true);
+        $("status").textContent = "Responding";
+        let reader,
+          failed = false;
+        try {
+          const response = await api("/v1/chat/completions", {
+            method: "POST",
+            signal: controller.signal,
+            body: JSON.stringify({
+              model,
+              messages: requestMessages,
+              stream: true,
+            }),
+          });
+          reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "",
+            done = false;
+          const line = (value) => {
+            if (!value.startsWith("data:")) return;
+            const data = value.slice(5).trim();
+            if (!data) return;
+            if (data === "[DONE]") {
+              done = true;
+              return;
+            }
+            const payload = JSON.parse(data);
+            if (payload.error)
+              throw Error(payload.error.message || "Generation failed");
+            const delta = payload.choices?.[0]?.delta;
+            parser.reason(
+              delta?.reasoning_content ||
+                delta?.reasoning ||
+                delta?.thinking ||
+                "",
+            );
+            parser.content(delta?.content || "");
+          };
+          while (!done) {
+            const chunk = await reader.read();
+            buffer += decoder.decode(chunk.value || new Uint8Array(), {
+              stream: !chunk.done,
+            });
+            let end;
+            while ((end = buffer.indexOf("\n")) >= 0) {
+              const value = buffer.slice(0, end).replace(/\r$/, "");
+              buffer = buffer.slice(end + 1);
+              line(value);
+              if (done) break;
+            }
+            if (chunk.done) {
+              if (buffer.trim() && !done) line(buffer.replace(/\r$/, ""));
+              done = true;
+            }
+            renderMessage(answer, article, true);
+            scrollDown();
+          }
+          $("status").textContent = "Response complete";
+        } catch (e) {
+          if (e.name === "AbortError") $("status").textContent = "Stopped";
+          else {
+            failed = true;
+            errorBanner(
+              e instanceof TypeError
+                ? "Connection lost. Check your Mac and Wi-Fi, then retry."
+                : e.message,
+              () => {
+                if (messages.at(-1) === answer) messages.pop();
+                save();
+                render();
+                send(true);
+              },
+            );
+          }
+        } finally {
+          parser.content("", true);
+          answer.thinking = false;
+          if (reader) {
+            try {
+              await reader.cancel();
+            } catch {}
+            reader.releaseLock();
+          }
+          controller = null;
+          renderMessage(answer, article);
+          if (!failed && !answer.content && !answer.thought) {
+            messages.pop();
+            article.remove();
+          }
+          save();
+          controls();
+          scrollDown();
+        }
+      }
+      $("chat").onsubmit = (e) => {
+        e.preventDefault();
+        send();
+      };
+      document.querySelectorAll("[data-copy]").forEach(
+        (button) =>
+          (button.onclick = async () => {
+            try {
+              await copyText($(button.dataset.copy).value);
+              button.textContent = "Copied";
+              $("status").textContent = "Copied";
+            } catch {
+              $("status").textContent = "Select and copy the field manually.";
+              button.textContent = "Select to copy";
+            }
+          }),
+      );
+      const manifest = document.createElement("link");
+      manifest.rel = "manifest";
+      manifest.href =
+        "data:application/manifest+json," +
+        encodeURIComponent(
+          JSON.stringify({
+            name: "Rapid",
+            short_name: "Rapid",
+            start_url: "/connect",
+            display: "standalone",
+            background_color: "#1b1c1b",
+            theme_color: "#446b54",
+          }),
+        );
+      document.head.append(manifest);
+      render();
+      loadModels();
+    </script>
+  </body>
+</html>

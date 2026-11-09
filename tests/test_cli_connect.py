@@ -240,7 +240,7 @@ def test_connect_no_target_renders_banner(monkeypatch):
     )
     # A live server is present for this shape check.
     monkeypatch.setattr(connect, "probe_server_alive", lambda *a, **k: True)
-    out = _run_connect()
+    out = _run_connect(host="localhost")
     assert "Ready: http://localhost:8000" in out
     assert "Connect:" in out
     assert "OpenAI:" in out
@@ -315,7 +315,7 @@ def test_connect_reports_no_server_when_nothing_listening(monkeypatch):
         lambda **kw: connect.ServerEndpoints("localhost", 8000, model=None),
     )
     monkeypatch.setattr(connect, "probe_server_alive", lambda *a, **k: False)
-    out = _run_connect()
+    out = _run_connect(host="localhost")
     assert "Ready:" not in out
     assert "No rapid-mlx server on http://localhost:8000" in out
     assert "rapid-mlx serve <model>" in out
@@ -332,7 +332,7 @@ def test_connect_json_is_valid_and_stable(monkeypatch):
         "resolve_endpoints",
         lambda **kw: connect.ServerEndpoints("localhost", 8000, model="m1"),
     )
-    out = _run_connect(json_=True)
+    out = _run_connect(json_=True, host="localhost")
     payload = json.loads(out)
     assert payload["ready"] == "http://localhost:8000"
     assert payload["openai"] == "http://localhost:8000/v1"
@@ -460,7 +460,7 @@ def test_ipv6_banner_renders_bracketed(monkeypatch):
         lambda **kw: connect.ServerEndpoints("::1", 8000, model=None),
     )
     monkeypatch.setattr(connect, "probe_server_alive", lambda *a, **k: True)
-    out = _run_connect()
+    out = _run_connect(host="::1")
     assert "Ready: http://[::1]:8000" in out
     assert "OpenAI:    http://[::1]:8000/v1" in out
 
@@ -471,7 +471,7 @@ def test_ipv6_json_renders_bracketed(monkeypatch):
         "resolve_endpoints",
         lambda **kw: connect.ServerEndpoints("::1", 8000, model="m1"),
     )
-    payload = json.loads(_run_connect(json_=True))
+    payload = json.loads(_run_connect(json_=True, host="::1"))
     assert payload["ready"] == "http://[::1]:8000"
     assert payload["openai"] == "http://[::1]:8000/v1"
     assert payload["anthropic"] == "http://[::1]:8000"

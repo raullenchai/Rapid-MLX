@@ -2932,13 +2932,11 @@ def _add_connect_parser(
     subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
 ) -> None:
     """Register the ``connect`` subcommand."""
-    # Connect command — the single place to learn "the server is up, now
-    # point a tool at it." Renders from the same SSOT as the serve banner
-    # (:mod:`rapid_mlx.connect`) so ``ready``/``openai``/``anthropic`` and the
-    # ``--json`` machine form can never drift from what the server prints.
+    # Bare connect shows the phone QR; explicit endpoints and tool targets
+    # retain the connection instructions shared with the serve banner.
     connect_parser = subparsers.add_parser(
         "connect",
-        help="Show the server's connection info and wire up a tool",
+        help="Connect a phone by QR code, or set up a tool",
     )
     connect_parser.add_argument(
         "target",
@@ -2946,8 +2944,11 @@ def _add_connect_parser(
         default=None,
         help=(
             "Tool to set up: claude-code, continue, or openai-python. "
-            "Omit to print the connection banner."
+            "Omit to connect your phone by QR code."
         ),
+    )
+    connect_parser.add_argument(
+        "--host-ip", help="LAN IPv4 address to put in the phone QR"
     )
     connect_parser.add_argument(
         "--allow-insecure-api-key",

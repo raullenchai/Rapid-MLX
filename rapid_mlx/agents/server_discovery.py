@@ -51,7 +51,7 @@ def _serve_actions():
     return parser._subparsers._group_actions[0].choices["serve"]._option_string_actions
 
 
-def scan_servers() -> list[Server]:
+def scan_servers(*, include_lan: bool = False) -> list[Server]:
     """Prefer the actual listener over argv: serve may auto-select its port."""
     import psutil
 
@@ -100,7 +100,7 @@ def scan_servers() -> list[Server]:
                 elif not token.startswith("-") and model == "(unknown)":
                     model = token
                 i += 1
-            if not _loopback_reachable(host):
+            if not include_lan and not _loopback_reachable(host):
                 continue
             listening = False
             inspected = True
@@ -110,7 +110,9 @@ def scan_servers() -> list[Server]:
                     for c in proc.net_connections(kind="inet")
                     if c.status == psutil.CONN_LISTEN and c.laddr
                 ]
-                listeners = {a.port for a in bound if _loopback_reachable(a.ip)}
+                listeners = {
+                    a.port for a in bound if include_lan or _loopback_reachable(a.ip)
+                }
                 if bound and not listeners:
                     # Listening, but only where localhost cannot reach it: not
                     # an unbound server that may still start on 8000-8009.

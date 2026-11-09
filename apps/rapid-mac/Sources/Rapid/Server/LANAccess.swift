@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Network
 import Observation
+import SystemConfiguration
 
 /// LAN mode must never fall back to the resolver's one-time credential.
 enum LANAccess {
@@ -23,7 +24,8 @@ enum LANAccess {
         var parsed = in_addr()
         guard (1...65535).contains(port),
               inet_pton(AF_INET, address, &parsed) == 1,
-              !address.hasPrefix("127."), address != "0.0.0.0" else { return nil }
+              !address.hasPrefix("127."), !address.hasPrefix("169.254."),
+              (1...223).contains(Int(address.split(separator: ".")[0]) ?? 0) else { return nil }
         return "http://\(address):\(port)/v1"
     }
 
@@ -47,7 +49,36 @@ enum LANAccess {
                 if baseURL(address: value, port: 1) != nil { addresses.insert(value) }
             }
         }
-        return addresses.sorted()
+        let state = SCDynamicStoreCopyValue(nil, "State:/Network/Global/IPv4" as CFString) as? [String: Any]
+        let primaryInterface = state?["PrimaryInterface"] as? String
+        let primaryState = primaryInterface.flatMap {
+            SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\($0)/IPv4" as CFString) as? [String: Any]
+        }
+        let primary = (primaryState?["Addresses"] as? [String])?.first
+        return PhoneConnect.orderedAddresses(Array(addresses), primary: primary)
+    }
+}
+
+/// A public page URL with the existing LAN bearer in its client-only fragment.
+enum PhoneConnect {
+    static func url(address: String, port: Int, key: String, lanEnabled: Bool) -> URL? {
+        guard lanEnabled, !key.isEmpty,
+              let base = LANAccess.baseURL(address: address, port: port),
+              var components = URLComponents(string: base) else { return nil }
+        components.path = "/connect"
+        var fragment = URLComponents()
+        fragment.queryItems = [URLQueryItem(name: "k", value: key)]
+        components.percentEncodedFragment = fragment.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        return components.url
+    }
+
+    static func orderedAddresses(_ addresses: [String], primary: String?) -> [String] {
+        let valid = Set(addresses.filter { LANAccess.baseURL(address: $0, port: 1) != nil })
+        return valid.sorted { left, right in
+            if left == primary { return true }
+            if right == primary { return false }
+            return left < right
+        }
     }
 }
 

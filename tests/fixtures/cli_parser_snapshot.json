@@ -85,7 +85,7 @@
     "bench": "Run benchmark",
     "benchmark": "Run or inspect reproducible local benchmarks",
     "chat": "Interactive chat REPL with a model",
-    "connect": "Show the server's connection info and wire up a tool",
+    "connect": "Connect a phone by QR code, or set up a tool",
     "cua": "Native-accessibility computer-use agent with configurable planner",
     "doctor": "Check environment health (Python, packages, HF cache, network, ...)",
     "feedback": "Tell us what you want from Rapid-MLX (opens the community Discord)",
@@ -2609,10 +2609,25 @@
        "const": null,
        "default": null,
        "dest": "target",
-       "help": "Tool to set up: claude-code, continue, or openai-python. Omit to print the connection banner.",
+       "help": "Tool to set up: claude-code, continue, or openai-python. Omit to connect your phone by QR code.",
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "host_ip",
+       "help": "LAN IPv4 address to put in the phone QR",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--host-ip"
+       ],
+       "required": false,
        "type": null
       },
       {
@@ -2724,6 +2739,7 @@
        "description": null,
        "dests": [
         "help",
+        "host_ip",
         "allow_insecure_api_key",
         "json",
         "host",
@@ -10289,7 +10305,7 @@
  "allow_abbrev": true,
  "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
  "defaults": {},
- "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple\nSilicon, built on MLX, focused on reliable tool calling for coding agents.\n\nGET STARTED\n  chat (run)        Interactive chat REPL with a model\n  serve             Start OpenAI-compatible server\n  pull              Download a model to the HuggingFace cache (no server)\n  models            List available model aliases\n  recipe            Recommend the smart and fast models for this Mac\n  import            Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)\n\nCODING AGENTS\n  agents            List, configure, and test agent integrations\n  launch            Launch coding agents with private local profiles or configure editors\n  start             Start an AI agent with a local model in one command\n  connect           Show the server's connection info and wire up a tool\n  share             Expose a local model behind a public URL via rapidmlx.com\n\nMANAGE\n  ls                List models in the local HuggingFace cache (alias for `models --cached`)\n  rm                Remove a cached model from the HuggingFace cache\n  alias             Manage user-owned model aliases\n  ps                List running rapid-mlx servers\n  info              Show the per-model profile for a model name or alias\n  upgrade (update)  Upgrade rapid-mlx to the latest version (brew / pip / install.sh)\n  doctor            Check environment health (Python, packages, HF cache, network, ...)\n  telemetry         Manage anonymous usage telemetry\n  feedback          Tell us what you want from Rapid-MLX (opens the community Discord)\n  version           Show version number\n  help              Show help for a subcommand\n\nADVANCED / EXPERIMENTAL\n  bench             Run benchmark\n  benchmark         Run or inspect reproducible local benchmarks\n  service           Headless macOS service lifecycle (system LaunchDaemon)\n  system-one        Serve a typed decision model\n  cua               Native-accessibility computer-use agent with configurable planner",
+ "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple\nSilicon, built on MLX, focused on reliable tool calling for coding agents.\n\nGET STARTED\n  chat (run)        Interactive chat REPL with a model\n  serve             Start OpenAI-compatible server\n  pull              Download a model to the HuggingFace cache (no server)\n  models            List available model aliases\n  recipe            Recommend the smart and fast models for this Mac\n  import            Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)\n\nCODING AGENTS\n  agents            List, configure, and test agent integrations\n  launch            Launch coding agents with private local profiles or configure editors\n  start             Start an AI agent with a local model in one command\n  connect           Connect a phone by QR code, or set up a tool\n  share             Expose a local model behind a public URL via rapidmlx.com\n\nMANAGE\n  ls                List models in the local HuggingFace cache (alias for `models --cached`)\n  rm                Remove a cached model from the HuggingFace cache\n  alias             Manage user-owned model aliases\n  ps                List running rapid-mlx servers\n  info              Show the per-model profile for a model name or alias\n  upgrade (update)  Upgrade rapid-mlx to the latest version (brew / pip / install.sh)\n  doctor            Check environment health (Python, packages, HF cache, network, ...)\n  telemetry         Manage anonymous usage telemetry\n  feedback          Tell us what you want from Rapid-MLX (opens the community Discord)\n  version           Show version number\n  help              Show help for a subcommand\n\nADVANCED / EXPERIMENTAL\n  bench             Run benchmark\n  benchmark         Run or inspect reproducible local benchmarks\n  service           Headless macOS service lifecycle (system LaunchDaemon)\n  system-one        Serve a typed decision model\n  cua               Native-accessibility computer-use agent with configurable planner",
  "epilog": "Examples:\n  rapid-mlx                                   # guided start for this Mac\n  rapid-mlx chat qwen3.5-4b-4bit              # chat in the terminal\n  rapid-mlx serve qwen3.5-9b-4bit --port 8000 # OpenAI/Anthropic-compatible server\n  rapid-mlx launch claude-code --model qwen3.5-9b-4bit\n  rapid-mlx recipe                            # best smart + fast models for this Mac\n\nRun `rapid-mlx <command> --help` for a command's options.\nDocs: https://rapidmlx.com/docs/\nCommunity: https://discord.gg/nZcXkUjY5R\n",
  "formatter_class": "argparse.RawDescriptionHelpFormatter",
  "groups": [

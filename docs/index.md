@@ -33,6 +33,7 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 
 ### User Guides
 - [OpenAI-Compatible Server](guides/server.md)
+- [Use Rapid from your phone](guides/phone.md)
 - [Headless macOS service](guides/headless-macos-service.md)
 - [Python API](guides/python-api.md)
 - [Multimodal (Images & Video)](guides/multimodal.md)

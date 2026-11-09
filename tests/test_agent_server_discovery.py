@@ -842,6 +842,7 @@ def test_scan_skips_servers_bound_only_to_a_lan_address(
     # Only the 127.0.0.1 listener is reachable at the localhost URL setup
     # writes; the others must not linger as "unbound, still starting".
     assert [s.pid for s in agent_discovery_defaults()] == [3]
+    assert [s.pid for s in agent_discovery_defaults(include_lan=True)] == [1, 2, 3, 4]
 
 
 def _listen(port, ip="127.0.0.1"):

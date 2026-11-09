@@ -16078,12 +16078,12 @@ def agents_command(args):
 
 
 def connect_command(args):
-    """Show server connection info and wire up a tool (SSOT-backed).
+    """Connect a phone by QR, or retain explicit endpoint/tool instructions."""
+    if not args.target and not args.base_url and not args.host:
+        from rapid_mlx.phone_connect import connect_phone
 
-    Renders from :mod:`rapid_mlx.connect` — the same source the serve
-    lifespan banner uses — so ``ready``/``openai``/``anthropic`` and the
-    machine form can never drift from what a running server prints.
-    """
+        return connect_phone(args)
+
     from rapid_mlx.connect import (
         _parse_base_url,
         probe_server_alive,

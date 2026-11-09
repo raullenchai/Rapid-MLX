@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from urllib.parse import urlsplit
 
@@ -121,6 +122,26 @@ class BrowserSecurityMiddleware:
                 or (pattern.startswith("*.") and hostname.endswith(pattern[1:]))
                 for pattern in self.hosts
             )
+        # Phone routes may use a numeric LAN Host matching the accepted socket.
+        # No DNS resolution, wildcard trust, or expansion to management routes.
+        if not allowed and authority and scope.get("server"):
+            try:
+                address = ipaddress.IPv4Address(authority[0])
+                allowed = (
+                    not address.is_loopback
+                    and authority == tuple(scope["server"])
+                    and (scope.get("method"), scope.get("path"))
+                    in {
+                        ("GET", "/connect"),
+                        ("GET", "/v1/models"),
+                        ("POST", "/v1/chat/completions"),
+                    }
+                    and (
+                        self.hosts is None or self.hosts == list(DEFAULT_TRUSTED_HOSTS)
+                    )
+                )
+            except ipaddress.AddressValueError:
+                pass
         status = 400 if not allowed else None
         if allowed and self.deny_cross_origin:
             origins = [
