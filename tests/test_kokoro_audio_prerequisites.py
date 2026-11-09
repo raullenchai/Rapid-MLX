@@ -118,3 +118,29 @@ def test_startup_ready_is_silent(monkeypatch, caplog):
     )
     probe.warn_if_kokoro_runtime_missing()
     assert not caplog.records
+
+
+@pytest.mark.parametrize("pipeline_check", ["missing", "raises"])
+def test_startup_warns_when_g2p_pipeline_unavailable(
+    monkeypatch, caplog, pipeline_check
+):
+    def available(_name):
+        if pipeline_check == "raises":
+            raise RuntimeError("private path must not escape")
+        return False
+
+    monkeypatch.setattr(runtime_requirements, "spacy_pipeline_available", available)
+    probe.warn_if_kokoro_runtime_missing()
+    assert len(caplog.records) == 1
+    assert "rapid-mlx pull kokoro" in caplog.text
+    assert "private path" not in caplog.text
+
+
+def test_request_treats_broken_spec_lookup_as_missing_extra(monkeypatch):
+    def broken(_name):
+        raise ValueError("broken spec")
+
+    monkeypatch.setattr(importlib.util, "find_spec", broken)
+    with pytest.raises(HTTPException) as excinfo:
+        probe.require_kokoro_runtime()
+    assert excinfo.value.status_code == 503
