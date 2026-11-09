@@ -40,15 +40,17 @@ enum CJKEmphasisFlanking {
             || [9, 10, 12, 13].contains(scalar.value)
     }
 
-    static func isPunctuation(_ scalar: Unicode.Scalar?) -> Bool {
+    static func isPunctuation(_ scalar: Unicode.Scalar?, cjkFriendly: Bool = false) -> Bool {
         guard let scalar else { return false }
         // CommonMark includes all ASCII punctuation, including `$`, `+`, etc.
         if (33...47).contains(scalar.value) || (58...64).contains(scalar.value)
             || (91...96).contains(scalar.value) || (123...126).contains(scalar.value) { return true }
         switch scalar.properties.generalCategory {
         case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
-             .initialPunctuation, .finalPunctuation, .otherPunctuation,
-             .mathSymbol, .currencySymbol, .modifierSymbol, .otherSymbol: return true
+             .initialPunctuation, .finalPunctuation, .otherPunctuation: return true
+        // Bundled cmark uses P* plus ASCII punctuation; keep symbols only in
+        // the desired CJK rule, not in the model of the unaided parser.
+        case .mathSymbol, .currencySymbol, .modifierSymbol, .otherSymbol: return cjkFriendly
         default: return false
         }
     }
@@ -64,8 +66,8 @@ enum CJKEmphasisFlanking {
     ) -> Flanking {
         let beforeCJK = before.map(isCJK) ?? false
         let afterCJK = after.map(isCJK) ?? false
-        let beforePunctuation = isPunctuation(before)
-        let afterPunctuation = isPunctuation(after)
+        let beforePunctuation = isPunctuation(before, cjkFriendly: cjkFriendly)
+        let afterPunctuation = isPunctuation(after, cjkFriendly: cjkFriendly)
         let beforeBoundary = beforePunctuation && !(cjkFriendly && beforeCJK)
         let afterBoundary = afterPunctuation && !(cjkFriendly && afterCJK)
         let left = !isWhitespace(after) && (!afterBoundary || isWhitespace(before)
@@ -94,7 +96,7 @@ enum CJKEmphasisFlanking {
         return nil
     }
 
-    static func prepare(_ source: String) -> String {
+    static func prepare(_ source: String, onIndexStep: (() -> Void)? = nil) -> String {
         guard source.contains("*") || source.contains("_"),
               source.unicodeScalars.contains(where: isCJK) else { return source }
         // Collect edits without rebuilding ordinary text or guessing code syntax.
@@ -127,7 +129,8 @@ enum CJKEmphasisFlanking {
         guard !candidates.isEmpty else { return source }
 
         let document = Document(parsing: source, options: MarkdownCompiler.parseOptions)
-        let excluded = opaqueRanges(in: document, source: source,
+        let sourceIndex = SourceIndex(source, onStep: onIndexStep)
+        let excluded = opaqueRanges(in: document, sourceIndex: sourceIndex,
                                     enclosing: source.startIndex..<source.endIndex)
         // Keep the run as well as the insertion point: a bridge immediately
         // after a closing delimiter can sit at the opaque range's upper bound.
@@ -151,14 +154,67 @@ enum CJKEmphasisFlanking {
     /// source range, exclude its enclosing node, conservatively covering all
     /// of the missing node's lines instead of guessing at code boundaries.
     static func opaqueRanges(
-        in markup: Markup, source: String, enclosing: Range<String.Index>
+        in markup: Markup, sourceIndex: SourceIndex, enclosing: Range<String.Index>
     ) -> [Range<String.Index>] {
-        let range = MarkdownCompiler.sourceRange(of: markup, in: source) ?? enclosing
+        let range = sourceIndex.range(of: markup) ?? enclosing
         switch markup {
         case is CodeBlock, is InlineCode, is HTMLBlock, is InlineHTML:
             return [range]
         default:
-            return markup.children.flatMap { opaqueRanges(in: $0, source: source, enclosing: range) }
+            return markup.children.flatMap { opaqueRanges(in: $0, sourceIndex: sourceIndex, enclosing: range) }
+        }
+    }
+
+    /// Index line bounds once so source locations never rescan preceding lines.
+    struct SourceIndex {
+        let source: String
+        private let lines: [Range<String.UTF8View.Index>]
+        private let onStep: (() -> Void)?
+
+        init(_ source: String, onStep: (() -> Void)? = nil) {
+            self.source = source
+            self.onStep = onStep
+            let utf8 = source.utf8
+            var lines: [Range<String.UTF8View.Index>] = []
+            var start = utf8.startIndex
+            var cursor = start
+            while cursor < utf8.endIndex {
+                let byte = utf8[cursor]
+                if byte == 0x0A || byte == 0x0D {
+                    lines.append(start..<cursor)
+                }
+                cursor = utf8.index(after: cursor)
+                onStep?()
+                if byte == 0x0D, cursor < utf8.endIndex, utf8[cursor] == 0x0A {
+                    cursor = utf8.index(after: cursor)
+                    onStep?()
+                }
+                if byte == 0x0A || byte == 0x0D { start = cursor }
+            }
+            lines.append(start..<cursor)
+            self.lines = lines
+        }
+
+        func index(at location: SourceLocation) -> String.Index? {
+            guard location.line >= 1, location.line <= lines.count,
+                  location.column >= 1 else { return nil }
+            let line = lines[location.line - 1]
+            let utf8 = source.utf8
+            var cursor = line.lowerBound
+            onStep?()
+            for _ in 0..<(location.column - 1) {
+                guard cursor < line.upperBound else { return nil }
+                cursor = utf8.index(after: cursor)
+                onStep?()
+            }
+            return cursor.samePosition(in: source)
+        }
+
+        func range(of markup: Markup) -> Range<String.Index>? {
+            guard let range = markup.range,
+                  let lower = index(at: range.lowerBound),
+                  let upper = index(at: range.upperBound), lower <= upper else { return nil }
+            return lower..<upper
         }
     }
 
