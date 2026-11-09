@@ -1919,7 +1919,15 @@ class MLXMultimodalLM:
                 fuse_gdn_in_proj(self.model)
                 install_qwen35_fused_gdn_decode(self.model, allow_dense=True)
 
-            if config_model_type in {"qwen3_5", "gemma4", "lfm2", "lfm2-vl", "lfm2_vl"}:
+            if config_model_type in {
+                "qwen3_5",
+                "gemma4",
+                "lfm2",
+                "lfm2-vl",
+                "lfm2_vl",
+                "lfm3",
+                "lfm3_vl",
+            }:
                 from ..dense_decode_fusion import install_dense_decode_fusion
 
                 install_dense_decode_fusion(self.model, spec_decode=self.spec_decode)
