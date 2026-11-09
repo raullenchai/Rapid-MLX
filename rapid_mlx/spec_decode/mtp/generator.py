@@ -1500,7 +1500,9 @@ def mtp_generate_step(
         """What ``CopyDraftGate`` is charged for a round (see ``_reproducible``)."""
         if not _reproducible:
             return round_ms
-        if _schedule is not None and getattr(_schedule, "verify_costs", ()):
+        if _schedule is not None and tuple(
+            getattr(_schedule, "verify_costs", None) or ()
+        ):
             return measured_verify_cost(_schedule, verify_rows)
         return verify_cost_estimate(
             verify_rows, steep=bool(getattr(_schedule, "steep_verify", False))
