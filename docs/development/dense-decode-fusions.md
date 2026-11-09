@@ -10,7 +10,10 @@ values through the decoder. LFM3 retains its post-operator and post-FFN sandwich
 norms before each residual add. Gemma 4 retains its attention/FFN branch norms,
 routed expert combination, and layer scalar; only the attention residual add
 and the following FFN input norm share a kernel. Gemma per-layer input gating
-remains stock.
+remains stock. The Gemma layer seam sits after attention, so it forwards the
+mask, cache, shared KV, offset, and shared cache to the original attention
+unchanged; the backbone-level mask and cache restrictions below apply to the
+Qwen3.5/LFM residual path.
 
 The kernel rounds the residual sum to the input dtype before the FP32 square
 reduction, retains the stock four-values-per-thread reduction, and preserves
