@@ -1088,7 +1088,8 @@ def test_parked_target_failure_settles_committed_head_history(private, prefetch)
     assert env["head_pending"] is None
 
 
-def test_parked_settlement_failure_preserves_original_error():
+@pytest.mark.parametrize("settle_error", [ValueError, KeyboardInterrupt])
+def test_parked_settlement_failure_preserves_original_error(settle_error):
     env, cache = _generation_harness(8, [0] * 8)
     generated = env["run"]()
     next(generated)
@@ -1098,7 +1099,7 @@ def test_parked_settlement_failure_preserves_original_error():
         raise RuntimeError("target forward failed")
 
     def settle_fail():
-        raise ValueError("head settlement failed")
+        raise settle_error("head settlement failed")
 
     env["_step_backbone"] = fail
     env["_finish_head"] = settle_fail

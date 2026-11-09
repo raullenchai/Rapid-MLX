@@ -2251,7 +2251,7 @@ def mtp_generate_step(
         if rebuild_head_history:
             try:
                 _finish_head()
-            except Exception:
+            except BaseException:
                 logger.warning(
                     "[MTP] failed to settle deferred head history after an error",
                     exc_info=True,
