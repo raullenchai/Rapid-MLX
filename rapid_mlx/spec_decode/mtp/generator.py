@@ -659,47 +659,51 @@ def mtp_generate_step(
             if mc.is_trimmable():
                 mc.trim(n)
 
-    def _head_offset():
-        return max((getattr(c, "offset", 0) for c in mtp_cache), default=0)
-
-    def _append_head_history(h, ids):
-        """Write one history segment, undoing a partial write if it raises."""
-        before = _head_offset()
-        try:
-            model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
-            quantize_cache_fn(mtp_cache)
-        except BaseException:
-            advanced = _head_offset() - before
-            if advanced > 0:
-                _trim_head(advanced)
-            raise
-
     def _replay_parked_head():
         """Build deferred KV updates at their original forward widths."""
-        # Dequeue each row only after its forward lands, so a failure leaves the
-        # cache plus the remaining queue equal to the committed history.
         if parked_head_rows:
             with mx.stream(generation_stream):
-                while parked_head_rows:
-                    _append_head_history(*parked_head_rows[0])
-                    parked_head_rows.pop(0)
+                for h, ids in parked_head_rows:
+                    model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+                    quantize_cache_fn(mtp_cache)
+            parked_head_rows.clear()
+
+    def _discard_head_history():
+        """Replace the head cache with an empty one after a failed settlement.
+
+        The head only proposes drafts; the target verifies every emitted
+        token. An empty head beside a populated backbone is the same state as
+        a caller cache built without MTP entries, so dropping history costs
+        acceptance, never correctness, and leaves no partial write behind.
+        """
+        nonlocal mtp_cache, head_pending
+        head_pending = None
+        parked_head_rows.clear()
+        mtp_cache = model.make_mtp_cache()
+        if prompt_cache is not None and len(prompt_cache) > len(model.layers):
+            prompt_cache[len(model.layers) :] = mtp_cache
 
     def _flush_head():
         """Settle deferred history when lookup or a caller-owned cache needs it."""
         nonlocal head_pending
         has_rows = bool(parked_head_rows)
-        with mx.stream(generation_stream):
-            _replay_parked_head()
-            if head_pending is not None:
-                h, ids = head_pending
-                if ids.size:
-                    # head_pending is cleared only after its write lands.
-                    _append_head_history(h, ids)
-                    has_rows = True
-                head_pending = None
-            if has_rows:
-                # History needs KV only, not the unused vocabulary projection.
-                mx.eval([c.state for c in mtp_cache if hasattr(c, "state")])
+        try:
+            with mx.stream(generation_stream):
+                _replay_parked_head()
+                if head_pending is not None:
+                    h, ids = head_pending
+                    if ids.size:
+                        model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+                        quantize_cache_fn(mtp_cache)
+                        has_rows = True
+                    head_pending = None
+                if has_rows:
+                    # History needs KV only, not the unused vocabulary projection.
+                    mx.eval([c.state for c in mtp_cache if hasattr(c, "state")])
+        except BaseException:
+            # A partial or lazily failed write cannot be trusted or retried.
+            _discard_head_history()
+            raise
 
     def _finish_head():
         nonlocal head_pending
