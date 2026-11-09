@@ -51,6 +51,23 @@ def test_calibration_tracks_common_drift_and_rejects_isolated_stalls():
     assert head / step == pytest.approx(0.1)
 
 
+@pytest.mark.parametrize(
+    "samples",
+    [
+        [[10.0], [13.0]],
+        [[], [13.0], [1.0]],
+        [[10.0, 10.0], [13.0], [1.0]],
+        [[10.0], [float("nan")], [1.0]],
+        [[10.0], [13.0], [0.0]],
+    ],
+)
+def test_incomplete_or_invalid_samples_are_rejected(samples):
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import summarize_forward_samples
+
+    with pytest.raises(ValueError):
+        summarize_forward_samples(samples)
+
+
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -1.0, 0.0])
 def test_invalid_measurement_keeps_configured_depth(invalid):
     schedule = reproducible_schedule("bad", 1, lambda k: (invalid, (13.0,), 1.0))
