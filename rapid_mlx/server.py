@@ -1090,6 +1090,11 @@ async def lifespan(app: FastAPI):
     # ``RAPID_MLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
     # (uppercase) are treated as falsy, not truthy. Mirrors the
     # convention used by every other ``RAPID_MLX_*`` boolean knob.
+    if _enable_audio_lane:
+        from .audio.probe import warn_if_kokoro_runtime_missing
+
+        await asyncio.to_thread(warn_if_kokoro_runtime_missing)
+
     if env_truthy("RAPID_MLX_AUDIO_DEEP_PROBE"):
         try:
             from .audio.probe import deep_probe_audio_lane as _deep_probe
