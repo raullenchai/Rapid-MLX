@@ -468,6 +468,8 @@ def test_unqualified_cache_layout_keeps_stock_call(monkeypatch):
     )
     x = mx.array([[1]])
     assert fusion._bits_equal(b(x, cache=left), original(b, x, cache=right))
+    with pytest.raises(IndexError):
+        b(x, cache=[lfm2.ArraysCache(size=1)])
 
 
 def test_residual_fusion_survives_declined_attention_group(monkeypatch):

@@ -354,6 +354,8 @@ def _make_call(cls, kind, dtype):
                 )
             )
             or cache is not None
+            and len(cache) != len(self.layers)
+            or cache is not None
             and any(
                 c is not None
                 and (
