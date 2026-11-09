@@ -3301,6 +3301,12 @@ def _resolve_tts_model(model: str | None) -> str:
     case verbatim — the case-insensitive lookup only fires for the
     short alias table, never for passthrough.
     """
+    if model and model.lower() in _OPENAI_TTS_MODELS:
+        # A user alias named like an OpenAI model wins over the built-in
+        # OpenAI-name mapping, so existing alias configs keep their target.
+        aliased = _resolve_audio_user_alias(model)
+        if aliased != model:
+            return _resolve_tts_model(aliased)
     if not model or model == "default" or model.lower() in _OPENAI_TTS_MODELS:
         served = _served_tts_default()
         if served is not None:
@@ -3615,14 +3621,9 @@ def _generate_speech_blocking(
             RepositoryNotFoundError,
             RevisionNotFoundError,
             EntryNotFoundError,
-            FileNotFoundError,
-            ValueError,
         ) as exc:
-            consent_error = _remote_code_consent_error(exc)
-            if consent_error is not None:
-                raise consent_error from exc
-            # Only lookup/load failures identify an unresolvable model;
-            # inference and encoding errors keep their own error handling.
+            # Only Hub lookup misses identify an unresolvable model; other
+            # load failures (bad config, backend errors) keep their own handling.
             raise _tts_model_not_found(model_name) from exc
         from ..server import _emit_audio_model_served_once
 

@@ -141,16 +141,14 @@ def test_model_load_errors(speech_client, monkeypatch, failure):
         "/v1/audio/speech",
         json={"model": "org/missing", "input": "hi", "voice": "default"},
     )
-    expected = (
-        403
-        if isinstance(failure, RemoteCodeConsentRequired)
-        else 500
-        if isinstance(failure, RuntimeError)
-        else 404
-    )
-    assert response.status_code == expected, response.text
-    if expected == 404:
+    if isinstance(failure, RepositoryNotFoundError):
+        assert response.status_code == 404, response.text
         assert "tts-1" in response.json()["detail"]["error"]["message"]
+    elif isinstance(failure, RemoteCodeConsentRequired):
+        assert response.status_code == 403, response.text
+    else:
+        # Config/backend load failures are not "model not found".
+        assert response.status_code not in (200, 404), response.text
     assert audio._tts_engine is None
 
 
@@ -174,3 +172,14 @@ def test_invalid_native_voice_still_rejected(speech_client):
     assert response.status_code == 400, response.text
     assert response.json()["detail"]["error"]["code"] == "invalid_voice"
     assert observed == []
+
+
+@pytest.mark.parametrize("model", OPENAI_MODELS)
+def test_user_alias_named_like_openai_model_wins(monkeypatch, model):
+    monkeypatch.setattr(audio, "_served_tts_default", lambda: None)
+    monkeypatch.setattr(
+        audio,
+        "_resolve_audio_user_alias",
+        lambda name: "org/custom-tts" if name == model else name,
+    )
+    assert audio._resolve_tts_model(model) == "org/custom-tts"
