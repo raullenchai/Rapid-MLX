@@ -36,6 +36,11 @@ struct LANAccessTests {
             return
         }
         #expect(!credential.secret.isEmpty)
+        #expect(defaults.bool(forKey: "rapid.lanAccess.enabled.v1") == true)
+        let relaunched = ServerManager(
+            testingState: .idle, sessionDefaults: defaults, bearerCredentialStore: credentialStore
+        )
+        #expect(relaunched.lanAccessEnabled)
         server.setEmbeddedBearerLifetime(.perLaunch)
         #expect(server.embeddedBearerLifetime == .explicit)
         await server.setLANAccessEnabled(false)
