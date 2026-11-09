@@ -3164,6 +3164,7 @@ TTS_MODEL_ALIASES: dict[str, str] = dict(_tts_aliases_from_registry())
 #: ``DEFAULT_STT_ALIAS`` rule on the STT side — drop-in OpenAI-SDK code
 #: that omits ``model=`` lands here.
 DEFAULT_TTS_ALIAS = "kokoro"
+_OPENAI_TTS_MODELS = frozenset({"tts-1", "tts-1-hd", "gpt-4o-mini-tts"})
 
 
 # R8-H5 (Bo 0.8.9 dogfood): canonical IANA Content-Type per
@@ -3256,6 +3257,26 @@ def _served_tts_default() -> str | None:
     return None
 
 
+def _tts_model_not_found(model: str) -> HTTPException:
+    available = ", ".join(sorted({"default", *TTS_MODEL_ALIASES, *_OPENAI_TTS_MODELS}))
+    return HTTPException(
+        status_code=404,
+        detail={
+            "error": {
+                "message": (
+                    f"The TTS model `{model}` could not be resolved. "
+                    f"Available TTS names: {available}. "
+                    "You may also supply a valid Hugging Face org/repo ID "
+                    "or the served local TTS model."
+                ),
+                "type": "model_not_found_error",
+                "code": "model_not_found",
+                "param": "model",
+            }
+        },
+    )
+
+
 def _resolve_tts_model(model: str | None) -> str:
     """Map a TTS request-time alias to its HF repo id.
 
@@ -3269,10 +3290,9 @@ def _resolve_tts_model(model: str | None) -> str:
       that model instead of silently loading Kokoro.
     * A short alias listed in :data:`TTS_MODEL_ALIASES` → its mapped
       HF id.
-    * Anything else → pass through verbatim (a HuggingFace repo id
-      the client is opting in to). Pre-fix the handler accepted the
-      same shape inline; promotion to a helper keeps the contract
-      identical without re-implementing the rule.
+    * OpenAI TTS names → the same served-model-or-Kokoro default.
+    * A valid HuggingFace org/repo id or served local model → pass through.
+      Unknown bare names and malformed ids are rejected with an actionable 404.
 
     R8-H4 (Bo 0.8.9 dogfood): lookup is case-insensitive so the
     brief's literal ``"kokoro-82m-8bit"`` and the SDK-style
@@ -3281,7 +3301,7 @@ def _resolve_tts_model(model: str | None) -> str:
     case verbatim — the case-insensitive lookup only fires for the
     short alias table, never for passthrough.
     """
-    if not model or model == "default":
+    if not model or model == "default" or model.lower() in _OPENAI_TTS_MODELS:
         served = _served_tts_default()
         if served is not None:
             # ``served`` is a concrete alias / HF id, never a placeholder, so
@@ -3289,9 +3309,19 @@ def _resolve_tts_model(model: str | None) -> str:
             return _resolve_tts_model(served)
         return TTS_MODEL_ALIASES[DEFAULT_TTS_ALIAS]
     model = _resolve_audio_user_alias(model)
-    return _served_local_request(model, "tts") or TTS_MODEL_ALIASES.get(
-        model.lower(), model
-    )
+    local = _served_local_request(model, "tts")
+    if local is not None:
+        return local
+    if model.lower() in TTS_MODEL_ALIASES:
+        return TTS_MODEL_ALIASES[model.lower()]
+    if (
+        "/" in model
+        and _STT_MODEL_NAME_RE.fullmatch(model)
+        and len(model) <= _HF_REPO_ID_MAX_LEN
+        and all(_is_valid_repo_component(part) for part in model.split("/"))
+    ):
+        return model
+    raise _tts_model_not_found(model)
 
 
 def _resolve_default_voice_literal(model_name: str, voice: str) -> str:
@@ -3572,8 +3602,28 @@ def _generate_speech_blocking(
             if callable(unload):
                 run_audio_mlx_sync("tts", old_model, "unload", unload)
             _tts_engine = None
-        tts_candidate = TTSEngine(model_name)
-        run_audio_mlx_sync("tts", model_name, "load", tts_candidate.load)
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+        )
+
+        try:
+            tts_candidate = TTSEngine(model_name)
+            run_audio_mlx_sync("tts", model_name, "load", tts_candidate.load)
+        except (
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+            EntryNotFoundError,
+            FileNotFoundError,
+            ValueError,
+        ) as exc:
+            consent_error = _remote_code_consent_error(exc)
+            if consent_error is not None:
+                raise consent_error from exc
+            # Only lookup/load failures identify an unresolvable model;
+            # inference and encoding errors keep their own error handling.
+            raise _tts_model_not_found(model_name) from exc
         from ..server import _emit_audio_model_served_once
 
         _emit_audio_model_served_once(tts_candidate, model_name)
@@ -3650,6 +3700,10 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     """
     global _tts_engine
 
+    # Reject unknown names before probing optional runtimes or loading weights.
+    model = request.model if "model" in request.model_fields_set else None
+    model_name = _resolve_tts_model(model)
+
     # TTS-lane audio dep probe (F-D05 + codex r3 BLOCKING). Fires
     # BEFORE the lazy TTSEngine import — if the TTS sub-module of
     # mlx_audio is missing or broken at runtime, both ``/v1/audio/
@@ -3672,7 +3726,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     # below uses — so an EXPLICIT ``"model": "kokoro"`` on a non-Kokoro server
     # is still honoured, while the omitted case flows through
     # ``_resolve_tts_model(None)`` to :func:`_served_tts_default`.
-    model = request.model if "model" in request.model_fields_set else None
     input_text = request.input
     voice = request.voice
     speed = request.speed
@@ -3690,15 +3743,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             UnsupportedAudioFormatError,
             is_indextts_model,
             is_kokoro_family_model,
+            is_qwen3_voicedesign_model,
         )
-
-        # R7-H3 follow-up: alias resolution lives in a shared helper
-        # (see ``_resolve_tts_model``) so the bare alias / ``"default"``
-        # / HF-path passthrough rule is one code path. Engines added in
-        # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
-        # handler body.
-        model_name = _resolve_tts_model(model)
-        from ..audio.tts import is_qwen3_voicedesign_model
 
         capability_name = _capability_model_name(model_name)
         if voice_seed is not None and not is_qwen3_voicedesign_model(capability_name):

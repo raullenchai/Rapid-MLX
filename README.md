@@ -370,6 +370,8 @@ The dependency commands below use the official `install.sh` environment. For Hom
 Audio aliases behind the OpenAI-compatible `/v1/audio/*` endpoints — any
 OpenAI SDK works unchanged.
 
+`tts-1`, `tts-1-hd`, and `gpt-4o-mini-tts` select the default TTS model (served TTS model, otherwise Kokoro).
+
 ```bash
 ~/.rapid-mlx/bin/python -m pip install 'rapid-mlx[audio]'
 
