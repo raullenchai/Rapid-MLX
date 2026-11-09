@@ -77,6 +77,8 @@ def test_checkpoint_config_defaults_and_detection(checkpoint):
         ("transformer/config.json", "use_meanflow", True),
         ("transformer/config.json", "in_channels", 64),
         ("transformer/config.json", "rope_axes_dim", [1, 2, 3]),
+        ("model_index.json", "_class_name", "OtherPipeline"),
+        ("vae/config.json", "spatial_compression_ratio", 8),
         ("scheduler/scheduler_config.json", "use_dynamic_shifting", True),
         ("scheduler/scheduler_config.json", "shift", float("nan")),
         ("guider/guider_config.json", "guidance_rescale", 0.5),
@@ -89,6 +91,176 @@ def test_config_rejects_unsupported_variants(checkpoint, file, key, value):
     path.write_text(json.dumps(data))
     with pytest.raises(ValueError):
         PipelineConfig.from_path(checkpoint)
+
+
+def test_detection_rejects_unreadable_snapshot(tmp_path):
+    assert not is_hunyuan_video15_model(None)
+    assert not is_hunyuan_video15_model("")
+    (tmp_path / "model_index.json").write_text("{broken json")
+    assert not is_hunyuan_video15_model(str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("shared.weight", "wte.weight"),
+        ("encoder.embed_tokens.weight", None),
+        ("encoder.final_layer_norm.weight", "encoder.ln.weight"),
+        (
+            "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight",
+            "encoder.relative_attention_bias.embeddings.weight",
+        ),
+        ("encoder.block.1.layer.0.layer_norm.weight", "encoder.layers.1.ln1.weight"),
+        ("encoder.block.1.layer.1.layer_norm.weight", "encoder.layers.1.ln2.weight"),
+        (
+            "encoder.block.1.layer.1.DenseReluDense.wi_0.weight",
+            "encoder.layers.1.dense.wi_0.weight",
+        ),
+        *[
+            (
+                f"encoder.block.1.layer.0.SelfAttention.{source}.weight",
+                f"encoder.layers.1.attention.{target}.weight",
+            )
+            for source, target in (
+                ("q", "query_proj"),
+                ("k", "key_proj"),
+                ("v", "value_proj"),
+                ("o", "out_proj"),
+            )
+        ],
+    ],
+)
+def test_t5_checkpoint_key_mapping(key, expected):
+    from rapid_mlx.video.hunyuan_video15.loading import t5_key
+
+    assert t5_key(key) == expected
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("model.embed_tokens.weight", "embed_tokens.weight"),
+        ("model.layers.0.self_attn.q_proj.weight", "layers.0.self_attn.q_proj.weight"),
+        ("layers.1.mlp.up_proj.weight", "layers.1.mlp.up_proj.weight"),
+        ("model.layers.2.mlp.up_proj.weight", None),
+        ("model.norm.weight", None),
+    ],
+)
+def test_qwen_checkpoint_key_mapping_truncates_before_final_norm(key, expected):
+    from rapid_mlx.video.hunyuan_video15.loading import qwen_key
+
+    assert qwen_key(key, 2) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["conditioning", "validation", "backend"])
+async def test_lane_translates_request_and_backend_errors(
+    monkeypatch, tmp_path, failure
+):
+    from rapid_mlx.runtime.video_lane import VideoRuntimeError
+    from rapid_mlx.video.engine import VideoBackendUnavailableError
+
+    calls = []
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        raise VideoBackendUnavailableError("encoder unavailable")
+
+    engine = VideoEngine(REPO)
+    monkeypatch.setattr(engine._hunyuan_engine, "generate_sync", generate)
+    try:
+        with pytest.raises(VideoRuntimeError) as exc:
+            engine.generate(
+                prompt="fox",
+                output_path=tmp_path / "clip.mp4",
+                width=256,
+                height=256,
+                num_frames=6 if failure == "validation" else 5,
+                fps=24,
+                seed=1,
+                image=None,
+                conditioning_strength=0.5 if failure == "conditioning" else None,
+            )
+        assert isinstance(
+            exc.value.__cause__,
+            VideoBackendUnavailableError if failure == "backend" else ValueError,
+        )
+        assert len(calls) == (1 if failure == "backend" else 0)
+        assert not (tmp_path / "clip.mp4").exists()
+    finally:
+        await engine.stop()
+
+
+def test_backend_rejects_unrecognized_model():
+    with pytest.raises(ValueError, match="pinned HunyuanVideo"):
+        HunyuanVideo15Engine("unrecognized/repository")
+
+
+@pytest.mark.parametrize("missing", [None, "ffmpeg", "mlx_lm"])
+def test_hunyuan_runtime_dependencies(monkeypatch, missing):
+    from rapid_mlx.runtime import video_lane
+
+    monkeypatch.setattr(
+        video_lane.importlib.util,
+        "find_spec",
+        lambda name: None if name == missing else SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        video_lane, "_resolve_ffmpeg", lambda: None if missing == "ffmpeg" else "ffmpeg"
+    )
+    issue = video_lane.video_runtime_issue(REPO, provision=False)
+    if missing is None:
+        assert issue is None
+    else:
+        assert issue.detail == f"HunyuanVideo 1.5 requires {missing}"
+        assert issue.status == "broken"
+        assert issue.marker_reason == "runtime_dependency_missing"
+        assert issue.install_hint
+
+
+def test_lane_constructs_hunyuan_backend(monkeypatch):
+    from rapid_mlx.video.hunyuan_video15 import backend
+
+    calls = []
+    sentinel = object()
+
+    def construct(model_name):
+        calls.append(model_name)
+        return sentinel
+
+    monkeypatch.setattr(backend, "HunyuanVideo15Engine", construct)
+    engine = VideoEngine(REPO)
+    assert calls == [REPO]
+    assert engine._hunyuan_engine is sentinel
+    assert engine.video_family == "hunyuan-video-1.5"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_backend_loads_local_or_pinned_snapshot(monkeypatch, checkpoint, remote):
+    from rapid_mlx import model_downloads
+
+    events, checks, downloads = [], [], []
+
+    def download(repo, *, revision, tqdm_class):
+        downloads.append((repo, revision))
+        with tqdm_class(total=2, disable=True) as progress:
+            progress.update(2)
+        return str(checkpoint)
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", download)
+    engine = HunyuanVideo15Engine(REPO if remote else str(checkpoint))
+    try:
+        assert (
+            engine._load_sync(lambda: checks.append(True), lambda *a: events.append(a))
+            == checkpoint
+        )
+        assert engine.config == PipelineConfig.from_path(checkpoint)
+        assert engine._load_sync() == checkpoint
+        assert downloads == ([(REPO, REVISION)] if remote else [])
+        if remote:
+            assert checks and events and events[-1][0] == "downloading"
+    finally:
+        asyncio.run(engine.close())
 
 
 def test_alias_and_live_catalog_match():
