@@ -13937,8 +13937,8 @@ def _stream_chat_response(
     arrive. Returns the full assistant content (concatenated content deltas).
 
     Reasoning-content deltas (Qwen3, DeepSeek-R1, etc.) are streamed to stdout
-    in dim ANSI so the user sees thinking, but excluded from the returned
-    string — chat history stores only the final answer, matching the
+    in dim ANSI unless the payload disables thinking, but excluded from the
+    returned string — chat history stores only the final answer, matching the
     OpenAI-compat split between ``content`` and ``reasoning_content``.
 
     Interactive terminals show a one-line incremental preview, then replace it
@@ -14045,6 +14045,9 @@ def _stream_chat_response(
                     _accumulate_tool_call_deltas(tool_call_parts, streamed_calls)
             if reasoning:
                 full_reasoning += reasoning
+            # Some templates always reason even when thinking is disabled.
+            # Preserve reasoning for tool history while honoring the display preference.
+            if reasoning and payload.get("enable_thinking") is not False:
                 if not in_reasoning:
                     if is_tty:
                         sys.stdout.write(f"{MAGENTA}[thinking]{RESET} {DIM}")
