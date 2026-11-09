@@ -644,7 +644,7 @@ def mtp_generate_step(
         max_k = min(max_k, model.mtp_max_speculative_tokens)
     head_pending = None
     head_seed = None
-    parked_head_rows = []
+    parked_head_rows: list[tuple[mx.array, mx.array]] = []
 
     def _trim_head(n):
         if getattr(model, "mtp_head_atomic_rollback", False):
