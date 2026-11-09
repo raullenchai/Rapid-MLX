@@ -75,14 +75,42 @@ AXApplication title="Rapid-MLX"
       AXScrollArea
         AXScrollArea id="Settings.Performance.Panel"
           AXHeading desc="Performance, These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts." enabled=true
-          AXHeading id="Settings.Performance.MetalMemory" desc="Engine Metal memory" enabled=true
+          AXHeading id="Settings.Performance.SystemMemory" desc="This Mac" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXUnknown id="Settings.Performance.SystemMemory" desc="This Mac memory usage" enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXStaticText id="Settings.Performance.SystemMemory" value=text enabled=true
+          AXHeading id="Settings.Performance.MetalMemory" desc="Inference engine (Metal)" enabled=true
           AXStaticText value=text enabled=true
           AXStaticText id="Settings.Performance.MetalMemory" value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText id="Settings.Performance.MetalMemory" value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText id="Settings.Performance.MetalMemory" value=text enabled=true
+          AXStaticText value=text enabled=true
           AXStaticText id="Settings.Performance.MetalMemory" value=text enabled=true
+          AXUnknown id="Settings.Performance.MetalMemory" desc="Metal active / total RAM" enabled=true
+          AXStaticText id="Settings.Performance.MetalMemory" value=text enabled=true
+          AXHeading id="Settings.Performance.PrefixCache" desc="Prefix cache" enabled=true
+          AXUnknown id="Settings.Performance.PrefixCache" desc="Reusable prompt cache budget" enabled=true
+          AXUnknown id="Settings.Performance.PrefixCache" desc="Reusable prompt cache budget" enabled=true
+          AXStaticText id="Settings.Performance.PrefixCache" value=text enabled=true
+          AXHeading id="Settings.Performance.Requests" desc="Requests" enabled=true
+          AXUnknown id="Settings.Performance.Requests" desc="Running requests" enabled=true
+          AXUnknown id="Settings.Performance.Requests" desc="Waiting requests" enabled=true
+          AXHeading id="Settings.Performance.MemoryTrend" desc="Recent memory usage" enabled=true
+          AXStaticText id="Settings.Performance.MemoryTrend" value=text enabled=true
+          AXUnknown id="Settings.Performance.MemoryTrend" desc="Recent memory usage" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText id="Settings.Performance.MemoryTrend" value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText id="Settings.Performance.MemoryTrend" value=text enabled=true
           AXHeading desc="Model, Choose which model owns these settings. It does not need to be running." enabled=true
           AXStaticText value=text enabled=true
           AXPopUpButton id="Settings.Performance.ModelPicker" value=text enabled=true

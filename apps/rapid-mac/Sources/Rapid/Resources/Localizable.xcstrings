@@ -2,6 +2,56 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Reusable prompt cache budget. This overlaps engine memory and is not added to Mac or Metal totals. A dash means this cache mode reports no current usage or capacity." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可复用提示词缓存预算。它与引擎内存重叠，不计入 Mac 或 Metal 的内存总量。短横线表示当前缓存模式未报告用量或容量上限。"
+          }
+        }
+      }
+    },
+    "Waiting requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待中的请求"
+          }
+        }
+      }
+    },
+    "Running requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行中的请求"
+          }
+        }
+      }
+    },
+    "Reusable prompt cache budget" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可复用提示词缓存预算"
+          }
+        }
+      }
+    },
+    "Current / capacity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前用量 / 容量上限"
+          }
+        }
+      }
+    },
     "Couldn't read cached models" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -502,6 +552,206 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "连接的服务器存储："
+          }
+        }
+      }
+    },
+    "This Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机"
+          }
+        }
+      }
+    },
+    "Total RAM" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "总内存"
+          }
+        }
+      }
+    },
+    "Memory used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已用内存"
+          }
+        }
+      }
+    },
+    "This Mac memory usage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机内存使用情况"
+          }
+        }
+      }
+    },
+    "App memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用内存"
+          }
+        }
+      }
+    },
+    "Wired memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "联动内存"
+          }
+        }
+      }
+    },
+    "Compressed memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "压缩内存"
+          }
+        }
+      }
+    },
+    "Not in use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未使用内存"
+          }
+        }
+      }
+    },
+    "Used = app + wired + compressed. Not in use = total − used, including reclaimable memory; it is not a count of physical free pages. All values are decimal GB; this is usage, not memory pressure. A dash means no current measurement." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已用内存 = 应用内存 + 联动内存 + 压缩内存。未使用内存 = 总内存 − 已用内存，其中包括可回收内存，并非物理空闲页的大小。所有数值均以十进制 GB 表示；此处显示使用量，而非内存压力。短横线表示当前没有测量值。"
+          }
+        }
+      }
+    },
+    "Inference engine (Metal)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理引擎（Metal）"
+          }
+        }
+      }
+    },
+    "Metal active / total RAM" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Metal 活跃分配 / 总内存"
+          }
+        }
+      }
+    },
+    "Recent memory usage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "近期内存使用情况"
+          }
+        }
+      }
+    },
+    "Up to 5 minutes, sampled every 3 seconds while this panel is visible. Gaps mean no measurement." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多显示 5 分钟，仅在此面板可见时每 3 秒采样一次。空缺表示没有测量值。"
+          }
+        }
+      }
+    },
+    "System used (solid)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统已用内存（实线）"
+          }
+        }
+      }
+    },
+    "Metal active (dashed)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Metal 活跃分配（虚线）"
+          }
+        }
+      }
+    },
+    "5 min ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "5 分钟前"
+          }
+        }
+      }
+    },
+    "Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在"
+          }
+        }
+      }
+    },
+    "Total: %@; used: %@; app: %@; wired: %@; compressed: %@; not in use: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "总计：%@；已用：%@；应用：%@；联动：%@；压缩：%@；未使用：%@"
+          }
+        }
+      }
+    },
+    "System used (solid): %@. Metal active (dashed): %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统已用内存（实线）：%@。Metal 活跃分配（虚线）：%@。"
+          }
+        }
+      }
+    },
+    "Latest: %@; low: %@; high: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最新：%@；最低：%@；最高：%@"
           }
         }
       }
