@@ -80,5 +80,8 @@ The MTP-default Qwen 9B control does not enroll fusions. M4 cold throughput is
 57.34→57.32 tok/s. M3 cold throughput is unresolved: 118.76→113.35 initially
 and 116.48→112.50 on confirmation; repeated-request medians are neutral
 (112.74→112.74 and 112.95→112.99). Output digests match. This is not a passed
-strict M3 MTP performance gate. M5 remains untested under an owner workload.
+strict M3 MTP performance gate. M5 Max (cold, three fresh boots versus main):
+Qwen 4B 140.83→141.60, LFM2.5 473.37→479.00, LFM3 186.45→188.37, Gemma
+113.00→115.50 tok/s; the MTP-default 9B control stays within range and exact
+request digests match.
 The broader all-model/all-chip throughput goal is not established.

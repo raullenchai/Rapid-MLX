@@ -254,6 +254,10 @@ def test_gemma_branch_norms_and_fallback(moe, external):
     assert fusion.install_dense_decode_fusion(layer) == 1
     assert fusion._bits_equal(layer(mx.ones((1, 1, 128), mx.bfloat16))[0], expected)
     assert fusion.install_dense_decode_fusion(layer) == 0
+    if external:
+        # The external layer has no shared-cache parameter; keep its contract.
+        with pytest.raises(TypeError):
+            layer(mx.ones((1, 1, 128), mx.bfloat16), shared_cache=object())
     for shape in ((2, 1, 128), (1, 3, 128)):
         x = mx.ones(shape, mx.bfloat16)
         assert fusion._bits_equal(layer(x)[0], original(layer, x)[0])

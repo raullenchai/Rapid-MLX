@@ -418,8 +418,11 @@ def _enroll_gemma(layer):
         shared_cache=None,
     ):
         shared = {"shared_kv": shared_kv, "offset": offset}
-        if has_shared_cache:
+        if has_shared_cache or shared_cache is not None:
+            # An unsupported argument reaches the original and fails there.
             shared["shared_cache"] = shared_cache
+            if not has_shared_cache:
+                return original(self, x, mask, cache, per_layer_input, **shared)
         if not _singleton(x) or x.dtype != dtype or per_layer_input is not None:
             return original(self, x, mask, cache, per_layer_input, **shared)
         branch, shared_kv, offset = self.self_attn(

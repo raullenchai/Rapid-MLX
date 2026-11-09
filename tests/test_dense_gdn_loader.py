@@ -12,7 +12,18 @@ mlx_vlm = pytest.importorskip("mlx_vlm")
 
 
 @pytest.mark.parametrize(
-    "model_type", ["qwen3_5", "qwen3_5_moe", "lfm2", "lfm3_vl", "qwen3_vl"]
+    "model_type",
+    [
+        "qwen3_5",
+        "qwen3_5_moe",
+        "gemma4",
+        "lfm2",
+        "lfm2-vl",
+        "lfm2_vl",
+        "lfm3",
+        "lfm3_vl",
+        "qwen3_vl",
+    ],
 )
 @pytest.mark.parametrize("mode", ["default", "none", "mtp", "auto", "future", None])
 def test_load_enrolls_only_plain_qwen_backbones(
@@ -92,7 +103,10 @@ def test_load_enrolls_only_plain_qwen_backbones(
     expected = model_type in {"qwen3_5", "qwen3_5_moe"} and mode in {"default", "none"}
     dense_kw = {"spec_decode": "none" if mode == "default" else mode}
     assert dense == (
-        [(model, dense_kw)] if model_type in {"qwen3_5", "lfm2", "lfm3_vl"} else []
+        [(model, dense_kw)]
+        if model_type
+        in {"qwen3_5", "gemma4", "lfm2", "lfm2-vl", "lfm2_vl", "lfm3", "lfm3_vl"}
+        else []
     )
     assert wrapper._loaded
     assert enrolled == ([model] if expected else [])
