@@ -1517,7 +1517,15 @@ async def create_response(request: Request):
             return StreamingResponse(
                 _stream_buffered_responses_response(_buffered_response.body),
                 media_type="text/event-stream",
-                headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
+                headers={
+                    **SSE_RESPONSE_HEADERS,
+                    "Connection": "keep-alive",
+                    **{
+                        k: v
+                        for k, v in _buffered_response.headers.items()
+                        if k.lower() == "x-rapidmlx-warning"
+                    },
+                },
             )
         return _buffered_response
     except ContextLengthExceeded as exc:
@@ -1746,6 +1754,48 @@ async def _non_stream(
         else None
     )
 
+    # Match chat's reasoning policy even when thinking is template-defaulted.
+    _schema_reasoning = (
+        cfg.reasoning_parser is not None and resolved_thinking is not False
+    )
+    _schema_gate_kwargs = {}
+    _schema_is_mllm = bool(_strict_schema) and getattr(engine, "is_mllm", False)
+    _schema_can_guide = bool(_strict_schema) and engine.supports_guided_generation
+    guided_warning = None
+    if _schema_is_mllm and _schema_reasoning:
+        from ..api.guided import resolve_schema_reasoning_end_id
+
+        _end_id = resolve_schema_reasoning_end_id(
+            engine.tokenizer, cfg.reasoning_parser
+        )
+        if _end_id is not None:
+            _schema_gate_kwargs["reasoning_end_id"] = _end_id
+        else:
+            from ..api.tool_calling import build_json_system_prompt
+            from ..service.helpers import _inject_json_instruction
+
+            _schema_can_guide = False
+            messages = _inject_json_instruction(
+                messages, build_json_system_prompt(_rf_for_strict)
+            )
+            guided_warning = (
+                "MLLM schema decoding is unconstrained: reasoning parser has no "
+                "supported atomic reasoning-end marker. Strict final-text "
+                "validation remains active when enabled. Check rapid-mlx[guided], "
+                "the schema and the reasoning marker; for text-only requests, "
+                "--no-mllm selects the text engine."
+            )
+            logger.warning(guided_warning)
+
+    def _schema_validation_text(result):
+        text = result.text or ""
+        if _schema_is_mllm and _schema_reasoning:
+            _, content = cfg.reasoning_parser.extract_reasoning(
+                text, enable_thinking=resolved_thinking
+            )
+            return content or ""
+        return text
+
     # Codex r3 BLOCKING #1: wrap ONLY the guided coroutine creation
     # in our exception translator, not ``_wait_with_disconnect``
     # itself. ``_wait_with_disconnect`` raises
@@ -1774,11 +1824,7 @@ async def _non_stream(
     # test in test_response_format_json_schema_strict.py pins
     # this behavior so any future refactor that moves the call
     # outside the try is caught.
-    if (
-        _strict_schema
-        and engine.supports_guided_generation
-        and not openai_request.tools
-    ):
+    if _strict_schema and _schema_can_guide and not openai_request.tools:
         # Codex r5 BLOCKING: ``chat_kwargs`` is the merged
         # ``_resolved_sampling_kwargs`` + tools/thinking flags blob.
         # If any upstream resolver ever surfaces a ``raise_on_failure``
@@ -1806,6 +1852,7 @@ async def _non_stream(
                 json_schema=_strict_schema,
                 raise_on_failure=True,
                 **_guided_kwargs,
+                **_schema_gate_kwargs,
             )
         except HTTPException:
             raise
@@ -2008,11 +2055,13 @@ async def _non_stream(
     # ``error.details.failing_path`` programmatically.
     if (
         _strict_schema
-        and (not engine.supports_guided_generation or bool(openai_request.tools))
+        and (not _schema_can_guide or bool(openai_request.tools))
         and strict_enforcement_enabled()
         and not _strict_tool_turn
     ):
-        ok, failure_details = validate_and_envelope(output.text or "", _strict_schema)
+        ok, failure_details = validate_and_envelope(
+            _schema_validation_text(output), _strict_schema
+        )
         attempts = 1
         repair_attempted = False
         if (
@@ -2077,12 +2126,13 @@ async def _non_stream(
                     (failure_details or {}).get("reason", "?"),
                 )
                 try:
-                    if openai_request.tools:
+                    if openai_request.tools and _schema_can_guide:
                         repair_coro = engine.generate_with_schema(
                             messages=repair_messages,
                             json_schema=_strict_schema,
                             raise_on_failure=True,
                             **repair_kwargs,
+                            **_schema_gate_kwargs,
                         )
                     else:
                         repair_coro = engine.chat(
@@ -2151,7 +2201,7 @@ async def _non_stream(
                     ) from repair_err
             if repair_output is not None:
                 ok2, failure2 = validate_and_envelope(
-                    repair_output.text or "", _strict_schema
+                    _schema_validation_text(repair_output), _strict_schema
                 )
                 if ok2:
                     incr_strict_repair_success()
@@ -2186,6 +2236,9 @@ async def _non_stream(
             raise HTTPException(
                 status_code=(502 if openai_request.tools and repair_attempted else 422),
                 detail=envelope,
+                headers={"X-RapidMLX-Warning": guided_warning}
+                if guided_warning
+                else None,
             )
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no
@@ -2306,11 +2359,13 @@ async def _non_stream(
     # chat's gate exactly: only the guided path runs this validator.
     if (
         _strict_schema
-        and engine.supports_guided_generation
+        and _schema_can_guide
         and not openai_request.tools
         and output is not None
     ):
-        ok, err = validate_output_against_schema(output.text or "", _strict_schema)
+        ok, err = validate_output_against_schema(
+            _schema_validation_text(output), _strict_schema
+        )
         if not ok:
             incr_strict_violation()
             logger.warning(
@@ -2568,6 +2623,8 @@ async def _non_stream(
         # #4092: announce a PFlash-compressed prompt.
         headers=prompt_compression_headers(openai_response.metrics) or None,
     )
+    if guided_warning:
+        response.headers["X-RapidMLX-Warning"] = guided_warning
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 

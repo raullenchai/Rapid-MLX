@@ -5453,6 +5453,16 @@ class BatchedEngine(BaseEngine):
                 thinking = (kwargs.get("chat_template_kwargs") or {}).get(
                     "enable_thinking"
                 )
+            if reasoning_end_id is None and thinking is None:
+                from ..api.guided import resolve_schema_reasoning_end_id
+                from ..config import get_config
+
+                parser = get_config().reasoning_parser
+                if parser is not None:
+                    reasoning_end_id = resolve_schema_reasoning_end_id(
+                        self.tokenizer, parser
+                    )
+                    thinking = True
             if reasoning_end_id is None and thinking is True:
                 reason = "MLLM guided reasoning requires an atomic reasoning_end_id"
                 logger.warning(reason)

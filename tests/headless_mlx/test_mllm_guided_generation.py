@@ -272,3 +272,42 @@ def test_mllm_failed_strict_repair_retains_degradation_warning(monkeypatch, capl
     assert len(engine.chat_calls) == 2
     assert "repair is unconstrained" in response.headers["X-RapidMLX-Warning"]
     assert "repair is unconstrained" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parser_configured,marker_resolves", [(False, False), (True, False), (True, True)]
+)
+async def test_direct_mllm_implicit_thinking_resolves_configured_gate(
+    monkeypatch, parser_configured, marker_resolves
+):
+    from rapid_mlx.api import guided
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    cfg = reset_config()
+    cfg.reasoning_parser = Qwen3ReasoningParser() if parser_configured else None
+    tokenizer = SimpleNamespace(
+        encode=lambda *a, **k: [7] if marker_resolves else [1, 2],
+        decode=lambda ids: "</think>",
+    )
+    build = Mock(return_value=object())
+    monkeypatch.setattr(guided, "build_json_schema_logits_processor", build)
+    monkeypatch.setattr(batched, "HAS_GUIDED", True)
+    engine = batched.BatchedEngine.__new__(batched.BatchedEngine)
+    engine._is_mllm = True
+    engine._loaded = True
+    engine._processor = SimpleNamespace(tokenizer=tokenizer)
+    engine.chat = AsyncMock()
+    if parser_configured and not marker_resolves:
+        with pytest.raises(RuntimeError, match="atomic reasoning_end_id"):
+            await engine.generate_with_schema([], {"type": "object"})
+        build.assert_not_called()
+        engine.chat.assert_not_called()
+    else:
+        await engine.generate_with_schema([], {"type": "object"})
+        assert build.call_args.kwargs["reasoning_end_id"] == (
+            7 if parser_configured else None
+        )
+        engine.chat.assert_awaited_once()
+    reset_config()
