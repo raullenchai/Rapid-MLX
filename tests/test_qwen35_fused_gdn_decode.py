@@ -468,7 +468,7 @@ def test_mllm_loader_installs_qwen35_fused_gdn_decode():
 
     source = inspect.getsource(MLXMultimodalLM.load)
     assert source.count("install_qwen35_moe_router") == 2
-    assert source.count("install_qwen35_fused_gdn_decode") == 2
+    assert source.count("install_qwen35_fused_gdn_decode") == 4
 
 
 @pytest.mark.skipif(not mx.metal.is_available(), reason="requires Metal")
@@ -592,3 +592,45 @@ def test_unsupported_convolution_law_keeps_enrollment_fail_closed(monkeypatch):
         lambda: (_ for _ in ()).throw(RuntimeError("unsupported native SiLU")),
     )
     assert fused.probe_qwen35_fused_gdn_decode() is None
+
+
+@pytest.mark.parametrize("width", [2560, 4096])
+def test_dense_width_opt_in_preserves_projected_geometry_guard(width):
+    layer = _layer(hidden_size=width)
+    assert not fused._structurally_eligible(layer)
+    assert fused._structurally_eligible(layer, allow_dense=True)
+    assert fused._eligible(
+        layer, mx.zeros((1, 1, width), dtype=mx.bfloat16), None, _Cache()
+    )
+    assert not fused._eligible(
+        layer, mx.zeros((1, 2, width), dtype=mx.bfloat16), None, _Cache()
+    )
+    layer.num_v_heads = 48
+    assert not fused._structurally_eligible(layer, allow_dense=True)
+
+
+@pytest.mark.parametrize("width", [0, -1, None, "2560", True])
+def test_dense_width_opt_in_fails_closed_on_invalid_width(width):
+    assert not fused._structurally_eligible(_layer(hidden_size=width), allow_dense=True)
+
+
+def test_dense_enrollment_requires_explicit_opt_in(monkeypatch):
+    from mlx_lm.models.qwen3_5 import GatedDeltaNet
+
+    layer = GatedDeltaNet.__new__(GatedDeltaNet)
+    nn.Module.__init__(layer)
+    for name, value in vars(_layer(hidden_size=2560)).items():
+        if name not in {"training", fused._TAG}:
+            setattr(layer, name, value)
+    layer.eval()
+    model = SimpleNamespace(named_modules=lambda: iter((("gdn", layer),)))
+    probes = []
+    monkeypatch.setattr(
+        fused, "probe_qwen35_fused_gdn_decode", lambda: probes.append(1) or 16
+    )
+    monkeypatch.setattr(fused, "_patch_class", lambda _: None)
+    assert fused.install_qwen35_fused_gdn_decode(model) == 0
+    assert probes == []
+    assert fused.install_qwen35_fused_gdn_decode(model, allow_dense=True) == 1
+    assert probes == [1]
+    assert getattr(layer, fused._TAG)
