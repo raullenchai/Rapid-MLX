@@ -445,7 +445,12 @@ class NemotronToolParser(ToolParser):
             # completed call are literal prose, including in buffered replies.
             pending_wrappers = 0
             span_index = 0
+            from .qwen3coder_tool_parser import _MarkdownCodeTracker
+
+            code = _MarkdownCodeTracker()
             for match in self.RESIDUAL_WRAPPER_PATTERN.finditer(text):
+                if code.inside(text, match.start()):
+                    continue
                 while (
                     span_index < len(valid_spans)
                     and valid_spans[span_index][1] <= match.start()

@@ -501,7 +501,17 @@ def test_undeclared_xml_policy(client, parser):
     raw = "<tool_call>\n<function=unknown>\n<parameter=city>Paris"
     expected = raw if parser == "qwen3_coder_xml" else ""
     assert _reply(client, "chat", raw)[0] == expected
-    assert _reply(client, "chat", raw, stream=True)[0] == expected
+    content, calls, reason = _reply(client, "chat", raw, stream=True)
+    assert content == ""
+    assert reason == "length"
+    if parser == "qwen3_coder_xml":
+        # #5693: unknown names use the same incremental header path as
+        # declared calls. The truncated argument remains incomplete.
+        calls = [call for batch in calls for call in batch]
+        assert len(calls) == 1
+        assert calls[0]["function"] == {"name": "unknown", "arguments": "{"}
+    else:
+        assert not calls
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -694,6 +704,11 @@ def test_streaming_unchanged_against_base():
                                 # pins its streaming and final output.
                                 "finalize_legacy_raw_stream",
                                 "_parse_xml_function_call",
+                                # #5693 forwards unknown names;
+                                # test_unknown_tool_reaches_client in
+                                # test_undeclared_tool_passthrough.py pins
+                                # streaming names, arguments, and stop reasons.
+                                "extract_tool_calls_streaming",
                             }
                         )
                     ]
@@ -1064,14 +1079,20 @@ def test_code_boundary_before_last_opener(client, parser, prefix, kept):
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_closed_inline_code_before_rejected_call(client, stream):
-    # A closed code span must not protect a later real undeclared call.
+def test_closed_inline_code_before_unknown_call(client, stream):
+    # A closed code span must not hide a later real undeclared call (#5693).
     client[1].tool_call_parser = "qwen3_coder_xml"
     prefix = "Use `code` here. "
     raw = prefix + "<tool_call>\n<function=unknown></function>\n</tool_call>"
-    content, calls, _ = _reply(client, "chat", raw, stream=stream)
+    content, calls, reason = _reply(
+        client, "chat", raw, stream=stream, finish_reason="stop"
+    )
     assert content.strip() == prefix.strip()
-    assert not calls
+    if stream:
+        calls = [call for batch in calls for call in batch]
+    assert len(calls) == 1
+    assert calls[0]["function"] == {"name": "unknown", "arguments": "{}"}
+    assert reason == "tool_calls"
 
 
 @pytest.mark.parametrize("parser", PARSERS)

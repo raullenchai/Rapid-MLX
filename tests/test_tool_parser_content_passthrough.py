@@ -15,16 +15,18 @@ Qwen3-Coder build, so that is the default path for local coding agents.
 
 The discriminator is NOT whether the span is closed —
 ``<function=read_file></function>`` is well-formed either way — but
-whether the CALLER declared that tool. A name the request never offered
-can never be executed, so promoting it only breaks the agent loop. That
-also preserves recovery of a genuine call truncated by ``max_tokens``
-before ``</function>``, which a closed-only rule would have thrown away.
+whether the text carries call framing rather than prose. Framed unknown
+names reach the client for error recovery (#5693), while explicit tool
+choices still constrain calls. Declared calls truncated by ``max_tokens``
+before ``</function>`` also retain their recovery behavior.
 
 The tool-extraction path also runs when the request declared no tools at
 all (``rapid_mlx/service/helpers.py`` does not gate on ``request.tools``),
 which is why these cases pass ``request=None`` — a plain chat turn must
 not be able to lose text to the tool layer.
 """
+
+import json
 
 import pytest
 
@@ -168,8 +170,8 @@ def _qwen3coder():
     return ToolParserManager.get_tool_parser("qwen3_coder_xml")(None)
 
 
-class TestOnlyDeclaredToolsBecomeCalls:
-    """A name the request never offered can never be executed."""
+class TestToolCallFramingAndChoice:
+    """Framed calls reach the client; prose and explicit choices stay guarded."""
 
     def test_balanced_prose_with_no_tools_declared(self):
         """codex r1 BLOCKING: closed spans in prose were still promoted."""
@@ -324,7 +326,7 @@ class TestOnlyDeclaredToolsBecomeCalls:
         assert [call["name"] for call in result.tool_calls] == ["write_file"]
         assert result.content == ("Docs: <function=read_file></function> then call: ")
 
-    def test_shared_wrapper_is_preserved_for_a_rejected_sibling(self):
+    def test_shared_wrapper_forwards_an_unknown_sibling(self):
         text = (
             "<tool_call><function=read_file></function>"
             "<function=write_file>"
@@ -335,10 +337,15 @@ class TestOnlyDeclaredToolsBecomeCalls:
         result = _qwen3coder().extract_tool_calls(text, {"tools": DECLARED_TOOLS})
 
         assert result.tools_called is True
-        assert [call["name"] for call in result.tool_calls] == ["write_file"]
-        assert result.content == (
-            "<tool_call><function=read_file></function></tool_call>"
-        )
+        assert [call["name"] for call in result.tool_calls] == [
+            "read_file",
+            "write_file",
+        ]
+        assert [json.loads(call["arguments"]) for call in result.tool_calls] == [
+            {},
+            {"path": "a.md", "content": "hi"},
+        ]
+        assert not result.content
 
     def test_shared_wrapper_admits_a_later_zero_argument_call(self):
         ping = {
@@ -352,10 +359,9 @@ class TestOnlyDeclaredToolsBecomeCalls:
         result = _qwen3coder().extract_tool_calls(text, {"tools": [ping]})
 
         assert result.tools_called is True
-        assert [call["name"] for call in result.tool_calls] == ["ping"]
-        assert result.content == (
-            "<tool_call><function=read_file></function></tool_call>"
-        )
+        assert [call["name"] for call in result.tool_calls] == ["read_file", "ping"]
+        assert [json.loads(call["arguments"]) for call in result.tool_calls] == [{}, {}]
+        assert not result.content
 
     @pytest.mark.parametrize(
         "request_payload",
@@ -418,7 +424,7 @@ class TestOnlyDeclaredToolsBecomeCalls:
     @pytest.mark.parametrize(
         "structured", [None, [{"name": "read_file", "arguments": "{}"}]]
     )
-    def test_service_helper_cannot_repromote_an_undeclared_span(
+    def test_service_helper_preserves_prose_and_structured_unknown_calls(
         self, monkeypatch, structured
     ):
         text = "Docs: <function=read_file></function> is the wire form."
@@ -446,7 +452,12 @@ class TestOnlyDeclaredToolsBecomeCalls:
             cfg.enable_auto_tool_choice, cfg.tool_call_parser = saved
 
         assert content == text
-        assert calls is None
+        if structured:
+            assert len(calls) == 1
+            assert calls[0].function.name == "read_file"
+            assert json.loads(calls[0].function.arguments) == {}
+        else:
+            assert calls is None
 
     def test_service_helper_enforces_named_tool_choice_on_structured_calls(
         self, monkeypatch

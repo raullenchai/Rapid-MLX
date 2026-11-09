@@ -1048,8 +1048,9 @@ def test_span_reuse_requires_exact_input_and_declared_names(monkeypatch, change)
         request["tools"][0]["function"]["name"] = "g"
     else:
         parser.reset()
-    expected = "" if change == "reset" else text
-    assert parser._visible_content_between(text, 0, len(text), request) == expected
+    # #5693: changed text/names invalidate the cache, but unknown calls
+    # are still removed from content and forwarded to the client.
+    assert parser._visible_content_between(text, 0, len(text), request) == ""
     assert scans == 1
 
 
