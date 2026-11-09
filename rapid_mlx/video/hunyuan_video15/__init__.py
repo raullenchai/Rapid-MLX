@@ -11,12 +11,21 @@ from pathlib import Path
 REPO = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
 REVISION = "286be7ce72277246578a3e3cc2487e95ddae5bcf"
 ALIAS = "hunyuan-video-1.5-480p"
+DISTILLED_REPO = REPO + "_distilled"
+DISTILLED_REVISION = "1abb14f06518f37448dcf3a6917dd086dd7045c7"
+DISTILLED_ALIAS = ALIAS + "-distilled"
+CHECKPOINTS = {
+    REPO: (REPO, REVISION),
+    ALIAS: (REPO, REVISION),
+    DISTILLED_REPO: (DISTILLED_REPO, DISTILLED_REVISION),
+    DISTILLED_ALIAS: (DISTILLED_REPO, DISTILLED_REVISION),
+}
 
 
 def is_hunyuan_video15_model(name: str | None) -> bool:
     if not name:
         return False
-    if name in (REPO, ALIAS):
+    if name in CHECKPOINTS:
         return True
     try:
         index = Path(name) / "model_index.json"
@@ -59,9 +68,7 @@ class PipelineConfig:
             or transformer.get("target_size") != 640
             or transformer.get("use_meanflow", False)
         ):
-            raise ValueError(
-                "Only HunyuanVideo 1.5 480p non-distilled T2V is implemented"
-            )
+            raise ValueError("Only HunyuanVideo 1.5 480p T2V is implemented")
         if (
             transformer["in_channels"] != 2 * vae["latent_channels"] + 1
             or transformer["out_channels"] != vae["latent_channels"]

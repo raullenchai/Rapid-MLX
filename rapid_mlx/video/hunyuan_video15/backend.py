@@ -14,9 +14,7 @@ from pathlib import Path
 from ..cancel import cleanup_on_cancel
 from ..engine import VideoGenerationEngine
 from . import (
-    ALIAS,
-    REPO,
-    REVISION,
+    CHECKPOINTS,
     FlowMatchScheduler,
     PipelineConfig,
     validate_request,
@@ -30,17 +28,22 @@ class HunyuanVideo15Engine(VideoGenerationEngine):
     validate_request = staticmethod(validate_request)
 
     def __init__(self, model_id):
-        if str(model_id) not in (REPO, ALIAS) and not Path(model_id).is_dir():
+        if str(model_id) not in CHECKPOINTS and not Path(model_id).is_dir():
             raise ValueError(
                 "Expected the pinned HunyuanVideo 1.5 480p T2V repository or a local snapshot"
             )
         super().__init__(str(model_id))
         self.timings = {}
 
-    def generate_sync(self, *, on_loaded=None, **kwargs):
+    async def generate(self, *, guidance_scale=None, **kwargs):
+        return await super().generate(guidance_scale=guidance_scale, **kwargs)
+
+    def generate_sync(self, *, guidance_scale=None, on_loaded=None, **kwargs):
         # Notify after actual weight loading, while keeping the base class's
         # persistent worker, atomic output staging and cancellation cleanup.
-        return super().generate_sync(_on_weights_loaded=on_loaded, **kwargs)
+        return super().generate_sync(
+            guidance_scale=guidance_scale, _on_weights_loaded=on_loaded, **kwargs
+        )
 
     def _load_sync(self, cancel_check=lambda: None, on_progress=None):
         if self._model_path is None:
@@ -62,9 +65,10 @@ class HunyuanVideo15Engine(VideoGenerationEngine):
                 logger.info(
                     "HunyuanVideo 1.5: upstream direct checkpoint (~53 GB), native 480p T2V"
                 )
+                repo, revision = CHECKPOINTS[self.model_id]
                 root = Path(
                     snapshot_download(
-                        REPO, revision=REVISION, tqdm_class=DownloadProgress
+                        repo, revision=revision, tqdm_class=DownloadProgress
                     )
                 )
             self.config = PipelineConfig.from_path(root)

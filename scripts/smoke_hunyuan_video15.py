@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rapid_mlx.video.hunyuan_video15 import REPO  # noqa: E402
+from rapid_mlx.video.hunyuan_video15 import DISTILLED_ALIAS  # noqa: E402
 from rapid_mlx.video.hunyuan_video15.backend import HunyuanVideo15Engine  # noqa: E402
 
 
@@ -25,8 +25,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--model",
-        default=REPO,
-        help="Pinned Hub checkpoint or local Diffusers snapshot",
+        "--alias",
+        default=DISTILLED_ALIAS,
+        help="Variant alias, pinned Hub checkpoint, or local Diffusers snapshot",
     )
     parser.add_argument(
         "--prompt",
@@ -63,6 +64,12 @@ def main():
             guidance_scale=args.guidance_scale,
             seed=args.seed,
             on_progress=progress,
+            on_loaded=lambda: print(
+                f"Effective steps={args.steps}, guidance="
+                f"{engine.config.guider['guidance_scale'] if args.guidance_scale is None else args.guidance_scale}, "
+                f"flow shift={engine.config.scheduler['shift']}",
+                flush=True,
+            ),
         )
         print(json.dumps(engine.timings, indent=2))
         print(f"Wrote {args.output.resolve()}")

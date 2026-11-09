@@ -3,6 +3,8 @@
 
 import asyncio
 import json
+import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +17,9 @@ from rapid_mlx.routes import video
 from rapid_mlx.runtime.video_lane import VideoEngine, validate_video_request
 from rapid_mlx.video.hunyuan_video15 import (
     ALIAS,
+    DISTILLED_ALIAS,
+    DISTILLED_REPO,
+    DISTILLED_REVISION,
     REPO,
     REVISION,
     FlowMatchScheduler,
@@ -42,6 +47,7 @@ def checkpoint(tmp_path):
             "latent_channels": 32,
             "spatial_compression_ratio": 16,
             "temporal_compression_ratio": 4,
+            "scaling_factor": 1.03682,
         },
         "scheduler/scheduler_config.json": {
             "_class_name": "FlowMatchEulerDiscreteScheduler",
@@ -333,12 +339,16 @@ def test_hub_direct_inventory_exclusion():
 
 
 @pytest.mark.asyncio
-async def test_shared_lane_dispatch_and_worker_ownership(monkeypatch, tmp_path):
+@pytest.mark.parametrize("model", [REPO, DISTILLED_REPO, DISTILLED_ALIAS])
+@pytest.mark.parametrize("guidance", [None, 5.0])
+async def test_shared_lane_dispatch_and_worker_ownership(
+    monkeypatch, tmp_path, model, guidance
+):
     captured = {}
     monkeypatch.setattr(
         HunyuanVideo15Engine, "generate_sync", lambda self, **kw: captured.update(kw)
     )
-    engine = VideoEngine(REPO)
+    engine = VideoEngine(model)
     try:
         assert engine.video_family == "hunyuan-video-1.5"
         assert engine.native_fps == 24
@@ -352,10 +362,10 @@ async def test_shared_lane_dispatch_and_worker_ownership(monkeypatch, tmp_path):
             fps=24,
             seed=42,
             image=None,
-            guidance_scale=5,
+            **({} if guidance is None else {"guidance_scale": guidance}),
             negative_prompt="rain",
         )
-        assert captured["frames"] == 33 and captured["guidance_scale"] == 5
+        assert captured["frames"] == 33 and captured["guidance_scale"] == guidance
         assert captured["negative_prompt"] == "rain"
         with pytest.raises(ValueError, match="text-to-video"):
             validate_video_request(
@@ -433,6 +443,7 @@ async def test_route_generates_default_resolution_without_rounding(
             await asyncio.sleep(0.01)
         assert result["status"] == "completed", result
         assert result["model"] == ALIAS
+        assert captured["guidance_scale"] is None
         assert (captured["width"], captured["height"], captured["num_frames"]) == (
             848,
             480,
@@ -440,3 +451,190 @@ async def test_route_generates_default_resolution_without_rounding(
         )
     finally:
         await video.delete_video(created["id"])
+
+
+@pytest.mark.parametrize(
+    "alias,repo,revision",
+    [
+        (ALIAS, REPO, REVISION),
+        (DISTILLED_ALIAS, DISTILLED_REPO, DISTILLED_REVISION),
+    ],
+)
+def test_variants_registered_and_excluded_from_mirror(alias, repo, revision):
+    profile = resolve_profile(alias)
+    assert profile.hf_path == repo
+    assert profile.video_modes == ("text-to-video",)
+    assert profile.modality == "video-gen"
+    assert profile.min_memory_gb == 64
+    assert resolve_revision(repo) == revision
+    assert is_hunyuan_video15_model(alias)
+    assert is_hunyuan_video15_model(repo)
+    root = Path(__file__).resolve().parents[1]
+    sizes = json.loads((root / "rapid_mlx/model_sizes.json").read_text())["sizes"]
+    assert sizes[repo] == 53384315789
+    excluded = json.loads((root / "scripts/mirror_unmirrored.json").read_text())
+    assert any(x["hf_path"] == repo for x in excluded["entries"])
+    digests = json.loads((root / "rapid_mlx/model_digests.json").read_text())["aliases"]
+    assert alias not in digests
+
+
+def test_cfg_distilled_checkpoint_uses_same_transformer_and_schedule(checkpoint):
+    base = PipelineConfig.from_path(checkpoint)
+    path = checkpoint / "guider/guider_config.json"
+    guider = json.loads(path.read_text())
+    guider["guidance_scale"] = 1.0
+    path.write_text(json.dumps(guider))
+    distilled = PipelineConfig.from_path(checkpoint)
+    assert distilled.transformer == base.transformer
+    assert distilled.scheduler == base.scheduler
+    assert distilled.steps == base.steps == 50
+    assert distilled.guider["guidance_scale"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guidance", [None, 4.0])
+async def test_async_api_defers_guidance_to_checkpoint(monkeypatch, guidance):
+    captured = {}
+    monkeypatch.setattr(
+        HunyuanVideo15Engine, "_generate_sync", lambda self, **kw: captured.update(kw)
+    )
+    engine = HunyuanVideo15Engine(DISTILLED_ALIAS)
+    try:
+        kwargs = {} if guidance is None else {"guidance_scale": guidance}
+        await engine.generate(prompt="fox", **kwargs)
+        assert captured["guidance_scale"] == guidance
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api", ["sync", "async"])
+@pytest.mark.parametrize("alias,default_scale", [(ALIAS, 6.0), (DISTILLED_ALIAS, 1.0)])
+@pytest.mark.parametrize("guidance", ["omitted", None, 4.0])
+async def test_checkpoint_guidance_and_forward_count(
+    monkeypatch, checkpoint, api, alias, default_scale, guidance
+):
+    """Run the production denoising loop and worker without MLX or weights."""
+    from rapid_mlx import _mlx_cache_limit, model_downloads
+    from rapid_mlx.video import encoding
+    from rapid_mlx.video.hunyuan_video15 import backend
+
+    guider_path = checkpoint / "guider/guider_config.json"
+    guider_path.write_text(
+        json.dumps(
+            {"_class_name": "ClassifierFreeGuidance", "guidance_scale": default_scale}
+        )
+    )
+    monkeypatch.setattr(
+        model_downloads, "snapshot_download", lambda *a, **k: checkpoint
+    )
+    monkeypatch.setattr(
+        _mlx_cache_limit, "bounded_cache_limit", lambda bound: nullcontext()
+    )
+    mx = SimpleNamespace(
+        bfloat16=np.float32,
+        float32=np.float32,
+        zeros=np.zeros,
+        array=np.array,
+        concatenate=np.concatenate,
+        random=SimpleNamespace(
+            key=lambda seed: seed,
+            normal=lambda shape, **kwargs: np.zeros(shape, dtype=np.float32),
+        ),
+        eval=lambda *a: None,
+        clear_cache=lambda: None,
+        get_peak_memory=lambda: 0,
+    )
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    forwards = []
+    predictions = []
+    prompt_batches = []
+
+    def encode(root, prompts, config, check):
+        prompt_batches.append(prompts)
+        return [(2.0,), (1.0,)][: len(prompts)]
+
+    class Transformer:
+        def __init__(self, config):
+            pass
+
+        def __call__(self, x, t, value, **kwargs):
+            forwards.append(value)
+            return np.full((1, 32, *x.shape[2:]), value, dtype=np.float32)
+
+    class VAE:
+        def __init__(self, config):
+            pass
+
+        def tiled_decode(self, *args):
+            return np.zeros((1, 3, 5, 256, 256), dtype=np.float32)
+
+    class Scheduler(FlowMatchScheduler):
+        def step(self, model_output, index, sample):
+            predictions.append(float(model_output.flat[0]))
+            return super().step(model_output, index, sample)
+
+    for module, attributes in {
+        "loading": dict(load_component=lambda *a, **k: None),
+        "text": dict(encode_prompts=encode),
+        "transformer": dict(Transformer=Transformer),
+        "vae": dict(VAE=VAE),
+    }.items():
+        monkeypatch.setitem(
+            sys.modules,
+            f"rapid_mlx.video.hunyuan_video15.{module}",
+            SimpleNamespace(**attributes),
+        )
+    monkeypatch.setattr(backend, "FlowMatchScheduler", Scheduler)
+    monkeypatch.setattr(
+        encoding, "encode_rgb_video", lambda pixels, path, fps: path.write_bytes(b"mp4")
+    )
+    engine = HunyuanVideo15Engine(alias)
+    engine.output_dir = checkpoint
+    kwargs = dict(prompt="fox", width=256, height=256, frames=5, fps=24, steps=2)
+    if guidance != "omitted":
+        kwargs["guidance_scale"] = guidance
+    effective_scale = default_scale if guidance in ("omitted", None) else guidance
+    try:
+        if api == "sync":
+            output = checkpoint / "output.mp4"
+            engine.generate_sync(output_path=output, **kwargs)
+        else:
+            output = await engine.generate(**kwargs)
+        assert engine.config.guider["guidance_scale"] == default_scale
+        assert prompt_batches == [["fox"] if effective_scale == 1 else ["fox", ""]]
+        assert len(forwards) == 2 * (1 if effective_scale == 1 else 2)
+        assert predictions == [1 + effective_scale] * 2
+        assert output.read_bytes() == b"mp4"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,repo,revision",
+    [
+        (ALIAS, REPO, REVISION),
+        (DISTILLED_ALIAS, DISTILLED_REPO, DISTILLED_REVISION),
+        (DISTILLED_REPO, DISTILLED_REPO, DISTILLED_REVISION),
+    ],
+)
+async def test_download_selects_variant_pin(
+    monkeypatch, checkpoint, name, repo, revision
+):
+    from rapid_mlx import model_downloads
+
+    captured = {}
+
+    def download(repo_id, **kwargs):
+        captured.update(repo=repo_id, **kwargs)
+        return str(checkpoint)
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", download)
+    engine = HunyuanVideo15Engine(name)
+    try:
+        assert engine._load_sync() == checkpoint
+        assert (captured["repo"], captured["revision"]) == (repo, revision)
+    finally:
+        await engine.close()

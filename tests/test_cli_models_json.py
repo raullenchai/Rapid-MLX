@@ -134,6 +134,7 @@ def test_video_entries_expose_pre_serve_modes_and_memory_floor() -> None:
         "minimax-h3": ["text-to-video", "image-to-video"],
         "pika-h3-flex": ["text-to-video", "image-to-video"],
         "hunyuan-video-1.5-480p": ["text-to-video"],
+        "hunyuan-video-1.5-480p-distilled": ["text-to-video"],
     }
     by_alias = {entry["alias"]: entry for entry in payload["video"]}
 

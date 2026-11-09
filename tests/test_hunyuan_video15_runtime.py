@@ -45,9 +45,10 @@ def test_sharded_loading_casts_and_rejects_missing_or_extra(tmp_path):
         load_component(nn.Linear(3, 2), tmp_path, dtype=mx.float32)
 
 
+@pytest.mark.parametrize("guidance", [1.0, 6.0])
 @pytest.mark.parametrize("cancel_stage", [None, "generating", "encoding"])
 def test_worker_releases_models_bounds_cache_and_cleans_output(
-    monkeypatch, tmp_path, cancel_stage
+    monkeypatch, tmp_path, cancel_stage, guidance
 ):
     import mlx.core as mx
 
@@ -87,6 +88,7 @@ def test_worker_releases_models_bounds_cache_and_cleans_output(
     def encode(root, prompts, config, check):
         assert cache_active
         check()
+        assert prompts == (["fox"] if guidance == 1 else ["fox", ""])
         record("prompt")
         return [
             [mx.zeros((1, 1, 2)), mx.ones((1, 1)), mx.zeros((1, 1, 2)), mx.ones((1, 1))]
@@ -149,7 +151,7 @@ def test_worker_releases_models_bounds_cache_and_cleans_output(
             scaling_factor=1.03682,
         ),
         dict(shift=5),
-        dict(guidance_scale=6),
+        dict(guidance_scale=guidance),
     )
     output = tmp_path / "output.mp4"
     try:
@@ -172,6 +174,7 @@ def test_worker_releases_models_bounds_cache_and_cleans_output(
             assert not output.exists()
         else:
             engine.generate_sync(**kwargs)
+            assert events.count("denoise") == (2 if guidance == 1 else 4)
             assert output.read_bytes() == b"mp4"
             assert engine.output_dir.is_dir()
             assert generated[0].parent == engine.output_dir

@@ -3304,5 +3304,21 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "hunyuan-video-1.5-480p-distilled": {
+    "hf_path": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled",
+    "revision": "1abb14f06518f37448dcf3a6917dd086dd7045c7",
+    "modality": "video-gen",
+    "video_modes": [
+      "text-to-video"
+    ],
+    "min_memory_gb": 64,
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
   }
 }
