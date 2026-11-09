@@ -726,7 +726,13 @@ def test_streaming_unchanged_against_base():
                 for node in tree.body
                 if not (
                     isinstance(node, ast.FunctionDef)
-                    and node.name == "_strip_trailing_tool_envelope"
+                    and node.name
+                    in {
+                        "_strip_trailing_tool_envelope",
+                        # #5692 accepts integral floats for integer params;
+                        # test_qwen3coder_integer_decimal_5692 pins its output.
+                        "_convert_param_value",
+                    }
                 )
             ]
             return ast.dump(tree, include_attributes=False)

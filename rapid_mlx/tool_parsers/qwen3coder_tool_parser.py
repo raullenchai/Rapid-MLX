@@ -608,7 +608,16 @@ def _convert_param_value(
         try:
             return int(keyword)
         except (ValueError, TypeError):
-            return param_value
+            pass
+        # Models can spell integer arguments as floats (issue #5692).
+        # Only integral values qualify; preserve invalid input for validation.
+        try:
+            float_value = float(keyword)
+            if float_value.is_integer():
+                return int(float_value)
+        except (ValueError, TypeError):
+            pass
+        return param_value
     elif param_type.startswith(("num", "float", "double")):
         # ``number`` follows JSON number semantics (issue #4037): ``10000``
         # stays ``10000``. Forcing ``10000.0`` made strictly typed clients
