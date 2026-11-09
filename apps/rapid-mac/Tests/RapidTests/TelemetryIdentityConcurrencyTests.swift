@@ -27,7 +27,11 @@ final class TelemetryIdentityConcurrencyTests: XCTestCase {
                 let defaults = UserDefaults(suiteName: suite)!
                 defer { defaults.removePersistentDomain(forName: suite) }
                 defaults.set(true, forKey: TelemetryConfig.enabledKey)
-                let id = TelemetryIdentity.clientID(defaults: defaults, sharedIDURL: url)
+                // CI sets the telemetry kill switch; task-locals do not cross
+                // concurrentPerform threads, so pin an empty environment here.
+                let id = TelemetryConfig.$environmentOverride.withValue([:]) {
+                    TelemetryIdentity.clientID(defaults: defaults, sharedIDURL: url)
+                }
                 XCTAssertEqual(defaults.string(forKey: TelemetryConfig.clientIDKey), id)
                 XCTAssertTrue(defaults.bool(forKey: TelemetryConfig.sharedClientIDMigrationKey))
                 results.append(id)
