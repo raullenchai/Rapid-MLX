@@ -521,3 +521,12 @@ def test_app_opened_command_is_optional_and_closed():
     assert reg.validate("app_opened", {}) == {}
     assert reg.validate("app_opened", {"command": "chat qwen3.5-4b-4bit"}) is None
     assert reg.validate("app_opened", {"command": "/Users/me/model"}) is None
+
+
+def test_app_opened_desktop_trigger_is_optional_and_closed():
+    assert reg.validate("app_opened", {}) == {}
+    assert reg.validate("app_opened", {"command": "serve"}) == {"command": "serve"}
+    for trigger in ("launch", "day_rollover"):
+        assert reg.validate("app_opened", {"trigger": trigger}) == {"trigger": trigger}
+    assert reg.validate("app_opened", {"trigger": "mouse contents"}) is None
+    assert reg.validate("app_opened", {"trigger": 1}) is None

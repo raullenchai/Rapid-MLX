@@ -16518,6 +16518,12 @@ def telemetry_command(args) -> None:
     action = getattr(args, "telemetry_action", None) or "status"
     cli_no = getattr(args, "no_telemetry", False)
 
+    if action == "desktop-opened":
+        from rapid_mlx.telemetry.desktop_opened import report
+
+        report(args.trigger)
+        return
+
     if action == "status":
         decision = consent_runtime.resolve()
         stamp = build_gate.official_build()

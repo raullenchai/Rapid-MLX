@@ -3122,6 +3122,12 @@ def _add_telemetry_parser(
     telemetry_subparsers.add_parser(
         "status", help="Show whether telemetry is enabled and why"
     )
+    desktop_opened = telemetry_subparsers.add_parser(
+        "desktop-opened", help="Report a consented Desktop foreground lifecycle event"
+    )
+    desktop_opened.add_argument(
+        "--trigger", choices=("launch", "day_rollover"), required=True
+    )
     telemetry_subparsers.add_parser("on", help="Turn anonymous usage telemetry on")
     telemetry_subparsers.add_parser("off", help="Turn anonymous usage telemetry off")
     telemetry_subparsers.add_parser("enable", help="Alias for telemetry on")

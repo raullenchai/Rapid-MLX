@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-10-24.
+Last updated: 2026-11-09.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -59,6 +59,18 @@ strings, and numeric buckets.
 For Desktop-owned engine processes, `app_version` is the running Desktop app
 version and `engine_version` is the bundled engine version. Earlier releases
 used the engine version in `app_version`.
+
+Desktop also reports `app_opened` through the engine's PostHog Cloud pipeline,
+without starting an inference server or selecting a model. It sends once per
+consented app process launch (`trigger=launch`), then on the first foreground
+activation or keyboard/mouse/scroll input of a new UTC day
+(`trigger=day_rollover`). A local last-attempted UTC date suppresses duplicate
+daily events; launches record that date too, but each relaunch may report its
+own launch. Claims precede best-effort delivery, so failures can lose events.
+No event or date marker is created before consent is persisted, and environment
+opt-outs override consent. It uses the shared install ID, Desktop app version,
+and the normal engine common properties, with `surface=desktop`. No input
+contents are recorded. `active_day` still means first successful inference.
 
 The native desktop client reports these events to rapidmlx.com's telemetry
 service:

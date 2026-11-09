@@ -29,6 +29,10 @@
   },
 
   "enums": {
+    "desktop_open_trigger": {
+      "_about": "Desktop lifecycle only; CLI/server omit this property.",
+      "values": ["launch", "day_rollover"]
+    },
     "model_ref_form": {"values": ["alias", "repo_id", "hf_url"]},
     "model_ref_verdict": {"values": ["ok", "unsupported", "too_big", "unknown", "invalid_reference"]},
     "model_ref_reason": {"values": ["unsupported_format", "unsupported_architecture", "insufficient_memory", "not_found", "gated", "disk_full", "offline", "dataset_link", "space_link", "collection_link", "model_listing_link", "invalid_model_ref", "other"]},
@@ -643,11 +647,16 @@
     },
     "app_opened": {
       "_about": [
-        "Launches. Common props carry everything that matters. CLI and server",
-        "launches add the closed top-level command name; Desktop omits it."
+        "CLI/server launches retain their existing command and deduplication rules.",
+        "Desktop sends once per consented process launch (trigger=launch), then",
+        "once per new UTC date on foreground activity (trigger=day_rollover).",
+        "Launches also claim the local date; relaunches may still send launch.",
+        "Desktop uses shared install_id, Desktop app_version and surface=desktop.",
+        "Claims precede best-effort delivery; failed sends are not retried."
       ],
       "props": {
-        "command": {"kind": "enum", "enum": "cli_command", "required": false}
+        "command": {"kind": "enum", "enum": "cli_command", "required": false},
+        "trigger": {"kind": "enum", "enum": "desktop_open_trigger", "required": false}
       }
     },
     "server_start_state": {

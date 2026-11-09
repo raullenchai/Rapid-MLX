@@ -90,3 +90,18 @@ the registry permits (its 128-character `model_id` cap on a failed request) is
 itself caps ids at 96 characters, so real keys stay at or under 172. `tests/test_telemetry_inference.py`
 derives both numbers from the registry, and `tests/test_telemetry_store.py`
 fills a real database to the unpatched cap.
+
+### Desktop foreground use
+
+Desktop owns `app_opened`: after persisted consent, it invokes the model-free
+`rapid-mlx telemetry desktop-opened --trigger launch|day_rollover` helper with
+the Desktop sidecar role and app version. The helper uses the existing release
+build gate, live consent checks, shared install ID, common props and PostHog
+`/batch/` sender. It does not start a server or emit `active_day`.
+
+A process claims one launch attempt and records the UTC date locally. Subsequent
+foreground activation or keyboard/mouse/scroll input claims at most one rollover
+attempt per newer UTC date. Relaunches can each emit launch, including on the
+same date; the daily variant cannot also fire that date. Claims precede delivery
+(no retries); opt-out leaves claims untouched. Background uptime alone emits
+nothing. `active_day` retains its first-successful-inference semantics.
