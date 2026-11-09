@@ -295,6 +295,13 @@ def stub_heavy_serve_deps(monkeypatch):
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *a, **kw: None)
+    # The default residency budget comes from host RAM; pin it so the
+    # snapshot does not depend on the machine running the test.
+    from rapid_mlx.runtime import resident_models as resident_mod
+
+    monkeypatch.setattr(
+        resident_mod, "_default_memory_limit_bytes", lambda: 24 * 1024**3
+    )
     # Pin flag resolution, not whether this host has a matching optional
     # vision package installed.  An absent, matching, or stale mlx-vlm must
     # produce the same characterization snapshot.
