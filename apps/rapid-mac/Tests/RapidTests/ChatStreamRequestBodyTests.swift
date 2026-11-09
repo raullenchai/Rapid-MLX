@@ -147,7 +147,7 @@ struct ChatStreamRequestBodyTests {
     /// would, then return it as a parsed JSON dict for inspection.
     private func encode(temperature: Double, topP: Double) -> [String: Any] {
         let req = ChatStreamClient.Request(
-            alias: "qwen3.5-9b-4bit",
+            alias: "qwopus-9b-4bit",
             messages: [
                 ChatMessage(role: .user, content: "hi", status: .complete)
             ],
@@ -417,7 +417,7 @@ struct ChatStreamClientBodyE2ETests {
             session: FakeChatProtocol.session()
         )
         let req = ChatStreamClient.Request(
-            alias: "qwen3.5-9b-4bit",
+            alias: "qwopus-9b-4bit",
             messages: [ChatMessage(role: .user, content: "hi", status: .complete)]
         )
         // ``ChatStreamClient.Event`` callbacks land on the MainActor;
@@ -437,7 +437,7 @@ struct ChatStreamClientBodyE2ETests {
         // v0.4.1: fp/pp default to 0.0 (see Suite above).
         #expect(parsed["frequency_penalty"] as? Double == 0.0)
         #expect(parsed["presence_penalty"] as? Double == 0.0)
-        #expect(parsed["model"] as? String == "qwen3.5-9b-4bit")
+        #expect(parsed["model"] as? String == "qwopus-9b-4bit")
         #expect(parsed["stream"] as? Bool == true)
     }
 

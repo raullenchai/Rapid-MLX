@@ -78,16 +78,16 @@ struct ToolUseCapabilityCatalogCoverageTests {
     /// Vibethinker — emits ``<JSON>`` wrapper instead of hermes
     /// ``<tool_call>``, so the hermes parser cannot extract args.
     /// Pre-fix HEAD: ``.unknown``. Per cycle-2 fuzz-correctness
-    /// entries in ``bug_report.md`` ("mlx-community/VibeThinker-3B-8bit emits
+    /// entries in ``bug_report.md`` ("vibethinker-3b-8bit emits
     /// `<JSON>...</JSON>` wrapper instead of hermes
     /// `<tool_call>...</tool_call>`" + 4-duplicate-tool-call
     /// pathology) the model silently fails at tool-calling. Two
-    /// shipped aliases: ``mlx-community/VibeThinker-1.5B-mlx-4bit`` (sub-3B; also
+    /// shipped aliases: ``vibethinker-1.5b-4bit`` (sub-3B; also
     /// hidden by picker visibility filter) and
-    /// ``mlx-community/VibeThinker-3B-8bit``.
+    /// ``vibethinker-3b-8bit``.
     @Test("vibethinker aliases are .broken (cycle-2 <JSON>-wrapper finding)", arguments: [
-        "mlx-community/VibeThinker-1.5B-mlx-4bit",
-        "mlx-community/VibeThinker-3B-8bit",
+        "vibethinker-1.5b-4bit",
+        "vibethinker-3b-8bit",
     ])
     func vibethinkerIsBroken(alias: String) {
         #expect(
@@ -104,7 +104,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
     @Test("PR #333 broken aliases remain .broken after refactor", arguments: [
         "phi-4-mini-reasoning-4bit",
         "phi-4-mini-reasoning-8bit",
-        "phi-4-mini-reasoning-4bit",
+        "hermes3-8b-4bit",
         "hermes3-8b",
         "llama3-1b-4bit",
         "llama3-1b-8bit",
@@ -372,7 +372,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "mistral-small-4-119b": .known,
         "mistral-small-4-119b-4bit": .known,
         "mistral-small-4-119b-8bit": .known,
-        // pipenetwork/GLM-5.2-REAP50-MLX-4bit — GLM 5.2 (REAP-pruned); NOT the glm4.5/4.7
+        // glm-5.2-reap50 — GLM 5.2 (REAP-pruned); NOT the glm4.5/4.7
         // namespace the catalog verifies, and the loop has not benched
         // the 5.2 tool path. Conservative .unknown.
         // kimi-k2.6 — Moonshot Kimi K2.6; agentic-capable upstream but
@@ -385,10 +385,10 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "qwen3-0.6b": .unknown,
         "qwen3-1.7b": .unknown,
         "qwen3-1.7b-4bit": .unknown,
-        // tmax-9b / mlx-community/Tmax-27B-MLX-4bit — TMAX family; unbenched by the loop, no
+        // tmax-9b / tmax-27b — TMAX family; unbenched by the loop, no
         // catalog family row. Conservative .unknown.
         "tmax-9b": .unknown,
-        // pipenetwork/Holo-3.1-35B-A3B-MLX-4bit — Holo GUI/computer-use family; screenshot-
+        // holo3.1-35b-a3b — Holo GUI/computer-use family; screenshot-
         // grounded action selection, not generic tool_call wire-protocol
         // (same rationale as ui-tars). Conservative .unknown.
         // ── v0.10.5 submodule bump reconciliation (2026-07-09, #514) ──
@@ -486,14 +486,14 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // ^ The single catalog allow-listed missing-size alias for
         //   this family — must still resolve .known.
         ("glm4.5-experimental", ToolUseConfidence.unknown),
-        // ^ glm4.5- family has an empty missing-size allow-list
+        // ^ glm4.5- family has ``missingSizeAllowList=["glm4.5-air-4bit"]``
         //   only; experimental falls through.
         ("glm4.7-experimental", ToolUseConfidence.unknown),
         // ^ glm4.7 family has ``missingSizeAllowList=["glm4.7-4bit"]``
         //   only; experimental falls through.
         ("minimax-m-experimental", ToolUseConfidence.unknown),
         // ^ minimax-m family has ``missingSizeAllowList=
-        //   ["minimax-m2.7-mxfp4"]`` only;
+        //   ["minimax-m2.5-4bit","minimax-m2.7-mxfp4"]`` only;
         //   experimental falls through.
         ("hermes4-experimental", ToolUseConfidence.unknown),
         // ^ hermes4 family has empty missingSizeAllowList (only
@@ -501,7 +501,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
         //   so this hypothetical falls through to .unknown.
         ("nemotron-preview", ToolUseConfidence.unknown),
         // ^ nemotron family empty missingSizeAllowList; only
-        //   ``lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit`` ships; experimental falls through.
+        //   ``nemotron-30b-4bit`` ships; experimental falls through.
         ("devstral-preview", ToolUseConfidence.unknown),
         // ^ bonsai-starter bump: the ``devstral`` brokenPrefix is gone
         //   (the mistral parser now ships bundled) and the ``devstral``

@@ -706,7 +706,7 @@ final class ServerModelProfileTests {
     func nonReasoningAliasUnchanged() {
         let s = SamplingConfig(defaults: freshDefaults())
         let profile = ServerModelProfile(
-            id: "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+            id: "hermes3-8b-4bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -731,7 +731,7 @@ final class ServerModelProfileTests {
     func reasoningAliasFreshInstall() {
         let s = SamplingConfig(defaults: freshDefaults())
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -761,7 +761,7 @@ final class ServerModelProfileTests {
         // User dragged the slider WAY below the chat floor.
         s.maxTokens = 512
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -842,7 +842,7 @@ final class ServerModelProfileTests {
     func resetClearsReasoningBookkeeping() {
         let s = SamplingConfig(defaults: freshDefaults())
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -869,7 +869,7 @@ final class ServerModelProfileTests {
     func aliasSwapDownshiftsParser() {
         let s = SamplingConfig(defaults: freshDefaults())
         let reasoning = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -881,7 +881,7 @@ final class ServerModelProfileTests {
         #expect(s.activeReasoningParser == "vibethinker")
 
         let nonReasoning = ServerModelProfile(
-            id: "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+            id: "hermes3-8b-4bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -922,7 +922,7 @@ final class ServerModelProfileTests {
         s.maxTokens = 2_048
         #expect(s.maxTokens == 2_048)
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -956,7 +956,7 @@ final class ServerModelProfileTests {
         // No user mutation; value sits at baseline.
         #expect(s.maxTokens == SamplingConfig.maxTokensDefault)
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -979,7 +979,7 @@ final class ServerModelProfileTests {
     func clearParserClosesSwapRace() {
         let s = SamplingConfig(defaults: freshDefaults())
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -1004,7 +1004,7 @@ final class ServerModelProfileTests {
         s.temperature = 0.42  // user dragged temp; max_tokens still at default
         #expect(s.maxTokens == SamplingConfig.maxTokensDefault)
         let profile = ServerModelProfile(
-            id: "mlx-community/VibeThinker-3B-8bit",
+            id: "vibethinker-3b-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,

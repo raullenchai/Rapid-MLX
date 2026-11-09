@@ -387,7 +387,7 @@ Rapid-MLX 0.15.7 adds native text and code embeddings, improves local agent setu
 
 ### Model catalog
 
-- `qwopus-27b-8bit` is retired because its upstream repository is unavailable; use `Jackrong/MLX-Qwopus3.5-27B-v3-4bit`.
+- `qwopus-27b-8bit` is retired because its upstream repository is unavailable; use `qwopus-27b-4bit`.
 - `qwen3.8-27b-abliterated-4bit` follows the publisher’s relocated oQ4e build.
 
 ### Fixed

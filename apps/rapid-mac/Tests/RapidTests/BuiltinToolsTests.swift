@@ -241,7 +241,7 @@ final class BuiltinToolsTests {
         // Sending tools to a model empirically proven to ignore them produces a
         // confidently-hallucinated answer with no chip to warn the user.
         let enabled = makeRegistry().definitions
-        #expect(ChatViewModel.wireDefinitions(forAlias: "mlx-community/Hermes-3-Llama-3.1-8B-4bit", enabled: enabled).isEmpty)
+        #expect(ChatViewModel.wireDefinitions(forAlias: "hermes3-8b-4bit", enabled: enabled).isEmpty)
         #expect(ChatViewModel.wireDefinitions(forAlias: "bonsai-8b-2bit", enabled: enabled).isEmpty)
         // An alias outside the broken list passes every enabled tool through,
         // whatever the registry's size (read_document joined the three web

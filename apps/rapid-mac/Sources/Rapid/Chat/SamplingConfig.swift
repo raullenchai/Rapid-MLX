@@ -75,7 +75,7 @@ final class SamplingConfig {
     /// floors that take effect when ``/v1/models`` reports
     /// ``reasoning_parser != null`` (Hermes / DeepSeek-R1 /
     /// VibeThinker / GLM-4.7 / GPT-OSS / Minimax / Qwen3.x and
-    /// any future addition). mlx-community/VibeThinker-3B-8bit on a trivial
+    /// any future addition). vibethinker-3b-8bit on a trivial
     /// "27 + 45?" tool prompt burns 1,697 reasoning tokens before
     /// emitting the first tool_call; at ``max_tokens = 512`` the
     /// same prompt returns ``content = null, tool_calls = null,

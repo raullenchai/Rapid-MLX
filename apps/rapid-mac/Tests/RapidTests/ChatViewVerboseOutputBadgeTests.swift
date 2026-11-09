@@ -5,7 +5,7 @@ import Testing
 /// Cycle-13 (2026-06-20) regression pin for the chat-view verbose-output
 /// length-truncation badge filed by cycle-7 fuzz-perf F-5.
 ///
-/// Symptom: a verbose non-reasoning dense model (lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit and
+/// Symptom: a verbose non-reasoning dense model (nemotron-30b-4bit and
 /// similar) answering "What is 17*23?" with ``enable_thinking=false``
 /// and the default ``max_tokens=200`` emits a 200-token LaTeX
 /// derivation and hits ``finish_reason == "length"``. Pre-cycle-13 the

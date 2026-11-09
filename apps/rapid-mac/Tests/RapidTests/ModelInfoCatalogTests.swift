@@ -87,9 +87,9 @@ struct ModelInfoCatalogTests {
         #expect(g3.contextWindow == 8_192)
     }
 
-    @Test("Retained Ornith 1.5 reports the 256k family window")
+    @Test("Ornith 1.5 reports the 256k window from both official model configs")
     func ornithContext() {
-        for alias in ["ornith-1.5-122b-a10b-4bit"] {
+        for alias in ["ornith-1.5-9b-bf16", "ornith-1.5-35b-a3b-bf16"] {
             let info = ModelInfoCatalog.info(for: alias, hfRepo: nil)
             #expect(info.family == "Ornith 1.5")
             #expect(info.contextWindow == 262_144)
@@ -253,7 +253,7 @@ struct ModelInfoCatalogTests {
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "llama-3.1-8b") == 131_072)
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "gemma-4-12b") == 8_192)
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "phi-4-mini") == 16_384)
-        #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "abenzerps/K2-Horizon-7B-MLX-4bit") == 524_288)
+        #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "k2-horizon-7b-4bit") == 524_288)
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "unknown-blah") == nil)
     }
 }

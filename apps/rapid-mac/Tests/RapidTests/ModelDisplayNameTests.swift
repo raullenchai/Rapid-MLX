@@ -47,12 +47,14 @@ struct ModelDisplayNameTests {
         ("qwen3.5-9b-8bit", "Qwen 3.5 · 9B · 8-bit"),
         ("qwen3-4b-thinking-2507-4bit", "Qwen 3 · 4B · Thinking 2507"),
         ("qwen3.8-27b-tensorfold", "Qwen 3.8 · 27B · TensorFold"),
+        ("llama-3.1-8b-8bit", "Llama 3.1 · 8B · 8-bit"),
         ("gemma3-12b-4bit", "Gemma 3 · 12B"),
         ("phi-4-mini-4bit", "Phi 4 · Mini"),
         ("mistral-24b-4bit", "Mistral · 24B"),
         ("deepseek-r1-8b-4bit", "DeepSeek · 8B · R1"),
         ("bonsai-1.7b-2bit", "Bonsai · 1.7B · 2-bit"),
         ("lfm2.5-1b-4bit", "LFM2.5 · 1.2B"),
+        ("ornith-1.5-9b-bf16", "Ornith 1.5 · 9B · 16-bit"),
         ("flux-schnell", "FLUX.1 Schnell"),
         ("whisper-large-v3-turbo", "Whisper Large v3 Turbo")
     ])
@@ -61,16 +63,25 @@ struct ModelDisplayNameTests {
     }
 
     @Test(arguments: [
+        ("ui-tars-1.5-7b-4bit", "UI-TARS 1.5 · 7B"),
+        ("ui-tars-7b-sft-4bit", "UI-TARS · 7B · SFT"),
         ("granite-4.2-3b-4bit", "Granite 4.2 · 3B"),
         ("nemotron-3.5-bolt-e4b-8bit", "Nemotron 3.5 Bolt E4B · 8-bit"),
+        ("nemotron-labs-diffusion-3b-4bit", "Nemotron Labs Diffusion · 3B"),
         ("tmax-9b", "TMAX · 9B"),
         ("minicpm5-1b-4bit", "MiniCPM 5 · 1B"),
         ("minicpm-v4.7-1b-8bit", "MiniCPM-V 4.7 · 1B · 8-bit"),
         ("muse-glimmer-30b-4bit", "Muse Glimmer · 30B"),
+        ("vibethinker-1.5b-4bit", "VibeThinker · 1.5B"),
+        ("nanbeige4.1-3b-4bit", "Nanbeige 4.1 · 3B"),
+        ("qwopus-9b-4bit", "Qwopus · 9B"),
         ("diffusion-gemma-26b-4bit", "Diffusion Gemma · 26B"),
+        ("holo3.1-35b-a3b", "Holo 3.1 · 35B · A3B"),
         ("glm5.3-flash-4bit", "GLM 5.3 Flash"),
+        ("minimax-m2.5-4bit", "MiniMax M2.5"),
         ("spark-x2.6-4b-4bit", "Spark X2.6 · 4B"),
         ("g9v3-39a5b-4bit", "G9V3 39A5B"),
+        ("lfm2-24b-a2b-4bit", "LFM 2 · 24B · A2B"),
         ("flint-40b-a2.5b-4bit", "Flint · 40B · A2.5B"),
         ("hy3-preview-4bit", "HY3 Preview"),
         ("kimi-k2.6", "Kimi K2.6"),
@@ -109,6 +120,7 @@ struct ModelDisplayNameTests {
         for (alias, expected) in [
             ("qwen3.5-4b-4bit", "Qwen 3.5"),
             ("gemma-4-e4b-8bit", "Gemma 4"),
+            ("llama-3.1-8b-8bit", "Llama 3.1"),
             ("gpt-oss-20b-4bit", "GPT-OSS"),
             ("devstral-24b-4bit", "Devstral"),
             ("lfm3-1.7b-8bit", "LFM3")
