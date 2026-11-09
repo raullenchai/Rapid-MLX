@@ -2,6 +2,193 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Changing network access restarts a running model and interrupts active requests.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changing network access restarts a running model and interrupts active requests."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改网络访问设置会重启正在运行的模型，并中断正在处理的请求。"
+          }
+        }
+      }
+    },
+    "Allow access from other devices on your network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow access from other devices on your network"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许网络上的其他设备访问"
+          }
+        }
+      }
+    },
+    "Restarting the API with the new network setting…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restarting the API with the new network setting…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在使用新的网络设置重启 API…"
+          }
+        }
+      }
+    },
+    "LAN access uses a persistent API key. Traffic is plain HTTP on your local network. Only inference APIs are available to other devices.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LAN access uses a persistent API key. Traffic is plain HTTP on your local network. Only inference APIs are available to other devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网访问使用持久保存的 API 密钥。流量以明文 HTTP 在本地网络上传输。其他设备只能使用推理 API。"
+          }
+        }
+      }
+    },
+    "Start the model to make the LAN API available.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start the model to make the LAN API available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动模型以启用局域网 API。"
+          }
+        }
+      }
+    },
+    "No network IPv4 address is available.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No network IPv4 address is available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可用的网络 IPv4 地址。"
+          }
+        }
+      }
+    },
+    "LAN URL": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LAN URL"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 URL"
+          }
+        }
+      }
+    },
+    "LAN curl example": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LAN curl example"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 curl 示例"
+          }
+        }
+      }
+    },
+    "LAN access requires a persistent API key. The Keychain could not save or read the key. Unlock your Keychain and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LAN access requires a persistent API key. The Keychain could not save or read the key. Unlock your Keychain and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网访问需要持久保存的 API 密钥。钥匙串无法保存或读取密钥。请解锁钥匙串后重试。"
+          }
+        }
+      }
+    },
+    "The API could not restart. Start the model again to apply the network setting.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API could not restart. Start the model again to apply the network setting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 无法重启。请重新启动模型以应用网络设置。"
+          }
+        }
+      }
+    },
+    "The Desktop engine always requires a bearer key. Network access is off by default. Choose when the key rotates.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Desktop engine always requires a bearer key. Network access is off by default. Choose when the key rotates."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌面引擎始终需要 Bearer 密钥。网络访问默认关闭。请选择密钥轮换时间。"
+          }
+        }
+      }
+    },
     "Reusable prompt cache budget. This overlaps engine memory and is not added to Mac or Metal totals. A dash means this cache mode reports no current usage or capacity." : {
       "localizations" : {
         "zh-Hans" : {

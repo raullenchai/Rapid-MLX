@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .lan_inference import is_loopback_peer
+
 _configured_hosts: list[str] | None = None
 
 
@@ -75,7 +77,8 @@ def _authority(value: str, scheme: str) -> tuple[str, int] | None:
 class BrowserSecurityMiddleware:
     """Reject untrusted Hosts and, with CORS disabled, foreign Origins before dispatch.
 
-    Host policy applies even to probes and preflights. Origin checking additionally
+    Host policy applies even to probes and preflights; authenticated LAN mode
+    exempts non-loopback peers from hostname matching. Origin checking additionally
     prevents simple cross-origin POSTs from mutating state without a preflight.
     Native clients omit Origin; same-origin browser clients remain supported.
     """
@@ -90,6 +93,7 @@ class BrowserSecurityMiddleware:
         self.app = app
         self.hosts = hosts
         self.deny_cross_origin = deny_cross_origin
+        self.lan_inference_only = os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") == "1"
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -103,7 +107,13 @@ class BrowserSecurityMiddleware:
             _authority(host_values[0], scheme) if len(host_values) == 1 else None
         )
         allowed = authority is not None
-        if authority is not None and self.hosts is not None:
+        # Remote LAN requests are guarded by mandatory auth and the inference
+        # allowlist. Local peers still need Host checks against DNS rebinding,
+        # including when the operator supplies an explicit host policy.
+        remote_lan = self.lan_inference_only and not is_loopback_peer(
+            scope.get("client")
+        )
+        if authority is not None and self.hosts is not None and not remote_lan:
             hostname = authority[0]
             allowed = any(
                 pattern == "*"

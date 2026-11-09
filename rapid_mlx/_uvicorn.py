@@ -28,6 +28,38 @@ ServerAcceptingCallback = Callable[[], None]
 logger = logging.getLogger(__name__)
 
 
+def _print_lan_banner(listeners) -> None:
+    """Report interface URLs from actual wildcard listeners after binding."""
+    if os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") != "1":
+        return
+    ports = {
+        sock.getsockname()[1]
+        for listener in listeners
+        for sock in listener.sockets
+        if sock.family == socket.AF_INET and sock.getsockname()[0] == "0.0.0.0"
+    }
+    if not ports:
+        return
+    import psutil
+
+    addresses = sorted(
+        {
+            entry.address
+            for entries in psutil.net_if_addrs().values()
+            for entry in entries
+            if entry.family == socket.AF_INET
+            and not ipaddress.ip_address(entry.address).is_loopback
+            and not ipaddress.ip_address(entry.address).is_unspecified
+        }
+    )
+    print("  LAN inference: API key required (Authorization: Bearer <key>)")
+    for port in sorted(ports):
+        for address in addresses:
+            print(f"  LAN: http://{address}:{port}")
+    if not addresses:
+        print("  LAN: no non-loopback IPv4 address currently available")
+
+
 class _SuccessfulProbeFilter(logging.Filter):
     """Quiet routine probes; keep failures and DEBUG diagnostics visible."""
 
@@ -219,6 +251,10 @@ class AcceptingConnectionsServer(uvicorn.Server):
                         logger.exception("Post-bind server callback failed")
                     except Exception:
                         pass
+            try:
+                _print_lan_banner(listeners)
+            except Exception:
+                logger.warning("Could not enumerate LAN URLs", exc_info=True)
 
     async def _startup_with_progress(self, sockets: list[Any] | None) -> None:
         """Keep readiness observable during blocking lifespan model loads.
@@ -271,13 +307,15 @@ class AcceptingConnectionsServer(uvicorn.Server):
             except OSError as exc:
                 logger.error(exc)
                 raise SystemExit(STARTUP_FAILURE) from exc
-            probe = StartupProbe(listener)
+            if os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") != "1":
+                probe = StartupProbe(listener)
 
             async def startup_then_handoff() -> None:
                 try:
                     await original_startup()
                 finally:
-                    probe.close()
+                    if probe is not None:
+                        probe.close()
 
             lifespan.startup = startup_then_handoff
             await super().startup(sockets=[listener])
@@ -304,6 +342,9 @@ def _run_server(
     app_dir = config_kwargs.pop("app_dir", None)
     if app_dir is not None:
         sys.path.insert(0, app_dir)
+    if os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") == "1":
+        # The LAN boundary must see the socket peer, regardless of proxy env.
+        config_kwargs["proxy_headers"] = False
     config = uvicorn.Config(app, **config_kwargs)
     server = AcceptingConnectionsServer(config, on_server_accepting=on_server_accepting)
     if (config.reload or config.workers > 1) and not isinstance(app, str):

@@ -146,3 +146,23 @@ Reporting a vulnerability: see [SECURITY.md](SECURITY.md).
 
 Apache-2.0 — see [LICENSE](LICENSE).
 Third-party components: [THIRD_PARTY.md](THIRD_PARTY.md).
+
+### LAN inference API
+
+In Settings → Tools → Embedded API security, enable **Allow access from other
+devices on your network** to share inference with devices on your local network.
+The same control and connection examples are in the integrations panel. Network
+access is off by default. Changing it restarts a running model and interrupts
+active requests; a stopped model stays stopped.
+
+LAN mode binds IPv4 `0.0.0.0` and requires a persistent Keychain-backed API key.
+If the key cannot be saved or read, sharing is refused. Key rotation is set to
+“Until I rotate” while sharing is enabled. The panel lists current interface URLs
+and copyable authenticated curl examples; keys stay masked until revealed.
+Traffic is plain HTTP. Use a trusted local network. CORS policy is unchanged.
+
+Other devices can access only the explicitly allowed inference and health APIs,
+with authentication. Administration, local search, computer use, and unlisted
+routes remain local to this Mac even with a valid key. Internal Desktop clients
+continue using loopback. This feature adds no IPv6, TLS, discovery, router port
+mapping, or internet exposure setup.
