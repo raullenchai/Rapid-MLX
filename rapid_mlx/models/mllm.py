@@ -43,6 +43,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from rapid_mlx._env import env_truthy
+from rapid_mlx.engine_startup_errors import startup_failure_boundary
 from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
 from rapid_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeStatus
@@ -533,6 +534,7 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
     )
 
 
+@startup_failure_boundary("vision_load")
 def _require_mlx_vlm(model_name: str | None = None) -> None:
     """Verify the vision runtime can load; raise actionable error if not.
 
@@ -1771,7 +1773,8 @@ class MLXMultimodalLM:
             model_path = resolve_native_checkpoint(self.model_name)
             from mlx_lm.utils import load_config
 
-            self.config = load_config(Path(model_path))
+            with startup_failure_boundary("config_load"):
+                self.config = load_config(Path(model_path))
             self.model, self.processor = load_native_media(model_path, self.config)
             self.enable_cache = False
             self._cache_manager = None
@@ -1808,10 +1811,11 @@ class MLXMultimodalLM:
                 {"trust_remote_code": self.trust_remote_code}
             )
             model_path = _resolve_checkpoint(self.model_name)
-            self.config = load_config(
-                model_path,
-                trust_remote_code=trust_remote_code,
-            )
+            with startup_failure_boundary("config_load"):
+                self.config = load_config(
+                    model_path,
+                    trust_remote_code=trust_remote_code,
+                )
             from ..utils.model_file_guard import (
                 validate_local_model_file,
                 validate_model_code,

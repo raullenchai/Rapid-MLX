@@ -180,7 +180,7 @@ def test_serve_failure_subtype_tolerates_hostile_cause(monkeypatch):
 
 def test_serve_failure_subtype_schema_is_closed_and_conditional():
     values = registry.load_registry()["enums"]["serve_failure_subtype"]["values"]
-    assert len(values) == 13
+    assert len(values) == 31
     assert {"weights_load", "draft_attach"} <= set(values)
     assert registry.validate(
         "model_serve_failed", {"error_class": "other", "failure_subtype": "unknown"}
@@ -2571,3 +2571,45 @@ def test_startup_boundary_emission_is_closed_and_preserves_memory_class(
     else:
         expected.update(error_class="other", failure_subtype=boundary)
     assert calls == [expected]
+
+
+@pytest.mark.parametrize("stage", ["resolve", "prepare", "engine_start"])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "config_load",
+        "tokenizer_load",
+        "chat_template",
+        "vision_load",
+        "cache_setup",
+        "warmup",
+        "checkpoint_resolve",
+        "model_prepare",
+        "weights_load",
+        "draft_attach",
+    ],
+)
+def test_emitted_properties_contain_only_closed_diagnostics(
+    monkeypatch, stage, boundary
+):
+    from rapid_mlx.engine_startup_errors import startup_failure_boundary
+
+    captured = []
+    _capture_accepted_events(
+        monkeypatch, lambda event, props: captured.append((event, props))
+    )
+    error = Exception("private/model /secret/path prompt")
+    with pytest.raises(Exception), startup_failure_boundary(boundary):
+        raise error
+    model_events.emit_model_serve_failed(error, failure_stage=stage)
+    assert captured == [
+        (
+            "model_serve_failed",
+            {
+                "error_class": "other",
+                "failure_subtype": boundary,
+                "failure_stage": stage,
+            },
+        )
+    ]
+    assert registry.validate(*captured[0]) == captured[0][1]

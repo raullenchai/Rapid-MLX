@@ -2042,9 +2042,10 @@ class BatchedEngine(BaseEngine):
         # batching is intentionally not enabled. Mamba, quantized, and unknown
         # cache types continue to fail at startup with the #352 diagnostic.
         language_model = getattr(self._model, "language_model", self._model)
-        cache_type = self._model_load_executor.submit(
-            _probe_mllm_cache_type, language_model
-        ).result()
+        with startup_failure_boundary("cache_setup"):
+            cache_type = self._model_load_executor.submit(
+                _probe_mllm_cache_type, language_model
+            ).result()
         arrays_cache_compat = cache_type == "ArraysCache"
         self._mllm_is_hybrid = arrays_cache_compat
         if cache_type is not None and not arrays_cache_compat:
@@ -2154,13 +2155,14 @@ class BatchedEngine(BaseEngine):
 
         # Create and start MLLM scheduler — pass the model-owning executor so
         # _step_no_queue runs on the same thread as model load.
-        mllm_scheduler = MLLMScheduler(
-            model=self._model,
-            processor=worker_processor,
-            config=mllm_config,
-            step_executor=self._model_load_executor,
-            model_name=self._model_name,
-        )
+        with startup_failure_boundary("cache_setup"):
+            mllm_scheduler = MLLMScheduler(
+                model=self._model,
+                processor=worker_processor,
+                config=mllm_config,
+                step_executor=self._model_load_executor,
+                model_name=self._model_name,
+            )
         self._mllm_scheduler = mllm_scheduler
         await self._mllm_scheduler.start()
 

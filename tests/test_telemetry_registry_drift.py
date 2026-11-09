@@ -614,11 +614,30 @@ def test_start_failure_enums_and_disclosure_match_code(registry):
             ValueError,
             RuntimeError,
             Exception,
+            TimeoutError,
+            NotImplementedError,
+            SystemExit,
         )
     } | {model_events.serve_failure_subtype(json.JSONDecodeError("private", "", 0))}
-    from rapid_mlx.engine_startup_errors import startup_failure_boundary
+    import subprocess
 
-    for boundary in ("weights_load", "draft_attach"):
+    from rapid_mlx.engine_startup_errors import (
+        _STARTUP_BOUNDARIES,
+        startup_failure_boundary,
+    )
+
+    subtypes.add(
+        model_events.serve_failure_subtype(subprocess.CalledProcessError(1, "private"))
+    )
+    for (
+        module,
+        qualname,
+    ), expected in model_events._STARTUP_EXCEPTION_SUBTYPES.items():
+        cls = type(qualname, (Exception,), {"__module__": module})
+        assert model_events.serve_failure_subtype(cls("private")) == expected
+        subtypes.add(expected)
+
+    for boundary in _STARTUP_BOUNDARIES:
         try:
             with startup_failure_boundary(boundary):
                 raise RuntimeError("private")

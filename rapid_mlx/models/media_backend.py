@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from ..engine_startup_errors import startup_failure_boundary
+
 
 def native_media_model_type(model_name):
     from ..model_metadata import read_model_metadata
@@ -26,6 +28,7 @@ def native_media_model_type(model_name):
     return model_type if model_type in {"lfm3_vl"} else None
 
 
+@startup_failure_boundary("checkpoint_resolve")
 def resolve_native_checkpoint(model_name):
     from ..model_aliases import resolve_hub_model, resolve_revision, resolve_subfolder
 

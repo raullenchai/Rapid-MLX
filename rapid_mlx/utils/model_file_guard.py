@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .._env import env_falsey, env_truthy
+from ..engine_startup_errors import startup_failure_boundary
 
 # Processors that force code trust on the root tokenizer or, for z_image,
 # the fixed 'tokenizer' subfolder. Include raw config aliases before remapping.
@@ -282,6 +283,7 @@ def checked_stt_loader(loader):
     return update_wrapper(adapted, loader)
 
 
+@startup_failure_boundary("checkpoint_resolve")
 def resolve_vlm_checkpoint(
     model_name: str | Path, *, revision: str | None = None
 ) -> Path:

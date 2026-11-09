@@ -27,6 +27,7 @@ from typing import Any
 import mlx.core as mx
 
 from ._env import env_truthy
+from .engine_startup_errors import startup_failure_boundary
 from .model_registry import get_registry
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .request import (
@@ -291,12 +292,13 @@ class EngineCore:
                 "disabled even though CLI flag is set",
                 e,
             )
-        self.scheduler = Scheduler(
-            model=model,
-            tokenizer=tokenizer,
-            config=scheduler_config,
-            tool_logits_processor_factory=self.config.tool_logits_processor_factory,
-        )
+        with startup_failure_boundary("cache_setup"):
+            self.scheduler = Scheduler(
+                model=model,
+                tokenizer=tokenizer,
+                config=scheduler_config,
+                tool_logits_processor_factory=self.config.tool_logits_processor_factory,
+            )
 
         # Output collectors for low-latency streaming (vLLM pattern)
         self._output_collectors: dict[str, RequestOutputCollector] = {}
