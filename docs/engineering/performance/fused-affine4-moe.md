@@ -1,10 +1,10 @@
 # Selected affine-4 MoE decode and verification
 
-`RAPID_MLX_QWEN35_AFFINE4=1` enables selected-expert gate/up/SwiGLU,
-down/weighted reduction and parallel routing for qualified Qwen blocks.
-The path remains opt-in: unset or `0` disables enrollment and execution.
-Round 3 improves default MTP on M5/M3, but M4 default MTP still regresses.
-This fails the cross-chip default-on gate.
+Selected-expert gate/up/SwiGLU, down/weighted reduction and parallel routing
+are enabled by default for qualified Qwen blocks. Set
+`RAPID_MLX_QWEN35_AFFINE4=0` to disable enrollment and execution, including
+already enrolled instances. All shape, quantization and numerical gates
+below continue to apply.
 
 The loaders enroll compatible blocks after a deterministic relative-RMS
 probe capped at 2%. Eligibility requires 256 experts, top-8 normalized
@@ -18,8 +18,8 @@ retain their existing implementation. Dense models enroll no blocks.
 Each projection uses the same tile at every supported token width. M5/M3
 use one output row per SIMD group for both expert projections. Apple M4 Pro
 uses two gate/up rows and four down rows; threadgroups contain 64 threads.
-The chip choice is fixed during kernel initialization. No speculative
-controller constants, class thresholds or policy change is included.
+The chip choice is fixed during kernel initialization. Expert arithmetic
+and launch geometry are unchanged by the default switch.
 
 Down projections and route-weighted terms round to BF16 before the FP32
 route sum and final BF16 cast, preserving the composed path's rounding
@@ -58,7 +58,7 @@ Run `scripts/qualify_qwen35_affine4.py --model <snapshot> --corpus <text>
 --output <directory>` on an idle GPU. It scores both arms one token at a
 time and stores NLLs, top-1 IDs, functional outputs and hashes.
 
-## Serving qualification (2026-11-09)
+## Round 3 serving qualification (2026-11-09)
 
 Rebased onto main `7b3bdd902`, including MTP park fix `890a6e2` (#5674).
 The round-2 base did not include that fix. Every cell below has three valid
@@ -117,3 +117,99 @@ waited for idle CPU/GPU/VM boundaries and preserved CI VMs. Contaminated
 samples were excluded/retried. Final relevant affine/router/gate-up/GDN/MTP
 suites passed 396 tests on each host, along with lint/format/whitespace checks.
 The full repository suite and broad model/task qualification are not claimed.
+
+## Continuous MTP cost calibration
+
+Greedy requests used to choose one of two permanent cost curves from seven
+round-robin timing samples. A two-row target forward at 1.33 times the
+one-row cost crossed the class threshold, changing the K=1 round price from
+1.272 to 1.87 plain rounds. An optimization to one-row decode could therefore
+park profitable drafts even when verification itself became faster.
+
+Calibration now uses 21 timed passes after two warmup passes. It takes the
+median of each pass's verify/step and draft/step ratios, retaining the actual
+measured curve instead of replacing it with a class proxy. The existing
+normalized draft and host-overhead estimate supplies the round costs. The
+request's own acceptance and existing expected-value controller/probes then
+choose depth, including zero where drafting cannot pay. There are no model
+name checks or forced depths/classes in this policy.
+
+The measured profile stays frozen for the process/model/depth key. Greedy
+requests never consume another request's acceptance or live wall times.
+This preserves repeated-request scheduling within a process; exact output
+across restarts remains limited by width-sensitive floating-point ties.
+Seeded sampling and explicit fixed-depth configuration keep their existing
+behavior. Copy-draft verification uses the same frozen forward costs at
+timed widths; beyond those widths, the existing tiled lookup proxy is scaled
+to the final measured width without selecting a class.
+
+The Round 3 tables above are historical evidence from before this controller
+change and do not qualify the new default.
+
+### Round 5 M4 qualification
+
+Base `85373e7d7`, same pinned Qwen35 target/sidecar and serving protocol as
+above. Stock uses the original controller with experts disabled; candidate
+uses the measured controller and the unset default-on switch. Three fresh
+processes per cell; 24/24 primary cells passed idle/contamination gates.
+
+| Model / mode | Stock median (min–max) tok/s | Candidate median (min–max) tok/s |
+|---|---:|---:|
+| Qwen35 default MTP | 95.29 (95.20–101.16) | 102.62 (102.60–102.73) |
+| Qwen35 no spec | 97.68 (97.56–97.80) | 99.96 (99.92–100.06) |
+| Dense 4B default MTP | 94.84 (94.67–94.89) | 94.58 (94.56–94.67) |
+| Dense 9B default MTP | 60.27 (60.19–60.41) | 60.28 (60.24–60.30) |
+
+Stock's original-controller boots selected default/steep/steep. Even its
+fastest boot is below the candidate's slowest. The 4B measurement is a small
+negative (-0.27%); separate instrumented diagnostics found identical full
+K/acceptance sequences on both dense controls (4B: six parks, 159 drafting
+rounds, 91 accepted drafts; 9B: six parks, 153 drafting rounds, 98 accepted).
+Diagnostic timings are excluded from the throughput table.
+
+The selected numerical/controller/greedy/park/head-history suites pass 430
+checks on M4. Arithmetic, JSON and Python-function prompts, repeated twice,
+match no-spec text and actual generated content IDs on all three models;
+candidate MTP IDs also match stock MTP. Dense MTP includes a terminal EOS ID
+that dense no-spec omits internally, on both arms. Raw Qwen35 IDs match
+without that normalization. This fixed-prompt result does not imply arbitrary
+long-form bitwise parity; width-sensitive and prefix-cache differences still
+exist. The kernel's earlier 50k qualification is inherited, not rerun.
+
+The 102.62 tok/s M4 median is still 1.99% below the supplied 104.7 reference
+target. This is a stability/rollout improvement, not evidence that every
+supplied target has been reached. M5 is occupied by an owner workload and
+has not been qualified with the new controller in this round.
+
+### Round 5 Studio qualification
+
+Studio's M3 Ultra uses the same snapshots, runtime versions and protocol,
+under a persistent `lockf -k` whose held inode is checked against the path.
+All 24/24 primary cells passed their idle/contamination gates.
+
+| Model / mode | Stock median (min–max) tok/s | Candidate median (min–max) tok/s |
+|---|---:|---:|
+| Qwen35 default MTP | 153.96 (153.62–154.25) | 169.01 (168.02–169.14) |
+| Qwen35 no spec | 138.71 (138.35–139.29) | 157.85 (156.51–158.28) |
+| Dense 4B default MTP | 154.11 (152.41–154.62) | 153.52 (152.81–153.61) |
+| Dense 9B default MTP | 111.50 (110.77–111.52) | 114.94 (113.60–115.30) |
+
+Qwen35 gains 9.78% with default MTP and 13.80% without speculation. Its
+candidate calibration ratios (1.3286, 1.3307, 1.3270) straddle the old class
+boundary, but the measured K=1 prices stay close (1.3722, 1.3764, 1.3717) and
+all three cold-prose output digests match. Stock has one fixed default class
+on all three boots. The 169.01 tok/s median remains 11.79% below the supplied
+191.6 target.
+
+Dense 4B measures -0.38% with overlapping run ranges; its instrumented full
+K/acceptance sequence is identical across arms, as on M4. Dense 9B measures
++3.09%. Both dense models produce identical cold-prose text across all stock
+and candidate boots on both chips. These measurements do not establish
+sub-percent performance equivalence.
+
+Studio also passes 430 selected tests and all fixed-prompt emitted-content
+ID/text comparisons, including repeated requests and candidate-versus-stock
+MTP. The same unchanged terminal-EOS reporting distinction applies to dense
+models. Both hosts enroll 40 eligible expert blocks under the unset switch;
+dense controls enroll none. A new M5 controller qualification is pending
+availability of the owner's machine.

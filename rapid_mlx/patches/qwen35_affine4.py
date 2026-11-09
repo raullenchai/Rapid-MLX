@@ -4,8 +4,7 @@
 Adapted from MIT-licensed code, Copyright (c) 2026 David Dalcu.
 See QWEN35_AFFINE4_LICENSE for the complete copyright and permission notice.
 Expert accumulation differs from the composed path; see qualification evidence.
-Enable with RAPID_MLX_QWEN35_AFFINE4=1; set to 0 to disable immediately.
-Opt-in because cross-generation throughput does not meet the default-on gate.
+Enabled by default; set RAPID_MLX_QWEN35_AFFINE4=0 to disable immediately.
 """
 
 import logging
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from .._env import env_truthy
+from .._env import env_falsey
 
 logger = logging.getLogger(__name__)
 _GATE = None
@@ -311,7 +310,7 @@ def _patch_class(cls):
     def call(self, x):
         if (
             getattr(self, "_rapid_affine4", False)
-            and env_truthy("RAPID_MLX_QWEN35_AFFINE4")
+            and not env_falsey("RAPID_MLX_QWEN35_AFFINE4")
             and x.ndim == 3
             and x.shape[0] == 1
             and 1 <= x.shape[1] <= 9
@@ -333,7 +332,7 @@ def install_qwen35_affine4(model):
     arrays, and no class closure retains models, weights or request state.
     All GPU temporaries belong to the individual forward invocation.
     """
-    if not env_truthy("RAPID_MLX_QWEN35_AFFINE4") or not mx.metal.is_available():
+    if env_falsey("RAPID_MLX_QWEN35_AFFINE4") or not mx.metal.is_available():
         return 0
     named = getattr(model, "named_modules", None)
     if not callable(named):

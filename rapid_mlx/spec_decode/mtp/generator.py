@@ -64,6 +64,7 @@ from .prompt_lookup import (
     verify_cost_estimate,
 )
 from .reproducible_depth import (
+    measured_verify_cost,
     request_depth_controller,
     request_round_cost,
     request_round_costs,
@@ -1499,6 +1500,8 @@ def mtp_generate_step(
         """What ``CopyDraftGate`` is charged for a round (see ``_reproducible``)."""
         if not _reproducible:
             return round_ms
+        if _schedule is not None and getattr(_schedule, "verify_costs", ()):
+            return measured_verify_cost(_schedule, verify_rows)
         return verify_cost_estimate(
             verify_rows, steep=bool(getattr(_schedule, "steep_verify", False))
         )

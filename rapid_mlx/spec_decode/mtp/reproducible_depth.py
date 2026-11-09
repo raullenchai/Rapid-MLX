@@ -19,38 +19,27 @@ What a greedy request may use instead
 
 Its own tokens, plus a host profile (:class:`GreedySchedule`) fixed once per
 process, model and ``max_k`` and shared by every greedy request. Each round's
-depth comes from :func:`request_depth_controller` -- the adaptive controller's
-EV rule (``argmax_K committed(K) / cost(K)``) on the round costs of the
-host's class (:data:`CLASS_ROW_COST`) and this request's own acceptance. So a host where a 2-row verify is
-cheap drafts K=1 on prose and K=2 on structured output, as the adaptive
-controller does, and a host where every verified row costs most of a step
-(the quantized-matmul vector path) drafts only when nearly every draft lands.
-The profile's ``depth`` is 0 where even fully accepted drafts cannot pay.
+depth maximizes expected committed tokens / cost on the measured curve and
+this request's own acceptance. No wall times or cross-request acceptance
+enter a greedy request's decisions after calibration.
 
-The copy-draft gate prices blocks on the measured verify curve of the host's
-class (``steep_verify``; ``prompt_lookup.verify_cost_estimate``). A seeded
-request keeps the ``max_k`` its route already pinned and the default curve;
-an operator's ``disable_auto_k`` depth is used as configured. Neither is
-measured.
+Calibration uses scratch forwards at one row and each verify width, plus
+the greedy draft head. Paired round-robin ratios suppress common clock drift;
+medians reject isolated stalls. The measured curve is continuous: crossing a
+verify/step ratio of 1.33 must not switch the K=1 price from 1.272 to 1.87.
+The profile is frozen after calibration to preserve repeated greedy output
+within a process. Across restarts, floating-point width sensitivity still
+makes exact text reproducibility best effort.
 
-How the profile is measured
----------------------------
+Seeded requests retain their configured depth and clock-free copy curve.
+An operator's ``disable_auto_k`` depth is used as configured.
 
-Before the first greedy request decodes, the scheduler times the target
-forward at one row and at every ``k + 1`` rows up to ``max_k + 1`` plus one
-greedy draft step (:func:`time_target_forwards`: a few dozen scratch forwards
-on caches nobody else reads, timed round-robin). The timings choose a class,
-not a curve: the request decides on its class's fixed curve, so timing noise
-between boots changes nothing unless it moves the host across the class
-threshold, which sits far from the hosts measured (per extra verified row,
-~0.2 of a step on an M4 Pro, ~0.45-0.7 on an M2 Pro; threshold 0.33).
-Within one process the profile never changes, which is the guarantee;
-identical output across restarts is best effort.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 import threading
 import time
@@ -62,10 +51,12 @@ from .draft_k_controller_v2 import COST_SEED_MIN_SAMPLES, DepthController
 
 logger = logging.getLogger(__name__)
 
+# Legacy class helpers below remain for explicitly constructed profiles.
+# Calibrated profiles use measured costs and never select a class curve.
 # Extra verified row's cost, as a fraction of a one-row step, above which the
 # host's verify is "steep" (the quantized-matmul vector path; M2 Pro:
 # ~0.45-0.7 depending on how it is timed) rather than cheap (M4 Pro: ~0.2).
-# Midway, so neither measured host is near it.
+# Retained for diagnostics only on measured profiles.
 STEEP_VERIFY_ROW_COST = 0.33
 
 # Per-class cost of one extra verified row and of one draft step, in one-row
@@ -99,7 +90,7 @@ CLASS_PARK_PAYS_OVERHEAD = {False: True, True: False}
 
 # Round-robin timing passes: the first compile kernels and are discarded.
 TIMING_WARMUP_ROUNDS = 2
-TIMING_ROUNDS = 7
+TIMING_ROUNDS = 21
 
 
 @dataclass(frozen=True)
@@ -109,10 +100,10 @@ class GreedySchedule:
     Attributes:
         depth: the deepest round a request may draft (``max_k``), or ``0``
             where even a fully accepted round cannot pay.
-        steep_verify: the host's class (see :data:`STEEP_VERIFY_ROW_COST`);
-            it picks the round-cost curve and the copy-draft gate's curve.
+        steep_verify: diagnostic classification; selects legacy proxy costs
+            only when ``verify_costs`` is empty.
         round_costs: ``round_costs[k]`` is a depth-``k`` round's cost in
-            plain rounds on the class curve (``round_costs[0] == 1``).
+            plain rounds on the frozen curve (``round_costs[0] == 1``).
             Empty when the host could not be timed: the request then drafts
             at ``depth`` every round.
     """
@@ -120,6 +111,10 @@ class GreedySchedule:
     depth: int
     steep_verify: bool = False
     round_costs: tuple[float, ...] = ()
+    # Normalized measured target-forward costs, starting with width one.
+    # Empty for an unmeasured/legacy profile; no class boundary prices a
+    # measured profile's copy-drafts or changes its parked-round policy.
+    verify_costs: tuple[float, ...] = ()
 
 
 # Guards the two dicts only; measuring holds the per-key lock, so a first
@@ -134,7 +129,14 @@ Timings = tuple[float, tuple[float, ...], float]
 
 
 def _check(step_ms: float, verify_ms: tuple[float, ...], draft_ms: float) -> None:
-    if step_ms <= 0.0 or not verify_ms or min(verify_ms) <= 0.0 or draft_ms < 0.0:
+    if (
+        not math.isfinite(step_ms)
+        or step_ms <= 0.0
+        or not verify_ms
+        or any(not math.isfinite(v) or v <= 0.0 for v in verify_ms)
+        or not math.isfinite(draft_ms)
+        or draft_ms < 0.0
+    ):
         raise ValueError(
             f"forward costs must be positive (step={step_ms}, "
             f"verify={verify_ms}, draft={draft_ms})"
@@ -225,11 +227,15 @@ def reproducible_schedule(
             return cached
         try:
             step_ms, verify_ms, draft_ms = measure(max_k)
-            steep = verify_is_steep(step_ms, verify_ms, max_k)
+            costs = round_costs(step_ms, verify_ms, draft_ms)
+            if len(verify_ms) < max_k:
+                raise ValueError("calibration omitted a configured verify depth")
             schedule = GreedySchedule(
-                depth=depth_that_pays(round_costs(step_ms, verify_ms, draft_ms), max_k),
-                steep_verify=steep,
-                round_costs=class_round_costs(steep, max_k),
+                depth=depth_that_pays(costs, max_k),
+                # Diagnostic only for measured profiles, never a cost selector.
+                steep_verify=verify_is_steep(step_ms, verify_ms, max_k),
+                round_costs=costs,
+                verify_costs=(1.0,) + tuple(v / step_ms for v in verify_ms),
             )
         except Exception:  # noqa: BLE001 -- measurement must never fail a request
             logger.warning(
@@ -246,7 +252,7 @@ def reproducible_schedule(
             "[MTP] greedy requests on %r: depth <= %d, %s verify curve, round costs %s",
             key,
             schedule.depth,
-            "steep" if schedule.steep_verify else "default",
+            "measured" if schedule.verify_costs else "unmeasured",
             list(schedule.round_costs),
         )
         return schedule
@@ -315,8 +321,29 @@ def time_target_forwards(model: Any, max_k: int) -> Timings:
                 mx.eval(run(cache))
                 if round_index >= TIMING_WARMUP_ROUNDS:
                     samples[index].append((time.perf_counter() - started) * 1000.0)
-    medians = [statistics.median(shape_samples) for shape_samples in samples]
-    step_ms, verify_ms, draft_ms = medians[0], tuple(medians[1:-1]), medians[-1]
+    logger.debug("[MTP] calibration raw ms by width and draft: %s", samples)
+    return summarize_forward_samples(samples)
+
+
+def summarize_forward_samples(samples: list[list[float]]) -> Timings:
+    """Robust paired ratios from complete passes (step, verify widths, draft)."""
+    if len(samples) < 3 or not samples[0]:
+        raise ValueError("calibration requires step, verify and draft samples")
+    if any(len(values) != len(samples[0]) for values in samples):
+        raise ValueError("calibration requires complete timing passes")
+    for values in samples:
+        if any(not math.isfinite(v) or v <= 0.0 for v in values):
+            raise ValueError("calibration samples must be finite and positive")
+    # Pair each shape with its pass's one-row forward before taking the
+    # median. A common frequency shift then cancels instead of moving two
+    # independent medians onto different portions of the clock ramp.
+    step_ms = statistics.median(samples[0])
+    relative = [
+        statistics.median(value / step for value, step in zip(values, samples[0]))
+        for values in samples[1:]
+    ]
+    verify_ms = tuple(step_ms * ratio for ratio in relative[:-1])
+    draft_ms = step_ms * relative[-1]
     return step_ms, verify_ms, draft_ms
 
 
@@ -349,12 +376,13 @@ def request_round_costs(
 ) -> tuple[float, ...]:
     """The round-cost curve one request decides on.
 
-    ``schedule.round_costs`` assumes parked rounds run ahead of delivery. A
-    request whose parked rounds cannot (fixed by its own configuration, never
-    by timing) decides on its class curve with the overhead on every round.
+    Measured profiles use the same normalized forward/draft/host-overhead
+    estimate for every request. Legacy class profiles retain their existing
+    adjustment when request configuration prevents parked run-ahead.
     """
     if (
-        parks_pipelined
+        schedule.verify_costs
+        or parks_pipelined
         or not schedule.round_costs
         or CLASS_PARK_PAYS_OVERHEAD[schedule.steep_verify]
     ):
@@ -364,6 +392,23 @@ def request_round_costs(
         len(schedule.round_costs) - 1,
         parks_pipelined=False,
     )
+
+
+def measured_verify_cost(schedule: GreedySchedule, rows: int) -> float:
+    """Clock-free copy verification price on the frozen measured curve.
+
+    Beyond the timed widths scale the existing lookup proxy to the last
+    measured width. Its tile charges still apply to large lookup blocks;
+    a noisy final slope must not make an unmeasured wide block free.
+    """
+    if rows < 1 or not schedule.verify_costs:
+        raise ValueError("a measured verify curve and positive row count are required")
+    costs = schedule.verify_costs
+    if rows <= len(costs):
+        return costs[rows - 1]
+    from .prompt_lookup import verify_cost_estimate
+
+    return costs[-1] * verify_cost_estimate(rows) / verify_cost_estimate(len(costs))
 
 
 def request_round_cost(costs: tuple[float, ...], depth: int) -> float:
