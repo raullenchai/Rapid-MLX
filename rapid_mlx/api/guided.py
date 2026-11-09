@@ -713,6 +713,20 @@ def build_json_schema_logits_processor(
             json.dumps(json_schema),
             overrides=_JSON_WHITESPACE_OVERRIDES.copy(),
         )
+        if reasoning_end_id is not None:
+            # JSON whitespace options only apply INSIDE the value. Preserve
+            # the model's post-reasoning separator before the schema starts.
+            spec = json.loads(grammar)
+            spec["grammars"].insert(
+                0,
+                {
+                    "lark_grammar": (
+                        f"start: /{_JSON_WHITESPACE_OVERRIDES['whitespace_pattern']}/ "
+                        "@json_schema"
+                    )
+                },
+            )
+            grammar = json.dumps(spec)
         processor = GrammarLogitsProcessor(
             lltokenizer,
             grammar,
