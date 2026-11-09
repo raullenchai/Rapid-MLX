@@ -3806,3 +3806,135 @@ def test_responses_mllm_no_reasoning_uses_token_zero_constraint(
     assert len(engine.guided_calls) == 1
     assert "reasoning_end_id" not in engine.guided_calls[0]["kwargs"]
     assert "X-RapidMLX-Warning" not in response.headers
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("thinking", [None, True, False])
+@pytest.mark.parametrize("with_image", [False, True])
+def test_mllm_strict_stream_keeps_json_and_reasoning_separate(
+    monkeypatch, _rate_limiter_state, surface, thinking, with_image
+):
+    from unittest.mock import Mock
+
+    from rapid_mlx.api import guided
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    class Tokenizer:
+        chat_template = "<think>"
+
+        def encode(self, text, **kwargs):
+            return [7] if text == "</think>" else [1, 2]
+
+        def decode(self, ids):
+            return "</think>" if ids == [7] else "prompt"
+
+    reason = "Check the schema."
+    raw = (
+        f"<think>{reason}</think>{_VALID_PAYLOAD}"
+        if thinking is not False
+        else _VALID_PAYLOAD
+    )
+    processor = object()
+    build = Mock(return_value=processor)
+    monkeypatch.setattr(guided, "build_json_schema_logits_processor", build)
+
+    class StreamingEngine(_Engine):
+        async def stream_chat(self, messages, **kwargs):
+            self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+            # Split both reasoning delimiters and JSON across engine deltas.
+            for index in range(len(raw)):
+                yield GenerationOutput(
+                    text=raw[: index + 1],
+                    new_text=raw[index],
+                    prompt_tokens=4,
+                    completion_tokens=5,
+                    finished=index == len(raw) - 1,
+                    finish_reason="stop" if index == len(raw) - 1 else None,
+                )
+
+    engine = StreamingEngine(guided_text=raw, chat_text=raw)
+    engine.is_mllm = True
+    engine.tokenizer = Tokenizer()
+    client = (
+        _make_client(engine)
+        if surface == "chat"
+        else _make_responses_client(engine, _rate_limiter_state)
+    )
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    payload = (
+        _payload(strict=True, stream=True)
+        if surface == "chat"
+        else _responses_payload(strict=True, stream=True)
+    )
+    if thinking is not None:
+        payload["enable_thinking"] = thinking
+    else:
+        payload["reasoning_effort"] = "high"
+    if with_image:
+        content = [
+            {"type": "text", "text": "return value"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,FAKE"}},
+        ]
+        if surface == "chat":
+            payload["messages"] = [{"role": "user", "content": content}]
+        else:
+            payload["input"] = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "return value"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,FAKE",
+                        },
+                    ],
+                }
+            ]
+    response = client.post(
+        "/v1/chat/completions" if surface == "chat" else "/v1/responses",
+        json=payload,
+    )
+    assert response.status_code == 200, response.text
+    events = [
+        json.loads(event["data"])
+        for event in _parse_sse_events(response.text)
+        if event["data"] != "[DONE]"
+    ]
+    if surface == "chat":
+        choices = [e["choices"][0] for e in events if e.get("choices")]
+        text = "".join(c["delta"].get("content", "") for c in choices)
+        reasoning = "".join(c["delta"].get("reasoning_content", "") for c in choices)
+        assert choices[-1]["finish_reason"] == "stop"
+        assert engine.stream_calls[0]["kwargs"]["grammar_logits_processor"] is processor
+        assert build.call_args.kwargs == (
+            {"reasoning_end_id": 7} if thinking is not False else {}
+        )
+    else:
+        text = "".join(
+            e["delta"] for e in events if e["type"] == "response.output_text.delta"
+        )
+        assert [
+            e["text"] for e in events if e["type"] == "response.output_text.done"
+        ] == [_VALID_PAYLOAD]
+        final = events[-1]["response"]
+        assert final["status"] == "completed"
+        assert [
+            p["text"]
+            for i in final["output"]
+            if i["type"] == "message"
+            for p in i["content"]
+        ] == [_VALID_PAYLOAD]
+        reasoning = "".join(
+            p["text"]
+            for i in final["output"]
+            if i["type"] == "reasoning"
+            for p in i["summary"]
+        )
+        assert engine.guided_calls[0]["kwargs"].get("reasoning_end_id") == (
+            7 if thinking is not False else None
+        )
+    assert text == _VALID_PAYLOAD
+    assert reasoning == (reason if thinking is not False else "")

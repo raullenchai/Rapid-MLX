@@ -3585,9 +3585,11 @@ async def _stream_responses(
         reasoning_item_finalized = False
         reasoning_item_payload_done: dict | None = None
 
-        # Per-request reasoning parser instance (matches anthropic.py).
+        # Buffered replay already owns separated reasoning/content channels.
+        # Re-parsing its untagged text at finalization duplicates the answer
+        # and can append the reasoning summary to the public JSON.
         reasoning_parser = None
-        if cfg.reasoning_parser_name:
+        if cfg.reasoning_parser_name and replay_item_ids is None:
             try:
                 from ..reasoning import get_parser
 
