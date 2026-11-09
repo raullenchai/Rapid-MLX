@@ -5282,8 +5282,8 @@ class BatchedEngine(BaseEngine):
 
     @property
     def supports_guided_generation(self) -> bool:
-        """Check if guided generation is available."""
-        return HAS_GUIDED and not self._is_mllm
+        """Whether the backend can constrain text on either serving lane."""
+        return HAS_GUIDED
 
     def _register_guided_request(
         self,
@@ -5412,8 +5412,10 @@ class BatchedEngine(BaseEngine):
         """Generate JSON output constrained to a schema using guided decoding.
 
         Uses llguidance for constrained generation to guarantee the output is
-        valid JSON matching the specified schema.  Runs synchronously in a
-        thread pool to avoid blocking the event loop.
+        valid JSON matching the specified schema. Text engines use a worker
+        thread; MLLM engines attach a request-local processor to their scheduler.
+        MLLM reasoning callers must pass the parser's atomic reasoning_end_id;
+        thinking preferences are preserved.
 
         Args:
             raise_on_failure: When True, raise ``RuntimeError`` instead of
@@ -5439,6 +5441,44 @@ class BatchedEngine(BaseEngine):
 
         if not self._loaded:
             await self.start()
+
+        if self._is_mllm:
+            from ..api.guided import build_json_schema_logits_processor
+
+            # Direct callers supply the same atomic boundary resolved by the
+            # route. Keep reasoning and media on the ordinary scheduler lane.
+            reasoning_end_id = kwargs.pop("reasoning_end_id", None)
+            thinking = kwargs.get("enable_thinking")
+            if thinking is None:
+                thinking = (kwargs.get("chat_template_kwargs") or {}).get(
+                    "enable_thinking"
+                )
+            if reasoning_end_id is None and thinking is True:
+                reason = "MLLM guided reasoning requires an atomic reasoning_end_id"
+                logger.warning(reason)
+                raise RuntimeError(reason)
+            processor = await asyncio.to_thread(
+                build_json_schema_logits_processor,
+                self.tokenizer,
+                json_schema,
+                reasoning_end_id=reasoning_end_id,
+            )
+            if processor is None:
+                reason = (
+                    "MLLM schema processor initialization failed (tokenizer or grammar)"
+                )
+                logger.warning(reason)
+                raise RuntimeError(reason)
+            kwargs["grammar_logits_processor"] = processor
+            if reasoning_end_id is None:
+                kwargs.pop("reasoning_budget_logits_processor", None)
+            return await self.chat(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                **kwargs,
+            )
 
         # R12-M2 (codex round-1 P2 follow-up to Mira r12 R-1/R-2):
         # honour ``enable_thinking`` on the guided path. Pre-fix this

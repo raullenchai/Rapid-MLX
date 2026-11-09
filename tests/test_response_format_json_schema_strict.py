@@ -45,7 +45,7 @@ from rapid_mlx.api.tool_calling import (
     is_strict_json_schema,
     validate_output_against_schema,
 )
-from rapid_mlx.config import reset_config
+from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 from rapid_mlx.routes.chat import router as chat_router
@@ -3664,3 +3664,44 @@ def test_chat_nonstream_abort_is_classified_abort_first(
     assert [(c["result"], c["error_class"]) for c in calls] == [
         ("failed", "engine_aborted")
     ]
+
+
+@pytest.mark.parametrize("marker_resolves", [True, False])
+def test_mllm_strict_tools_repair_requires_reasoning_gate(marker_resolves):
+    """#5667: a multimodal tools repair keeps reasoning only behind the gate."""
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    class Tokenizer:
+        def encode(self, text, **kwargs):
+            return [7] if text == "</think>" else [1, 2]
+
+        def decode(self, ids):
+            return "</think>" if ids == [7] and marker_resolves else "prompt"
+
+    engine = _Engine(
+        supports_guided=True,
+        chat_text=_INVALID_PAYLOAD_WRONG_KEY,
+        guided_text=f"<think>Check the schema.</think>{_VALID_PAYLOAD}",
+    )
+    engine.is_mllm = True
+    engine.tokenizer = Tokenizer()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    payload = _chat_tools_payload()
+    payload["enable_thinking"] = True
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert len(engine.chat_calls) == 1
+    if marker_resolves:
+        assert response.status_code == 200, response.text
+        content = response.json()["choices"][0]["message"]["content"]
+        assert json.loads(content) == {"value": 42}
+        assert engine.guided_calls[0]["kwargs"]["reasoning_end_id"] == 7
+    else:
+        assert response.status_code == 502, response.text
+        assert response.json()["error"]["code"] == "strict_repair_engine_failure"
+        assert not engine.guided_calls
