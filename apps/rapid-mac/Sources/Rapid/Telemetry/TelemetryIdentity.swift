@@ -75,13 +75,11 @@ enum TelemetryIdentity {
                     forKey: TelemetryConfig.sharedClientIDMigrationKey
                 )
                 if !alreadyMigrated {
-                    if persist(existing, at: sharedIDURL) {
-                        defaults.set(
-                            true,
-                            forKey: TelemetryConfig.sharedClientIDMigrationKey
-                        )
-                    }
-                    return existing
+                    let adopted = persist(existing, at: sharedIDURL)
+                    let resolved = adopted ?? existing
+                    defaults.set(resolved, forKey: TelemetryConfig.clientIDKey)
+                    defaults.set(adopted != nil, forKey: TelemetryConfig.sharedClientIDMigrationKey)
+                    return resolved
                 }
                 // The shared file existed after migration and is now
                 // gone: honour engine `telemetry reset` by rotating
@@ -92,15 +90,13 @@ enum TelemetryIdentity {
         }
 
         let fresh = UUID().uuidString
-        defaults.set(fresh, forKey: TelemetryConfig.clientIDKey)
-        if let sharedIDURL {
-            let persisted = persist(fresh, at: sharedIDURL)
-            defaults.set(
-                persisted,
-                forKey: TelemetryConfig.sharedClientIDMigrationKey
-            )
+        let adopted = sharedIDURL.flatMap { persist(fresh, at: $0) }
+        let resolved = adopted ?? fresh
+        defaults.set(resolved, forKey: TelemetryConfig.clientIDKey)
+        if sharedIDURL != nil {
+            defaults.set(adopted != nil, forKey: TelemetryConfig.sharedClientIDMigrationKey)
         }
-        return fresh
+        return resolved
     }
 
     /// Engine-compatible state directory. ``HOME`` is read at call
@@ -137,8 +133,8 @@ enum TelemetryIdentity {
         return value
     }
 
-    @discardableResult
-    private static func persist(_ value: String, at url: URL) -> Bool {
+    /// Returns the published identity, including another process's winning ID.
+    private static func persist(_ value: String, at url: URL) -> String? {
         let fm = FileManager.default
         do {
             try fm.createDirectory(
@@ -146,13 +142,20 @@ enum TelemetryIdentity {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            // Identity bytes are owner-only from creation.
-            try OwnerOnlyFile.writeAtomically(Data("\(value)\n".utf8), to: url)
-            return true
+            let data = Data("\(value)\n".utf8)
+            do {
+                try OwnerOnlyFile.writeAtomically(data, to: url, replaceExisting: false)
+            } catch let error as POSIXError where error.code == .EEXIST {
+                let shared = try String(contentsOf: url, encoding: .utf8)
+                if let existing = usableID(shared) { return existing }
+                // An existing invalid file still needs intentional replacement.
+                try OwnerOnlyFile.writeAtomically(data, to: url)
+            }
+            return value
         } catch {
             // Telemetry state must never make the app fail. The
             // UserDefaults copy still gives desktop events a stable ID.
-            return false
+            return nil
         }
     }
 }

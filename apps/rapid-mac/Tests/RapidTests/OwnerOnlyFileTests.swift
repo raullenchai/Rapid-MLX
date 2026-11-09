@@ -83,6 +83,24 @@ final class OwnerOnlyFileTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [url.lastPathComponent])
     }
 
+    func testExclusivePublishPreservesWinnerAndCleansTemporaryFiles() throws {
+        let dir = try directory()
+        let url = dir.appendingPathComponent("identity")
+        let winner = Data("winner\n".utf8)
+        try OwnerOnlyFile.writeAtomically(winner, to: url, replaceExisting: false) { path, _ in
+            XCTAssertEqual(try self.mode(URL(fileURLWithPath: path)), 0o600)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        }
+        XCTAssertThrowsError(try OwnerOnlyFile.writeAtomically(
+            Data("loser\n".utf8), to: url, replaceExisting: false
+        )) {
+            XCTAssertEqual(($0 as? POSIXError)?.code, .EEXIST)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), winner)
+        XCTAssertEqual(try mode(url), 0o600)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [url.lastPathComponent])
+    }
+
     func testMissingDirectoryThrowsWithoutLeavingFiles() throws {
         let dir = try directory()
         let url = dir.appendingPathComponent("missing/private.json")

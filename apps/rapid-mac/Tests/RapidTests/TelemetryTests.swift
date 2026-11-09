@@ -222,6 +222,24 @@ final class TelemetryTests {
         #expect(defaults.bool(forKey: TelemetryConfig.sharedClientIDMigrationKey))
     }
 
+    @Test("invalid shared identity is repaired with owner-only bytes")
+    func invalidSharedClientIDIsRepaired() throws {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        let directory = try temporaryTelemetryDirectory("identity-repair")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("telemetry-client-id")
+        try Data("\n".utf8).write(to: url)
+        let resolved = TelemetryIdentity.clientID(defaults: defaults, sharedIDURL: url)
+        #expect(UUID(uuidString: resolved) != nil)
+        #expect(try String(contentsOf: url, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines) == resolved)
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect(defaults.string(forKey: TelemetryConfig.clientIDKey) == resolved)
+        #expect(defaults.bool(forKey: TelemetryConfig.sharedClientIDMigrationKey))
+    }
+
     @Test("deleting a migrated shared ID rotates instead of resurrecting the old ID")
     func sharedClientIDResetRotates() throws {
         let defaults = freshDefaults()
