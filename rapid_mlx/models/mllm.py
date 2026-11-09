@@ -1906,6 +1906,10 @@ class MLXMultimodalLM:
                 # exact decode optimization as explicit text-only serving.
                 install_qwen35_fused_gdn_decode(self.model)
 
+                from ..patches.qwen35_affine4 import install_qwen35_affine4
+
+                install_qwen35_affine4(self.model)
+
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
             # Gemma 3 / 3n VL variants are the canonical case:

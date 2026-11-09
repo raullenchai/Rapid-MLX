@@ -1,0 +1,277 @@
+"""Numerics, conservative enrollment, and model lifetime for affine-4 decode."""
+
+import gc
+import weakref
+from types import SimpleNamespace
+
+import pytest
+
+mx = pytest.importorskip("mlx.core")
+if not mx.metal.is_available():
+    pytest.skip("Metal required", allow_module_level=True)
+
+from rapid_mlx.patches import qwen35_affine4 as fused  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def enable_candidate(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_QWEN35_AFFINE4", "1")
+
+
+@pytest.mark.parametrize(
+    "seed,k,n,h,experts,topk",
+    [(1, 64, 64, 64, 4, 2), (19, 128, 128, 96, 8, 3), (73, 1024, 64, 128, 4, 2)],
+)
+def test_small_selected_experts_against_dense_oracle(seed, k, n, h, experts, topk):
+    """Use small full banks, including the final expert, to catch stride errors."""
+    key = mx.random.key(seed)
+    dp = mx.quantize(
+        mx.random.normal((experts, h, n), key=key).astype(mx.bfloat16) * 0.05,
+        group_size=64,
+        bits=4,
+    )
+    gu = mx.quantize(
+        mx.random.normal((experts, 2 * n, k), key=key).astype(mx.bfloat16) * 0.05,
+        group_size=64,
+        bits=4,
+    )
+    x = mx.random.normal((1, 1, k), key=key).astype(mx.bfloat16)
+    ids = mx.array([0, experts - 1] if topk == 2 else [0, 3, experts - 1], mx.uint32)
+    scores = mx.array([0.25, 0.75] if topk == 2 else [0.2, 0.3, 0.5], mx.bfloat16)
+    gate, down, sig = fused.kernels()
+    act = gate(
+        inputs=[x, *gu, *gu, ids, sig],
+        template=[
+            ("T", mx.bfloat16),
+            ("ROWS", 1),
+            ("K", k),
+            ("N", n),
+            ("GS", 64),
+            ("TOPK", topk),
+        ],
+        grid=(32, n, topk),
+        threadgroup=(32, 2, 1),
+        output_shapes=[(topk, n)],
+        output_dtypes=[mx.bfloat16],
+    )[0]
+    dense_gu = mx.dequantize(
+        gu[0], gu[1].astype(mx.float32), gu[2].astype(mx.float32), group_size=64, bits=4
+    ).astype(mx.float32)[ids]
+    proj = (dense_gu @ x.reshape(k).astype(mx.float32)).astype(mx.bfloat16)
+    g, u = mx.split(proj, 2, axis=-1)
+    expected_act = (g * mx.sigmoid(g)) * u
+    zeros = mx.zeros((h,), mx.bfloat16)
+    out = down(
+        inputs=[act, *dp, ids, scores, zeros, mx.zeros((1,), mx.bfloat16)],
+        template=[
+            ("T", mx.bfloat16),
+            ("ROWS", 1),
+            ("I", n),
+            ("H", h),
+            ("GS", 64),
+            ("TOPK", topk),
+            ("SHARED", 0),
+        ],
+        grid=(32, h, 1),
+        threadgroup=(32, 2, 1),
+        output_shapes=[(h,)],
+        output_dtypes=[mx.bfloat16],
+    )[0]
+    dense_dp = mx.dequantize(
+        dp[0], dp[1].astype(mx.float32), dp[2].astype(mx.float32), group_size=64, bits=4
+    ).astype(mx.float32)[ids]
+    expected = (
+        (dense_dp @ expected_act.astype(mx.float32)[..., None]).squeeze(-1)
+        * scores[:, None]
+    ).sum(axis=0)
+    # Pending kernel graphs must retain their full banks after the owner unloads.
+    mx.eval(expected_act, expected)
+    del gu, dp, dense_gu, dense_dp, x, ids, scores
+    gc.collect()
+    for actual, ref in ((act, expected_act), (out, expected)):
+        relative = mx.sqrt(
+            mx.mean((actual.astype(mx.float32) - ref.astype(mx.float32)) ** 2)
+            / mx.maximum(mx.mean(ref.astype(mx.float32) ** 2), 1e-12)
+        ).item()
+        assert relative < 0.025
+        assert mx.all(mx.isfinite(actual)).item()
+
+
+def test_parallel_router_ties_and_shared_dot():
+    block = SimpleNamespace(
+        _rapid_affine4_shared_weight=mx.sin(mx.arange(2048)).astype(mx.float32) / 2048
+    )
+    x = mx.cos(mx.arange(2048)).reshape(1, 1, 2048).astype(mx.bfloat16)
+    for logits in (
+        mx.zeros((1, 1, 256), mx.bfloat16),
+        mx.sin(mx.arange(256) * 0.731).reshape(1, 1, 256).astype(mx.bfloat16),
+    ):
+        ids, scores, glog = fused.fused_route(block, x, logits)
+        from rapid_mlx.qwen35_moe_router import fused_router_topk
+
+        ei, es = fused_router_topk(mx.softmax(logits, axis=-1, precise=True), 8)
+        assert mx.array_equal(ids, ei).item()
+        assert mx.array_equal(scores, es).item()
+        expected = mx.sum(
+            x.astype(mx.float32) * block._rapid_affine4_shared_weight
+        ).astype(mx.bfloat16)
+        assert mx.allclose(glog, expected, atol=0.001).item()
+
+
+class Bank(dict):
+    def __init__(self, shape):
+        super().__init__()
+        self.bits, self.group_size, self.mode = 4, 64, "affine"
+        self.weight = SimpleNamespace(shape=shape, dtype=mx.uint32)
+        self.scales = SimpleNamespace(
+            shape=(*shape[:-1], shape[-1] // 8), dtype=mx.bfloat16
+        )
+        self.biases = SimpleNamespace(shape=self.scales.shape, dtype=mx.bfloat16)
+
+
+def block_type():
+    class Qwen3_5MoeSparseMoeBlock:
+        num_experts, top_k, norm_topk_prob = 256, 8, True
+        _rapid_qwen35_fused_router = True
+
+        def __init__(self):
+            self.switch_mlp = SimpleNamespace(
+                gate_up_proj=Bank((256, 1024, 256)), down_proj=Bank((256, 2048, 64))
+            )
+            self.shared_expert_gate = Bank((1, 256))
+
+        def __call__(self, x):
+            return mx.zeros_like(x)
+
+    return Qwen3_5MoeSparseMoeBlock
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["dense", "experts", "topk", "quant", "scales", "sharded", "normalization", "bias"],
+)
+def test_geometry_fails_closed(mutation, monkeypatch):
+    cls = block_type()
+    monkeypatch.setattr(fused, "_block_classes", lambda: (cls,))
+    b = cls()
+    assert fused._compatible(b)
+    if mutation == "dense":
+        b.switch_mlp = None
+    if mutation == "experts":
+        b.num_experts = 32  # another common MoE geometry
+    if mutation == "topk":
+        b.top_k = 4
+    if mutation == "quant":
+        b.switch_mlp.down_proj.bits = 8
+    if mutation == "scales":
+        b.switch_mlp.down_proj.scales.dtype = mx.float16
+    if mutation == "sharded":
+        b.sharding_group = object()
+    if mutation == "normalization":
+        b.norm_topk_prob = False
+    if mutation == "bias":
+        b.shared_expert_gate["bias"] = True
+    assert not fused._compatible(b)
+
+
+def test_reload_multiple_models_fallbacks_and_kill_switch(monkeypatch):
+    cls = block_type()
+    monkeypatch.setattr(
+        fused.mx, "dequantize", lambda *a, **k: mx.zeros((1, 2048), mx.float32)
+    )
+    monkeypatch.setattr(fused, "forward", lambda b, x: mx.zeros_like(x))
+
+    def enroll(b):
+        b.shared_expert_gate.scales = mx.ones((1, 32), mx.bfloat16)
+        b.shared_expert_gate.biases = mx.zeros((1, 32), mx.bfloat16)
+        # Keep metadata eligibility checks independently covered above.
+        monkeypatch.setattr(fused, "_compatible", lambda candidate: True)
+        return fused.install_qwen35_affine4(
+            SimpleNamespace(named_modules=lambda: [("block", b)])
+        )
+
+    first, second, untouched = cls(), cls(), cls()
+    assert enroll(first) == 1
+    assert enroll(first) == 0
+    assert enroll(second) == 1
+    assert not getattr(untouched, "_rapid_affine4", False)
+    monkeypatch.setattr(fused, "forward", lambda b, x: mx.ones_like(x))
+    x = mx.zeros((1, 1, 2048), mx.bfloat16)
+    assert first(x).sum().item() == 2048
+    assert untouched(x).sum().item() == 0
+    assert first(mx.zeros((2, 1, 2048), mx.bfloat16)).sum().item() == 0
+    assert first(mx.zeros((1, 2, 2048), mx.bfloat16)).sum().item() == 0
+    assert first(x.astype(mx.float32)).sum().item() == 0
+    assert first(x.astype(mx.float16)).sum().item() == 0
+    for value in ("0", "off", "false"):
+        monkeypatch.setenv("RAPID_MLX_QWEN35_AFFINE4", value)
+        assert first(x).sum().item() == 0
+        assert fused.install_qwen35_affine4(object()) == 0
+    ref = weakref.ref(first)
+    del first
+    gc.collect()
+    assert ref() is None  # class patch has no model/weight closure
+    monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4")
+    assert second(x).sum().item() == 0
+    assert fused.install_qwen35_affine4(object()) == 0
+    monkeypatch.setenv("RAPID_MLX_QWEN35_AFFINE4", "1")
+    third = cls()
+    monkeypatch.setattr(fused, "forward", lambda b, x: mx.zeros_like(x))
+    assert enroll(third) == 1
+    monkeypatch.setattr(fused, "forward", lambda b, x: mx.ones_like(x))
+    assert second(x).sum().item() == 2048
+
+
+def test_dense_model_skipped():
+    assert fused.install_qwen35_affine4(SimpleNamespace(named_modules=lambda: [])) == 0
+
+
+def test_probe_failure_does_not_enroll_or_retain_weights(monkeypatch):
+    b = block_type()()
+    monkeypatch.setattr(fused, "_compatible", lambda candidate: True)
+    b.shared_expert_gate.scales = mx.ones((1, 32), mx.bfloat16)
+    b.shared_expert_gate.biases = mx.zeros((1, 32), mx.bfloat16)
+    monkeypatch.setattr(fused.mx, "dequantize", lambda *a, **k: mx.zeros((1, 2048)))
+    monkeypatch.setattr(fused, "forward", lambda b, x: mx.full(x.shape, float("nan")))
+    assert (
+        fused.install_qwen35_affine4(
+            SimpleNamespace(named_modules=lambda: [("block", b)])
+        )
+        == 0
+    )
+    assert not getattr(b, "_rapid_affine4", False)
+    assert not hasattr(b, "_rapid_affine4_shared_weight")
+
+
+def test_shared_gate_mixed_precision_layout(monkeypatch):
+    cls = block_type()
+    monkeypatch.setattr(fused, "_block_classes", lambda: (cls,))
+    b = cls()
+    shared = b.shared_expert_gate
+    shared.bits = 8
+    shared.weight.shape = (1, 512)
+    shared.scales.shape = shared.biases.shape = (1, 32)
+    assert fused._compatible(b)
+    shared.bits = 2
+    assert not fused._compatible(b)
+
+
+def test_other_popular_moe_families_skip():
+    from mlx_lm.models.gpt_oss import MLPBlock
+    from mlx_lm.models.qwen3_moe import Qwen3MoeSparseMoeBlock
+
+    for cls in (Qwen3MoeSparseMoeBlock, MLPBlock):
+        assert not fused._compatible(dict.__new__(cls))
+
+
+def test_nonfinite_router_never_returns_out_of_bounds_experts():
+    block = SimpleNamespace(
+        _rapid_affine4_shared_weight=mx.zeros((1, 2048), mx.float32)
+    )
+    x = mx.zeros((1, 1, 2048), mx.bfloat16)
+    for value in (float("nan"), float("inf"), float("-inf")):
+        ids, scores, glog = fused.fused_route(
+            block, x, mx.full((1, 1, 256), value, mx.bfloat16)
+        )
+        mx.eval(ids, scores, glog)
+        assert mx.all(ids < 256).item()
