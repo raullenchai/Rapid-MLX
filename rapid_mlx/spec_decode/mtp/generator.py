@@ -679,9 +679,14 @@ def mtp_generate_step(
         nonlocal mtp_cache, head_pending
         head_pending = None
         parked_head_rows.clear()
+        caller_tail = prompt_cache is not None and len(prompt_cache) > len(model.layers)
+        if caller_tail:
+            # Detach the old head first: if allocation fails, the caller keeps
+            # a backbone-only cache, which the next request rebuilds a head for.
+            del prompt_cache[len(model.layers) :]
         mtp_cache = model.make_mtp_cache()
-        if prompt_cache is not None and len(prompt_cache) > len(model.layers):
-            prompt_cache[len(model.layers) :] = mtp_cache
+        if caller_tail:
+            prompt_cache.extend(mtp_cache)
 
     def _flush_head():
         """Settle deferred history when lookup or a caller-owned cache needs it."""

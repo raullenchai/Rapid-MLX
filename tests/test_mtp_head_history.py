@@ -1067,6 +1067,23 @@ def test_draft_failure_keeps_error_when_discard_allocation_fails():
     assert env["head_pending"] is None
 
 
+def test_discard_allocation_failure_detaches_caller_head():
+    env, cache, _, _ = _harness()
+    cache.rows = [(90.0, 10)]
+    env["parked_head_rows"] = [(np.array([[[100.0]]]), np.array([11]))]
+
+    def discard_fail():
+        raise ValueError("head allocation failed")
+
+    env["model"].make_mtp_cache = discard_fail
+    with pytest.raises(ValueError, match="head allocation failed"):
+        env["_discard_head_history"]()
+    # A backbone-only caller cache is valid input; the old head is never kept.
+    assert env["prompt_cache"] == ["b0", "b1"]
+    assert env["parked_head_rows"] == []
+    assert env["head_pending"] is None
+
+
 def test_probe_reset_allocation_failure_preserves_history():
     env, original, _, _ = _harness()
     env["parked_head_rows"] = [(np.zeros((1, 1, 1)), np.array([3]))]
