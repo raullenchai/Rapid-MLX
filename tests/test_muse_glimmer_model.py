@@ -381,9 +381,10 @@ def test_resolve_serving_lane_muse_text_fallback(monkeypatch, tmp_path):
 
 
 def test_aliases_pin_text_only_and_muse_parsers():
-    aliases = json.loads(
-        (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
-    )
+    package = Path(__file__).parent.parent / "rapid_mlx"
+    aliases = json.loads((package / "aliases.json").read_text())
+    # The bf16 row is a repo-only execution profile; its pins must survive.
+    aliases |= json.loads((package / "repo_profiles.json").read_text())
     for name in (
         "muse-glimmer-30b-4bit",
         "muse-glimmer-30b-8bit",

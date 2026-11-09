@@ -128,7 +128,7 @@ def test_normalize_model_path_redacts_local(raw):
 def test_normalize_model_path_bare_alias_passes():
     """Bare alias names (no slash) are public + harmless."""
     assert normalize_model_path("qwen3.5-9b-4bit") == "qwen3.5-9b-4bit"
-    assert normalize_model_path("hermes3-8b-4bit") == "hermes3-8b-4bit"
+    assert normalize_model_path("llama-3.1-8b-4bit") == "llama-3.1-8b-4bit"
 
 
 def test_normalize_model_path_empty():

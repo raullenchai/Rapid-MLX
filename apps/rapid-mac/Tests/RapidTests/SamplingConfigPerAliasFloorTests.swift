@@ -49,7 +49,7 @@ final class SamplingConfigPerAliasFloorTests {
     func defaultFloorsUnchangedWhenProfileSilent() {
         let s = SamplingConfig(defaults: freshDefaults())
         let profile = ServerModelProfile(
-            id: "vibethinker-3b-8bit",
+            id: "mlx-community/VibeThinker-3B-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,
@@ -298,7 +298,7 @@ final class SamplingConfigPerAliasFloorTests {
         // Apply a reasoning profile WITHOUT an over-baseline floor;
         // the user override gate suppresses auto-scale entirely.
         let profile = ServerModelProfile(
-            id: "vibethinker-3b-8bit",
+            id: "mlx-community/VibeThinker-3B-8bit",
             recommendedSampling: nil,
             isHybrid: false,
             isMoe: false,

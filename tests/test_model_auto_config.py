@@ -442,10 +442,10 @@ class TestDetectModelConfig:
     @pytest.mark.parametrize(
         "model_path",
         [
-            "vibethinker-1.5b-4bit",
+            "mlx-community/VibeThinker-1.5B-mlx-4bit",
             "mlx-community/VibeThinker-1.5B-mlx-4bit",
             "WeiboAI/VibeThinker-1.5B",
-            "vibethinker-3b-8bit",
+            "mlx-community/VibeThinker-3B-8bit",
             "mlx-community/VibeThinker-3B-8bit",
             "WeiboAI/VibeThinker-3B",
         ],
@@ -470,7 +470,7 @@ class TestDetectModelConfig:
     @pytest.mark.parametrize(
         "model_path",
         [
-            "nanbeige4.1-3b-4bit",
+            "mlx-community/Nanbeige4.1-3B-4bit",
             "mlx-community/Nanbeige4.1-3B-4bit",
             "Nanbeige/Nanbeige4.1-3B",
         ],
@@ -1257,8 +1257,8 @@ class TestVisibility:
             table = format_profile_table(target, cfg)
             assert "dense GatedDeltaNet (standard scheduler)" in table, target
             assert "pure attention" not in table, target
-        cfg = detect_model_config("ornith-1.5-9b-bf16")
-        table = format_profile_table("ornith-1.5-9b-bf16", cfg)
+        cfg = detect_model_config("ornith-ai/Ornith-1.5-9B-MLX")
+        table = format_profile_table("ornith-ai/Ornith-1.5-9B-MLX", cfg)
         assert "dense GatedDeltaNet (standard scheduler)" in table
 
     def test_table_gemma4_and_true_hybrid_keep_arch_labels(self):

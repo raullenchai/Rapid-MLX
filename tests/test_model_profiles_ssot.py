@@ -103,7 +103,7 @@ def test_orphan_aliases_now_covered() -> None:
     must itself resolve — so it takes their slot in this guard."""
     for orphan in (
         "bonsai-1.7b-2bit",
-        "nemotron-30b-4bit",
+        "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
     ):
         profile = resolve_profile(orphan)
         assert profile is not None, f"{orphan} regressed to orphan"

@@ -43,10 +43,10 @@ struct ToolUseCapabilityTests {
         #expect(ToolUseCapability.confidence(for: "phi-4-mini-reasoning-8bit") == .broken)
     }
 
-    @Test("hermes3-8b-4bit is .broken (cycle-4 F-1)")
+    @Test("mlx-community/Hermes-3-Llama-3.1-8B-4bit is .broken (cycle-4 F-1)")
     func hermes3_8bIsBroken() {
         #expect(
-            ToolUseCapability.confidence(for: "hermes3-8b-4bit") == .broken,
+            ToolUseCapability.confidence(for: "mlx-community/Hermes-3-Llama-3.1-8B-4bit") == .broken,
             "hermes3-8b silent-degradation: auto tool_choice never emits <tool_call> (cycle-4 F-1)."
         )
     }
@@ -98,8 +98,8 @@ struct ToolUseCapabilityTests {
 
     @Test("Ornith-1.5 official sizes are .known after Studio tool-call dogfood")
     func ornithOfficialSizesAreKnown() {
-        #expect(ToolUseCapability.confidence(for: "ornith-1.5-9b-bf16") == .known)
-        #expect(ToolUseCapability.confidence(for: "ornith-1.5-35b-a3b-bf16") == .known)
+        #expect(ToolUseCapability.confidence(for: "ornith-ai/Ornith-1.5-9B-MLX") == .known)
+        #expect(ToolUseCapability.confidence(for: "ornith-ai/Ornith-1.5-35B-A3B-MLX") == .known)
     }
 
     @Test("Unverified Ornith-1.5 size shapes remain .unknown")

@@ -302,7 +302,7 @@ enum ModelPickerVisibility {
     /// passed 5/5 weather tool-call schemas at temp=0 vs
     /// ``llama3-1b-4bit``'s 3/5 schema-leak rate, held its
     /// multi-turn arithmetic stable, and decoded at 154 tok/s B=1
-    /// on M3 Ultra). 3.8B ``phi-3.5-mini-4bit`` and 4B
+    /// on M3 Ultra). 3.8B ``mlx-community/Phi-3.5-mini-instruct-4bit`` and 4B
     /// ``qwen3.5-4b-4bit`` are real-world-useful for testing and
     /// single-shot Q&A, and the project's own test default is
     /// qwen3.5-4b — stickering them would dilute the warning.
@@ -326,12 +326,12 @@ enum ModelPickerVisibility {
         /// ``>= 1B`` and ``< 3B``. The cycle-10 sticker bucket,
         /// tightened in cycle-11 to exclude exactly-3B aliases.
         /// ``llama3-1b-4bit`` (1.0B), ``gemma3-1b-qat-4bit`` (1.0B),
-        /// ``vibethinker-1.5b-4bit`` (1.5B), and
+        /// ``mlx-community/VibeThinker-1.5B-mlx-4bit`` (1.5B), and
         /// ``bonsai-1.7b-unpacked`` (1.7B) all land here.
         /// ``llama3-3b-4bit`` (3.0B) does NOT — cycle-10 empirical
         /// data showed 3B is the smallest llama-family chat-viable
         /// size (5/5 clean tool calls, stable multi-turn).
-        /// ``phi-3.5-mini-4bit`` (3.8B, per the HF card's true param
+        /// ``mlx-community/Phi-3.5-mini-instruct-4bit`` (3.8B, per the HF card's true param
         /// count) also does NOT — it parses to no size from the
         /// alias and falls through to ``midOrLarger`` via the
         /// nil-default branch. That's intentional: stickering an

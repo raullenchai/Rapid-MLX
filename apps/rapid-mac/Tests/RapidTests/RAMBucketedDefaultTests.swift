@@ -597,7 +597,7 @@ struct SafeDefaultFallbackTests {
     func unparseableLosesAtAllStepsWhenKnownAvailable() {
         let catalog = [
             entry("deepseek-v4-flash-2bit"),  // unparseable
-            entry("glm4.5-air-4bit"),         // unparseable
+            entry("glm4.7-4bit"),         // unparseable
             entry("qwen3.5-9b-4bit"),         // known: 9B
             entry("qwen3.5-4b-4bit"),         // known: 4B
         ]

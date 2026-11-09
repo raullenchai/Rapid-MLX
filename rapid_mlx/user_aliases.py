@@ -106,7 +106,16 @@ def _validated_mapping(
     if len(set(folded_names)) != len(folded_names):
         raise UserAliasError("user alias names collide by case")
     user_folded = set(folded_names)
+    from .model_aliases import _DEPRECATED_MODEL_ALIASES
+
+    normalized = dict(aliases)
     for name, target in aliases.items():
+        # Old targets remain valid for the deprecation release. Normalize in
+        # memory so neither listings nor catalog projections expose old names;
+        # the user's persisted file remains untouched by read-side resolution.
+        if target not in builtins:
+            target = _DEPRECATED_MODEL_ALIASES.get(target, target)
+        normalized[name] = target
         _validate_name(name)
         if name.casefold() in reserved_folded:
             raise UserAliasError(f"{name!r} is a reserved built-in alias")
@@ -118,7 +127,7 @@ def _validated_mapping(
             raise UserAliasError(
                 f"target {target!r} must be a built-in alias or Hugging Face repo id"
             )
-    return aliases
+    return normalized
 
 
 def validated_user_aliases(

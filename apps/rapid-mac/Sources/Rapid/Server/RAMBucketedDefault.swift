@@ -564,7 +564,7 @@ enum SafeDefaultFallback {
         // Codex r3 BLOCKING on #165: ``ModelSizing.estimate`` returns
         // ``paramsBillions == nil`` for aliases like
         // ``qwen3-coder-4bit`` / ``deepseek-v4-flash-2bit`` /
-        // ``glm4.5-air-4bit`` where the parameter count isn't a
+        // ``mlx-community/GLM-4.5-Air-4bit`` where the parameter count isn't a
         // ``<number>b`` token. Those nil-param footprints come out
         // at totalGB = 0 + 1.2 + 2.0 = 3.2 GB and ``classify`` short-
         // circuits to ``.borderline`` — so a naive "sort by total

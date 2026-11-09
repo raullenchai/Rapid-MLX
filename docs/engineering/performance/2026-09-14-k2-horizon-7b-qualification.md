@@ -80,7 +80,7 @@ The standard product benchmark was run with:
 
 ```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  rapid-mlx bench k2-horizon-7b-4bit --tier speed
+  rapid-mlx bench abenzerps/K2-Horizon-7B-MLX-4bit --tier speed
 ```
 
 It passed five prompts, generated 640 tokens, and reported 49.1 tokens/second

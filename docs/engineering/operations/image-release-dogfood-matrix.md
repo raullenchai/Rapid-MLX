@@ -21,7 +21,6 @@ column.
 | `z-image-turbo` | mflux / Z-Image | Generate | Required manually | [Initial real-weight qualification](https://github.com/raullenchai/Rapid-MLX/commit/056ebe79b9904dd432049a550b1bf6c3b298783d) |
 | `flux-schnell` | mflux / FLUX.1 Schnell | Generate | Required manually | [FLUX.1 Schnell dogfood](../performance/2026-09-04-flux1-schnell-dogfood.md) |
 | `sdxl-base` | Native SDXL | Generate | Required manually | [SDXL Base dogfood](../performance/2026-09-05-sdxl-base-dogfood.md) |
-| `flux2-klein-4b-bf16` | mflux / FLUX.2 Klein BF16 | Generate + edit | Required manually | [Klein precision qualification](../performance/2026-09-04-image-weight-precision.md) |
 | `hidream-o1-dev` | Native HiDream | Generate | Required manually | [HiDream-O1 Dev dogfood](../performance/2026-09-04-hidream-o1-dev-dogfood.md) |
 | `sd35-large-4bit` | Native SD3.5 | Generate | Required manually | [SD3.5 Large dogfood](../performance/2026-09-05-sd35-large-dogfood.md) |
 | `qwen-image-2.1` | mflux / Qwen Image 2.1 full q4 | Generate + img2img | Required manually | [Low-memory qualification](../performance/2026-09-25-qwen-image-2.1-low-memory-spike.md) |

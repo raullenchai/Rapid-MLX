@@ -17,11 +17,11 @@ from rapid_mlx.routes import video
             SimpleNamespace(video_family="cogvideox-fun"),
         ),
         (
-            "cogvideox-fun-5b-q8",
+            "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
             SimpleNamespace(video_family="cogvideox-fun"),
         ),
         (
-            "cogvideox-fun-5b-bf16",
+            "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
             SimpleNamespace(video_family="cogvideox-fun"),
         ),
         (
@@ -33,7 +33,7 @@ from rapid_mlx.routes import video
             ),
         ),
         (
-            "wan2.2-ti2v-5b-bf16",
+            "rickylin20260522/Wan2.2-TI2V-5B-mlx",
             SimpleNamespace(
                 video_family="wan",
                 native_fps=24,

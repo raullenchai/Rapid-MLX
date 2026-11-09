@@ -55,7 +55,7 @@ remains q4 and no hardware-based switch happens automatically.
 ```bash
 rapid-mlx serve flux2-klein-4b --image-weight-precision bf16
 # Equivalent:
-rapid-mlx serve flux2-klein-4b-bf16
+rapid-mlx serve mflux-community/flux2-klein-4b-mflux-bf16
 ```
 
 Use `--image-weight-precision q4` to force the compact checkpoint. The option

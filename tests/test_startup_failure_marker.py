@@ -99,9 +99,9 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
                 "rapid_mlx.models.mllm.vision_runtime_status",
                 return_value=(VisionRuntimeStatus.ABSENT, None),
             ):
-                require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+                require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
             """,
-            "error: model 'ui-tars-1.5-7b-4bit' is a vision/multimodal alias "
+            "error: model 'mlx-community/UI-TARS-1.5-7B-4bit' is a vision/multimodal alias "
             "and requires the `mlx-vlm` runtime, which ships with rapid-mlx "
             "but is missing from this environment.\n"
             + VISION_INSTALL_HINT
@@ -151,9 +151,9 @@ def test_sibling_extra_guards_emit_closed_marker_once(
                 "rapid_mlx.models.mllm.vision_runtime_status",
                 return_value=(VisionRuntimeStatus.INCOMPATIBLE, "0.0"),
             ):
-                require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+                require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
             """,
-            "error: model 'ui-tars-1.5-7b-4bit' requires the Rapid-MLX vision "
+            "error: model 'mlx-community/UI-TARS-1.5-7B-4bit' requires the Rapid-MLX vision "
             "lane, but mlx-vlm '0.0' is incompatible; this release validates "
             "exactly 0.7.2. This is a vision-runtime compatibility error, not "
             "a Metal out-of-memory error.\n" + VISION_INSTALL_HINT + "\n",
@@ -171,9 +171,9 @@ def test_sibling_extra_guards_emit_closed_marker_once(
                 "rapid_mlx.models.mllm.vision_runtime_status",
                 return_value=(VisionRuntimeStatus.BROKEN, "PIL"),
             ):
-                require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+                require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
             """,
-            "error: model 'ui-tars-1.5-7b-4bit' is a vision/multimodal alias, "
+            "error: model 'mlx-community/UI-TARS-1.5-7B-4bit' is a vision/multimodal alias, "
             "but the vision runtime cannot load.\n"
             "`mlx-vlm` is installed but its dependency 'PIL' is not, so the "
             "vision runtime cannot load. "
@@ -209,7 +209,7 @@ def test_healthy_vision_status_has_no_failure_output() -> None:
             "rapid_mlx.models.mllm.vision_runtime_status",
             return_value=(VisionRuntimeStatus.OK, None),
         ):
-            require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+            require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
         """
     )
 
@@ -292,7 +292,9 @@ def test_vision_marker_branches_are_covered_in_process(
     status = getattr(mllm.VisionRuntimeStatus, status_name)
     monkeypatch.setattr(mllm, "vision_runtime_status", lambda: (status, "PIL"))
     with pytest.raises(SystemExit, match="2"):
-        _handle_guard(lambda: mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit"))
+        _handle_guard(
+            lambda: mllm.require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
+        )
     assert f"{expected_reason} extra=vision" in capsys.readouterr().err
 
 

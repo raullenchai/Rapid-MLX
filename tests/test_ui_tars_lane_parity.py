@@ -425,7 +425,7 @@ class TestResponsesLaneComputerCallEmission:
             id="chatcmpl-test",
             object="chat.completion",
             created=1,
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             choices=[
                 ChatCompletionChoice(
                     index=0,
@@ -445,7 +445,7 @@ class TestResponsesLaneComputerCallEmission:
         from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             input="Click the OK button at (500, 300).",
             tools=[
                 {
@@ -459,7 +459,10 @@ class TestResponsesLaneComputerCallEmission:
             json.dumps({"action": "click", "point": [500, 300]})
         )
         resp = openai_to_responses(
-            chat_resp, model="ui-tars-1.5-7b-4bit", request=req, created_at=1
+            chat_resp,
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
+            request=req,
+            created_at=1,
         )
         computer_calls = [
             o for o in resp.output if getattr(o, "type", None) == "computer_call"
@@ -750,7 +753,7 @@ class TestR6M2CoordinateKeyTranslation:
             id="chatcmpl-test",
             object="chat.completion",
             created=1,
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             choices=[
                 ChatCompletionChoice(
                     index=0,
@@ -769,7 +772,7 @@ class TestR6M2CoordinateKeyTranslation:
         from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
 
         chat_resp = self._click_chat_response({"action": "click", "point": [500, 300]})
-        anth = openai_to_anthropic(chat_resp, model="ui-tars-1.5-7b-4bit")
+        anth = openai_to_anthropic(chat_resp, model="mlx-community/UI-TARS-1.5-7B-4bit")
         tool_uses = [b for b in anth.content if getattr(b, "type", None) == "tool_use"]
         assert len(tool_uses) == 1
         tu = tool_uses[0]
@@ -790,7 +793,7 @@ class TestR6M2CoordinateKeyTranslation:
                 "end_point": [100, 200],
             }
         )
-        anth = openai_to_anthropic(chat_resp, model="ui-tars-1.5-7b-4bit")
+        anth = openai_to_anthropic(chat_resp, model="mlx-community/UI-TARS-1.5-7B-4bit")
         tool_uses = [b for b in anth.content if getattr(b, "type", None) == "tool_use"]
         assert len(tool_uses) == 1
         # Spec: ``start_coordinate`` + ``coordinate`` (the END).
@@ -855,7 +858,7 @@ class TestR6M2CoordinateKeyTranslation:
 
         chat_resp = self._click_chat_response({"action": "click", "point": [500, 300]})
         req = ResponsesRequest(
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             input="Click OK.",
             tools=[
                 {
@@ -866,7 +869,10 @@ class TestR6M2CoordinateKeyTranslation:
             ],
         )
         resp = openai_to_responses(
-            chat_resp, model="ui-tars-1.5-7b-4bit", request=req, created_at=1
+            chat_resp,
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
+            request=req,
+            created_at=1,
         )
         computer_calls = [
             o for o in resp.output if getattr(o, "type", None) == "computer_call"
@@ -920,7 +926,7 @@ class TestR6M2CoordinateKeyTranslation:
             }
         )
         req = ResponsesRequest(
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             input="Drag from (10,20) to (100,200).",
             tools=[
                 {
@@ -931,7 +937,10 @@ class TestR6M2CoordinateKeyTranslation:
             ],
         )
         resp = openai_to_responses(
-            chat_resp, model="ui-tars-1.5-7b-4bit", request=req, created_at=1
+            chat_resp,
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
+            request=req,
+            created_at=1,
         )
         computer_calls = [
             o for o in resp.output if getattr(o, "type", None) == "computer_call"
@@ -1211,7 +1220,7 @@ class TestR7H1NonStreamChatResponseBuilder:
             id="chatcmpl-test",
             object="chat.completion",
             created=1,
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             choices=[
                 ChatCompletionChoice(
                     index=0,
@@ -1261,7 +1270,7 @@ class TestR10C2NoReasoningAliasOnChatWire:
         )
 
         chunk = ChatCompletionChunk(
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             choices=[
                 ChatCompletionChunkChoice(
                     delta=ChatCompletionChunkDelta(
@@ -1441,7 +1450,7 @@ class TestR7M6ComputerUsePreviewAlias:
         from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             input="Click OK.",
             tools=[
                 {

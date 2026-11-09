@@ -519,7 +519,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// mid-answer — i.e. ``finish_reason == "length"`` AND ``content``
     /// is non-empty AND ``reasoning`` is empty (see
     /// ``ChatViewModel.runOneStream``'s ``.finished`` handler).
-    /// Verbose-output dense models (nemotron-30b-4bit and similar)
+    /// Verbose-output dense models (lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit and similar)
     /// would emit a 200-token LaTeX derivation for "what is 17*23?"
     /// against the default 200-token cap and the row would render as
     /// a normal completed answer with no indication the model was

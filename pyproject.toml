@@ -622,6 +622,7 @@ vllm-mlx-bench = "rapid_mlx.benchmark:main"
 rapid_mlx = [
     "chat_runtime/store/migrations/*.sql",
     "aliases.json",
+    "repo_profiles.json",
     "model_digests.json",
     "model_catalog_lock.json",
     "utils/kimi_tokenizer/LICENSE",

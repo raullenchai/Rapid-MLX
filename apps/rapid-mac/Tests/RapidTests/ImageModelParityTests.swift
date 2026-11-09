@@ -13,7 +13,6 @@ struct ImageModelParityTests {
 
     private static let aliasFamily: [String: String] = [
         "flux2-klein-4b": "flux2-klein",
-        "flux2-klein-4b-bf16": "flux2-klein",
         "bonsai-image-4b-2bit": "bonsai-image",
         "flux-schnell": "flux-schnell",
         "z-image-turbo": "z-image",

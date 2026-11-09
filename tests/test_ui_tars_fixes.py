@@ -953,7 +953,7 @@ class TestAnthropicAdapterPointShape:
             id="chatcmpl-test",
             object="chat.completion",
             created=1,
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             choices=[
                 ChatCompletionChoice(
                     index=0,
@@ -964,7 +964,7 @@ class TestAnthropicAdapterPointShape:
                 )
             ],
         )
-        anth = openai_to_anthropic(response, model="ui-tars-1.5-7b-4bit")
+        anth = openai_to_anthropic(response, model="mlx-community/UI-TARS-1.5-7B-4bit")
         # Find the tool_use block.
         tool_use_blocks = [b for b in anth.content if b.type == "tool_use"]
         assert len(tool_use_blocks) == 1

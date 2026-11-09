@@ -26,6 +26,10 @@ def public_repositories() -> frozenset[str]:
 @lru_cache(maxsize=1)
 def _catalog_artifacts() -> tuple[tuple[str, str], ...]:
     aliases = json.loads(Path(__file__).with_name("aliases.json").read_text())
+    repo_profiles = json.loads(
+        Path(__file__).with_name("repo_profiles.json").read_text()
+    )
+    aliases = {k: v for k, v in repo_profiles.items() if k != "_comment"} | aliases
     public = public_repositories()
     return tuple(
         sorted(

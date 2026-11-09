@@ -1,0 +1,480 @@
+{
+  "_comment": "Repo-keyed execution-profile store, keyed by former alias for provenance. Consulted ONLY by HF-path reverse lookup for execution metadata and pins (and stable telemetry identity), never for alias-name resolution, catalog, listings, recommendations, completions, or Desktop.",
+  "k2-horizon-7b-4bit": {
+    "hf_path": "abenzerps/K2-Horizon-7B-MLX-4bit",
+    "revision": "871302850906f0150a5f52b3e922ea3c4133904f",
+    "modality": "text",
+    "is_text_only": true,
+    "tool_call_parser": "k2_horizon",
+    "reasoning_parser": "k2_horizon",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "min_memory_gb": 16,
+    "experimental": true
+  },
+  "north-mini-code-bf16": {
+    "hf_path": "mlx-community/North-Mini-Code-1.0-bf16",
+    "revision": "f94a85ec3612b0bf6cf23a0d7ebcc9c682883a81",
+    "reasoning_parser": "cohere_command4",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false
+  },
+  "tmax-9b-6bit": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-6bit",
+    "revision": "6ca68c6f8a3386629eaef470508dd1bce371d43f",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-9b-8bit": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-8bit",
+    "revision": "33812d6cf04f88856f25eb828de4f3144a194560",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-9b-bf16": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-bf16",
+    "revision": "bb2ea1863179e4895dba8719613918e16a3d7a3e",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-27b": {
+    "hf_path": "mlx-community/Tmax-27B-MLX-4bit",
+    "revision": "385e4b07407e69761bb0a316805fe060ce3e61e6",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-27b-6bit": {
+    "hf_path": "mlx-community/Tmax-27B-MLX-6bit",
+    "revision": "2a8d8f4cfcf6b4a8d536ebc080a16061f8a10b8a",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-27b-8bit": {
+    "hf_path": "mlx-community/Tmax-27B-MLX-8bit",
+    "revision": "2f350699e318cab933c687b09e37a409b09342c3",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "llama-3.1-8b-8bit": {
+    "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
+    "revision": "142d428004044c37c441272c91316251d9aecc58",
+    "tool_call_parser": "llama",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "hermes3-8b-4bit": {
+    "hf_path": "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+    "revision": "3fde32264814f68c3d6d71ac333adf447523288a",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.615,
+      "json_array": 0.976,
+      "tool_loop": 0.594,
+      "code_edit": 0.584
+    }
+  },
+  "glm4.5-air-4bit": {
+    "hf_path": "mlx-community/GLM-4.5-Air-4bit",
+    "revision": "60837794f3caafc4682dd1a9188a82c55a9100ef",
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "glm4",
+    "is_hybrid": false,
+    "supports_spec_decode": true,
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.755,
+      "json_array": 0.688,
+      "tool_loop": 0.715,
+      "code_edit": 0.787
+    },
+    "recommended_sampling": {
+      "temperature": 0.6,
+      "top_p": 0.95
+    }
+  },
+  "minimax-m2.5-4bit": {
+    "hf_path": "lmstudio-community/MiniMax-M2.5-MLX-4bit",
+    "revision": "9af822e97aaa5d3d8f9a635ec2b967b0c0a9a09f",
+    "tool_call_parser": "minimax",
+    "reasoning_parser": "minimax",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": true
+  },
+  "qwopus-9b-4bit": {
+    "hf_path": "Jackrong/MLX-Qwopus3.5-9B-v3-4bit",
+    "revision": "7f75eaf78e0da7e23ef84471aaa7331f0d8de6e2",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false
+  },
+  "qwopus-27b-4bit": {
+    "hf_path": "Jackrong/MLX-Qwopus3.5-27B-v3-4bit",
+    "revision": "d399209470abffa6b45678c53a910f869b18b2f2",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false
+  },
+  "muse-glimmer-30b-bf16": {
+    "hf_path": "mlx-community/Muse-Glimmer-30B-bf16",
+    "revision": "904079a1a494209b7b3bbd5f9eff1f36228398df",
+    "is_text_only": true,
+    "tool_call_parser": "muse",
+    "reasoning_parser": "muse",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "min_memory_gb": 96
+  },
+  "nemotron-30b-4bit": {
+    "hf_path": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
+    "revision": "543873e66e36362182738b0d2863a766728045aa",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "is_moe": true
+  },
+  "nemotron-labs-diffusion-3b-4bit": {
+    "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+    "revision": "5fd1ad4bcbd02a3fd489ec6e87059e072118548c",
+    "supports_spec_decode": true,
+    "is_hybrid": false
+  },
+  "vibethinker-1.5b-4bit": {
+    "hf_path": "mlx-community/VibeThinker-1.5B-mlx-4bit",
+    "revision": "2c092d732009cb3a2dd4871456c0f1c4e3c0ccec",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "vibethinker",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95
+    }
+  },
+  "vibethinker-3b-8bit": {
+    "hf_path": "mlx-community/VibeThinker-3B-8bit",
+    "revision": "8c33007d8c61ac21aad443c4663d256ce5cca4ae",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "vibethinker",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95
+    }
+  },
+  "granite-4.2-30b-8bit": {
+    "hf_path": "ibm-granite/granite-4.2-30b-q8-mlx",
+    "revision": "5fa24cd75b3aaaf5a59ef9e343f7bd4ebbf74860",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-8b-8bit": {
+    "hf_path": "ibm-granite/granite-4.2-8b-q8-mlx",
+    "revision": "a60999a162a4799c52a7bd6ec65c780d6138cfcf",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-3b-8bit": {
+    "hf_path": "ibm-granite/granite-4.2-3b-q8-mlx",
+    "revision": "8e19ac6574124635eb8fbd06a15d05ebbfff82dd",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "nanbeige4.1-3b-4bit": {
+    "hf_path": "mlx-community/Nanbeige4.1-3B-4bit",
+    "revision": "4d6c41d88f1416777bbda005aad92798e56e5ba9",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "deepseek_r1",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "phi-3.5-mini-4bit": {
+    "hf_path": "mlx-community/Phi-3.5-mini-instruct-4bit",
+    "revision": "7b2052fd882fe017300d4d42a4eb06a27b816af4",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "cogvideox-fun-5b-q8": {
+    "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
+    "revision": "087fbb62e1d9949f8bd5c81f2d9f66d3638a7e24",
+    "modality": "video-gen",
+    "video_modes": [
+      "text-to-video"
+    ],
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 24
+  },
+  "cogvideox-fun-5b-bf16": {
+    "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
+    "revision": "1e13912e22112cd4407b769116b39b92f424c6d5",
+    "modality": "video-gen",
+    "video_modes": [
+      "text-to-video"
+    ],
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 32
+  },
+  "wan2.2-ti2v-5b-bf16": {
+    "hf_path": "rickylin20260522/Wan2.2-TI2V-5B-mlx",
+    "revision": "592b2473f27cd6f466cdd9f2c0f5750a77b37b59",
+    "modality": "video-gen",
+    "video_modes": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 40
+  },
+  "flux2-klein-4b-bf16": {
+    "hf_path": "mflux-community/flux2-klein-4b-mflux-bf16",
+    "revision": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 32
+  },
+  "ui-tars-1.5-7b-4bit": {
+    "hf_path": "mlx-community/UI-TARS-1.5-7B-4bit",
+    "revision": "cca0e360e25322cdf480cf841e301b6d55bce9e0",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-1.5-7b-6bit": {
+    "hf_path": "mlx-community/UI-TARS-1.5-7B-6bit",
+    "revision": "8d6f3cd8ccbdbd9922c0675069f4ea871c3d73d9",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-1.5-7b-8bit": {
+    "hf_path": "mlx-community/UI-TARS-1.5-7B-8bit",
+    "revision": "ac86addd9b9908d8134f11416d1de17a12f708d6",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-dpo-4bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-DPO-4bit",
+    "revision": "11a4a389a4db746c059e9aff83b4c32fd6e88728",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-dpo-6bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-DPO-6bit",
+    "revision": "bf64dfcb78b830eda5986fc7d2430a5e95cdf8ff",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-dpo-8bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-DPO-8bit",
+    "revision": "5d4d06d590848fafe2192865f4d4d27b525e3842",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-sft-4bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-SFT-4bit",
+    "revision": "ee15331116bc98fb75f33cd7901fa5fdb3104555",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-sft-8bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-SFT-8bit",
+    "revision": "5f624ec5b26f6f2de69c874b0f48321f7c1860a8",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-72b-dpo-4bit": {
+    "hf_path": "mlx-community/UI-TARS-72B-DPO-4bit",
+    "revision": "3bc7e51f138b02d27d49a7a0438944ca6d2cbf83",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "holo3.1-35b-a3b": {
+    "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-4bit",
+    "revision": "5d70beb5ba973aa56f8fdf0c260b245e70d8fd6c",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "holo3.1-35b-a3b-8bit": {
+    "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit",
+    "revision": "f06241848a969d03a4e1275a64bf045eb93aa7fe",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "glm-5.2-reap50": {
+    "hf_path": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
+    "revision": "f01c14495d9ee40922602af2d63db35c019571b9",
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "glm4",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "lfm2-24b-a2b-4bit": {
+    "hf_path": "lmstudio-community/LFM2-24B-A2B-MLX-4bit",
+    "revision": "f86ea2ca24bcee27aa23f3552f199f3f92a48560",
+    "tool_call_parser": "lfm",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "supports_spec_decode": false,
+    "is_moe": true
+  },
+  "minicpm5-1b-optiq-4bit": {
+    "hf_path": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+    "revision": "935dd26f1ce9f3596d7ecd04014a704592b70dcc",
+    "tool_call_parser": "minicpm",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "ornith-1.5-9b-bf16": {
+    "hf_path": "ornith-ai/Ornith-1.5-9B-MLX",
+    "revision": "b6a99985f4e3abf23a5a2ae056a46359e1054f8d",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "ornith-1.5-35b-a3b-bf16": {
+    "hf_path": "ornith-ai/Ornith-1.5-35B-A3B-MLX",
+    "revision": "1713baf2e38984a3c557195caf167759144d1d7e",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false
+  }
+}

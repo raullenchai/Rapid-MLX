@@ -89,7 +89,7 @@ struct ModelPickerVisibilityTests {
     func vibethinker15bShown() {
         #expect(
             ModelPickerVisibility.shouldShow(
-                alias: "vibethinker-1.5b-4bit",
+                alias: "qwen3-1.7b-4bit",
                 selectedAlias: "",
                 includeAll: false
             ) == true
@@ -127,7 +127,7 @@ struct ModelPickerVisibilityTests {
         // The parser MUST return nil; the visibility check MUST then
         // default to true.
         let parseMisses = [
-            "phi-3.5-mini-4bit",       // no N-b / N-m token outside the bit-width
+            "phi-4-mini-4bit",       // no N-b / N-m token outside the bit-width
             "my-custom-alias",
             "x",
             "gemma3n",                 // 3n is digits-letter but not b / m
@@ -213,7 +213,7 @@ struct ModelPickerVisibilityTests {
         )
     }
 
-    @Test("minimax-m2.7-mxfp4 / minimax-m2.5-4bit: 'm' is the family-version letter, NOT a million suffix — parse miss → shown (codex r2 MINOR pin)")
+    @Test("minimax-m2.7-mxfp4 / minimax-m2.7-mxfp4: 'm' is the family-version letter, NOT a million suffix — parse miss → shown (codex r2 MINOR pin)")
     func minimaxFamilyLetterNotMillionSuffix() {
         // The regex is number-then-suffix (`\d+(\.\d+)?[mM]\b`), so
         // `m2.7` (suffix-then-number) is correctly NOT matched. The
@@ -224,7 +224,7 @@ struct ModelPickerVisibilityTests {
         // suffix-then-number matching (`m\d+(\.\d+)?`) doesn't
         // silently mis-classify these aliases as 2.7B → 2.5B → 2B
         // and break the family-letter convention.
-        for alias in ["minimax-m2.7-mxfp4", "minimax-m2.5-4bit"] {
+        for alias in ["minimax-m2.7-mxfp4", "minimax-m2.7-mxfp4"] {
             #expect(
                 ModelPickerVisibility.parseSmallestParamsBillions(alias) == nil,
                 "alias \(alias) should NOT parse to a size — 'm' is the family letter, not a million suffix"
@@ -385,7 +385,7 @@ struct ModelPickerVisibilityTests {
             ("llama3-1b-4bit", .small),
             ("gemma3-1b-qat-4bit", .small),
             // 1.5B / 1.7B → small
-            ("vibethinker-1.5b-4bit", .small),
+            ("qwen3-1.7b-4bit", .small),
             ("bonsai-1.7b-unpacked", .small),
             // == 3.0B → midOrLarger (cycle-11 strict upper bound —
             // 3B is desktop-viable for llama-family chat per cycle-10
@@ -465,9 +465,9 @@ struct ModelPickerVisibilityTests {
         }
     }
 
-    @Test("Parse-failure alias falls into midOrLarger (no sticker) — phi-3.5-mini-4bit is 3.8B in reality but the alias carries no size token")
+    @Test("Parse-failure alias falls into midOrLarger (no sticker) — phi-4-mini-4bit is 3.8B in reality but the alias carries no size token")
     func qualityBucketParseFailureMidOrLarger() {
-        // phi-3.5-mini-4bit's HF card shows ~3.8B params but the
+        // phi-4-mini-4bit's HF card shows ~3.8B params but the
         // alias string only carries "3.5" (the version) and "4bit"
         // (the quant). The two-pass parser doesn't see a `\d+b\b`
         // token — `4bit` ends in `t` so `b\b` fails — and returns
@@ -477,7 +477,7 @@ struct ModelPickerVisibilityTests {
         // future upstream rename adds "3.8b" to the alias the bucket
         // will flip to .midOrLarger anyway via the > 3.0 branch.
         #expect(
-            ModelPickerVisibility.qualityBucket(for: "phi-3.5-mini-4bit")
+            ModelPickerVisibility.qualityBucket(for: "phi-4-mini-4bit")
                 == .midOrLarger
         )
         // Custom HF repo with no size token at all → midOrLarger

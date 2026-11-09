@@ -67,15 +67,18 @@ class TestAliases:
     @pytest.mark.parametrize(
         "alias,hf_path",
         [
-            ("ui-tars-1.5-7b-4bit", "mlx-community/UI-TARS-1.5-7B-4bit"),
-            ("ui-tars-1.5-7b-6bit", "mlx-community/UI-TARS-1.5-7B-6bit"),
-            ("ui-tars-1.5-7b-8bit", "mlx-community/UI-TARS-1.5-7B-8bit"),
-            ("ui-tars-7b-dpo-4bit", "mlx-community/UI-TARS-7B-DPO-4bit"),
-            ("ui-tars-7b-dpo-6bit", "mlx-community/UI-TARS-7B-DPO-6bit"),
-            ("ui-tars-7b-dpo-8bit", "mlx-community/UI-TARS-7B-DPO-8bit"),
-            ("ui-tars-7b-sft-4bit", "mlx-community/UI-TARS-7B-SFT-4bit"),
-            ("ui-tars-7b-sft-8bit", "mlx-community/UI-TARS-7B-SFT-8bit"),
-            ("ui-tars-72b-dpo-4bit", "mlx-community/UI-TARS-72B-DPO-4bit"),
+            ("mlx-community/UI-TARS-1.5-7B-4bit", "mlx-community/UI-TARS-1.5-7B-4bit"),
+            ("mlx-community/UI-TARS-1.5-7B-6bit", "mlx-community/UI-TARS-1.5-7B-6bit"),
+            ("mlx-community/UI-TARS-1.5-7B-8bit", "mlx-community/UI-TARS-1.5-7B-8bit"),
+            ("mlx-community/UI-TARS-7B-DPO-4bit", "mlx-community/UI-TARS-7B-DPO-4bit"),
+            ("mlx-community/UI-TARS-7B-DPO-6bit", "mlx-community/UI-TARS-7B-DPO-6bit"),
+            ("mlx-community/UI-TARS-7B-DPO-8bit", "mlx-community/UI-TARS-7B-DPO-8bit"),
+            ("mlx-community/UI-TARS-7B-SFT-4bit", "mlx-community/UI-TARS-7B-SFT-4bit"),
+            ("mlx-community/UI-TARS-7B-SFT-8bit", "mlx-community/UI-TARS-7B-SFT-8bit"),
+            (
+                "mlx-community/UI-TARS-72B-DPO-4bit",
+                "mlx-community/UI-TARS-72B-DPO-4bit",
+            ),
         ],
     )
     def test_alias_resolves_to_ui_tars_parsers(self, alias: str, hf_path: str):
@@ -869,7 +872,7 @@ class TestAnthropicAdapter:
             id="chatcmpl-test",
             object="chat.completion",
             created=0,
-            model="ui-tars-1.5-7b-4bit",
+            model="mlx-community/UI-TARS-1.5-7B-4bit",
             choices=[
                 ChatCompletionChoice(
                     index=0,
@@ -888,7 +891,7 @@ class TestAnthropicAdapter:
 
         text = "Thought: Click search.\nAction: click(point='<point>200 300</point>')"
         openai_resp = self._to_openai_choice(text)
-        anth = openai_to_anthropic(openai_resp, "ui-tars-1.5-7b-4bit")
+        anth = openai_to_anthropic(openai_resp, "mlx-community/UI-TARS-1.5-7B-4bit")
         tool_use_blocks = [b for b in anth.content if b.type == "tool_use"]
         assert len(tool_use_blocks) == 1
         tu = tool_use_blocks[0]
@@ -906,7 +909,7 @@ class TestAnthropicAdapter:
             "Action: type(content='hi')"
         )
         openai_resp = self._to_openai_choice(text)
-        anth = openai_to_anthropic(openai_resp, "ui-tars-1.5-7b-4bit")
+        anth = openai_to_anthropic(openai_resp, "mlx-community/UI-TARS-1.5-7B-4bit")
         tool_use_blocks = [b for b in anth.content if b.type == "tool_use"]
         assert len(tool_use_blocks) == 2
         assert tool_use_blocks[0].input["action"] == "click"

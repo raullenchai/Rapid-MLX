@@ -211,6 +211,7 @@ def test_runtime_asset_selections_with_pins(monkeypatch, tmp_path):
     (tmp_path / "rapid_mlx/models/deepseek_v41_native").mkdir(parents=True)
     (tmp_path / "scripts").mkdir()
     (tmp_path / "rapid_mlx/aliases.json").write_text("{}")
+    (tmp_path / "rapid_mlx/repo_profiles.json").write_text("{}")
     (tmp_path / "rapid_mlx/audio/aliases.json").write_text(
         json.dumps(
             {

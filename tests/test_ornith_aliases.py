@@ -25,8 +25,8 @@ from __future__ import annotations
 from rapid_mlx.model_aliases import list_profiles, resolve_profile
 from rapid_mlx.model_auto_config import detect_model_config
 
-ORNITH_9B = "ornith-1.5-9b-bf16"
-ORNITH_35B = "ornith-1.5-35b-a3b-bf16"
+ORNITH_9B = "ornith-ai/Ornith-1.5-9B-MLX"
+ORNITH_35B = "ornith-ai/Ornith-1.5-35B-A3B-MLX"
 ORNITH_9B_HF = "ornith-ai/Ornith-1.5-9B-MLX"
 ORNITH_35B_HF = "ornith-ai/Ornith-1.5-35B-A3B-MLX"
 
@@ -68,8 +68,10 @@ def test_ornith_aliases_are_registered():
     orphan checks in ``test_model_profiles_ssot.py`` also cover this, but a
     non-existent alias resolving to ``None`` here is the sharpest signal)."""
     profiles = list_profiles()
-    assert ORNITH_9B in profiles
-    assert ORNITH_35B in profiles
+    assert ORNITH_9B not in profiles
+    assert resolve_profile(ORNITH_9B) is not None
+    assert ORNITH_35B not in profiles
+    assert resolve_profile(ORNITH_35B) is not None
 
 
 # ---- detect_model_config routing ---------------------------------------
@@ -146,8 +148,7 @@ def test_ornith_size_marker_substrings_do_not_match_family_fallback():
 def test_ornith_hf_path_markers_match_classification():
     """Sanity: the alias the JSON marks hybrid/MoE must point at an A3B repo,
     and the non-hybrid one at a repo without an MoE marker."""
-    profiles = list_profiles()
-    assert "a3b" in profiles[ORNITH_35B].hf_path.lower()
+    assert "a3b" in resolve_profile(ORNITH_35B).hf_path.lower()
     assert not any(
-        m in profiles[ORNITH_9B].hf_path.lower() for m in ("a3b", "a10b", "moe")
+        m in resolve_profile(ORNITH_9B).hf_path.lower() for m in ("a3b", "a10b", "moe")
     )

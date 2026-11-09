@@ -164,7 +164,7 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
     }
 
     static let registeredWanAliases: Set<String> = [
-        "wan2.2-t2v-a14b-bf16", "wan2.2-ti2v-5b-bf16", "wan2.2-ti2v-5b-q8"
+        "wan2.2-t2v-a14b-bf16", "rickylin20260522/Wan2.2-TI2V-5B-mlx", "wan2.2-ti2v-5b-q8"
     ]
 
     static func models(

@@ -35,7 +35,7 @@ must run their own exact-artifact matrix.
 | `bonsai-image-4b-2bit` | `prism-ml/bonsai-image-ternary-4B-mlx-2bit` | `2c24c81b934a658ba5590cf39088ba929985b4a8` | 3,888,262,196 |
 | `flux-schnell` | `mflux-community/flux-1-schnell-mflux-q4` | `bcdbe817ad51175959b2e691e64eca626db30558` | 9,613,040,056 |
 | `flux2-klein-4b` | `Runpod/FLUX.2-klein-4B-mflux-4bit` | `7ee1b3aa8178a1240050490072196a57da2bf2a9` | 4,619,695,783 |
-| `flux2-klein-4b-bf16` | `mflux-community/flux2-klein-4b-mflux-bf16` | `4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67` | 15,975,684,703 |
+| `mflux-community/flux2-klein-4b-mflux-bf16` | `mflux-community/flux2-klein-4b-mflux-bf16` | `4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67` | 15,975,684,703 |
 | `hidream-o1-dev` | `mlx-community/HiDream-O1-Image-Dev-mlx-bf16` | `33c7a00bce8e3410304f83ec408a15a1eb6782df` | 17,649,873,024 |
 | `qwen-image` | `mflux-community/qwen-image-mflux-q6` | `c628fe4392d963557c3013c2709e6d3b67bca79d` | 31,013,313,085 |
 | `qwen-image-edit` | `OsaurusAI/Qwen-Image-Edit-mflux-q8` | `a458969f2a612433cf036bfc3d8d818ceba29fab` | 37,472,689,129 |
@@ -65,7 +65,7 @@ PNG of the expected dimensions.
 | `bonsai-image-4b-2bit` | Generate | 14.18 | 11.36 | 1/4 | 11.44 | 12.31 | 3.73 |
 | `flux-schnell` | Generate | 28.05 | 20.43 | 1/4 | 20.40 | 21.25 | 10.17 |
 | `flux2-klein-4b` | Generate + edit | 10.27 | 9.03 | 1/4 | 9.02 | 9.81 | 7.14 |
-| `flux2-klein-4b-bf16` | Generate + edit | 24.58 | 8.92 | 1/4 | 8.93 | 9.74 | 22.71 |
+| `mflux-community/flux2-klein-4b-mflux-bf16` | Generate + edit | 24.58 | 8.92 | 1/4 | 8.93 | 9.74 | 22.71 |
 | `hidream-o1-dev` | Generate | 29.40 | 26.15 | 1/28 | 26.15 | 27.22 | 18.43 |
 | `qwen-image` | Generate | 216.95 | 212.79 | 1/20 | 212.69 | 216.05 | 31.53 |
 | `qwen-image-edit` | Edit | 168.54 | 166.17 | 1/20 | 165.73 | 167.05 | 38.07 |

@@ -17,6 +17,23 @@ can actually understand.
 
 ## [Unreleased]
 
+### Deprecated model names
+
+The following 44 curated short names are deprecated and hidden from model discovery.
+For this release they still work with a warning; use `rapid-mlx serve ORG/REPO`
+with the corresponding Hugging Face repo ID instead. Repo execution profiles,
+revision pins, parsers and capability settings are unchanged.
+
+- `k2-horizon-7b-4bit`, `north-mini-code-bf16`, `tmax-9b-6bit`, `tmax-9b-8bit`, `tmax-9b-bf16`.
+- `tmax-27b`, `tmax-27b-6bit`, `tmax-27b-8bit`, `llama-3.1-8b-8bit`, `hermes3-8b-4bit`.
+- `glm4.5-air-4bit`, `minimax-m2.5-4bit`, `qwopus-9b-4bit`, `qwopus-27b-4bit`, `muse-glimmer-30b-bf16`.
+- `nemotron-30b-4bit`, `nemotron-labs-diffusion-3b-4bit`, `vibethinker-1.5b-4bit`, `vibethinker-3b-8bit`, `granite-4.2-30b-8bit`.
+- `granite-4.2-8b-8bit`, `granite-4.2-3b-8bit`, `nanbeige4.1-3b-4bit`, `phi-3.5-mini-4bit`, `cogvideox-fun-5b-q8`.
+- `cogvideox-fun-5b-bf16`, `wan2.2-ti2v-5b-bf16`, `flux2-klein-4b-bf16`, `ui-tars-1.5-7b-4bit`, `ui-tars-1.5-7b-6bit`.
+- `ui-tars-1.5-7b-8bit`, `ui-tars-7b-dpo-4bit`, `ui-tars-7b-dpo-6bit`, `ui-tars-7b-dpo-8bit`, `ui-tars-7b-sft-4bit`.
+- `ui-tars-7b-sft-8bit`, `ui-tars-72b-dpo-4bit`, `holo3.1-35b-a3b`, `holo3.1-35b-a3b-8bit`, `glm-5.2-reap50`.
+- `lfm2-24b-a2b-4bit`, `minicpm5-1b-optiq-4bit`, `ornith-1.5-9b-bf16`, `ornith-1.5-35b-a3b-bf16`.
+
 ## [1.0.2] — 2026-11-05
 
 Desktop adds video with audio and references, video cancellation, idle chat-model unloading, a faster first run and adding models from Hugging Face links, with clearer model choices and improved Chinese localization and accessibility.
@@ -370,7 +387,7 @@ Rapid-MLX 0.15.7 adds native text and code embeddings, improves local agent setu
 
 ### Model catalog
 
-- `qwopus-27b-8bit` is retired because its upstream repository is unavailable; use `qwopus-27b-4bit`.
+- `qwopus-27b-8bit` is retired because its upstream repository is unavailable; use `Jackrong/MLX-Qwopus3.5-27B-v3-4bit`.
 - `qwen3.8-27b-abliterated-4bit` follows the publisher’s relocated oQ4e build.
 
 ### Fixed

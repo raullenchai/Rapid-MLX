@@ -4239,7 +4239,7 @@ Your previous draft refused the question by claiming you lack real-time access o
                     case .realCompletion:
                         // Cycle-13 (2026-06-20) F-5: verbose-output
                         // length-truncation badge. A non-reasoning
-                        // dense model (nemotron-30b-4bit and similar)
+                        // dense model (lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit and similar)
                         // that exhausts ``max_tokens`` mid-answer
                         // lands here as ``.realCompletion`` because
                         // ``content`` is non-empty — but the body the

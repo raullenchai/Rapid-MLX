@@ -2,7 +2,7 @@
 """R-10 — boot-time guard for UI-TARS / VLM aliases when ``mlx-vlm`` missing.
 
 PyPI 0.8.6 dogfood: a first-time ``pip install rapid-mlx`` user (no
-``[vision]`` extra) running ``rapid-mlx serve ui-tars-1.5-7b-4bit``
+``[vision]`` extra) running ``rapid-mlx serve mlx-community/UI-TARS-1.5-7B-4bit``
 crashed deep inside the engine's MLLM load path with a confusing
 ``ImportError: No module named 'mlx_vlm'`` traceback — minutes of
 wall-clock noise (alias resolution + weight download via the R2
@@ -92,13 +92,13 @@ def test_require_mlx_vlm_or_exit_raises_typed_actionable_failure(monkeypatch):
     _mask_mlx_vlm(monkeypatch)
 
     with pytest.raises(OptionalRuntimeMissing) as exc_info:
-        require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+        require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
 
     err = exc_info.value.format_user_message()
     # User-facing hint must include the canonical install command,
     # the offending model name, and a "vision" marker so the message
     # is searchable in support threads.
-    assert "ui-tars-1.5-7b-4bit" in err, (
+    assert "mlx-community/UI-TARS-1.5-7B-4bit" in err, (
         f"hint must name the offending model id, got: {err!r}"
     )
     assert "rapid-mlx==" in err, (
@@ -121,7 +121,7 @@ def test_require_mlx_vlm_or_exit_is_noop_when_installed(monkeypatch):
     )
 
     # Must not raise SystemExit.
-    require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+    require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
 
 
 def test_engine_side_require_mlx_vlm_raises_typed_failure(

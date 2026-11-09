@@ -553,10 +553,13 @@ def _get_json(url: str) -> Any:
 
 def _load_aliases(main_path: Path, audio_path: Path) -> list[AliasSpec]:
     specs: list[AliasSpec] = []
-    for path, key, source in (
-        (main_path, "hf_path", "main"),
-        (audio_path, "hf_id", "audio"),
-    ):
+    # Repo profiles keep pinned execution metadata for retired alias names,
+    # so their repositories stay under mirror drift coverage.
+    repo_profiles_path = main_path.with_name("repo_profiles.json")
+    catalogs = [(main_path, "hf_path", "main"), (audio_path, "hf_id", "audio")]
+    if repo_profiles_path.exists():
+        catalogs.insert(1, (repo_profiles_path, "hf_path", "main"))
+    for path, key, source in catalogs:
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict):
             raise ValueError(f"{path} must contain a JSON object")

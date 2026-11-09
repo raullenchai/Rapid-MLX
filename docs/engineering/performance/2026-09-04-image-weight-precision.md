@@ -62,7 +62,7 @@ Rapid-MLX therefore exposes an opt-in path while preserving existing behavior:
 ```bash
 rapid-mlx serve flux2-klein-4b --image-weight-precision bf16
 # Equivalent explicit alias:
-rapid-mlx serve flux2-klein-4b-bf16
+rapid-mlx serve mflux-community/flux2-klein-4b-mflux-bf16
 ```
 
 The bf16 alias uses the pinned, mflux-layout

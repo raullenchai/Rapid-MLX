@@ -31,7 +31,7 @@ _FLUX2_KLEIN_SOURCES = frozenset(
 
 
 def resolve_image_weight_precision(model_name: str, precision: str) -> str:
-    """Return the curated alias for an explicit image precision request.
+    """Return the checkpoint reference for an explicit image precision request.
 
     Only FLUX.2 Klein has an end-to-end q4/bf16 qualification today (#3058).
     Refusing other families prevents a seemingly generic flag from silently
@@ -59,7 +59,7 @@ def resolve_image_weight_precision(model_name: str, precision: str) -> str:
             "not completed the q4/bf16 qualification"
         )
     return (
-        FLUX2_KLEIN_BF16_ALIAS
+        FLUX2_KLEIN_BF16_REPO
         if normalized_precision == "bf16"
         else FLUX2_KLEIN_Q4_ALIAS
     )

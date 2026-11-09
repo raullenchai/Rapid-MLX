@@ -478,7 +478,7 @@ enum ModelSizing {
     // MARK: - Alias parsers
 
     /// Extract the parameter count in billions from an alias.
-    /// Handles ``qwen3.6-27b``, ``llama-3.1-8b-8bit``, ``smollm3-3b``,
+    /// Handles ``qwen3.6-27b``, ``mlx-community/Meta-Llama-3.1-8B-Instruct-8bit``, ``smollm3-3b``,
     /// ``gemma-4-12b-qat`` — pulls the largest number followed by ``b``.
     /// Compiled once. ``NSRegularExpression(pattern:)`` runs a full ICU
     /// pattern compile on every call, and this is reached once per alias per

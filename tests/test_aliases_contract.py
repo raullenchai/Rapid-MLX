@@ -120,7 +120,16 @@ def _raw_aliases() -> dict[str, dict | str]:
     """Return the raw JSON, not the coerced profiles — we need to see
     unexpected keys before ``_coerce`` drops them on the floor."""
     path = Path(__file__).resolve().parents[1] / "rapid_mlx" / "aliases.json"
-    return json.loads(path.read_text())
+    aliases = json.loads(path.read_text())
+    repo_rows = json.loads(path.with_name("repo_profiles.json").read_text())
+    return aliases | {v["hf_path"]: v for k, v in repo_rows.items() if k != "_comment"}
+
+
+def _execution_profiles():
+    """Exercise the same schema and capabilities for both registry stores."""
+    from rapid_mlx.model_aliases import _load_repo_profiles
+
+    return list_profiles() | {p.hf_path: p for p in _load_repo_profiles().values()}
 
 
 def _alias_ids() -> list[str]:
@@ -143,7 +152,7 @@ def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
     """The published M1 artifact stays explicit and Ultra-class only."""
 
     alias = "qwen3.8-flash-next-4bit"
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
 
     assert profile.hf_path == "rapid-mlx/Qwen3.8-Flash-Next-4bit"
     assert profile.experimental is True
@@ -165,7 +174,7 @@ def test_neohorse_9b_alias_is_experimental_text_only_and_conservative() -> None:
     """NeoHorse ships as an opt-in Chat candidate without borrowed speedups."""
 
     alias = "neohorse-9b-4bit"
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
 
     assert profile.hf_path == "rapid-mlx/NeoHorse-1-9B-MLX-4bit"
     assert profile.modality == "text"
@@ -191,8 +200,8 @@ def test_neohorse_9b_alias_is_experimental_text_only_and_conservative() -> None:
 def test_k2_horizon_7b_alias_uses_rapid_native_runtime_contract() -> None:
     """K2 stays opt-in and binds only its reviewed IFM protocol handlers."""
 
-    alias = "k2-horizon-7b-4bit"
-    profile = list_profiles()[alias]
+    alias = "abenzerps/K2-Horizon-7B-MLX-4bit"
+    profile = _execution_profiles()[alias]
 
     assert profile.hf_path == "abenzerps/K2-Horizon-7B-MLX-4bit"
     assert profile.modality == "text"
@@ -218,7 +227,7 @@ def test_k2_horizon_7b_alias_uses_rapid_native_runtime_contract() -> None:
 def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
     """Every shipped 27B checkpoint uses the same native XML tool template."""
 
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     for alias in (
         "qwen3.8-27b-4bit",
         "qwen3.8-27b-4bit-fp16",
@@ -234,7 +243,7 @@ def test_bonsai2_27b_pins_the_published_multimodal_contract() -> None:
     """Bonsai 2 uses named XML tools and its published sampling defaults."""
 
     alias = "bonsai2-27b-2bit"
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
 
     assert profile.hf_path == "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
     assert profile.supports_image_input is True
@@ -257,7 +266,7 @@ def test_qwen38_27b_abliterated_alias_is_scoped_and_conservative() -> None:
     """The research checkpoint loads one build and borrows no base drafter."""
 
     alias = "qwen3.8-27b-abliterated-4bit"
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
 
     assert profile.hf_path == ("windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp")
     assert profile.subfolder is None
@@ -336,7 +345,7 @@ def test_native_mtp_alias_metadata_is_strict_and_unambiguous() -> None:
 def test_flash_next_native_mtp_capability_label_is_opt_in() -> None:
     from rapid_mlx.model_auto_config import _mtp_path_label
 
-    profile = list_profiles()["qwen3.8-flash-next-4bit"]
+    profile = _execution_profiles()["qwen3.8-flash-next-4bit"]
 
     assert (
         _mtp_path_label("qwen3.8-flash-next-4bit", profile)
@@ -357,7 +366,7 @@ def test_experimental_alias_flag_requires_a_boolean(bad_value) -> None:
 
 def test_agentic_coverage_metadata_loads_and_preserves_defaults() -> None:
     """The normal catalog loader retains the G12 capability metadata."""
-    profiles = list_profiles()
+    profiles = _execution_profiles()
 
     assert profiles["deepseek-r1-8b-4bit"].agentic_coverage is False
     assert profiles["qwen3.5-9b-4bit"].agentic_coverage is True
@@ -377,10 +386,10 @@ def test_agentic_coverage_alias_flag_requires_a_boolean(bad_value) -> None:
 
 def test_minicpm5_aliases_pin_the_verified_native_xml_contract() -> None:
     """Every curated MiniCPM5 artifact shares its native XML wire format."""
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     expected_paths = {
         "minicpm5-1b-4bit": "openbmb/MiniCPM5-1B-MLX",
-        "minicpm5-1b-optiq-4bit": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+        "mlx-community/MiniCPM5-1B-OptiQ-4bit": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
         "minicpm5-2b-4bit": "openbmb/MiniCPM5-2B-MLX",
     }
     for alias, expected_path in expected_paths.items():
@@ -407,7 +416,7 @@ def test_alias_hf_path_is_org_slash_repo(alias: str) -> None:
     """Every alias must point at an ``org/repo`` style path. Loose paths
     silently break HF download — the user sees a confusing 404 from
     ``huggingface_hub`` rather than "you typed the alias wrong"."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     assert "/" in profile.hf_path, (
         f"{alias}: hf_path {profile.hf_path!r} is missing '/' separator. "
         f"Use 'org/repo' format (e.g. 'mlx-community/Qwen3.5-4B-MLX-4bit')."
@@ -446,7 +455,7 @@ def test_alias_tool_parser_is_registered(alias: str) -> None:
     ``"hermess"`` silently produces a model that emits tool calls the
     server can't parse, and there's no startup error today — the user
     just sees no tool_calls in their response."""
-    parser = list_profiles()[alias].tool_call_parser
+    parser = _execution_profiles()[alias].tool_call_parser
     if parser is None:
         return
     valid = _registered_tool_parsers()
@@ -461,7 +470,7 @@ def test_alias_reasoning_parser_is_registered(alias: str) -> None:
     """Same contract as the tool parser — a typo'd reasoning_parser
     silently makes ``<think>...</think>`` blocks flow into the user-visible
     content."""
-    parser = list_profiles()[alias].reasoning_parser
+    parser = _execution_profiles()[alias].reasoning_parser
     if parser is None:
         return
     valid = _registered_reasoning_parsers()
@@ -491,7 +500,7 @@ def test_nemotron_3_5_lightning_profile() -> None:
     - ``is_hybrid`` / ``is_moe`` true and ``supports_spec_decode`` false — a
       Mamba/attention mix breaks the spec-decode drafter state.
     """
-    profile = list_profiles()["nemotron-3.5-lightning-30b-4bit"]
+    profile = _execution_profiles()["nemotron-3.5-lightning-30b-4bit"]
     assert profile.hf_path == "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
     assert profile.tool_call_parser == "nemotron"
     assert profile.reasoning_parser == "qwen3"
@@ -510,7 +519,7 @@ def test_hybrid_disables_spec_decode(alias: str) -> None:
     Granite4 all have ``is_hybrid=true`` and ``supports_spec_decode=false``.
     Mixing these silently caused failed boots in past PRs.
     """
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.is_hybrid:
         assert not profile.supports_spec_decode, (
             f"{alias}: is_hybrid=True but supports_spec_decode=True — "
@@ -530,7 +539,7 @@ def test_alias_suffix_tier_value_is_in_enum(alias: str) -> None:
     Typing ``"god"`` (typo for ``"good"``) today silently flows through
     as a string — the CLI startup hint and any future filtering would
     treat it as ``unknown`` without a warning."""
-    tier = list_profiles()[alias].suffix_decoding_tier
+    tier = _execution_profiles()[alias].suffix_decoding_tier
     assert tier in VALID_SUFFIX_TIERS, (
         f"{alias}: suffix_decoding_tier={tier!r} not in "
         f"{sorted(VALID_SUFFIX_TIERS)}. Did you misspell it?"
@@ -544,7 +553,7 @@ def test_alias_suffix_bench_consistency(alias: str) -> None:
     decision is required. Conversely, ``tier`` ∉ {``"unknown"``} requires
     bench data so the decision is justified (no editorial classification
     without evidence)."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     has_bench = profile.suffix_bench_speedup is not None
     is_unknown = profile.suffix_decoding_tier == "unknown"
     if has_bench:
@@ -583,7 +592,7 @@ def test_alias_pflash_tier_value_is_in_enum(alias: str) -> None:
     contract at PR review time so the rejection isn't only an integration-
     test failure.
     """
-    tier = list_profiles()[alias].pflash_tier
+    tier = _execution_profiles()[alias].pflash_tier
     assert tier in VALID_PFLASH_TIERS, (
         f"{alias}: pflash_tier={tier!r} not in "
         f"{sorted(VALID_PFLASH_TIERS)}. Did you misspell it?"
@@ -610,7 +619,7 @@ def test_pflash_verified_aliases_are_qwen35_or_qwen36() -> None:
     is NOT recall-safe at the 0.20 default, so bare-verifying it would ship a
     silent mid-prompt-recall regression.
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     verified = sorted(a for a, p in profiles.items() if p.pflash_tier == "verified")
     # Positive control: at least one verified alias exists (otherwise the
     # test would trivially pass and the intent would silently rot).
@@ -762,7 +771,7 @@ def test_dflash_requires_drafter(alias: str) -> None:
     """If ``supports_dflash=True``, ``dflash_draft_model`` MUST be set.
     A half-populated DFlash alias would silently fall back to AR at
     server-start time and look like an unexplained perf regression."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.supports_dflash:
         assert profile.dflash_draft_model, (
             f"{alias}: supports_dflash=True but dflash_draft_model is empty"
@@ -789,7 +798,7 @@ def test_dflash_excludes_moe_architectures(alias: str) -> None:
     regardless of precision — DFlash drafters' hidden-state fusion
     misfires on expert-routing churn (accept_len floors at ~1.5).
     Re-enabling this combination would ship the regression to users."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.is_moe:
         assert not profile.supports_dflash, (
             f"{alias}: is_moe=True but supports_dflash=True — DFlash "
@@ -803,7 +812,7 @@ def test_dflash_excludes_moe_architectures(alias: str) -> None:
 def test_dflash_4bit_precision_requires_dflash2_qualification(alias: str) -> None:
     """Legacy DFlash remains blocked on 4-bit; a separately qualified
     DFlash2 pair may opt in with an explicit runtime-identity receipt."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if not profile.supports_dflash:
         return
     hf = profile.hf_path
@@ -840,7 +849,7 @@ def test_dflash_eligible_aliases_have_qualified_drafter_family() -> None:
             "meta-models/Muse-Glimmer-30B-assistant",
         )
     }
-    for alias, profile in list_profiles().items():
+    for alias, profile in _execution_profiles().items():
         if not profile.supports_dflash:
             continue
         d = profile.dflash_draft_model or ""
@@ -1000,7 +1009,7 @@ def test_qwen35_and_qwen36_vision_aliases_carry_the_same_memory_floor() -> None:
     ["mistral-24b-4bit", "devstral-24b-4bit", "devstral-v2-24b-4bit"],
 )
 def test_text_capable_mistral_vision_routes_do_not_overload_memory_floor(alias) -> None:
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     assert profile.vision_min_memory_gb is None
     assert profile.modality == "text"
     assert profile.is_text_only is False
@@ -1115,7 +1124,7 @@ def test_pflash_keep_ratio_requires_verified_tier() -> None:
 
 @pytest.mark.parametrize("alias", _alias_ids())
 def test_ddtree_requires_drafter_and_params(alias: str) -> None:
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.supports_ddtree:
         assert profile.ddtree_draft_model, (
             f"{alias}: supports_ddtree=True but ddtree_draft_model is empty"
@@ -1134,7 +1143,7 @@ def test_ddtree_requires_drafter_and_params(alias: str) -> None:
 
 @pytest.mark.parametrize("alias", _alias_ids())
 def test_ddtree_excludes_moe_architectures(alias: str) -> None:
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.is_moe:
         assert not profile.supports_ddtree, (
             f"{alias}: is_moe=True but supports_ddtree=True — DDTree verifier "
@@ -1144,7 +1153,7 @@ def test_ddtree_excludes_moe_architectures(alias: str) -> None:
 
 @pytest.mark.parametrize("alias", _alias_ids())
 def test_ddtree_excludes_4bit_precision_until_benched(alias: str) -> None:
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if not profile.supports_ddtree:
         return
     hf_lc = profile.hf_path.lower()
@@ -1157,7 +1166,7 @@ def test_ddtree_excludes_4bit_precision_until_benched(alias: str) -> None:
 
 
 def test_ddtree_eligible_aliases_have_dflash_drafter() -> None:
-    for alias, profile in list_profiles().items():
+    for alias, profile in _execution_profiles().items():
         if not profile.supports_ddtree:
             continue
         d = profile.ddtree_draft_model or ""
@@ -1185,7 +1194,7 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
     ``message.content``.
 
     Parser choice rationale:
-    - nemotron-30b-4bit/nano use a Qwen3-style template that
+    - lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit/nano use a Qwen3-style template that
       INJECTS ``<think>`` into the prompt (gated by ``enable_thinking``
       / ``thinking`` flag). ``qwen3`` parser's ``finalize_streaming``
       correction handles the "no </think> ever appeared → emit as
@@ -1194,9 +1203,9 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
       the model decides autonomously. Same contract as GLM-4 → reuse
       ``glm4`` parser (no-tags-yet → content semantics).
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     expected = {
-        "nemotron-30b-4bit": "qwen3",
+        "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit": "qwen3",
         "hermes4-70b-4bit": "glm4",
     }
     for alias, parser in expected.items():
@@ -1234,7 +1243,7 @@ def test_bonsai_ternary_alias_wiring() -> None:
     raw = _raw_aliases()
     alias = "bonsai-1.7b-2bit"
     assert alias in raw, f"{alias} missing from aliases.json"
-    p = list_profiles()[alias]
+    p = _execution_profiles()[alias]
     assert p.hf_path == "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit", (
         f"{alias}: must point at the ternary MLX-2bit repo, got {p.hf_path!r}."
     )
@@ -1261,7 +1270,7 @@ def test_bonsai_ternary_alias_wiring() -> None:
     # qwen3 reasoning parser.
     alias_8b = "bonsai-8b-2bit"
     assert alias_8b in raw, f"{alias_8b} missing from aliases.json"
-    p8 = list_profiles()[alias_8b]
+    p8 = _execution_profiles()[alias_8b]
     assert p8.hf_path == "prism-ml/Ternary-Bonsai-8B-mlx-2bit"
     assert p8.tool_call_parser == "hermes"
     assert p8.reasoning_parser == "qwen3"
@@ -1296,7 +1305,7 @@ def test_deepseek_v4_flash_family_wires_dedicated_reasoning_parser() -> None:
     Verified format source:
     https://huggingface.co/mlx-community/DeepSeek-V4-Flash-4bit/resolve/main/chat_template.jinja
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     family = [
         "deepseek-v4-flash-8bit",
         "deepseek-v4-flash-2bit",
@@ -1313,7 +1322,7 @@ def test_deepseek_v4_flash_family_wires_dedicated_reasoning_parser() -> None:
 
 @pytest.mark.parametrize(
     "alias",
-    ["vibethinker-1.5b-4bit", "vibethinker-3b-8bit"],
+    ["mlx-community/VibeThinker-1.5B-mlx-4bit", "mlx-community/VibeThinker-3B-8bit"],
 )
 def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> None:
     """VibeThinker (Weibo AI; 1.5B base = Qwen2.5-Math-1.5B, 3B base =
@@ -1340,7 +1349,7 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
     https://huggingface.co/mlx-community/VibeThinker-3B-8bit
     https://huggingface.co/mlx-community/VibeThinker-1.5B-mlx-4bit
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].reasoning_parser == "vibethinker", (
         f"{alias}: reasoning_parser must be 'vibethinker' — a DeepSeek-R1 "
@@ -1382,7 +1391,7 @@ def test_qwen3_4b_thinking_2507_wires_qwen3_reasoning_parser() -> None:
     ``test_qwen3_small_non_thinking_variants_have_no_reasoning_parser``
     for the fuzz-evidence rationale (PR #715 bundle).
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     alias = "qwen3-4b-thinking-2507-4bit"
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].tool_call_parser == "hermes", (
@@ -1431,7 +1440,7 @@ def test_qwen3_small_non_thinking_variants_have_no_reasoning_parser(
     Thinking-2507 sibling keeps the family parser (see
     ``test_qwen3_4b_thinking_2507_wires_qwen3_reasoning_parser``).
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].tool_call_parser == "hermes", (
         f"{alias}: tool_call_parser stays 'hermes' (the model can emit "
@@ -1460,7 +1469,7 @@ def test_granite4_h_micro_inherits_family_hybrid_gates() -> None:
     comment on the family regex), and the hybrid Mamba2 state breaks
     spec-decode drafters.
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     micro = profiles["granite4-h-micro-4bit"]
     tiny = profiles["granite4-tiny-4bit"]
     assert micro.tool_call_parser == tiny.tool_call_parser == "hermes", (
@@ -1481,7 +1490,7 @@ def test_granite4_h_micro_inherits_family_hybrid_gates() -> None:
 
 
 def test_nanbeige_4_1_3b_uses_hermes_not_llama_tool_parser() -> None:
-    """``nanbeige4.1-3b-4bit`` has ``model_type=llama`` in its config but
+    """``mlx-community/Nanbeige4.1-3B-4bit`` has ``model_type=llama`` in its config but
     is NOT a Meta-LLaMA-3 chat checkpoint — chat template + tool format
     are upstream-Nanbeige. The matching ``nanbeige`` regex in
     ``model_auto_config.py`` must win over the generic ``llama`` regex
@@ -1491,9 +1500,9 @@ def test_nanbeige_4_1_3b_uses_hermes_not_llama_tool_parser() -> None:
     Pin here so a regex re-ordering can't quietly demote the entry to
     the LLaMA tool parser.
     """
-    profile = list_profiles()["nanbeige4.1-3b-4bit"]
+    profile = _execution_profiles()["mlx-community/Nanbeige4.1-3B-4bit"]
     assert profile.tool_call_parser == "hermes", (
-        f"nanbeige4.1-3b-4bit: tool_call_parser must be 'hermes' (Nanbeige "
+        f"mlx-community/Nanbeige4.1-3B-4bit: tool_call_parser must be 'hermes' (Nanbeige "
         f"is not vanilla LLaMA-3 despite model_type=llama). "
         f"Got {profile.tool_call_parser!r}."
     )
@@ -1504,7 +1513,7 @@ def test_nanbeige_4_1_3b_uses_hermes_not_llama_tool_parser() -> None:
     # ``deepseek_r1`` handles the "model decides" contract — same as
     # VibeThinker / R1-distill on a non-DeepSeek base.
     assert profile.reasoning_parser == "deepseek_r1", (
-        f"nanbeige4.1-3b-4bit: reasoning_parser must be 'deepseek_r1' — "
+        f"mlx-community/Nanbeige4.1-3B-4bit: reasoning_parser must be 'deepseek_r1' — "
         f"the model emits `<think>` blocks autonomously. Got "
         f"{profile.reasoning_parser!r}."
     )
@@ -1532,7 +1541,7 @@ def test_phi_4_mini_reasoning_wires_deepseek_r1_reasoning_parser() -> None:
     repack; tokenizer special tokens enumerated from
     ``microsoft/Phi-4-mini-reasoning/tokenizer_config.json``.
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     alias = "phi-4-mini-reasoning-4bit"
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].reasoning_parser == "deepseek_r1", (
@@ -1559,7 +1568,7 @@ def test_gemma_3n_multimodal_aliases_share_family_sampling() -> None:
     audio rides the same lane when an audio attachment is present.
     """
     for alias in ("gemma-3n-e2b-4bit", "gemma-3n-e4b-4bit"):
-        profile = list_profiles()[alias]
+        profile = _execution_profiles()[alias]
         sampling = dict(profile.recommended_sampling or ())
         assert sampling.get("temperature") == 1.0, (
             f"{alias}: temperature must be 1.0 per Google's Gemma chat "
@@ -1576,7 +1585,7 @@ def test_gemma_3n_multimodal_aliases_share_family_sampling() -> None:
 @pytest.mark.parametrize(
     "alias",
     [
-        "phi-3.5-mini-4bit",
+        "mlx-community/Phi-3.5-mini-instruct-4bit",
         "gemma-3n-e2b-4bit",
         "gemma-3n-e4b-4bit",
         "deepseek-r1-32b-4bit",
@@ -1593,7 +1602,7 @@ def test_no_tool_call_support_aliases_have_null_tool_call_parser(
     to each ≤5B alias and recorded whether the model emitted a parseable
     ``<tool_call>...</tool_call>`` envelope:
 
-    * ``phi-3.5-mini-4bit`` (Microsoft Phi-3.5) — chat template only
+    * ``mlx-community/Phi-3.5-mini-instruct-4bit`` (Microsoft Phi-3.5) — chat template only
       defines ``<|user|>`` / ``<|assistant|>`` / ``<|end|>``; no
       ``<tool_call>`` special tokens. Tool-call attempts get ignored.
     * ``deepseek-r1-32b-4bit`` (DeepSeek R1 Distill Qwen 32B) — live
@@ -1621,7 +1630,7 @@ def test_no_tool_call_support_aliases_have_null_tool_call_parser(
     family default is correct for the chat-format families that
     ship tool tokens, and wrong for these checkpoints that don't.
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].tool_call_parser is None, (
         f"{alias}: tool_call_parser must be None — the checkpoint cannot "
@@ -1645,7 +1654,7 @@ def test_phi_4_mini_reasoning_keeps_hermes_tool_call_parser() -> None:
     phi family" sweep can't silently flip this entry to ``null``
     on the strength of pattern-matching to phi-3.5.
     """
-    profile = list_profiles()["phi-4-mini-reasoning-4bit"]
+    profile = _execution_profiles()["phi-4-mini-reasoning-4bit"]
     assert profile.tool_call_parser == "hermes", (
         f"phi-4-mini-reasoning-4bit: tool_call_parser must stay 'hermes' — "
         f"the model CAN tool-call (parser works), it just needs more "
@@ -1666,7 +1675,7 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     The substring guards below ensure a future "revert that aliases
     change" commit doesn't quietly restore the broken path.
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     # qwen3-vl-4b-4bit: stale ``-MLX-`` suffix not used by upstream uploads
     assert "MLX-4bit" not in profiles["qwen3-vl-4b-4bit"].hf_path, (
         "qwen3-vl-4b-4bit previously pointed at "
@@ -1679,10 +1688,10 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
         "devstral-24b-4bit previously pointed at Devstral-Small-2503-MLX-4bit "
         "which 404s. Use the 2507 (or 2505) MLX 4-bit upload."
     )
-    # glm4.5-air-4bit: ``-0111-`` date suffix was a community-only tag that
+    # mlx-community/GLM-4.5-Air-4bit: ``-0111-`` date suffix was a community-only tag that
     # got rolled into the default release.
-    assert "0111" not in profiles["glm4.5-air-4bit"].hf_path, (
-        "glm4.5-air-4bit previously pointed at GLM-4.5-Air-0111-4bit which "
+    assert "0111" not in profiles["mlx-community/GLM-4.5-Air-4bit"].hf_path, (
+        "mlx-community/GLM-4.5-Air-4bit previously pointed at GLM-4.5-Air-0111-4bit which "
         "404s. The current canonical upload is GLM-4.5-Air-4bit."
     )
     # glm4.7-9b-4bit previously pointed at the full GLM-4.7 (355B MoE,
@@ -1772,7 +1781,7 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     # reasoning_parser=glm4 → thinking IS the default response path,
     # so 0.6 is the right pick. (Users who want non-thinking can pass
     # temperature explicitly per-request.)
-    "glm4.5-air-4bit": {"temperature": 0.6, "top_p": 0.95},
+    "mlx-community/GLM-4.5-Air-4bit": {"temperature": 0.6, "top_p": 0.95},
     # GLM-4.7-Flash ships temperature=1.0 upstream; we add only top_p.
     "glm4.7-9b-4bit": {"top_p": 0.95},
     # Native MTP is qualified on greedy decode. These values also neutralize
@@ -1792,7 +1801,7 @@ def test_curated_recommended_sampling_matches_pinned_values() -> None:
     drop or mutate a value. If you intentionally change a value, update
     this test too — that's the prompt to re-verify against the model
     card you originally consulted."""
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     for alias, expected in _CURATED_RECOMMENDED_SAMPLING.items():
         assert alias in profiles, f"{alias}: missing from aliases.json"
         actual_tuple = profiles[alias].recommended_sampling
@@ -1835,7 +1844,7 @@ def test_curated_aliases_do_not_contradict_fixture_generation_config() -> None:
     from rapid_mlx.utils.generation_config import load_generation_config_sampling
 
     fixture_dir = Path(__file__).parent / "fixtures" / "generation_configs"
-    profiles = list_profiles()
+    profiles = _execution_profiles()
 
     coverage = 0
     for alias in _CURATED_RECOMMENDED_SAMPLING:
@@ -1878,7 +1887,7 @@ def test_curated_aliases_do_not_contradict_fixture_generation_config() -> None:
 def test_default_max_tokens_is_positive_or_none() -> None:
     """``default_max_tokens`` is None or a positive int. A negative or
     zero default would make every request return empty completions."""
-    for alias, profile in list_profiles().items():
+    for alias, profile in _execution_profiles().items():
         if profile.default_max_tokens is not None:
             assert (
                 isinstance(profile.default_max_tokens, int)
@@ -1895,7 +1904,7 @@ def test_default_max_tokens_is_positive_or_none() -> None:
 #
 # Five-pack of operator-requested additions landed in 0.9.x:
 #   - kimi-k2.6 (Kimi K2.6 Smart-Quant MoE — DeepseekV3-style architecture)
-#   - holo3.1-35b-a3b / -8bit (Hcompany Holo 3.1, Qwen3.5-MoE base — GUI-agent
+#   - pipenetwork/Holo-3.1-35B-A3B-MLX-4bit / -8bit (Hcompany Holo 3.1, Qwen3.5-MoE base — GUI-agent
 #     vision model, A3B sparse experts)
 #   - qwen3-0.6b / qwen3-1.7b / qwen3-1.7b-4bit (the bare ≤2B Qwen3 short
 #     aliases — triple-reported missing in #299/#290/#304)
@@ -1910,8 +1919,8 @@ def test_default_max_tokens_is_positive_or_none() -> None:
 _TIER4_ALIASES_AND_MOE: tuple[tuple[str, bool], ...] = (
     # alias, expected is_moe
     ("kimi-k2.6", True),
-    ("holo3.1-35b-a3b", True),
-    ("holo3.1-35b-a3b-8bit", True),
+    ("pipenetwork/Holo-3.1-35B-A3B-MLX-4bit", True),
+    ("pipenetwork/Holo-3.1-35B-A3B-MLX-8bit", True),
     ("qwen3-0.6b", False),
     ("qwen3-1.7b", False),
     ("qwen3-1.7b-4bit", False),
@@ -1937,7 +1946,7 @@ def test_tier4_alias_resolves(alias: str, expected_is_moe: bool) -> None:
       are dense transformers; mis-tagging as MoE would gate them out of
       DFlash unnecessarily.
     """
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     assert alias in profiles, (
         f"{alias}: missing from aliases.json — Tier-4 wave (#299/#290/#304) "
         f"requires this entry to resolve."
@@ -1963,6 +1972,7 @@ def test_tier4_short_alias_keys_are_unique() -> None:
     """
     path = Path(__file__).resolve().parents[1] / "rapid_mlx" / "aliases.json"
     raw_text = path.read_text()
+    repo_text = path.with_name("repo_profiles.json").read_text()
     # Lightweight key scan — count quoted alias names at the start of a
     # JSON object property. Anchored on the leading whitespace pattern
     # that the file uses (2-space indent for top-level entries) so
@@ -1970,7 +1980,13 @@ def test_tier4_short_alias_keys_are_unique() -> None:
     short_aliases = [a for a, _ in _TIER4_ALIASES_AND_MOE]
     for alias in short_aliases:
         pattern = re.compile(rf'^\s{{2}}"{re.escape(alias)}":\s*\{{', re.MULTILINE)
-        hits = pattern.findall(raw_text)
+        if "/" in alias:
+            pattern = re.compile(
+                rf'^\s{{4}}"hf_path": "{re.escape(alias)}",?$', re.MULTILINE
+            )
+            hits = pattern.findall(repo_text)
+        else:
+            hits = pattern.findall(raw_text)
         assert len(hits) == 1, (
             f"{alias}: appears {len(hits)} times as a top-level alias key "
             f"in aliases.json; must appear exactly once. Duplicate keys "
@@ -1993,7 +2009,7 @@ def test_kimi_k26_wires_kimi_tool_parser_and_deepseek_r1_reasoning() -> None:
     flip these to e.g. ``hermes`` (wrong tool envelope) or ``None``
     reasoning (think blocks would leak into content).
     """
-    profile = list_profiles()["kimi-k2.6"]
+    profile = _execution_profiles()["kimi-k2.6"]
     assert profile.tool_call_parser == "kimi", (
         f"kimi-k2.6: tool_call_parser must be 'kimi' — the model emits the "
         f"native <|tool_calls_section_begin|> envelope, not hermes/qwen3 XML. "
@@ -2026,7 +2042,7 @@ def test_kimi_k26_wires_kimi_tool_parser_and_deepseek_r1_reasoning() -> None:
 
 @pytest.mark.parametrize(
     "alias",
-    ["holo3.1-35b-a3b", "holo3.1-35b-a3b-8bit"],
+    ["pipenetwork/Holo-3.1-35B-A3B-MLX-4bit", "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit"],
 )
 def test_holo3_1_family_follows_qwen35_moe_precedent(alias: str) -> None:
     """Holo 3.1-35B-A3B (Hcompany GUI-agent fine-tune of Qwen3.5-MoE)
@@ -2038,7 +2054,7 @@ def test_holo3_1_family_follows_qwen35_moe_precedent(alias: str) -> None:
     on every assistant turn (qwen3 reasoning parser handles the
     "template opens, model closes" contract).
     """
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     assert profile.tool_call_parser == "hermes", (
         f"{alias}: tool_call_parser must be 'hermes' — Holo 3.1 emits the "
         f"`<tool_call><function=name><parameter=...>...</function></tool_call>` "
@@ -2083,14 +2099,14 @@ def test_mistral_small_4_119b_family_follows_mistral_24b_precedent() -> None:
     through a different parser than 24B (confusing for operators
     debugging tool-call regressions).
     """
-    twentyfour = list_profiles()["mistral-24b-4bit"]
+    twentyfour = _execution_profiles()["mistral-24b-4bit"]
     family = [
         "mistral-small-4-119b",
         "mistral-small-4-119b-4bit",
         "mistral-small-4-119b-8bit",
     ]
     for alias in family:
-        profile = list_profiles()[alias]
+        profile = _execution_profiles()[alias]
         # #1071: the whole Mistral family uses the ``mistral`` parser
         # (Mistral-native ``[TOOL_CALLS]`` envelope), not ``hermes`` XML.
         assert profile.tool_call_parser == twentyfour.tool_call_parser == "mistral", (
@@ -2123,7 +2139,7 @@ def test_bare_qwen3_short_aliases_follow_family_precedent(alias: str) -> None:
     here would let a user typing ``qwen3-0.6b`` get different behaviour
     from ``qwen3-0.6b-4bit`` (which points at the same HF path).
     """
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     assert profile.tool_call_parser == "hermes", (
         f"{alias}: Qwen3 family default tool_call_parser is 'hermes'. "
         f"Got {profile.tool_call_parser!r}."
@@ -2161,37 +2177,37 @@ def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
 
     HF: https://huggingface.co/pipenetwork/GLM-5.2-REAP50-MLX-4bit
     """
-    profile = list_profiles()["glm-5.2-reap50"]
+    profile = _execution_profiles()["pipenetwork/GLM-5.2-REAP50-MLX-4bit"]
     assert profile.hf_path == "pipenetwork/GLM-5.2-REAP50-MLX-4bit", (
-        f"glm-5.2-reap50: hf_path drifted. The alias name carries the "
+        f"pipenetwork/GLM-5.2-REAP50-MLX-4bit: hf_path drifted. The alias name carries the "
         f"50% expert-prune semantics; pointing at REAP25 / REAP75 / "
         f"non-REAP would silently change disk size + quality. "
         f"Got {profile.hf_path!r}."
     )
     assert profile.is_moe is True, (
-        "glm-5.2-reap50: GLM-5.2 is sparse-expert (n_routed_experts=128 "
+        "pipenetwork/GLM-5.2-REAP50-MLX-4bit: GLM-5.2 is sparse-expert (n_routed_experts=128 "
         "after REAP-50% prune, num_experts_per_tok=8). Mis-tagging as "
         "dense would mis-route DFlash / spec-decode gates."
     )
     assert profile.is_hybrid is False, (
-        "glm-5.2-reap50: pure-attention (glm_moe_dsa backbone), not hybrid."
+        "pipenetwork/GLM-5.2-REAP50-MLX-4bit: pure-attention (glm_moe_dsa backbone), not hybrid."
     )
     assert profile.tool_call_parser == "glm47", (
-        f"glm-5.2-reap50: GLM-5.2 shares the GLM-4.7 ``<tool_call>...`` "
+        f"pipenetwork/GLM-5.2-REAP50-MLX-4bit: GLM-5.2 shares the GLM-4.7 ``<tool_call>...`` "
         f"tool envelope. Got {profile.tool_call_parser!r}."
     )
     assert profile.reasoning_parser == "glm4", (
-        f"glm-5.2-reap50: GLM-5.2 chat template autonomously emits "
+        f"pipenetwork/GLM-5.2-REAP50-MLX-4bit: GLM-5.2 chat template autonomously emits "
         f"`<think>...</think>` blocks (same as GLM-4.5/4.7) — route "
         f"through ``glm4`` so the trace lands in reasoning_content. "
         f"Got {profile.reasoning_parser!r}."
     )
     assert profile.supports_spec_decode is False, (
-        "glm-5.2-reap50: 214 GB MoE — spec-decode drafter overhead "
+        "pipenetwork/GLM-5.2-REAP50-MLX-4bit: 214 GB MoE — spec-decode drafter overhead "
         "swamps the win at this size (same call as Kimi K2.6)."
     )
     assert profile.supports_dflash is False, (
-        "glm-5.2-reap50: sparse-expert MoE — DFlash drafter hidden-state "
+        "pipenetwork/GLM-5.2-REAP50-MLX-4bit: sparse-expert MoE — DFlash drafter hidden-state "
         "fusion misfires on expert-routing churn (see "
         "test_dflash_excludes_moe_architectures)."
     )
@@ -2201,7 +2217,7 @@ def test_glm_5_3_flash_alias_declares_qualified_native_mtp() -> None:
     """GLM-5.3 advertises only its immutable, qualified native-MTP pair."""
 
     alias = "glm5.3-flash-4bit"
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
 
     assert profile.hf_path == "Vontra/GLM-5.3-Flash-MLX-4bit-MTP"
     assert profile.experimental is True
@@ -2242,7 +2258,7 @@ def test_is_text_only_requires_text_modality(alias: str) -> None:
     ``_coerce`` rejects the combination at load; this contract test pins the
     invariant at PR time so a future edit can't smuggle ``is_text_only`` on
     a diffusion / vision alias."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.is_text_only:
         assert profile.modality == "text", (
             f"{alias}: is_text_only=True requires modality='text' (it serves "
@@ -2254,7 +2270,7 @@ def test_is_text_only_requires_text_modality(alias: str) -> None:
 @pytest.mark.parametrize("alias", _alias_ids())
 def test_image_input_capability_never_conflicts_with_text_only(alias: str) -> None:
     """Product capability must be explicit and internally coherent."""
-    profile = list_profiles()[alias]
+    profile = _execution_profiles()[alias]
     if profile.supports_image_input:
         assert not profile.is_text_only, (
             f"{alias}: supports_image_input=True conflicts with is_text_only=True"
@@ -2264,7 +2280,7 @@ def test_image_input_capability_never_conflicts_with_text_only(alias: str) -> No
 def test_image_input_capability_is_strict_and_explicit() -> None:
     from rapid_mlx.model_aliases import _coerce
 
-    profiles = list_profiles()
+    profiles = _execution_profiles()
     assert profiles["qwen3.8-27b-4bit"].supports_image_input is True
     assert profiles["qwen3.8-27b-4bit-fp16"].supports_image_input is True
     assert profiles["qwen3-vl-4b-4bit"].supports_image_input is True
@@ -2309,7 +2325,7 @@ def test_bonsai_27b_ternary_routes_through_text_loader() -> None:
 
     HF: https://huggingface.co/prism-ml/Ternary-Bonsai-27B-mlx-2bit
     """
-    profile = list_profiles()["bonsai-27b-2bit"]
+    profile = _execution_profiles()["bonsai-27b-2bit"]
     assert profile.hf_path == "prism-ml/Ternary-Bonsai-27B-mlx-2bit", (
         f"bonsai-27b-2bit: hf_path drifted off the ternary MLX-2bit repo. "
         f"Got {profile.hf_path!r}."

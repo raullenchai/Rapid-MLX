@@ -13,7 +13,7 @@ struct ModelSizingTests {
     func parsesParams() {
         #expect(ModelSizing.parseParamsBillions("qwen3.5-4b") == 4)
         #expect(ModelSizing.parseParamsBillions("gemma-4-12b") == 12)
-        #expect(ModelSizing.parseParamsBillions("llama-3.1-8b-8bit") == 8)
+        #expect(ModelSizing.parseParamsBillions("llama-3.1-8b-4bit") == 8)
         #expect(ModelSizing.parseParamsBillions("smollm3-3b") == 3)
         #expect(ModelSizing.parseParamsBillions("qwen3.5-122b-mxfp4") == 122)
     }

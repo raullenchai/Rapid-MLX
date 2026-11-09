@@ -16,7 +16,7 @@ import Foundation
 /// the answer ("Tokyo is 16°C, partly cloudy" with ``tool_calls:
 /// null``) and the user sees a confidently wrong reply.
 ///
-/// Cycle-4 fuzz F-1 caught the same shape on ``hermes3-8b-4bit`` and
+/// Cycle-4 fuzz F-1 caught the same shape on ``mlx-community/hermes-3-llama-3.1-8b-4bit`` and
 /// cycle-9 fuzz F9-001 caught a parser-level variant on
 /// ``llama3-1b-4bit`` (the model emits raw JSON-Schema into
 /// ``function.arguments`` instead of a populated args object). Cycle-2
@@ -123,8 +123,8 @@ enum ToolUseCapability {
         // arguments. Keep this exact so future MiniCPM sizes do not inherit
         // a capability verdict without their own product-path dogfood.
         "minicpm5-2b-4bit",
-        "ornith-1.5-9b-bf16",
-        "ornith-1.5-35b-a3b-bf16",
+        "ornith-ai/ornith-1.5-9b-mlx",
+        "ornith-ai/ornith-1.5-35b-a3b-mlx",
     ]
 
     /// One family-level rule: "aliases whose name starts with
@@ -195,12 +195,15 @@ enum ToolUseCapability {
     /// deepseek-r1 / qwen-thinker variants exist that DO emit
     /// tool_calls, and we don't want to lock out an untested sibling.
     static let brokenPrefixes: [String] = [
+        "mlx-community/hermes-3-llama-3.1-8b-4bit",
+        "mlx-community/vibethinker-1.5b-mlx-4bit",
+        "mlx-community/vibethinker-3b-8bit",
         // F-11-5 (2026-06-20): phi-4-mini-reasoning-4bit advertises
         // tool_call_parser="hermes" but emits no <tool_call> tokens;
         // model hallucinates the answer with tool_calls: null. Family
         // prefix covers any future ``phi-4-mini-reasoning-Nbit`` quant.
         "phi-4-mini-reasoning",
-        // cycle-4 F-1 (2026-06-19): hermes3-8b-4bit silent-degradation
+        // cycle-4 F-1 (2026-06-19): mlx-community/hermes-3-llama-3.1-8b-4bit silent-degradation
         // — auto tool_choice never emits <tool_call> across 4 prompts;
         // content returns hallucinated prose with fabricated values.
         // rapid-mlx registry already flags model tool_calling="avoid"
@@ -214,7 +217,7 @@ enum ToolUseCapability {
         // a user who keeps the alias selected (or types it manually
         // into the picker) still hits this.
         "llama3-1b",
-        // cycle-2 fuzz-correctness (2026-06-19): vibethinker-3b-8bit
+        // cycle-2 fuzz-correctness (2026-06-19): mlx-community/vibethinker-3b-8bit
         // (and -1.5b-4bit sibling) emit ``<JSON>...</JSON>`` wrapper
         // instead of hermes ``<tool_call>...</tool_call>`` on simple
         // single-tool prompts. The alias claims ``tool_call_parser=
@@ -356,7 +359,7 @@ enum ToolUseCapability {
 
         // MARK: GLM family
 
-        KnownFamily(prefix: "glm4.5-", minSizeBillions: 3.0, missingSizeAllowList: ["glm4.5-air-4bit"], note: "glm47 parser shared with glm4.7; eval-suite verified family; bare ``glm4.5-air-4bit`` (no size token) ships in the catalog and promotes via exact allow-list"),
+        KnownFamily(prefix: "glm4.5-", minSizeBillions: 3.0, missingSizeAllowList: [], note: "glm47 parser shared with glm4.7; eval-suite verified family; no curated missing-size alias"),
         KnownFamily(prefix: "glm4.7", minSizeBillions: 3.0, missingSizeAllowList: ["glm4.7-4bit"], note: "glm47 parser, benched in evals/tool_calling .known on 9-cat scorecard; bare ``glm4.7-4bit`` (PR #333 pin) covered via exact allow-list"),
         KnownFamily(prefix: "glm-4.7", minSizeBillions: 3.0, note: "underscore variant of glm4.7 namespace (alias-name convention); no catalog size-less aliases at this prefix"),
 
@@ -376,7 +379,7 @@ enum ToolUseCapability {
         KnownFamily(prefix: "mimo-v2.6-", minSizeBillions: 3.0, missingSizeAllowList: ["mimo-v2.6-flash-4bit"], note: "qwen3_coder_xml parser; 2026-09-21 M3 Ultra e2e: tool_calls + json_object clean; size-less alias promotes via exact allow-list"),
         // minimax-m2.x — minimax parser, 235B MoE family. Loop verifies
         // the parser path on this family.
-        KnownFamily(prefix: "minimax-m", minSizeBillions: 3.0, missingSizeAllowList: ["minimax-m2.5-4bit", "minimax-m2.7-mxfp4"], note: "minimax parser; 235B MoE family; aliases ``minimax-m2.5-4bit`` / ``minimax-m2.7-mxfp4`` have no \\d+b token (the m-version is the model name, not a size) — promote via exact allow-list"),
+        KnownFamily(prefix: "minimax-m", minSizeBillions: 3.0, missingSizeAllowList: ["minimax-m2.7-mxfp4"], note: "minimax parser; 235B MoE family; alias ``minimax-m2.7-mxfp4`` has no \\d+b token (the m-version is the model name, not a size) — promote via exact allow-list"),
         // NOTE: the Mistral family (``mistral-``, ``devstral``) was
         // demoted to ``brokenPrefixes`` on the 2026-07-09 sweep (hermes
         // parser mis-parsed its ``[TOOL_CALLS]…[ARGS]{…}`` output, 6/6
@@ -546,8 +549,8 @@ enum ToolUseCapability {
             // ``allowMissingSize: Bool`` to per-family exact-alias
             // ``missingSizeAllowList: Set<String>``. The 4 catalog
             // aliases without a size token (``qwen3-coder-4bit`` /
-            // ``glm4.5-air-4bit`` / ``glm4.7-4bit`` /
-            // ``minimax-m2.5-4bit`` / ``minimax-m2.7-mxfp4``) are
+            // ``mlx-community/glm-4.5-air-4bit`` / ``glm4.7-4bit`` /
+            // ``lmstudio-community/minimax-m2.5-mlx-4bit`` / ``minimax-m2.7-mxfp4``) are
             // each listed by full name on their family row; a
             // user-typed ``qwen3-coder-experimental`` that shares
             // the prefix but isn't in the allow-list falls through
@@ -600,7 +603,7 @@ enum ToolUseCapability {
     /// vs "we have no signal either way") into one alarmist label —
     /// a user who picked an unbenched 4B alias (e.g.
     /// ``bonsai-4b-unpacked``) saw the same sticker as on
-    /// ``hermes3-8b-4bit`` even though the bonsai family might be
+    /// ``mlx-community/hermes-3-llama-3.1-8b-4bit`` even though the bonsai family might be
     /// fine. The split mirrors the bucket semantics:
     ///
     ///   * ``.known`` → ``nil`` (no badge — the alias is verified).
