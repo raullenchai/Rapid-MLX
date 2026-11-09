@@ -479,9 +479,16 @@ def install_dense_decode_fusion(model, *, spec_decode="none"):
             "rapid_mlx.models.gemma4_vendored.language",
             "mlx_vlm.models.gemma4.language",
         }:
+            snapshot = None
             try:
-                count += int(_enroll_gemma(backbone))
+                snapshot = _snapshot(backbone)
+                if _enroll_gemma(backbone):
+                    count += 1
+                else:
+                    _restore(snapshot)
             except Exception:
+                if snapshot is not None:
+                    _restore(snapshot)
                 logger.debug("Gemma decode enrollment declined", exc_info=True)
             continue
         kind = _BACKBONES.get((cls.__module__, cls.__name__))

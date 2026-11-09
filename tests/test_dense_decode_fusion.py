@@ -5,6 +5,8 @@ import weakref
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 from mlx_lm.models import lfm2, qwen3_5
@@ -400,6 +402,52 @@ def test_failed_composition_restores_projection_classes_and_parameters(monkeypat
         )
         assert fusion.install_dense_decode_fusion(root) == 0
     assert type(mlp) is original_class and mlp.w1.weight is weight
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("failure", ["group-exception", "exception", "declined"])
+def test_failed_gemma_enrollment_restores_full_layer(monkeypatch, external, failure):
+    layer = gemma_tiny(external=external)
+    before = [
+        (name, module, type(module), dict(module), module.__dict__.copy())
+        for name, module in layer.named_modules()
+    ]
+    x = mx.ones((1, 1, 128), mx.bfloat16)
+    expected = layer(x)[0]
+    mx.eval(expected)
+    original_group = fusion._group_mlp
+    original_enroll = fusion._enroll_gemma
+    grouped = []
+
+    def group_then_fail(module, dtype):
+        assert original_group(module, dtype)
+        assert hasattr(module, "_rapid_dense_group")
+        grouped.append(module)
+        if failure == "group-exception":
+            raise RuntimeError("failure after projection grouping")
+        return True
+
+    def enroll_then_fail(module):
+        assert original_enroll(module)
+        if failure == "exception":
+            raise RuntimeError("failure after layer replacement")
+        return False
+
+    monkeypatch.setattr(fusion, "_group_mlp", group_then_fail)
+    if failure != "group-exception":
+        monkeypatch.setattr(fusion, "_enroll_gemma", enroll_then_fail)
+    assert fusion.install_dense_decode_fusion(layer) == 0
+    assert grouped == [layer.mlp]
+    after = list(layer.named_modules())
+    assert [name for name, _ in after] == [entry[0] for entry in before]
+    for (_, actual), (_, module, cls, values, attrs) in zip(after, before):
+        assert actual is module
+        assert type(actual) is cls
+        assert actual.keys() == values.keys()
+        assert all(actual[key] is value for key, value in values.items())
+        assert actual.__dict__.keys() == attrs.keys()
+        assert all(actual.__dict__[key] is value for key, value in attrs.items())
+    assert fusion._bits_equal(layer(x)[0], expected)
 
 
 def test_unqualified_cache_layout_keeps_stock_call(monkeypatch):

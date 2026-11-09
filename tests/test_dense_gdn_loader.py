@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 pytest.importorskip("mlx.core")
 mlx_vlm = pytest.importorskip("mlx_vlm")
 
