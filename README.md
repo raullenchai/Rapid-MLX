@@ -150,8 +150,9 @@ and [install security](https://github.com/raullenchai/Rapid-MLX/blob/main/SECURI
 
 The guided installer prefers a runnable model already cached on this Mac when
 it fits the RAM tier. Otherwise its quick first-chat download is
-`lfm2.5-1b-4bit` below 16 GB and `qwen3.5-4b-4bit` at 16 GB or above; larger
-quality picks remain available through `rapid-mlx recipe` and the model picker.
+`lfm2.5-2.6b-4bit` at 8 GB or above, with `lfm2.5-1b-4bit` for smaller or
+unknown RAM. Larger quality picks remain available through `rapid-mlx recipe`
+and the model picker.
 
 ---
 

@@ -229,9 +229,9 @@ def _readme_prose_tiers() -> list[tuple[int, str]]:
     """The quick-start prose pins the two first-chat baselines."""
     text = README.read_text()
     assert "prefers a runnable model already cached" in text
-    assert "`lfm2.5-1b-4bit` below 16 GB" in text
-    assert "`qwen3.5-4b-4bit` at 16 GB or above" in text
-    return [(8, "lfm2.5-1b-4bit"), (16, "qwen3.5-4b-4bit")]
+    assert "`lfm2.5-2.6b-4bit` at 8 GB or above" in text
+    assert "`lfm2.5-1b-4bit` for smaller or unknown RAM" in " ".join(text.split())
+    return [(0, "lfm2.5-1b-4bit"), (8, "lfm2.5-2.6b-4bit")]
 
 
 def test_readme_table_matches_the_app_tier_for_tier():
@@ -256,11 +256,10 @@ def test_readme_table_matches_the_app_tier_for_tier():
     )
 
 
-def test_readme_prose_matches_the_readme_table():
+def test_readme_prose_matches_the_installer_baseline():
     """Installer starters are deliberately smaller than browser smart picks."""
     assert _readme_prose_tiers() == [
-        (8, "lfm2.5-1b-4bit"),
-        (16, "qwen3.5-4b-4bit"),
+        (ram, _select_installer_starter(ram)) for ram in (0, 8)
     ]
 
 
