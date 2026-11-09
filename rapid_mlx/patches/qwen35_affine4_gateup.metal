@@ -1,4 +1,4 @@
-// Adapted from mlx-serve, MIT License, Copyright (c) 2026 David Dalcu.
+// Adapted from MIT-licensed code, Copyright (c) 2026 David Dalcu.
 // See QWEN35_AFFINE4_LICENSE for the full permission and warranty notice.
 const uint lane = thread_index_in_simdgroup;
 const int row0 = int(thread_position_in_grid.y) * ROWS;

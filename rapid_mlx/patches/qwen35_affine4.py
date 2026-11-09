@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Fused affine-4 selected experts and parallel routing for short Qwen decode blocks.
 
-Adapted from mlx-serve, MIT License, Copyright (c) 2026 David Dalcu.
+Adapted from MIT-licensed code, Copyright (c) 2026 David Dalcu.
 See QWEN35_AFFINE4_LICENSE for the complete copyright and permission notice.
 Expert accumulation differs from the composed path; see qualification evidence.
 Enable with RAPID_MLX_QWEN35_AFFINE4=1; set to 0 to disable immediately.

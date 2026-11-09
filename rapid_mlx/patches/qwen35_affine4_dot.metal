@@ -1,4 +1,4 @@
-// Adapted from mlx-serve, MIT License, Copyright (c) 2026 David Dalcu.
+// Adapted from MIT-licensed code, Copyright (c) 2026 David Dalcu.
 // See QWEN35_AFFINE4_LICENSE for the full permission and warranty notice.
 inline float rapid_affine4_dot16(uint2 w, thread const float* x) {
   float a = 0.0f, b = 0.0f;
