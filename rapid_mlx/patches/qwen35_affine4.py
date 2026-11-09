@@ -249,10 +249,19 @@ def _compatible(block):
     """Check every layout/semantic assumption before exposing raw bank pointers."""
     if type(block) not in _block_classes():
         return False
+    # The VLM class always renormalizes; the LM class exposes an explicit flag.
+    if hasattr(block, "norm_topk_prob"):
+        if block.norm_topk_prob is not True:
+            return False
+    elif type(block) is not getattr(
+        sys.modules.get("mlx_vlm.models.qwen3_5_moe.language"),
+        "Qwen3_5MoeSparseMoeBlock",
+        None,
+    ):
+        return False
     if (
         getattr(block, "num_experts", 0) != 256
         or getattr(block, "top_k", 0) != 8
-        or not getattr(block, "norm_topk_prob", True)
         or getattr(block, "sharding_group", None) is not None
         or not getattr(block, "_rapid_qwen35_fused_router", False)
     ):

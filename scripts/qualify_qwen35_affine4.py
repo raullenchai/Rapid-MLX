@@ -98,6 +98,10 @@ def main():
     parser.add_argument("--positions", type=int, default=50000)
     parser.add_argument("--context", type=int, default=1024)
     args = parser.parse_args()
+    if args.positions <= 0:
+        parser.error("--positions must be positive")
+    if args.context <= 0:
+        parser.error("--context must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     raw = args.corpus.read_bytes()
     model, _ = load(args.model)
