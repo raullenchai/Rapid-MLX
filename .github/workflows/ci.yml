@@ -749,6 +749,8 @@ jobs:
             tests/test_qwen35_moe_router.py \
             tests/test_moe_decode_fusion.py \
             tests/test_qwen35_fused_gdn_decode.py \
+            tests/test_dense_decode_fusion.py \
+            tests/test_dense_gdn_loader.py \
             tests/test_qwen3_5_eager_dispatch.py \
             tests/test_nemotron_h_ssm.py \
             tests/test_qwen36_native_text_cache.py \

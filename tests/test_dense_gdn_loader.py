@@ -17,6 +17,7 @@ def test_load_enrolls_only_plain_qwen_backbones(
     import mlx_vlm.utils
 
     from rapid_mlx import (
+        dense_decode_fusion,
         gdn_in_proj_fusion,
         moe_fusion,
         qwen35_fused_gdn_decode,
@@ -34,6 +35,7 @@ def test_load_enrolls_only_plain_qwen_backbones(
     processor = SimpleNamespace(tokenizer=SimpleNamespace())
     enrolled = []
     recurrent = []
+    dense = []
     monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
     monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda _: str(tmp_path))
     monkeypatch.setattr(media_backend, "native_media_model_type", lambda _: None)
@@ -68,7 +70,15 @@ def test_load_enrolls_only_plain_qwen_backbones(
         lambda loaded, **kw: recurrent.append((loaded, kw)),
     )
     monkeypatch.setattr(
-        gdn_in_proj_fusion, "fuse_gdn_in_proj", lambda loaded: enrolled.append(loaded)
+        gdn_in_proj_fusion,
+        "fuse_gdn_in_proj",
+        lambda loaded: enrolled.append(loaded),
+    )
+
+    monkeypatch.setattr(
+        dense_decode_fusion,
+        "install_dense_decode_fusion",
+        lambda loaded, **kw: dense.append((loaded, kw)),
     )
 
     kwargs = {} if mode == "default" else {"spec_decode": mode}
@@ -76,6 +86,7 @@ def test_load_enrolls_only_plain_qwen_backbones(
     wrapper.load()
     wrapper.load()
     expected = model_type in {"qwen3_5", "qwen3_5_moe"} and mode in {"default", "none"}
+    assert dense == [(model, {"spec_decode": "none" if mode == "default" else mode})]
     assert wrapper._loaded
     assert enrolled == ([model] if expected else [])
 

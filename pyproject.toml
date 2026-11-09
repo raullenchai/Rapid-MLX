@@ -620,6 +620,8 @@ vllm-mlx-bench = "rapid_mlx.benchmark:main"
 
 [tool.setuptools.package-data]
 rapid_mlx = [
+    # Required notice for the fused RMS reduction and decoder composition.
+    "kernels/LICENSE-RMS",
     "chat_runtime/store/migrations/*.sql",
     "aliases.json",
     "model_digests.json",

@@ -1919,6 +1919,10 @@ class MLXMultimodalLM:
                 fuse_gdn_in_proj(self.model)
                 install_qwen35_fused_gdn_decode(self.model, allow_dense=True)
 
+            from ..dense_decode_fusion import install_dense_decode_fusion
+
+            install_dense_decode_fusion(self.model, spec_decode=self.spec_decode)
+
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
             # Gemma 3 / 3n VL variants are the canonical case:

@@ -288,6 +288,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # loads, which parser fires, which tier engages — none of that
         # changes. Read by ``gdn_in_proj_fusion.fuse_gdn_in_proj()`` only.
         "RAPID_MLX_GDN_IN_PROJ_FUSION",
+        # Rollback for model-local exact dense decode graph fusions;
+        # does not select an engine, model, or speculative policy.
+        "RAPID_MLX_DENSE_DECODE_FUSION",
         # Opt-in fused Qwen4 single-token GDN recurrence. This selects a
         # bit-exact kernel for an already-selected model and falls back for
         # unsupported shapes; it does not select a model, parser, or lane.

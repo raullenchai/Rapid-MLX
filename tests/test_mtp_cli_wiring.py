@@ -1244,9 +1244,18 @@ def test_start_llm_calls_apply_mtp_dispatch():
         result = (fake_model, fake_tokenizer)
         return (*result, "/fake/immutable-snapshot") if return_source else result
 
+    from rapid_mlx import dense_decode_fusion
+
+    dense_calls = []
+
     monkeypatch = _MonkeypatchScope()
     try:
         monkeypatch.setattr(_tokenizer_mod, "load_model_with_fallback", _fake_load)
+        monkeypatch.setattr(
+            dense_decode_fusion,
+            "install_dense_decode_fusion",
+            lambda model, **kw: dense_calls.append((model, kw)),
+        )
 
         # 3. Monkey-patch _apply_mtp_dispatch on the batched module.
         #    Record args, then raise a sentinel to short-circuit the
@@ -1295,6 +1304,7 @@ def test_start_llm_calls_apply_mtp_dispatch():
     #      * ``model_name`` matches the engine's model_name.
     #      * ``scheduler_config`` is the engine's config (same object).
     #      * ``executor`` is the engine's ``_model_load_executor``.
+    assert dense_calls == [(engine._model, {"spec_decode": "mtp"})]
     assert len(dispatch_calls) == 1, (
         "codex round-L NIT: _start_llm did NOT invoke "
         "_apply_mtp_dispatch. The wiring is broken and the behavioral "
