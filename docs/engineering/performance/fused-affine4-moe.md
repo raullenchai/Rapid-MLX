@@ -178,8 +178,24 @@ exist. The kernel's earlier 50k qualification is inherited, not rerun.
 
 The 102.62 tok/s M4 median is still 1.99% below the supplied 104.7 reference
 target. This is a stability/rollout improvement, not evidence that every
-supplied target has been reached. M5 is occupied by an owner workload and
-has not been qualified with the new controller in this round.
+supplied target has been reached.
+
+### M5 Max qualification
+
+M5 Max (36 GiB) used the same fresh-server protocol against current main:
+three valid boots per cell, 564-token prompt, 256 greedy tokens, cold and
+repeated requests. Qwen35 fixed-request content IDs and text match on both
+modes; dense controls stay within run-to-run range.
+
+| Cell | Base median (range) | Candidate median (range) | Delta |
+|---|---:|---:|---:|
+| Qwen35 default MTP, cold | 164.56 (162.28–164.74) | 179.93 (179.91–180.16) | +9.34% |
+| Qwen35 default MTP, repeat | 158.71 (158.65–158.72) | 170.33 (170.28–170.33) | +7.32% |
+| Qwen35 no spec, cold | 150.86 (150.76–151.19) | 167.20 (166.96–167.22) | +10.83% |
+| Dense 4B default MTP, cold | 144.66 (144.45–144.75) | 144.21 (143.92–144.47) | -0.31% |
+| Dense 9B default MTP, cold | 96.08 (95.14–96.14) | 95.53 (94.95–96.21) | -0.57% |
+
+The M5 Qwen35 default-MTP median reaches the supplied 178 tok/s target.
 
 ### Round 5 Studio qualification
 
