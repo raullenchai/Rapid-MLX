@@ -1,5 +1,6 @@
 """Response-format constraints must preserve system prefixes and reasoning."""
 
+import json
 import logging
 
 import pytest
@@ -63,6 +64,146 @@ def test_injection_does_not_mutate_original():
     result = _inject_json_instruction(messages, "JSON please")
     assert messages[0]["content"] == "<|think|>Rules"
     assert result[0]["content"] == "<|think|>Rules\n\nJSON please"
+
+
+@pytest.mark.parametrize("typed_message", [False, True])
+def test_injection_appends_block_without_mutating_original(typed_message):
+    from copy import deepcopy
+
+    from rapid_mlx.api.models import Message
+
+    blocks = [
+        {"type": "text", "text": "<|think|>First rule"},
+        {"type": "text", "text": "Second rule"},
+    ]
+    original_blocks = deepcopy(blocks)
+    system = (
+        Message(role="system", content=blocks)
+        if typed_message
+        else {"role": "system", "content": blocks}
+    )
+    messages = [{"role": "user", "content": "Earlier turn"}, system]
+    original = deepcopy(messages)
+    original_content = system.content if typed_message else system["content"]
+
+    result = _inject_json_instruction(messages, "JSON please")
+
+    content = result[1].content if typed_message else result[1]["content"]
+    assert result[0] == messages[0]
+    assert len(result) == len(messages)
+    assert content == [*original_content, {"type": "text", "text": "JSON please"}]
+    assert messages == original
+    assert blocks == original_blocks
+    assert result[1] is not system
+    assert content is not original_content
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failing_method", ["encode", "decode"])
+def test_reasoning_gate_tokenizer_failure_uses_logged_fallback(
+    monkeypatch, caplog, stream, failing_method
+):
+    from unittest.mock import Mock
+
+    from rapid_mlx.api import guided
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    class Tokenizer:
+        def encode(self, text, **kwargs):
+            if text == "</think>":
+                if failing_method == "encode":
+                    raise RuntimeError("marker encode failed")
+                return [7]
+            return [1, 2]
+
+        def decode(self, ids):
+            if ids == [7]:
+                raise RuntimeError("marker decode failed")
+            return "prompt"
+
+    engine = _Engine(chat_text='<think>Keep this reasoning.</think>{"value":42}')
+    engine.tokenizer = Tokenizer()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    build = Mock()
+    monkeypatch.setattr(guided, "build_json_schema_logits_processor", build)
+    payload = _payload(strict=True, stream=stream)
+    payload["enable_thinking"] = True
+    payload["messages"].insert(0, {"role": "system", "content": "<|think|>My rules"})
+
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.routes.chat"):
+        response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200, response.text
+    assert "Keep this reasoning." in response.text
+    assert not engine.guided_calls
+    build.assert_not_called()
+    calls = engine.stream_calls if stream else engine.chat_calls
+    assert len(calls) == 1
+    assert calls[0]["messages"][0]["content"].startswith("<|think|>My rules\n\n")
+    assert "final answer" in calls[0]["messages"][0]["content"]
+    assert calls[0]["kwargs"]["enable_thinking"] is True
+    assert "grammar_logits_processor" not in calls[0]["kwargs"]
+    assert "Unable to resolve response_format reasoning gate" in caplog.text
+    assert f"marker {failing_method} failed" in caplog.text
+    fallback_logs = [
+        r.message
+        for r in caplog.records
+        if "prompt augmented for response_format" in r.message
+    ]
+    assert len(fallback_logs) == 1
+    assert "no supported atomic reasoning-end marker" in fallback_logs[0]
+
+
+@pytest.mark.parametrize("repair_content", ['{"value":42}', '{"value":200}'])
+def test_strict_repair_validates_extracted_content(monkeypatch, repair_content):
+    from unittest.mock import Mock
+
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from rapid_mlx.routes import chat as chat_route
+
+    initial_content = '{"value":0}'
+
+    class RepairingEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            content = repair_content if self.chat_calls else initial_content
+            self._chat_text = f"<think>Reasoning for this attempt.</think>{content}"
+            return await super().chat(messages=messages, **kwargs)
+
+    engine = RepairingEngine(supports_guided=False)
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    validate = Mock(wraps=chat_route.validate_and_envelope)
+    monkeypatch.setattr(chat_route, "validate_and_envelope", validate)
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "on")
+    payload = _payload(strict=True)
+    payload["enable_thinking"] = True
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert len(engine.chat_calls) == 2
+    assert not engine.guided_calls
+    assert [call.args[0] for call in validate.call_args_list] == [
+        initial_content,
+        repair_content,
+    ]
+    if repair_content == '{"value":42}':
+        assert response.status_code == 200, response.text
+        message = response.json()["choices"][0]["message"]
+        assert json.loads(message["content"]) == json.loads(repair_content)
+        assert message["reasoning_content"] == "Reasoning for this attempt."
+    else:
+        assert response.status_code == 422, response.text
+        details = response.json()["error"]["details"]
+        assert details["attempts"] == 2
+        assert details["reason"] == "schema_violation"
+        assert details["failing_path"] == "/value"
 
 
 @pytest.mark.parametrize("stream", [False, True])
