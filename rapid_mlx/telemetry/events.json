@@ -246,7 +246,12 @@
       "values": [
         "config_parse", "import_error", "io_error", "type_error",
         "memory_error", "key_error", "attribute_error", "assertion_error",
-        "value_error", "runtime_error", "unknown", "weights_load", "draft_attach"
+        "value_error", "runtime_error", "unknown", "weights_load", "draft_attach",
+        "config_load", "tokenizer_load", "chat_template", "vision_load",
+        "cache_setup", "warmup", "checkpoint_resolve", "model_prepare",
+        "subprocess_error", "timeout_error", "not_implemented", "system_exit",
+        "template_error", "safetensors_error", "hub_error", "network_error",
+        "cache_layout", "cancelled_error"
       ]
     },
     "byom_preflight": {

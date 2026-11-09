@@ -115,7 +115,12 @@ service:
   * A failed serve classified as `other` includes one closed startup boundary or exception type
     (`failure_subtype`): `config_parse`, `import_error`, `io_error`, `type_error`,
     `memory_error`, `key_error`, `attribute_error`, `assertion_error`,
-    `value_error`, `runtime_error`, `unknown`, `weights_load`, or `draft_attach`; never the message.
+    `value_error`, `runtime_error`, `unknown`, `weights_load`, `draft_attach`,
+    `config_load`, `tokenizer_load`, `chat_template`, `vision_load`, `cache_setup`,
+    `warmup`, `checkpoint_resolve`, `model_prepare`, `subprocess_error`,
+    `timeout_error`, `not_implemented`, `system_exit`, `template_error`,
+    `safetensors_error`, `hub_error`, `network_error`, `cache_layout`, or
+    `cancelled_error`; never the message.
   * A failed model serve uses one closed error class: `unsupported_architecture`,
     `unsupported_format`, `insufficient_memory`, `corrupt_weights`,
     `download_failed`, `local_path_missing`, `missing_extra`, `invalid_config`,

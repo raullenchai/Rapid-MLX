@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import stat
+import subprocess
 import threading
 import time
 import urllib.error
@@ -412,6 +413,24 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
     return "other"
 
 
+# Fixed identities are matched across the MRO so optional packages need not be
+# imported by telemetry. Neither arbitrary class names nor messages are emitted.
+_STARTUP_EXCEPTION_SUBTYPES = {
+    ("jinja2.exceptions", "TemplateError"): "template_error",
+    ("safetensors_rust", "SafetensorError"): "safetensors_error",
+    ("safetensors._safetensors_rust", "SafetensorError"): "safetensors_error",
+    ("huggingface_hub.errors", "HfHubHTTPError"): "hub_error",
+    ("huggingface_hub.utils._errors", "HfHubHTTPError"): "hub_error",
+    ("httpx", "TimeoutException"): "timeout_error",
+    ("httpx", "HTTPError"): "network_error",
+    ("requests.exceptions", "Timeout"): "timeout_error",
+    ("requests.exceptions", "RequestException"): "network_error",
+    ("rapid_mlx.errors", "PagedCacheUnsupportedLayoutError"): "cache_layout",
+    ("concurrent.futures._base", "CancelledError"): "cancelled_error",
+    ("asyncio.exceptions", "CancelledError"): "cancelled_error",
+}
+
+
 def serve_failure_subtype(exc: BaseException) -> str:
     """Classify an unclassified serve failure by boundary, then exception type.
 
@@ -437,8 +456,21 @@ def serve_failure_subtype(exc: BaseException) -> str:
         if boundary := startup_boundary_for(cause):
             return boundary
 
+    for cause in chain:
+        for cls in type(cause).__mro__:
+            subtype = _STARTUP_EXCEPTION_SUBTYPES.get(
+                (cls.__module__, cls.__qualname__)
+            )
+            if subtype is not None:
+                return subtype
+
     for failure_type, subtype in (
         (json.JSONDecodeError, "config_parse"),
+        (subprocess.TimeoutExpired, "timeout_error"),
+        (TimeoutError, "timeout_error"),
+        (subprocess.SubprocessError, "subprocess_error"),
+        (NotImplementedError, "not_implemented"),
+        (SystemExit, "system_exit"),
         (ImportError, "import_error"),
         (OSError, "io_error"),
         (TypeError, "type_error"),

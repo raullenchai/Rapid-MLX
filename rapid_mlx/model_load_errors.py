@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 
 from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
+from .engine_startup_errors import startup_failure_boundary
 from .runtime.optional_runtime import OptionalRuntimeMissing
 
 _T = TypeVar("_T")
@@ -58,6 +59,7 @@ _MLX_LOAD_BOUNDARIES_ACTIVE: ContextVar[bool] = ContextVar(
 )
 
 
+@startup_failure_boundary("config_load")
 def validate_model_config_file(model_path: str | Path) -> dict[str, Any] | None:
     """Validate a local ``config.json`` before MLX starts loading weights.
 
@@ -107,6 +109,7 @@ def validate_model_config_file(model_path: str | Path) -> dict[str, Any] | None:
     return config
 
 
+@startup_failure_boundary("tokenizer_load")
 def load_tokenizer_checked(loader: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
     """Run a tokenizer loader and preserve its failure as a typed cause."""
 

@@ -3,11 +3,36 @@
 
 from __future__ import annotations
 
+from contextlib import ContextDecorator
 from types import TracebackType
 from typing import Literal
 
-StartupBoundary = Literal["weights_load", "draft_attach"]
-_STARTUP_BOUNDARIES = frozenset({"weights_load", "draft_attach"})
+StartupBoundary = Literal[
+    "weights_load",
+    "draft_attach",
+    "config_load",
+    "tokenizer_load",
+    "chat_template",
+    "vision_load",
+    "cache_setup",
+    "warmup",
+    "checkpoint_resolve",
+    "model_prepare",
+]
+_STARTUP_BOUNDARIES = frozenset(
+    {
+        "weights_load",
+        "draft_attach",
+        "config_load",
+        "tokenizer_load",
+        "chat_template",
+        "vision_load",
+        "cache_setup",
+        "warmup",
+        "checkpoint_resolve",
+        "model_prepare",
+    }
+)
 _BOUNDARY_ATTRIBUTE = "_rapid_mlx_startup_boundary"
 
 
@@ -20,7 +45,7 @@ def startup_boundary_for(exc: BaseException) -> str | None:
         return None
 
 
-class _StartupFailureBoundary:
+class _StartupFailureBoundary(ContextDecorator):
     def __init__(self, boundary: StartupBoundary) -> None:
         if boundary not in _STARTUP_BOUNDARIES:
             raise ValueError("Unknown engine startup boundary")

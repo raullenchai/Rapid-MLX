@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 
+from ..engine_startup_errors import startup_failure_boundary
 from ..model_load_errors import (
     IncompatibleWeights,
     TokenizerLoadFailed,
@@ -583,6 +584,7 @@ def augment_eos_token_ids_from_generation_config(
         )
 
 
+@startup_failure_boundary("chat_template")
 def _apply_chat_template_sidecar(model_path: Path, tokenizer) -> bool:
     """Populate ``tokenizer.chat_template`` from a sidecar file if missing.
 
@@ -1235,6 +1237,7 @@ def _local_snapshot_if_cached(model_name: str) -> str:
         return model_name
 
 
+@startup_failure_boundary("checkpoint_resolve")
 def _resolve_subfolder_checkpoint(model_name: str) -> str:
     """Resolve a catalog revision or subfolder to an exact local checkpoint.
 

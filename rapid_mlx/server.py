@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, cast
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .engine_startup_errors import startup_failure_boundary
+
 if TYPE_CHECKING:
     from .runtime.audio_worker import AudioWorkerHandoff, ModelWorker
     from .runtime.effective_config import EffectiveRuntimeConfig
@@ -2495,6 +2497,7 @@ def _reject_text_lane_only_mllm_pack(model_name: str, load_path: str) -> None:
     )
 
 
+@startup_failure_boundary("checkpoint_resolve")
 def _resolve_serving_checkpoint(
     model_name: str,
     *,
@@ -2563,6 +2566,7 @@ def _resolve_serving_checkpoint(
     )
 
 
+@startup_failure_boundary("model_prepare")
 def load_model(
     model_name: str,
     scheduler_config=None,
@@ -3396,7 +3400,8 @@ async def _load_dynamic_resident_model(
         engine._load_blocking()  # noqa: SLF001
         if hasattr(engine, "_loaded") and not engine._loaded:
             await engine.start()
-        engine.generate_warmup()
+        with startup_failure_boundary("warmup"):
+            engine.generate_warmup()
     elif modality in ("video-gen", "audio"):
         raise RuntimeError(
             f"runtime residency loading is not available for modality {modality!r}"
@@ -3440,7 +3445,8 @@ async def _load_dynamic_resident_model(
         )
         await engine.start()
         try:
-            engine.generate_warmup()
+            with startup_failure_boundary("warmup"):
+                engine.generate_warmup()
         except Exception as exc:  # noqa: BLE001 - warmup is an optimization
             logger.debug("Dynamic model warmup failed (non-fatal): %s", exc)
 

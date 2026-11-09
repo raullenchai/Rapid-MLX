@@ -20,6 +20,7 @@ import json
 import os
 from typing import cast
 
+from .engine_startup_errors import startup_failure_boundary
 from .model_profile import (
     VIDEO_GENERATION_MODES,
     Modality,
@@ -1142,6 +1143,7 @@ def external_model_root_paths() -> list[str]:
     return roots
 
 
+@startup_failure_boundary("checkpoint_resolve")
 def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     """Resolve a model alias to its full HuggingFace path.
 

@@ -12,6 +12,8 @@ import logging
 from functools import cache
 from importlib.resources import files
 
+from ..engine_startup_errors import startup_failure_boundary
+
 logger = logging.getLogger(__name__)
 
 ChatTemplateValue = str | dict[str, str]
@@ -50,6 +52,7 @@ def _template_owner(applicator):
     return None
 
 
+@startup_failure_boundary("chat_template")
 def resolve_chat_template(
     applicator,
     template_id: str | None,
