@@ -744,3 +744,45 @@ def test_request_curve_follows_whether_parked_rounds_pipeline():
     assert request_round_costs(steep, parks_pipelined=False) == (1.0, 1.496, 1.992)
     assert request_round_costs(cheap, parks_pipelined=False) == cheap.round_costs
     assert request_round_costs(GreedySchedule(depth=2), parks_pipelined=False) == ()
+
+
+def test_adaptive_controller_still_learns_costs():
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import DepthController
+
+    controller = DepthController(max_k=2)
+    controller.record(0, 10.0, [])
+    controller.record(0, 20.0, [])
+    assert controller.cost.visits(0) == 2
+    assert controller.cost.cost(0) > 10.0
+
+
+def test_fixed_park_skips_redundant_cost_refresh_probes():
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import DEPTH_PROBE_INTERVAL_MAX
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import request_depth_controller
+
+    controller = request_depth_controller((1.0, 1.87, 2.49), 2)
+    for _ in range(8):
+        controller.record(1, 1.87, [False])
+        controller.record(2, 2.49, [False])
+    assert controller._selected() == 0
+    for _ in range(4 * DEPTH_PROBE_INTERVAL_MAX):
+        k = controller.pick_k(refresh_park_costs=False)
+        controller.record(k, (1.0, 1.87, 2.49)[k], [False] if k else [])
+    assert controller.starvation_probe_count == 0
+    assert controller.k_histogram[0] > 150
+    assert controller.k_histogram[1] > 0
+    assert controller.k_histogram[2] > 8
+
+
+def test_active_fixed_controller_retains_original_exploration():
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import request_depth_controller
+
+    controller = request_depth_controller((1.0, 1.272, 1.544), 2)
+    original = request_depth_controller((1.0, 1.272, 1.544), 2)
+    for _ in range(200):
+        assert controller._selected() > 0
+        k = controller.pick_k(refresh_park_costs=False)
+        assert k == original.pick_k()
+        controller.record(k, (1.0, 1.272, 1.544)[k], [True] * k)
+        original.record(k, (1.0, 1.272, 1.544)[k], [True] * k)
+    assert controller.starvation_probe_count > 0

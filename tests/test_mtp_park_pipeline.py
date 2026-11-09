@@ -120,7 +120,7 @@ def test_parked_rounds_without_a_schedule_pipeline_too(monkeypatch):
         def __init__(self, *args, **kwargs):
             self.cost = self
 
-        def pick_k(self):
+        def pick_k(self, *, refresh_park_costs=True):
             return 0
 
         def record(self, *args, **kwargs):
@@ -201,7 +201,7 @@ def test_drafting_resumes_after_pipelined_parks(monkeypatch):
     picks: list[int] = []
 
     class _Scripted:
-        def pick_k(self):
+        def pick_k(self, *, refresh_park_costs=True):
             depth = next(script)
             picks.append(depth)
             return depth
@@ -270,7 +270,7 @@ def test_a_park_after_a_verify_round_is_launched_before_its_tokens_go_out(
     script = iter([0, 2] + [0] * 50)
 
     class _Scripted:
-        def pick_k(self):
+        def pick_k(self, *, refresh_park_costs=True):
             return next(script)
 
         def record(self, *args, **kwargs):
@@ -336,7 +336,7 @@ def _scripted_depths(monkeypatch, depths):
     script = iter(depths)
 
     class _Scripted:
-        def pick_k(self):
+        def pick_k(self, *, refresh_park_costs=True):
             return next(script)
 
         def record(self, *args, **kwargs):
@@ -420,7 +420,7 @@ def test_parked_round_cost_excludes_the_callers_time(monkeypatch):
     charged: list[tuple[int, float]] = []
 
     class _ParkedController:
-        def pick_k(self):
+        def pick_k(self, *, refresh_park_costs=True):
             return 0
 
         def record(self, depth, cost_ms, accepts):

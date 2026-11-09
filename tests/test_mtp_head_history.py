@@ -3,12 +3,13 @@
 
 import ast
 import copy
+import logging
 import os
 import time
 from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -44,7 +45,7 @@ def _harness(legacy=False, fused=False):
     target_drops = []
 
     def forward(hidden, ids, caches, return_hidden=False):
-        cache.rows.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
+        caches[0].rows.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
         logits = np.eye(64)[ids + 1]
         cascade = np.full(hidden.shape, -99.0)
         return (logits, cascade) if return_hidden else logits
@@ -65,13 +66,24 @@ def _harness(legacy=False, fused=False):
         rebuild_head_history=not legacy,
         head_pending=None,
         head_seed=None,
+        server_bootstrap=None,
+        _request_depth=None,
+        _CACHE_CLEAR_INTERVAL=256,
+        parked_head_rows=[],
+        head_discarded=False,
         mtp_cache=[cache],
         ntoks=1,
         generation_stream=None,
         _is_greedy=True,
         _mtp_supports_fused_greedy=fused,
         _mtp_supports_hidden=True,
-        model=SimpleNamespace(mtp_forward=forward, mtp_greedy=greedy),
+        model=SimpleNamespace(
+            mtp_forward=forward,
+            mtp_greedy=greedy,
+            make_mtp_cache=lambda: [_Cache()],
+            layers=[object(), object()],
+        ),
+        prompt_cache=["b0", "b1", cache],
         quantize_cache_fn=lambda caches: quantized.append(caches),
         _process_and_sample=lambda prev, logits, *a, **kw: (
             logits.argmax(axis=-1),
@@ -88,16 +100,23 @@ def _harness(legacy=False, fused=False):
         _restore_processor_state=lambda state: None,
         _timing_add=lambda *args: None,
         _launch_drafts=lambda result: result,
+        logger=logging.getLogger("test_mtp_head_history"),
     )
     # These nested functions use enclosing generator state. Executing them in
     # one namespace preserves that state without importing the MLX runtime.
     names = {
         "_trim_head",
         "_flush_head",
+        "_discard_head_history",
+        "_settle_head_after_error",
+        "_replay_parked_head",
+        "_finish_head",
+        "_park_head",
         "_rollback_verify_round",
         "_step_mtp",
         "_step_mtp_chain",
         "_draft_chain_timed",
+        "_reset_parked_probe_head",
         "_prefill",
         "_lookup_drafts",
         "_sync_prompt_lookup_history",
@@ -115,7 +134,18 @@ def _harness(legacy=False, fused=False):
     return env, cache, quantized, target_drops
 
 
-def _settle_verify(env, accepted, emitted=None, *, lookup=False):
+def _assert_head_discarded(env, original):
+    fresh = env["mtp_cache"][0]
+    assert fresh is not original
+    assert fresh.offset == 0
+    assert fresh.rows == []
+    assert env["prompt_cache"][:2] == ["b0", "b1"]
+    assert env["prompt_cache"][2:] == [fresh]
+    assert env["head_pending"] is None
+    assert env["parked_head_rows"] == []
+
+
+def _settle_verify(env, accepted, emitted=None, *, lookup=False, k=3):
     """Execute the actual post-verify rebuild block, including terminal caps."""
     block = next(
         n
@@ -130,7 +160,7 @@ def _settle_verify(env, accepted, emitted=None, *, lookup=False):
     )
     env.update(
         pending_is_prompt_lookup=lookup,
-        k_len=3,
+        k_len=k,
         accepted_count=accepted,
         emissions=[None] * (accepted if emitted is None else emitted),
         hidden=np.array([[[110.0], [120.0], [130.0], [140.0]]]),
@@ -298,9 +328,11 @@ def test_park_transitions_append_each_committed_head_pair_once(prefetch, parking
         trim(n)
 
     def checked_chain(*args, **kwargs):
-        assert env["head_pending"] is None
-        assert cache.offset == env["ntoks"] - 1
-        assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 10 + env["ntoks"])]
+        deferred = _deferred_rows(env)
+        assert cache.offset + len(deferred) == env["ntoks"] - 1
+        assert cache.rows + deferred == [
+            (10.0 * (t - 1), t) for t in range(11, 10 + env["ntoks"])
+        ]
         chain_boundaries.append(env["ntoks"])
         return chain(*args, **kwargs)
 
@@ -319,7 +351,7 @@ def test_park_transitions_append_each_committed_head_pair_once(prefetch, parking
     # Verify deliberately trims provisional draft rows and rebuilds them.
     # Every other mtp_forward row must commit exactly once, including parks.
     assert Counter(forwards) == Counter(expected) + Counter(trimmed)
-    assert trimmed == [(110.0, 12), (150.0, 16)]
+    assert trimmed == []  # K=1 appends only an already-committed pair.
 
 
 @pytest.mark.parametrize("accepted", [0, 1, 3])
@@ -358,12 +390,7 @@ def test_lookup_transitions_rebuild_true_committed_pairs(
         trim(n)
 
     def checked_chain(*args, **kwargs):
-        pending = env["head_pending"]
-        deferred = (
-            []
-            if pending is None
-            else list(zip(pending[0][0, :, 0].tolist(), pending[1].tolist()))
-        )
+        deferred = _deferred_rows(env)
         assert cache.offset + len(deferred) == env["ntoks"] - 1
         assert cache.rows + deferred == [
             (10.0 * (t - 1), t) for t in range(11, 10 + env["ntoks"])
@@ -513,11 +540,11 @@ def test_rebuild_flushes_terminal_or_park_handoff(accepted, emitted, lookup):
     else:
         env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
     _settle_verify(env, accepted, emitted, lookup=lookup)
-    assert cache.offset == 0
+    assert cache.offset == (0 if lookup else 1)
     env["_flush_head"]()
     assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 12 + emitted)]
     assert env["head_pending"] is None
-    assert len(quantized) == (1 if lookup else 4)
+    assert len(quantized) == (1 if lookup else 3 + int(emitted > 0))
 
 
 def test_rebuild_park_and_resume():
@@ -545,7 +572,7 @@ def test_rebuild_park_and_resume():
 
 
 @pytest.mark.parametrize("lookup", [False, True])
-def test_failed_chain_restores_deferred_rows(lookup):
+def test_failed_chain_discards_deferred_rows(lookup):
     env, cache, _, _ = _harness()
     assert "_draft_chain_timed" in env
     count = 4 if lookup else 1
@@ -568,8 +595,7 @@ def test_failed_chain_restores_deferred_rows(lookup):
     env["_step_mtp"] = fail_second
     with pytest.raises(RuntimeError, match="injected draft fault"):
         env["_draft_chain_timed"](np.array([[[110.0]]]), np.array([12]), None, 3)
-    assert cache.rows == expected
-    assert env["head_pending"] is None
+    _assert_head_discarded(env, cache)
 
 
 def test_prefill_shift_and_first_chain():
@@ -615,7 +641,7 @@ def test_terminal_bonus_or_residual_is_committed(accepted, lookup):
 
 @pytest.mark.parametrize("sync_failure", [False, True])
 @pytest.mark.parametrize("lookup", [False, True])
-def test_verify_exception_keeps_true_y(sync_failure, lookup):
+def test_verify_exception_discards_head_history(sync_failure, lookup):
     env, cache, _, drops = _harness()
     cache.rows = [(90.0, 10)]
     if lookup:
@@ -626,15 +652,8 @@ def test_verify_exception_keeps_true_y(sync_failure, lookup):
         n
         for n in ast.walk(GENERATOR)
         if isinstance(n, ast.ExceptHandler)
-        and any(
-            isinstance(child, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "head_pending"
-                for t in child.targets
-            )
-            and ast.unparse(child.value) == "(head_seed, y)"
-            for child in ast.walk(n)
-        )
+        and "_settle_head_after_error(_discard_head_history)" in ast.unparse(n)
+        and "_restore_processor_state(processor_boundary)" in ast.unparse(n)
     ]
     assert len(handlers) == 2
     handler = next(
@@ -660,7 +679,7 @@ def test_verify_exception_keeps_true_y(sync_failure, lookup):
             ),
             env,
         )
-    assert cache.rows == [(90.0, 10), (100.0, 11)]
+    _assert_head_discarded(env, cache)
     assert bool(drops) == sync_failure
 
 
@@ -703,3 +722,507 @@ def test_repeated_rejections_do_not_accumulate_missing_head_rows():
     env["_flush_head"]()
     assert cache.offset == 5
     assert drops == [(3, {"verify_size": 4})] * 5
+
+
+def test_history_flush_evaluates_kv_without_unused_logits():
+    env, cache, quantized, _ = _harness()
+    cache.state = (object(), object())
+    unused_logits = object()
+    evaluated = []
+    forward = env["model"].mtp_forward
+
+    def lazy_forward(*args, **kwargs):
+        forward(*args, **kwargs)
+        return unused_logits
+
+    env["model"].mtp_forward = lazy_forward
+    env["mx"].eval = lambda *args: evaluated.extend(args)
+    env["head_pending"] = (np.array([[[100.0]]]), np.array([11]))
+    env["_flush_head"]()
+    assert evaluated == [[cache.state]]
+    assert quantized == [[cache]]
+    assert cache.rows == [(100.0, 11)]
+    assert env["head_pending"] is None
+    env["_flush_head"]()
+    assert len(evaluated) == 1
+
+
+@pytest.mark.parametrize("rows", [1, 2, 4])
+def test_qwen_greedy_projects_only_last_history_row(monkeypatch, rows):
+    import sys
+
+    source = SOURCE.with_name("qwen3_5_inject.py")
+    method = next(
+        n
+        for n in ast.walk(ast.parse(source.read_text()))
+        if isinstance(n, ast.FunctionDef) and n.name == "mtp_greedy"
+    )
+    projected = []
+    full_hidden = np.arange(rows * 8).reshape(1, rows, 8)
+    token = np.array([[23]])
+    module = ModuleType("rapid_mlx.spec_decode.mtp.quantized_argmax")
+    module.quantized_argmax = lambda head, hidden: projected.append(hidden) or token
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    env = {
+        "__package__": "rapid_mlx.spec_decode.mtp",
+        "mtp_concat_order": "embedding_hidden",
+    }
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), env)
+    model = SimpleNamespace(
+        args=SimpleNamespace(tie_word_embeddings=False),
+        model=SimpleNamespace(embed_tokens=None),
+        lm_head=object(),
+        mtp=lambda *args, **kwargs: full_hidden,
+    )
+    actual, hidden = env["mtp_greedy"](model, None, None, [])
+    assert actual is token
+    assert hidden is full_hidden
+    assert len(projected) == 1
+    np.testing.assert_array_equal(projected[0], full_hidden[:, -1:, :])
+
+
+def _deferred_rows(env):
+    pending = env["head_pending"]
+    rows = ([pending] if pending is not None else []) + env["parked_head_rows"]
+    return [
+        pair
+        for hidden, ids in rows
+        for pair in zip(hidden[0, :, 0].tolist(), ids.reshape(-1).tolist())
+    ]
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+@pytest.mark.parametrize("end", ["budget", "close", "throw"])
+def test_parked_head_defers_work_until_resume_or_exit(prefetch, end):
+    env, cache = _generation_harness(8, [0] * 8, prefetch=prefetch)
+    generated = env["run"]()
+    for token in range(11, 15):
+        assert next(generated)[0] == token
+        assert cache.rows == []
+        assert _deferred_rows(env) == [
+            (10.0 * (t - 1), t) for t in range(11, token + 1)
+        ]
+    if end == "budget":
+        assert [t for t, _, _ in generated] == list(range(15, 19))
+        assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 19)]
+    elif end == "close":
+        generated.close()
+        _assert_head_discarded(env, cache)
+    else:
+        error = RuntimeError("cancel")
+        with pytest.raises(RuntimeError, match="cancel") as caught:
+            generated.throw(error)
+        assert caught.value is error
+        _assert_head_discarded(env, cache)
+    assert env["parked_head_rows"] == []
+    assert env["head_pending"] is None
+
+
+def test_resumed_chain_failure_discards_deferred_park_history():
+    env, cache, _, _ = _harness()
+    env["parked_head_rows"] = [
+        (np.array([[[100.0]]]), np.array([11])),
+        (np.array([[[110.0]]]), np.array([12])),
+    ]
+    original = env["_step_mtp"]
+
+    def fail_after_forward(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("draft failed")
+
+    env["_step_mtp"] = fail_after_forward
+    with pytest.raises(RuntimeError, match="draft failed"):
+        env["_draft_chain_timed"](np.array([[[120.0]]]), np.array(13), None, 1)
+    _assert_head_discarded(env, cache)
+
+
+def test_long_park_bounds_replay_and_preserves_all_rows():
+    env, cache = _generation_harness(600, [0] * 600)
+    calls = []
+
+    def counted(hidden, ids, caches, **kwargs):
+        calls.append(ids.shape[1])
+        # The toy vocabulary has 64 ids; this test only needs KV writes.
+        cache.rows.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
+        return None
+
+    env["model"].mtp_forward = counted
+    assert [tok for tok, _, _ in env["run"]()] == list(range(11, 611))
+    assert calls == [1] * 600
+    assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 611)]
+    assert env["parked_head_rows"] == []
+
+
+@pytest.mark.parametrize("lookup", [False, True])
+@pytest.mark.parametrize("prefetch", [False, True])
+@pytest.mark.parametrize("close_at", [12, 14])
+def test_verify_park_handoff_defers_head_then_discards_on_close(
+    lookup, prefetch, close_at
+):
+    env, cache = _generation_harness(12, [], prefetch=prefetch)
+    env["_next_depth"] = lambda: 1 if env["ntoks"] < 2 else 0
+    if lookup:
+        env["_lookup_proposal"] = lambda: ([12], 2) if env["ntoks"] == 1 else None
+    generated = env["run"]()
+    for token in range(11, close_at + 1):
+        assert next(generated)[0] == token
+        assert cache.rows == ([(100.0, 11)] if not lookup else [])
+    # Verify can collect an undelivered bonus before yielding; closing must
+    # discard that row along with all deferred history, never flush it.
+    generated.close()
+    _assert_head_discarded(env, cache)
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_close_at_parked_yield_discards_caller_head_without_forward(prefetch):
+    env, cache = _generation_harness(8, [0] * 8, prefetch=prefetch)
+    generated = env["run"]()
+    assert next(generated)[0] == 11
+    assert _deferred_rows(env) == [(100.0, 11)]
+    forwards = []
+    forward = env["model"].mtp_forward
+
+    def observed_forward(*args, **kwargs):
+        forwards.append(args)
+        return forward(*args, **kwargs)
+
+    env["model"].mtp_forward = observed_forward
+    generated.close()
+    assert forwards == []
+    assert cache.rows == []
+    _assert_head_discarded(env, cache)
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+@pytest.mark.parametrize("close_early", [False, True])
+def test_server_exit_discards_unused_private_head_history(prefetch, close_early):
+    env, cache = _generation_harness(40, [0] * 40, bootstrap=True, prefetch=prefetch)
+    forwards = []
+    env["model"].mtp_forward = lambda *args, **kwargs: forwards.append(args)
+    generated = env["run"]()
+    if close_early:
+        assert [next(generated)[0] for _ in range(5)] == list(range(12, 17))
+        generated.close()
+    else:
+        assert [t for t, _, _ in generated] == list(range(12, 51))
+    assert forwards == []
+    assert cache.rows == []
+    assert env["parked_head_rows"] == []
+    assert env["head_pending"] is None
+
+
+def test_park_replay_preserves_forward_widths_without_per_block_sync():
+    env, cache, _, _ = _harness()
+    widths = []
+    evaluated = []
+    original = env["model"].mtp_forward
+
+    def counted(h, ids, caches, **kwargs):
+        widths.append(ids.shape[1])
+        return original(h, ids, caches, **kwargs)
+
+    env["model"].mtp_forward = counted
+    env["mx"].eval = lambda *args: evaluated.append(args)
+    env["parked_head_rows"] = [
+        (np.array([[[100.0], [110.0]]]), np.array([11, 12])),
+        (np.array([[[120.0]]]), np.array([13])),
+        (np.array([[[130.0]]]), np.array([14])),
+    ]
+    env["_step_mtp_chain"](np.array([[[140.0]]]), np.array([15]), None, 1)
+    assert widths == [2, 1, 1, 1]
+    assert evaluated == []
+    assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 16)]
+    assert env["parked_head_rows"] == []
+
+
+@pytest.mark.parametrize("layers", [1, 2])
+@pytest.mark.parametrize("quantized", [False, True])
+@pytest.mark.parametrize("dtype_name", ["float16", "bfloat16"])
+def test_lazy_replay_at_original_widths_matches_eager_kv_and_next_query(
+    layers, quantized, dtype_name
+):
+    mx = pytest.importorskip("mlx.core")
+    nn = pytest.importorskip("mlx.nn")
+    from mlx_lm.models.cache import KVCache
+    from mlx_lm.models.qwen3_5 import TextModelArgs
+
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+
+    mx.random.seed(9)
+    dtype = getattr(mx, dtype_name)
+    args = TextModelArgs(
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=32,
+        vocab_size=64,
+    )
+    head = build_mtp_module(args, layers)
+    head.set_dtype(dtype)
+    embed = nn.Embedding(64, 64)
+    embed.set_dtype(dtype)
+    if quantized:
+        nn.quantize(head, group_size=64, bits=4)
+    eager = [KVCache() for _ in range(layers)]
+    lazy = [KVCache() for _ in range(layers)]
+    chunks = [
+        (mx.random.normal((1, n, 64)).astype(dtype), mx.arange(n)[None] + 3)
+        for n in [3, 1, 1, 2]
+    ]
+    for h, ids in chunks:
+        head(h, ids, embed, eager)
+        mx.eval([c.state for c in eager])
+    for h, ids in chunks:
+        head(h, ids, embed, lazy)
+    mx.eval([c.state for c in lazy])
+    for a, b in zip(eager, lazy):
+        assert a.offset == b.offset == 7
+        for x, y in zip(a.state, b.state):
+            assert bool(mx.array_equal(x, y).item())
+    h = mx.random.normal((1, 1, 64)).astype(dtype)
+    ids = mx.array([[11]])
+    a, b = head(h, ids, embed, eager), head(h, ids, embed, lazy)
+    mx.eval(a, b)
+    assert bool(mx.array_equal(a, b).item())
+
+
+@pytest.mark.parametrize("greedy", [False, True])
+@pytest.mark.parametrize("server", [False, True])
+@pytest.mark.parametrize("selected", [None, 0, 1, 2])
+def test_probe_reset_only_for_private_ev_park(greedy, server, selected):
+    env, original, _, _ = _harness()
+    fresh = _Cache()
+    original.rows = [(1, 2)]
+    pending = (np.zeros((1, 1, 1)), np.array([3]))
+    env["parked_head_rows"] = [pending]
+    env["head_pending"] = pending
+    env["server_bootstrap"] = object() if server else None
+    env["_is_greedy"] = greedy
+    env["_request_depth"] = (
+        SimpleNamespace(_last_selected=selected) if selected is not None else None
+    )
+    env["model"].make_mtp_cache = lambda: [fresh]
+    env["_reset_parked_probe_head"]()
+    reset = greedy and server and selected == 0
+    assert env["mtp_cache"][0] is (fresh if reset else original)
+    assert env["parked_head_rows"] == ([] if reset else [pending])
+    assert env["head_pending"] is (None if reset else pending)
+    assert original.rows == [(1, 2)]
+
+
+@pytest.mark.parametrize("fail_at", ["forward", "eval"])
+def test_failed_head_settlement_discards_history(fail_at):
+    env, cache, _, _ = _harness()
+    fresh = _Cache()
+    env["model"].make_mtp_cache = lambda: [fresh]
+    env["model"].layers = [object(), object()]
+    caller = ["b0", "b1", cache]
+    env["prompt_cache"] = caller
+    env["parked_head_rows"] = [(np.full((1, 1, 1), 1.0), np.array([1]))]
+    env["head_pending"] = (np.full((1, 2, 1), 7.0), np.array([4, 5]))
+    forward = env["model"].mtp_forward
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("head settlement failed")
+
+    if fail_at == "forward":
+
+        def write_then_fail(hidden, ids, caches, return_hidden=False):
+            if int(ids[0, 0]) == 4:
+                forward(hidden, ids, caches, return_hidden)
+                fail()
+            return forward(hidden, ids, caches, return_hidden)
+
+        env["model"].mtp_forward = write_then_fail
+    else:
+        env["mx"].eval = fail
+    with pytest.raises(RuntimeError, match="head settlement failed"):
+        env["_flush_head"]()
+    assert env["mtp_cache"] == [fresh]
+    assert caller == ["b0", "b1", fresh]
+    assert fresh.offset == 0
+    assert env["head_pending"] is None
+    assert env["parked_head_rows"] == []
+
+
+def test_draft_failure_keeps_error_when_discard_allocation_fails():
+    env, _, _, _ = _harness()
+    env["head_pending"] = (np.full((1, 1, 1), 7.0), np.array([4]))
+
+    error = RuntimeError("draft failed")
+
+    def draft_fail(*args, **kwargs):
+        raise error
+
+    def discard_fail():
+        raise ValueError("head allocation failed")
+
+    env["_step_mtp_chain"] = draft_fail
+    env["model"].make_mtp_cache = discard_fail
+    env["prompt_cache"] = None
+    with pytest.raises(RuntimeError, match="draft failed") as caught:
+        env["_draft_chain_timed"]()
+    assert caught.value is error
+    assert env["head_pending"] is None
+
+
+def test_discard_allocates_once_across_nested_handlers():
+    env, cache, _, _ = _harness()
+    allocations = []
+
+    def make():
+        allocations.append(True)
+        return [type(cache)()]
+
+    env["model"].make_mtp_cache = make
+    env["_discard_head_history"]()
+    fresh = env["mtp_cache"][0]
+    env["_discard_head_history"]()
+    assert allocations == [True]
+    assert env["mtp_cache"][0] is fresh
+    assert env["prompt_cache"] == ["b0", "b1", fresh]
+
+
+def test_discard_allocation_failure_detaches_caller_head():
+    env, cache, _, _ = _harness()
+    cache.rows = [(90.0, 10)]
+    env["parked_head_rows"] = [(np.array([[[100.0]]]), np.array([11]))]
+
+    def discard_fail():
+        raise ValueError("head allocation failed")
+
+    env["model"].make_mtp_cache = discard_fail
+    with pytest.raises(ValueError, match="head allocation failed"):
+        env["_discard_head_history"]()
+    # A backbone-only caller cache is valid input; the old head is never kept.
+    assert env["prompt_cache"] == ["b0", "b1"]
+    assert env["parked_head_rows"] == []
+    assert env["head_pending"] is None
+
+
+def test_probe_reset_allocation_failure_preserves_history():
+    env, original, _, _ = _harness()
+    env["parked_head_rows"] = [(np.zeros((1, 1, 1)), np.array([3]))]
+    env["server_bootstrap"] = object()
+    env["_request_depth"] = SimpleNamespace(_last_selected=0)
+
+    def fail():
+        raise RuntimeError("allocation failed")
+
+    env["model"].make_mtp_cache = fail
+    with pytest.raises(RuntimeError, match="allocation failed"):
+        env["_reset_parked_probe_head"]()
+    assert env["mtp_cache"][0] is original
+    assert len(env["parked_head_rows"]) == 1
+
+
+@pytest.mark.parametrize(
+    "k,accepted", [(1, 0), (1, 1), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 3)]
+)
+@pytest.mark.parametrize("fused", [False, True])
+def test_verify_keeps_first_committed_head_pair_without_replay(k, accepted, fused):
+    env, cache, _, _ = _harness(fused=fused)
+    seen = []
+    forward = env["model"].mtp_forward
+    greedy = env["model"].mtp_greedy
+
+    def counted(hidden, ids, caches, **kwargs):
+        seen.extend(ids.reshape(-1).tolist())
+        return forward(hidden, ids, caches, **kwargs)
+
+    def counted_greedy(hidden, ids, caches):
+        seen.extend(ids.reshape(-1).tolist())
+        return greedy(hidden, ids, caches)
+
+    env["model"].mtp_forward = counted
+    env["model"].mtp_greedy = counted_greedy
+    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, k)
+    _settle_verify(env, accepted, k=k)
+    assert cache.rows == [(100.0, 11)]
+    env["_flush_head"]()
+    assert seen.count(11) == 1
+    assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 12 + accepted)]
+    assert env["head_pending"] is None
+
+
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_parked_target_failure_discards_head_history(private, prefetch):
+    env, cache = _generation_harness(8, [0] * 8, prefetch=prefetch)
+    if private:
+        env["server_bootstrap"] = (np.array([[[100.0]]]), np.zeros(64))
+    generated = env["run"]()
+    next(generated)
+    next(generated)
+    committed = env["ntoks"]
+    assert committed > 0
+    assert cache.offset == 0
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("target forward failed")
+
+    env["_step_backbone"] = fail
+    with pytest.raises(RuntimeError, match="target forward failed"):
+        next(generated)
+    _assert_head_discarded(env, cache)
+
+
+@pytest.mark.parametrize("discard_error", [ValueError, KeyboardInterrupt])
+def test_parked_discard_failure_preserves_original_error(discard_error):
+    env, cache = _generation_harness(8, [0] * 8)
+    generated = env["run"]()
+    next(generated)
+    next(generated)
+
+    error = RuntimeError("target forward failed")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    attempts = []
+
+    def discard_fail():
+        attempts.append(True)
+        raise discard_error("head allocation failed")
+
+    env["_step_backbone"] = fail
+    env["model"].make_mtp_cache = discard_fail
+    env["logger"] = logging.getLogger("test_mtp_head_history")
+    with pytest.raises(RuntimeError, match="target forward failed") as caught:
+        next(generated)
+    assert caught.value is error
+    assert attempts == [True]
+    assert env["head_pending"] is None
+    assert env["parked_head_rows"] == []
+
+
+def test_fixed_park_eventually_discovers_profitable_deeper_acceptance():
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        ACCEPTANCE_MIN_SAMPLES,
+        DEPTH_PROBE_INTERVAL_MAX,
+    )
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import request_depth_controller
+
+    costs = (1.0, 1.87, 2.49)
+    controller = request_depth_controller(costs, 2)
+    # K=1 earns 1.8/1.87 < 1; inherited acceptance makes K=2 look
+    # unprofitable too. Its actual second-position acceptance is perfect:
+    # (1 + .8 + .8) / 2.49 > 1.
+    for _ in range(ACCEPTANCE_MIN_SAMPLES):
+        controller.record(1, costs[1], [True])
+    controller.acc._rate[1] = 0.8
+    assert controller._selected() == 0
+    deeper = 0
+    for _ in range(4 * ACCEPTANCE_MIN_SAMPLES * DEPTH_PROBE_INTERVAL_MAX):
+        k = controller.pick_k(refresh_park_costs=False)
+        controller.record(k, costs[k], [True] * k)
+        # Hold K=1 unprofitable throughout; only deeper evidence can unpark.
+        controller.acc._rate[1] = 0.8
+        deeper += k == 2
+        if controller._selected() == 2:
+            break
+        assert controller._selected() == 0
+    assert deeper >= ACCEPTANCE_MIN_SAMPLES
+    assert controller._selected() == 2

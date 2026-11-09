@@ -464,6 +464,7 @@ def mtp_generate_step(
         server_bootstrap: Internal server handoff of (prompt-end hidden,
             first-token logprobs). ``prompt`` is the already emitted first
             token; skip its delivery and the redundant target bootstrap.
+            Its head cache is request-private and discarded at server exit.
         accept_counter: Optional override for the process-global
             :class:`MTPAcceptCounter`. Tests pass a fresh counter to
             isolate measurements; production callers pass ``None``
@@ -643,6 +644,8 @@ def mtp_generate_step(
         max_k = min(max_k, model.mtp_max_speculative_tokens)
     head_pending = None
     head_seed = None
+    parked_head_rows: list[tuple[mx.array, mx.array]] = []
+    head_discarded = False
 
     def _trim_head(n):
         if getattr(model, "mtp_head_atomic_rollback", False):
@@ -657,16 +660,90 @@ def mtp_generate_step(
             if mc.is_trimmable():
                 mc.trim(n)
 
-    def _flush_head():
-        """Eagerly settle deferred rows when no MTP chain will consume them."""
-        nonlocal head_pending
-        if head_pending is not None:
-            h, ids = head_pending
+    def _replay_parked_head():
+        """Build deferred KV updates at their original forward widths."""
+        if parked_head_rows:
             with mx.stream(generation_stream):
-                logits = model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
-                quantize_cache_fn(mtp_cache)
-                mx.eval(logits, [c.state for c in mtp_cache if hasattr(c, "state")])
+                for h, ids in parked_head_rows:
+                    model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+                    quantize_cache_fn(mtp_cache)
+            parked_head_rows.clear()
+
+    def _discard_head_history():
+        """Replace the head cache with an empty one after a failed settlement.
+
+        The head only proposes drafts; the target verifies every emitted
+        token. An empty head beside a populated backbone is the same state as
+        a caller cache built without MTP entries, so dropping history costs
+        acceptance, never correctness, and leaves no partial write behind.
+        """
+        nonlocal mtp_cache, head_pending, head_discarded
+        head_pending = None
+        parked_head_rows.clear()
+        if head_discarded:
+            # Every discard ends the generator; one attempt is enough.
+            return
+        head_discarded = True
+        caller_tail = prompt_cache is not None and len(prompt_cache) > len(model.layers)
+        if caller_tail:
+            # Detach the old head first: if allocation fails, the caller keeps
+            # a backbone-only cache, which the next request rebuilds a head for.
+            del prompt_cache[len(model.layers) :]
+        mtp_cache = model.make_mtp_cache()
+        if caller_tail:
+            prompt_cache.extend(mtp_cache)
+
+    def _flush_head():
+        """Settle deferred history when lookup or a caller-owned cache needs it."""
+        nonlocal head_pending
+        has_rows = bool(parked_head_rows)
+        try:
+            with mx.stream(generation_stream):
+                _replay_parked_head()
+                if head_pending is not None:
+                    h, ids = head_pending
+                    if ids.size:
+                        model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+                        quantize_cache_fn(mtp_cache)
+                        has_rows = True
+                    head_pending = None
+                if has_rows:
+                    # History needs KV only, not the unused vocabulary projection.
+                    mx.eval([c.state for c in mtp_cache if hasattr(c, "state")])
+        except BaseException:
+            # A partial or lazily failed write cannot be trusted or retried.
+            _discard_head_history()
+            raise
+
+    def _finish_head():
+        nonlocal head_pending
+        if server_bootstrap is not None:
+            # The server handoff's head cache is request-private. Finish and
+            # removal discard it; only the backbone participates in scheduling.
             head_pending = None
+            parked_head_rows.clear()
+        else:
+            _flush_head()
+
+    def _settle_head_after_error(settle):
+        """Best-effort settlement on an error path; never replaces that error.
+
+        A failed settlement has already discarded the head history, so only
+        draft acceptance is lost; the original exception keeps propagating.
+        """
+        try:
+            settle()
+        except BaseException:
+            logger.warning(
+                "[MTP] failed to settle deferred head history after an error",
+                exc_info=True,
+            )
+
+    def _park_head(hidden, token):
+        # Bound retained hidden rows and replay width on long parked runs.
+        parked_head_rows.append((hidden, token))
+        if len(parked_head_rows) >= _CACHE_CLEAR_INTERVAL and ntoks < max_tokens:
+            _flush_head()
 
     # Sliding-window targets need a few hidden rows beyond the visible
     # attention window so a rejected speculative block remains reversible.
@@ -1033,6 +1110,7 @@ def mtp_generate_step(
         """
         nonlocal head_pending, head_seed
         if rebuild_head_history:
+            _replay_parked_head()
             head_seed = hidden_last
             if head_pending is not None:
                 cache_commit = head_pending
@@ -1243,7 +1321,7 @@ def mtp_generate_step(
     def _next_depth() -> int:
         """Depth for the upcoming round."""
         if _request_depth is not None:
-            desired = _request_depth.pick_k()
+            desired = _request_depth.pick_k(refresh_park_costs=not _is_greedy)
         elif _select_k and _controller is not None:
             desired = _controller.pick_k()
         else:
@@ -1275,23 +1353,41 @@ def mtp_generate_step(
     # max_tokens or EOS first) are simply never charged.
     pending_draft_ms = 0.0
 
+    def _reset_parked_probe_head():
+        """A private exploratory drafter need not pay parked-history debt.
+
+        Keep full history while EV selects active MTP. If EV still selects
+        plain decode, restarting its exploratory head is cheaper than replaying
+        a parked interval. Target verification and caller-owned caches keep
+        their existing contracts; only the private approximate drafter resets.
+        """
+        nonlocal mtp_cache, head_pending
+        if (
+            server_bootstrap is not None
+            and _is_greedy
+            and parked_head_rows
+            and _request_depth is not None
+            and _request_depth._last_selected == 0
+        ):
+            fresh = model.make_mtp_cache()
+            mtp_cache = fresh
+            head_pending = None
+            parked_head_rows.clear()
+            _timing_add("head_park_resets", 1.0)
+
     def _draft_chain_timed(*args, **kwargs):
         """``_step_mtp_chain`` with its wall time held for the next round."""
-        nonlocal pending_draft_ms, head_pending
+        nonlocal pending_draft_ms
         _t0 = time.perf_counter()
         boundary = _snapshot_processor_state()
         if rebuild_head_history:
-            head_start = mtp_cache[0].offset if mtp_cache else 0
-            saved_pending = head_pending
+            _reset_parked_probe_head()
         try:
             result = _step_mtp_chain(*args, **kwargs)
         except BaseException:
             if rebuild_head_history:
                 # A partial chain may already have consumed the align rows.
-                # Restore the pre-chain prefix, then settle those true rows.
-                _trim_head((mtp_cache[0].offset if mtp_cache else 0) - head_start)
-                head_pending = saved_pending
-                _flush_head()
+                _settle_head_after_error(_discard_head_history)
             raise
         finally:
             # Draft-side interventions shape q(d), but only target-verified,
@@ -1533,604 +1629,637 @@ def mtp_generate_step(
             and _prompt_lookup_index.may_match_after_next(generated_token_ids)
         )
 
-    while ntoks < max_tokens:
-        round_start_perf = time.perf_counter()
-        if pending_drafts is None:
-            # -------------------------------------------------------
-            # Round K=0 (either bootstrap or a park). Plain backbone
-            # forward emits ONE committed token.
-            # -------------------------------------------------------
-            uncharged_ms = 0.0
-            if prefetched_step is not None:
-                # Launched by the previous round (see ``_launch_park_step``
-                # for how its build is charged).
-                main_tok, main_lp, hidden, prev_tokens, uncharged_ms = prefetched_step
-                prefetched_step = None
-            else:
-                main_tok, main_lp, hidden, prev_tokens = _park_step(y)
-            # Decide the next round's depth before the sync (see the
-            # pipelining note above) when there is a next round.
-            request_recorded = False
-            if ntoks + 1 < max_tokens:
-                if _request_depth is not None:
-                    _request_depth.record(0, request_round_cost(_request_costs, 0), [])
-                    request_recorded = True
-                next_k = _next_depth()
-            # Certain to park: no depth asked for, and no copy can follow.
-            parks_next = (
-                ntoks + 1 < max_tokens and next_k == 0 and not _copy_may_follow()
-            )
-            launched = (
-                _launch_park_step(main_tok, timed_by_this_round=True)
-                if parks_next and _pipeline_parks and _may_run_ahead()
-                else None
-            )
-            mx.eval(main_tok)
-            round_wall_ms = (
-                time.perf_counter() - round_start_perf
-            ) * 1000.0 + uncharged_ms
-            _record_round(0, round_wall_ms, [], request_recorded=request_recorded)
-            # One token for the whole forward: the floor a copy-draft has to
-            # beat when the controller has parked.
-            _copy_draft_gate.observe(
-                is_copy_draft=False,
-                committed=1,
-                round_ms=_gate_cost(round_wall_ms, 1),
-            )
-
-            ntoks += 1
-            main_tok_id = int(main_tok.item())
-            _remember_generated(main_tok_id)
-            round_done = ntoks >= max_tokens
-
-            # Decide K for the NEXT round, and draft for it, BEFORE handing
-            # this round's token to the caller: the caller's per-token work
-            # runs inside our ``yield``, so the drafter forward launched here
-            # overlaps it instead of waiting behind it.
-            #
-            # Drafter time is charged at most once, never twice. The draft is
-            # only built when this round is not the last one, so max_tokens
-            # still never pays for a draft nobody verifies; a caller that
-            # abandons the generator at the yield below (EOS, disconnect)
-            # leaves one launched chain unconsumed and its carried
-            # ``pending_draft_ms`` unrecorded, which costs the cost model one
-            # sample at request end and can never double-charge a round
-            # (codex #1441 guarded the same invariant when drafting was the
-            # last thing a round did).
-            if rebuild_head_history and (round_done or parks_next):
-                head_pending = (hidden[:, -1:, :], main_tok)
-                _flush_head()
-            if not round_done:
-                pending_drafts = None
-                pending_is_prompt_lookup = False
-                if parks_next:
-                    # Planned before the sync: a park, its step already
-                    # running unless ``may_run_ahead`` held it.
-                    prefetched_step = launched
+    try:
+        while ntoks < max_tokens:
+            round_start_perf = time.perf_counter()
+            if pending_drafts is None:
+                # -------------------------------------------------------
+                # Round K=0 (either bootstrap or a park). Plain backbone
+                # forward emits ONE committed token.
+                # -------------------------------------------------------
+                uncharged_ms = 0.0
+                if prefetched_step is not None:
+                    # Launched by the previous round (see ``_launch_park_step``
+                    # for how its build is charged).
+                    main_tok, main_lp, hidden, prev_tokens, uncharged_ms = (
+                        prefetched_step
+                    )
+                    prefetched_step = None
                 else:
-                    plan, plan_arg = _plan_next(next_k)
-                    if rebuild_head_history and plan == "park":
-                        head_pending = (hidden[:, -1:, :], main_tok)
-                        _flush_head()
+                    main_tok, main_lp, hidden, prev_tokens = _park_step(y)
+                # Decide the next round's depth before the sync (see the
+                # pipelining note above) when there is a next round.
+                request_recorded = False
+                if ntoks + 1 < max_tokens:
+                    if _request_depth is not None:
+                        _request_depth.record(
+                            0, request_round_cost(_request_costs, 0), []
+                        )
+                        request_recorded = True
+                    next_k = _next_depth()
+                # Certain to park: no depth asked for, and no copy can follow.
+                parks_next = (
+                    ntoks + 1 < max_tokens and next_k == 0 and not _copy_may_follow()
+                )
+                launched = (
+                    _launch_park_step(main_tok, timed_by_this_round=True)
+                    if parks_next and _pipeline_parks and _may_run_ahead()
+                    else None
+                )
+                mx.eval(main_tok)
+                round_wall_ms = (
+                    time.perf_counter() - round_start_perf
+                ) * 1000.0 + uncharged_ms
+                _record_round(0, round_wall_ms, [], request_recorded=request_recorded)
+                # One token for the whole forward: the floor a copy-draft has to
+                # beat when the controller has parked.
+                _copy_draft_gate.observe(
+                    is_copy_draft=False,
+                    committed=1,
+                    round_ms=_gate_cost(round_wall_ms, 1),
+                )
+
+                ntoks += 1
+                main_tok_id = int(main_tok.item())
+                _remember_generated(main_tok_id)
+                round_done = ntoks >= max_tokens
+
+                # Decide K for the NEXT round, and draft for it, BEFORE handing
+                # this round's token to the caller: the caller's per-token work
+                # runs inside our ``yield``, so the drafter forward launched here
+                # overlaps it instead of waiting behind it.
+                #
+                # Drafter time is charged at most once, never twice. The draft is
+                # only built when this round is not the last one, so max_tokens
+                # still never pays for a draft nobody verifies; a caller that
+                # abandons the generator at the yield below (EOS, disconnect)
+                # leaves one launched chain unconsumed and its carried
+                # ``pending_draft_ms`` unrecorded, which costs the cost model one
+                # sample at request end and can never double-charge a round
+                # (codex #1441 guarded the same invariant when drafting was the
+                # last thing a round did).
+                if rebuild_head_history and (round_done or parks_next):
+                    _park_head(hidden, main_tok)
+                    if round_done:
+                        _finish_head()
+                if not round_done:
+                    pending_drafts = None
+                    pending_is_prompt_lookup = False
+                    if parks_next:
+                        # Planned before the sync: a park, its step already
+                        # running unless ``may_run_ahead`` held it.
+                        prefetched_step = launched
+                    else:
+                        plan, plan_arg = _plan_next(next_k)
+                        if rebuild_head_history and plan == "park":
+                            _park_head(hidden, main_tok)
+                        if plan == "lookup":
+                            if rebuild_head_history:
+                                _flush_head()
+                                head_seed = hidden[:, -1:, :]
+                            pending_drafts = _lookup_drafts(plan_arg)
+                            pending_is_prompt_lookup = True
+                        elif plan == "mtp":
+                            # Chain-of-K: generate ``plan_arg`` drafts cascaded
+                            # via MTP. A depth of 1 is the plain single-draft
+                            # path.
+                            d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                                hidden[:, -1:, :], main_tok, prev_tokens, plan_arg
+                            )
+                            pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                        elif _pipeline_parks and _may_run_ahead():
+                            # Parking again, with the next step launched now so
+                            # it runs while the caller handles this token. Next
+                            # round pays no drafter cost -- the whole point of
+                            # park.
+                            prefetched_step = _launch_park_step(
+                                main_tok, timed_by_this_round=False
+                            )
+                    y = mx.array([main_tok_id], mx.uint32)
+
+                # No guard rewind is needed around this yield the way the verify
+                # branch needs one for its emissions: ``_draft_chain_timed``
+                # already restores the transactional processors in a ``finally``,
+                # because draft-side interventions shape q(d) but only
+                # target-verified, delivered positions may advance processor
+                # state. So the caller is handed the state its own token
+                # committed even though drafting now runs first.
+                if suppress_bootstrap:
+                    suppress_bootstrap = False
+                else:
+                    yield main_tok_id, main_lp, False
+                if round_done:
+                    return
+            else:
+                # -------------------------------------------------------
+                # Verify path with K = len(pending_drafts) drafts.
+                #
+                # 0.9.13 PR-C: single-sync verify. Ollama's
+                # ``speculate.go:428-439`` pre-samples the residual at
+                # EVERY draft position and the bonus at position K, then
+                # batches them into ONE ``mx.eval`` alongside the accept
+                # mask. The prior implementation issued two host syncs
+                # (verify tokens first, then residual on the reject path);
+                # merging them cuts one host round-trip per verify round
+                # and — for K≥2 — replaces a per-position Python accept
+                # loop with a single vectorized comparison.
+                #
+                # K=1: single verify + bonus (byte-equal to pre-PR-C at
+                # greedy temp=0 because residual == verify-argmax there).
+                # K>=2: batched (K+1)-position backbone forward, sequential
+                # accept-reject per Ollama's ``speculate.go::accept``. The
+                # SSM targets use per-position snapshots; attention targets
+                # use KVCache.trim() for the same accepted-prefix boundary.
+                # -------------------------------------------------------
+                k_len = len(pending_drafts)
+                draft_toks_arr = [rec[0] for rec in pending_drafts]
+                draft_alps_arr = [rec[2] for rec in pending_drafts]
+                first_xtc_draw = pending_drafts[0][3]
+
+                # Assemble [y, d_1, ..., d_K] for the batched target forward.
+                # Stacking on device (rather than materializing each draft
+                # via ``.item()``) keeps the whole graph lazy up to the
+                # single ``mx.eval`` below.
+                drafts_arr = (
+                    mx.stack([d.reshape(-1) for d in draft_toks_arr])
+                    .reshape(-1)
+                    .astype(mx.uint32)
+                )
+                y_with_drafts = mx.concatenate([y, drafts_arr])
+
+                processor_boundary = _snapshot_processor_state()
+                try:
+                    (
+                        toks,
+                        lps,
+                        accept_lps,
+                        hidden,
+                        prev_tokens,
+                        processor_position_states,
+                    ) = _step_backbone(
+                        y_with_drafts,
+                        prev_tokens,
+                        n_predict=k_len + 1,
+                        # Any positive value activates per-position SSM snapshots;
+                        # k_len preserves the legacy K=1 boundary semantics too.
+                        n_confirmed=k_len,
+                        xtc_draw=first_xtc_draw,
+                        capture_processor_states=True,
+                    )
+                except BaseException:
+                    if rebuild_head_history:
+                        _settle_head_after_error(_discard_head_history)
+                    _restore_processor_state(processor_boundary)
+                    raise
+                # Verification computes every target row eagerly, but none is
+                # committed until its token is actually delivered below.
+                _restore_processor_state(processor_boundary)
+
+                # One independent uniform per speculative position. Reusing one
+                # scalar across K positions preserves each isolated acceptance
+                # probability but correlates the sequential accept decisions,
+                # changing the joint token distribution for K>1. Independent
+                # Bernoulli draws are required by rejection sampling.
+                u = _uniform(shape=(k_len,))
+                drafts_i32 = drafts_arr.astype(mx.int32)
+
+                # --------------------------------------------------------
+                # Pre-compute accept-mask, residual-at-every-position, and
+                # bonus-at-position-K on device. Single ``mx.eval`` below
+                # materializes all four at once. Ollama's speculate.go:428-439.
+                # --------------------------------------------------------
+                if _is_greedy:
+                    # ``toks[i]`` IS target's argmax at position i. Accept
+                    # iff it matches the draft; residual == verify == toks[i]
+                    # (residual distribution at greedy is a point mass on
+                    # target's argmax, which coincides with target argmax).
+                    accept_mask_arr = toks[:k_len].astype(mx.int32) == drafts_i32
+                    residual_toks_arr = toks[:k_len]
+                    bonus_tok_arr = toks[k_len]
+                else:
+                    # Vectorized per-position log-accept over the K draft
+                    # positions with one independent draw per position.
+                    v_alps = accept_lps[:k_len]  # (K, V)
+                    idx = drafts_i32.reshape(-1, 1)  # (K, 1)
+                    v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
+                    if pending_is_prompt_lookup:
+                        # Prompt lookup is a deterministic (point-mass) proposal:
+                        # q(d)=1, hence log min(1, p(d)/q(d)) = log p(d).
+                        log_accept = v_at
+                        d_alps_stack = None
+                    else:
+                        d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
+                        d_at = mx.take_along_axis(d_alps_stack, idx, axis=1).squeeze(-1)
+                        log_accept = v_at - d_at  # (K,)
+                    accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
+
+                    if pending_is_prompt_lookup:
+                        dist = _point_mass_residual_distribution(v_alps, drafts_i32)
+                    else:
+                        # Existing MTP residual: max(p_target - p_draft, 0),
+                        # falling back to p_target if the clamp zeroed the row.
+                        p_target = mx.exp(v_alps)
+                        p_draft = mx.exp(d_alps_stack)
+                        residual = mx.maximum(p_target - p_draft, 0.0)
+                        z = residual.sum(axis=-1, keepdims=True)
+                        dist = mx.where(z > 0, residual, p_target)
+                    residual_toks_arr = _categorical(mx.log(dist))
+                    # Bonus already sampled per-position inside _step_backbone
+                    # for temp>0 (categorical over target distro at position K).
+                    bonus_tok_arr = toks[k_len]
+
+                # Rows cross threads; MLX streams are thread-local. Materialize
+                # the exact views we yield in the existing verify sync.
+                lp_rows = [lps[i] for i in range(k_len + 1)]
+
+                # ------- SINGLE SYNC -------
+                accepted_count = 0
+                try:
+                    _verify_sync_started = time.perf_counter()
+                    mx.eval(
+                        toks,
+                        accept_mask_arr,
+                        residual_toks_arr,
+                        bonus_tok_arr,
+                        u,
+                        *lp_rows,
+                    )
+                    _timing_add(
+                        "verify_sync_seconds",
+                        time.perf_counter() - _verify_sync_started,
+                    )
+                    _timing_add("verify_calls", 1.0)
+
+                    # ------- Host-side read (all values already resident) -------
+                    accept_flags = accept_mask_arr.tolist()
+                    residual_ids = residual_toks_arr.tolist()
+                    bonus_id = int(bonus_tok_arr.item())
+                    draft_ids = drafts_arr.tolist()
+                except BaseException:
+                    # The target verify forward above has already appended
+                    # ``[y, d_1, ..., d_K]`` to model_cache, and the prior
+                    # MTP chain appended the K draft positions to mtp_cache.
+                    # If a cancellation / injected fault / host materialization
+                    # error fires before this round's fresh accept count is known,
+                    # never let stale state leak into a fallback path: keep the
+                    # committed ``y`` position and drop every uncommitted draft.
+                    if pending_is_prompt_lookup:
+                        _rollback_draft(k_len, verify_size=k_len + 1)
+                    else:
+                        _rollback_verify_round(
+                            k_len - accepted_count, verify_size=k_len + 1
+                        )
+                    if rebuild_head_history:
+                        _settle_head_after_error(_discard_head_history)
+                    _restore_processor_state(processor_boundary)
+                    raise
+
+                # Bump attempts by K (one per draft position considered).
+                for _ in range(k_len):
+                    accept_counter.record_attempt()
+
+                # Sequential accept-reject walk (host-only; no MLX ops).
+                accepts: list[bool] = []
+                for i in range(k_len):
+                    ok = bool(accept_flags[i])
+                    accepts.append(ok)
+                    if ok:
+                        accepted_count += 1
+                    else:
+                        break
+                if pending_is_prompt_lookup:
+                    _timing_add("prompt_lookup_accepted_tokens", float(accepted_count))
+                    if accepted_count < k_len:
+                        _timing_add("prompt_lookup_rejections", 1.0)
+
+                # -------- 0.9.13 PR-C: EOS holdout --------
+                # When an accepted draft is a stop token, positions past it
+                # would never be reached in real decode. Ollama's
+                # ``speculate.go:456-472`` sets ``observed = i + 1`` and
+                # ``keep = i`` at the EOS, so the acceptance-rate EWMA
+                # never sees the (nonexistent) positions past the natural
+                # terminator. We use the same idea: truncate ``accepts``
+                # to the EOS index+1 for the record call; cap
+                # ``accepted_count`` so we stop emitting at (and including)
+                # EOS instead of continuing to a bonus or residual.
+                eos_cut = False
+                accepts_for_record = accepts
+                if stop_tokens:
+                    for j in range(accepted_count):
+                        if int(draft_ids[j]) in stop_tokens:
+                            eos_cut = True
+                            accepts_for_record = accepts[: j + 1]
+                            accepted_count = j + 1
+                            break
+
+                round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+                # What the round actually delivers: the accepted prefix, plus the
+                # bonus or residual position -- which a natural terminator inside
+                # the prefix skips, because the round ends at the EOS it emitted.
+                committed_this_round = accepted_count + (0 if eos_cut else 1)
+                if pending_is_prompt_lookup:
+                    # Lookup windows do not measure the MTP drafter's cost curve.
+                    # Feeding K=8..24 into its K<=max_k controller would poison
+                    # future depth choices. They do measure their own worth,
+                    # which is what the gate compares against the rounds above.
+                    _copy_draft_gate.observe(
+                        is_copy_draft=True,
+                        committed=committed_this_round,
+                        round_ms=_gate_cost(round_wall_ms, k_len + 1),
+                        accepted=accepted_count,
+                        proposed=k_len,
+                    )
+                    pending_draft_ms = 0.0
+                else:
+                    _copy_draft_gate.observe(
+                        is_copy_draft=False,
+                        committed=committed_this_round,
+                        round_ms=_gate_cost(
+                            round_wall_ms + pending_draft_ms, k_len + 1
+                        ),
+                    )
+                    _record_round(k_len, round_wall_ms, accepts_for_record)
+                    # #3155: per-depth acceptance for /metrics.  ``accepts`` stops
+                    # at the first rejection, so the drafted depth is ``k_len``
+                    # (every position was proposed and charged as an attempt),
+                    # EOS-capped so depths past a natural terminator are neither
+                    # drafted nor accepted in the histogram.
+                    verify_depth = len(accepts_for_record) if eos_cut else k_len
+                    accept_counter.record_verify(verify_depth, accepted_count)
+
+                # Hold this round's emissions, hand them over only after the
+                # next chain is launched (see ``_launch_drafts``): the caller's
+                # per-token work runs inside our ``yield``, so drafting first
+                # overlaps the drafter forward with it instead of queueing the
+                # forward behind it on an idle GPU. Delivery order and the
+                # ``max_tokens`` cut are unchanged -- ``round_done`` stands in for
+                # the ``return`` each emission point used to take, so a capped
+                # round still skips the bonus / residual / drafter tail.
+                #
+                # Two pieces of state must advance in lockstep with DELIVERY
+                # rather than with this collection pass, because both outlive a
+                # caller that stops pulling mid-round:
+                #
+                # * The transactional processors. Each entry carries the snapshot
+                #   its position captured during verification and delivery
+                #   restores it just before the token goes out, so an abandoned
+                #   round leaves the guards at the last DELIVERED prefix.
+                #   Restores are absolute, so replaying them in order reproduces
+                #   the old per-yield walk even though the drafter below has
+                #   already run at the round's final state.
+                # * ``accept_counter``, which is a process-global metrics counter
+                #   shared by every request. Recording a whole round's accepts up
+                #   front would publish accepted-but-undelivered tokens as saved
+                #   ones whenever a caller stops early (stop string, disconnect),
+                #   so each entry carries the accounting its delivery owes and
+                #   the delivery loop runs it. The DEPTH CONTROLLER is not on this
+                #   path -- ``_record_round`` above already fed it the round's
+                #   outcome, before any of this -- so deferring the counter cannot
+                #   make ``pick_k`` read stale acceptance.
+                #
+                # ``_remember_generated`` deliberately stays here: it feeds this
+                # request's own prompt-lookup history, which dies with the
+                # generator, so an abandoned round cannot leak it anywhere.
+                emissions: list[tuple[int, Any, Any, bool, str | None]] = []
+                round_done = False
+
+                # Emit the accepted drafts (capped at EOS position when set).
+                for i in range(accepted_count):
+                    ntoks += 1
+                    draft_id = int(draft_ids[i])
+                    _remember_generated(draft_id)
+                    # Serving logprobs always describe the target model, even when
+                    # the emitted token originated as a draft.  Returning the
+                    # drafter row here leaks q(token) to API clients instead of the
+                    # verified target p(token); the distributions legitimately
+                    # differ on a probabilistically accepted proposal.
+                    emissions.append(
+                        (
+                            draft_id,
+                            lp_rows[i],
+                            processor_position_states[i],
+                            True,
+                            "accept",
+                        )
+                    )
+                    if ntoks >= max_tokens:
+                        round_done = True
+                        break
+
+                if rebuild_head_history:
+                    # The first head row consumed (head_seed, y), already a
+                    # committed pair. Keep it; later rows used draft hiddens.
+                    # Lookup created no head rows and must replay that first pair.
+                    kept = len(emissions)
+                    if pending_is_prompt_lookup:
+                        head_pending = (
+                            mx.concatenate([head_seed, hidden[:, :kept, :]], axis=1),
+                            mx.concatenate([y, drafts_arr[:kept]]),
+                        )
+                    else:
+                        _trim_head(k_len - 1)
+                        head_pending = (hidden[:, :kept, :], drafts_arr[:kept])
+
+                if eos_cut:
+                    # Emitted EOS via an accepted draft. Caller will detect
+                    # the stop token and terminate; skip bonus / residual /
+                    # drafter-chain setup entirely. The cache is left with
+                    # the un-emitted drafts past EOS still committed to it,
+                    # but the request terminates here so the cache is
+                    # discarded by the scheduler at request boundary.
+                    round_done = True
+
+                if not round_done:
+                    if accepted_count == k_len:
+                        # All K drafts accepted → emit the bonus token
+                        # (target's prediction one past the last draft).
+                        _clear_rollback()
+                        if pending_is_prompt_lookup:
+                            _sync_prompt_lookup_history(
+                                hidden, y, drafts_arr, accepted_count
+                            )
+                        ntoks += 1
+                        _remember_generated(bonus_id)
+                        emissions.append(
+                            (
+                                bonus_id,
+                                lp_rows[k_len],
+                                processor_position_states[k_len],
+                                False,
+                                None,
+                            )
+                        )
+                        if ntoks >= max_tokens:
+                            round_done = True
+                        else:
+                            last_committed_tok_id = bonus_id
+                            last_committed_hidden = hidden[:, k_len : k_len + 1, :]
+                            y = mx.array([bonus_id], mx.uint32)
+                    else:
+                        # Reject at position ``accepted_count``. Emit target's
+                        # pre-sampled residual there (byte-equal to the prior
+                        # ``verify_pred.item()`` on greedy since residual ==
+                        # target argmax at temp=0), and drop the remaining
+                        # (k_len - accepted_count) unaccepted drafts from the
+                        # caches.
+                        n_to_drop = k_len - accepted_count
+                        if pending_is_prompt_lookup:
+                            _rollback_draft(n_to_drop, verify_size=k_len + 1)
+                            _sync_prompt_lookup_history(
+                                hidden, y, drafts_arr, accepted_count
+                            )
+                        else:
+                            _rollback_verify_round(n_to_drop, verify_size=k_len + 1)
+                        if logits_processors and prev_tokens is not None:
+                            # Discard the ``n_to_drop`` rejected positions
+                            # from prev_tokens (they were appended by
+                            # _step_backbone during the batched verify).
+                            prev_tokens = prev_tokens[:-n_to_drop]
+
+                        verify_tok_id = int(residual_ids[accepted_count])
+
+                        ntoks += 1
+                        _remember_generated(verify_tok_id)
+                        # ``lps[position]`` is the full target-model logprob row,
+                        # not a scalar attached to the independently pre-sampled
+                        # ``toks[position]``.  Indexing this row later with the
+                        # emitted residual token therefore reports its target
+                        # probability, while rejection sampling preserves the
+                        # target marginal.
+                        emissions.append(
+                            (
+                                verify_tok_id,
+                                lp_rows[accepted_count],
+                                processor_position_states[accepted_count],
+                                False,
+                                "reject",
+                            )
+                        )
+                        if ntoks >= max_tokens:
+                            round_done = True
+                        else:
+                            last_committed_tok_id = verify_tok_id
+                            # hidden at position ``accepted_count`` is the state
+                            # AFTER the last accepted draft (or after y when
+                            # accepted_count=0) — this is what MTP conditions on
+                            # for the next draft chain.
+                            last_committed_hidden = hidden[
+                                :, accepted_count : accepted_count + 1, :
+                            ]
+                            y = mx.array([verify_tok_id], mx.uint32)
+
+                if not round_done:
+                    # The drafter reads processor state, so it has to see the
+                    # round's last committed position -- the state the old
+                    # per-yield walk left behind when it drafted last.
+                    if emissions:
+                        _restore_processor_state(emissions[-1][2])
+                    # Decide K for the next round BEFORE generating the
+                    # next chain (a park decision skips drafter cost).
+                    plan, plan_arg = _plan_next(_next_depth())
                     if plan == "lookup":
                         if rebuild_head_history:
-                            head_seed = hidden[:, -1:, :]
+                            head_seed = last_committed_hidden
                         pending_drafts = _lookup_drafts(plan_arg)
                         pending_is_prompt_lookup = True
                     elif plan == "mtp":
-                        # Chain-of-K: generate ``plan_arg`` drafts cascaded
-                        # via MTP. A depth of 1 is the plain single-draft
-                        # path.
+                        # Chain-carry: on all-accept the mtp_cache must
+                        # advance by one extra position for the just-accepted
+                        # LAST draft so the head's attention sees it before
+                        # predicting the next round's first draft.
+                        if accepted_count == k_len and not rebuild_head_history:
+                            align_h = hidden[:, accepted_count - 1 : accepted_count, :]
+                            align_tok = draft_toks_arr[accepted_count - 1]
+                            cache_commit = (align_h, align_tok)
+                        else:
+                            cache_commit = None
+                        last_committed_tok = mx.array(
+                            [last_committed_tok_id], mx.uint32
+                        )
                         d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                            hidden[:, -1:, :], main_tok, prev_tokens, plan_arg
+                            last_committed_hidden,
+                            last_committed_tok,
+                            prev_tokens,
+                            plan_arg,
+                            cache_commit=cache_commit,
                         )
                         pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                    elif _pipeline_parks and _may_run_ahead():
-                        # Parking again, with the next step launched now so
-                        # it runs while the caller handles this token. Next
-                        # round pays no drafter cost -- the whole point of
-                        # park.
-                        prefetched_step = _launch_park_step(
-                            main_tok, timed_by_this_round=False
-                        )
-                y = mx.array([main_tok_id], mx.uint32)
+                        pending_is_prompt_lookup = False
+                    else:
+                        if rebuild_head_history and head_pending is not None:
+                            # No chain will append the usual new row for y on
+                            # this handoff either. Settle it along with the rebuild
+                            # before parks begin advancing the target alone.
+                            align_h, align_tok = head_pending
+                            head_pending = None
+                            _park_head(
+                                mx.concatenate(
+                                    [align_h, last_committed_hidden], axis=1
+                                ),
+                                mx.concatenate([align_tok, y]),
+                            )
+                        pending_drafts = None
+                        pending_is_prompt_lookup = False
+                        if _pipeline_parks and _may_run_ahead():
+                            # The next round parks; start its step now so it
+                            # runs while the caller handles this round's tokens.
+                            prefetched_step = _launch_park_step(
+                                y, timed_by_this_round=False
+                            )
 
-            # No guard rewind is needed around this yield the way the verify
-            # branch needs one for its emissions: ``_draft_chain_timed``
-            # already restores the transactional processors in a ``finally``,
-            # because draft-side interventions shape q(d) but only
-            # target-verified, delivered positions may advance processor
-            # state. So the caller is handed the state its own token
-            # committed even though drafting now runs first.
-            if suppress_bootstrap:
-                suppress_bootstrap = False
-            else:
-                yield main_tok_id, main_lp, False
-            if round_done:
-                return
-        else:
-            # -------------------------------------------------------
-            # Verify path with K = len(pending_drafts) drafts.
-            #
-            # 0.9.13 PR-C: single-sync verify. Ollama's
-            # ``speculate.go:428-439`` pre-samples the residual at
-            # EVERY draft position and the bonus at position K, then
-            # batches them into ONE ``mx.eval`` alongside the accept
-            # mask. The prior implementation issued two host syncs
-            # (verify tokens first, then residual on the reject path);
-            # merging them cuts one host round-trip per verify round
-            # and — for K≥2 — replaces a per-position Python accept
-            # loop with a single vectorized comparison.
-            #
-            # K=1: single verify + bonus (byte-equal to pre-PR-C at
-            # greedy temp=0 because residual == verify-argmax there).
-            # K>=2: batched (K+1)-position backbone forward, sequential
-            # accept-reject per Ollama's ``speculate.go::accept``. The
-            # SSM targets use per-position snapshots; attention targets
-            # use KVCache.trim() for the same accepted-prefix boundary.
-            # -------------------------------------------------------
-            k_len = len(pending_drafts)
-            draft_toks_arr = [rec[0] for rec in pending_drafts]
-            draft_alps_arr = [rec[2] for rec in pending_drafts]
-            first_xtc_draw = pending_drafts[0][3]
-
-            # Assemble [y, d_1, ..., d_K] for the batched target forward.
-            # Stacking on device (rather than materializing each draft
-            # via ``.item()``) keeps the whole graph lazy up to the
-            # single ``mx.eval`` below.
-            drafts_arr = (
-                mx.stack([d.reshape(-1) for d in draft_toks_arr])
-                .reshape(-1)
-                .astype(mx.uint32)
-            )
-            y_with_drafts = mx.concatenate([y, drafts_arr])
-
-            processor_boundary = _snapshot_processor_state()
-            try:
-                (
-                    toks,
-                    lps,
-                    accept_lps,
-                    hidden,
-                    prev_tokens,
-                    processor_position_states,
-                ) = _step_backbone(
-                    y_with_drafts,
-                    prev_tokens,
-                    n_predict=k_len + 1,
-                    # Any positive value activates per-position SSM snapshots;
-                    # k_len preserves the legacy K=1 boundary semantics too.
-                    n_confirmed=k_len,
-                    xtc_draw=first_xtc_draw,
-                    capture_processor_states=True,
-                )
-            except BaseException:
-                if rebuild_head_history:
-                    if not pending_is_prompt_lookup:
-                        _trim_head(k_len)
-                    head_pending = (head_seed, y)
-                    _flush_head()
-                _restore_processor_state(processor_boundary)
-                raise
-            # Verification computes every target row eagerly, but none is
-            # committed until its token is actually delivered below.
-            _restore_processor_state(processor_boundary)
-
-            # One independent uniform per speculative position. Reusing one
-            # scalar across K positions preserves each isolated acceptance
-            # probability but correlates the sequential accept decisions,
-            # changing the joint token distribution for K>1. Independent
-            # Bernoulli draws are required by rejection sampling.
-            u = _uniform(shape=(k_len,))
-            drafts_i32 = drafts_arr.astype(mx.int32)
-
-            # --------------------------------------------------------
-            # Pre-compute accept-mask, residual-at-every-position, and
-            # bonus-at-position-K on device. Single ``mx.eval`` below
-            # materializes all four at once. Ollama's speculate.go:428-439.
-            # --------------------------------------------------------
-            if _is_greedy:
-                # ``toks[i]`` IS target's argmax at position i. Accept
-                # iff it matches the draft; residual == verify == toks[i]
-                # (residual distribution at greedy is a point mass on
-                # target's argmax, which coincides with target argmax).
-                accept_mask_arr = toks[:k_len].astype(mx.int32) == drafts_i32
-                residual_toks_arr = toks[:k_len]
-                bonus_tok_arr = toks[k_len]
-            else:
-                # Vectorized per-position log-accept over the K draft
-                # positions with one independent draw per position.
-                v_alps = accept_lps[:k_len]  # (K, V)
-                idx = drafts_i32.reshape(-1, 1)  # (K, 1)
-                v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
-                if pending_is_prompt_lookup:
-                    # Prompt lookup is a deterministic (point-mass) proposal:
-                    # q(d)=1, hence log min(1, p(d)/q(d)) = log p(d).
-                    log_accept = v_at
-                    d_alps_stack = None
-                else:
-                    d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
-                    d_at = mx.take_along_axis(d_alps_stack, idx, axis=1).squeeze(-1)
-                    log_accept = v_at - d_at  # (K,)
-                accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
-
-                if pending_is_prompt_lookup:
-                    dist = _point_mass_residual_distribution(v_alps, drafts_i32)
-                else:
-                    # Existing MTP residual: max(p_target - p_draft, 0),
-                    # falling back to p_target if the clamp zeroed the row.
-                    p_target = mx.exp(v_alps)
-                    p_draft = mx.exp(d_alps_stack)
-                    residual = mx.maximum(p_target - p_draft, 0.0)
-                    z = residual.sum(axis=-1, keepdims=True)
-                    dist = mx.where(z > 0, residual, p_target)
-                residual_toks_arr = _categorical(mx.log(dist))
-                # Bonus already sampled per-position inside _step_backbone
-                # for temp>0 (categorical over target distro at position K).
-                bonus_tok_arr = toks[k_len]
-
-            # Rows cross threads; MLX streams are thread-local. Materialize
-            # the exact views we yield in the existing verify sync.
-            lp_rows = [lps[i] for i in range(k_len + 1)]
-
-            # ------- SINGLE SYNC -------
-            accepted_count = 0
-            try:
-                _verify_sync_started = time.perf_counter()
-                mx.eval(
-                    toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u, *lp_rows
-                )
-                _timing_add(
-                    "verify_sync_seconds",
-                    time.perf_counter() - _verify_sync_started,
-                )
-                _timing_add("verify_calls", 1.0)
-
-                # ------- Host-side read (all values already resident) -------
-                accept_flags = accept_mask_arr.tolist()
-                residual_ids = residual_toks_arr.tolist()
-                bonus_id = int(bonus_tok_arr.item())
-                draft_ids = drafts_arr.tolist()
-            except BaseException:
-                # The target verify forward above has already appended
-                # ``[y, d_1, ..., d_K]`` to model_cache, and the prior
-                # MTP chain appended the K draft positions to mtp_cache.
-                # If a cancellation / injected fault / host materialization
-                # error fires before this round's fresh accept count is known,
-                # never let stale state leak into a fallback path: keep the
-                # committed ``y`` position and drop every uncommitted draft.
-                if pending_is_prompt_lookup:
-                    _rollback_draft(k_len, verify_size=k_len + 1)
-                else:
-                    _rollback_verify_round(
-                        k_len - accepted_count, verify_size=k_len + 1
+                if (
+                    rebuild_head_history
+                    and head_pending is not None
+                    and round_done
+                    and not eos_cut
+                    and len(emissions) == accepted_count + 1
+                ):
+                    # A final bonus/residual has no next chain to append its
+                    # usual new row. Accepted-prefix caps are already included.
+                    align_h, align_tok = head_pending
+                    head_pending = (
+                        mx.concatenate(
+                            [
+                                align_h,
+                                hidden[:, accepted_count : accepted_count + 1, :],
+                            ],
+                            axis=1,
+                        ),
+                        mx.concatenate(
+                            [align_tok, mx.array([emissions[-1][0]], mx.uint32)]
+                        ),
                     )
                 if rebuild_head_history:
-                    if not pending_is_prompt_lookup:
-                        _trim_head(k_len)
-                    head_pending = (head_seed, y)
-                    _flush_head()
-                _restore_processor_state(processor_boundary)
-                raise
+                    if round_done:
+                        _finish_head()
+                    elif pending_is_prompt_lookup:
+                        _flush_head()
 
-            # Bump attempts by K (one per draft position considered).
-            for _ in range(k_len):
-                accept_counter.record_attempt()
-
-            # Sequential accept-reject walk (host-only; no MLX ops).
-            accepts: list[bool] = []
-            for i in range(k_len):
-                ok = bool(accept_flags[i])
-                accepts.append(ok)
-                if ok:
-                    accepted_count += 1
-                else:
-                    break
-            if pending_is_prompt_lookup:
-                _timing_add("prompt_lookup_accepted_tokens", float(accepted_count))
-                if accepted_count < k_len:
-                    _timing_add("prompt_lookup_rejections", 1.0)
-
-            # -------- 0.9.13 PR-C: EOS holdout --------
-            # When an accepted draft is a stop token, positions past it
-            # would never be reached in real decode. Ollama's
-            # ``speculate.go:456-472`` sets ``observed = i + 1`` and
-            # ``keep = i`` at the EOS, so the acceptance-rate EWMA
-            # never sees the (nonexistent) positions past the natural
-            # terminator. We use the same idea: truncate ``accepts``
-            # to the EOS index+1 for the record call; cap
-            # ``accepted_count`` so we stop emitting at (and including)
-            # EOS instead of continuing to a bonus or residual.
-            eos_cut = False
-            accepts_for_record = accepts
-            if stop_tokens:
-                for j in range(accepted_count):
-                    if int(draft_ids[j]) in stop_tokens:
-                        eos_cut = True
-                        accepts_for_record = accepts[: j + 1]
-                        accepted_count = j + 1
-                        break
-
-            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
-            # What the round actually delivers: the accepted prefix, plus the
-            # bonus or residual position -- which a natural terminator inside
-            # the prefix skips, because the round ends at the EOS it emitted.
-            committed_this_round = accepted_count + (0 if eos_cut else 1)
-            if pending_is_prompt_lookup:
-                # Lookup windows do not measure the MTP drafter's cost curve.
-                # Feeding K=8..24 into its K<=max_k controller would poison
-                # future depth choices. They do measure their own worth,
-                # which is what the gate compares against the rounds above.
-                _copy_draft_gate.observe(
-                    is_copy_draft=True,
-                    committed=committed_this_round,
-                    round_ms=_gate_cost(round_wall_ms, k_len + 1),
-                    accepted=accepted_count,
-                    proposed=k_len,
-                )
-                pending_draft_ms = 0.0
-            else:
-                _copy_draft_gate.observe(
-                    is_copy_draft=False,
-                    committed=committed_this_round,
-                    round_ms=_gate_cost(round_wall_ms + pending_draft_ms, k_len + 1),
-                )
-                _record_round(k_len, round_wall_ms, accepts_for_record)
-                # #3155: per-depth acceptance for /metrics.  ``accepts`` stops
-                # at the first rejection, so the drafted depth is ``k_len``
-                # (every position was proposed and charged as an attempt),
-                # EOS-capped so depths past a natural terminator are neither
-                # drafted nor accepted in the histogram.
-                verify_depth = len(accepts_for_record) if eos_cut else k_len
-                accept_counter.record_verify(verify_depth, accepted_count)
-
-            # Hold this round's emissions, hand them over only after the
-            # next chain is launched (see ``_launch_drafts``): the caller's
-            # per-token work runs inside our ``yield``, so drafting first
-            # overlaps the drafter forward with it instead of queueing the
-            # forward behind it on an idle GPU. Delivery order and the
-            # ``max_tokens`` cut are unchanged -- ``round_done`` stands in for
-            # the ``return`` each emission point used to take, so a capped
-            # round still skips the bonus / residual / drafter tail.
-            #
-            # Two pieces of state must advance in lockstep with DELIVERY
-            # rather than with this collection pass, because both outlive a
-            # caller that stops pulling mid-round:
-            #
-            # * The transactional processors. Each entry carries the snapshot
-            #   its position captured during verification and delivery
-            #   restores it just before the token goes out, so an abandoned
-            #   round leaves the guards at the last DELIVERED prefix.
-            #   Restores are absolute, so replaying them in order reproduces
-            #   the old per-yield walk even though the drafter below has
-            #   already run at the round's final state.
-            # * ``accept_counter``, which is a process-global metrics counter
-            #   shared by every request. Recording a whole round's accepts up
-            #   front would publish accepted-but-undelivered tokens as saved
-            #   ones whenever a caller stops early (stop string, disconnect),
-            #   so each entry carries the accounting its delivery owes and
-            #   the delivery loop runs it. The DEPTH CONTROLLER is not on this
-            #   path -- ``_record_round`` above already fed it the round's
-            #   outcome, before any of this -- so deferring the counter cannot
-            #   make ``pick_k`` read stale acceptance.
-            #
-            # ``_remember_generated`` deliberately stays here: it feeds this
-            # request's own prompt-lookup history, which dies with the
-            # generator, so an abandoned round cannot leak it anywhere.
-            emissions: list[tuple[int, Any, Any, bool, str | None]] = []
-            round_done = False
-
-            # Emit the accepted drafts (capped at EOS position when set).
-            for i in range(accepted_count):
-                ntoks += 1
-                draft_id = int(draft_ids[i])
-                _remember_generated(draft_id)
-                # Serving logprobs always describe the target model, even when
-                # the emitted token originated as a draft.  Returning the
-                # drafter row here leaks q(token) to API clients instead of the
-                # verified target p(token); the distributions legitimately
-                # differ on a probabilistically accepted proposal.
-                emissions.append(
-                    (draft_id, lp_rows[i], processor_position_states[i], True, "accept")
-                )
-                if ntoks >= max_tokens:
-                    round_done = True
-                    break
-
-            if rebuild_head_history:
-                # Remove every speculative row, even on all-accept/terminal
-                # rounds. Lookup created none. H[i] predicted d[i+1];
-                # head_seed predicted y.
-                kept = len(emissions)
-                if not pending_is_prompt_lookup:
-                    _trim_head(k_len)
-                head_pending = (
-                    mx.concatenate([head_seed, hidden[:, :kept, :]], axis=1),
-                    mx.concatenate([y, drafts_arr[:kept]]),
-                )
-
-            if eos_cut:
-                # Emitted EOS via an accepted draft. Caller will detect
-                # the stop token and terminate; skip bonus / residual /
-                # drafter-chain setup entirely. The cache is left with
-                # the un-emitted drafts past EOS still committed to it,
-                # but the request terminates here so the cache is
-                # discarded by the scheduler at request boundary.
-                round_done = True
-
-            if not round_done:
-                if accepted_count == k_len:
-                    # All K drafts accepted → emit the bonus token
-                    # (target's prediction one past the last draft).
-                    _clear_rollback()
-                    if pending_is_prompt_lookup:
-                        _sync_prompt_lookup_history(
-                            hidden, y, drafts_arr, accepted_count
-                        )
-                    ntoks += 1
-                    _remember_generated(bonus_id)
-                    emissions.append(
-                        (
-                            bonus_id,
-                            lp_rows[k_len],
-                            processor_position_states[k_len],
-                            False,
-                            None,
-                        )
-                    )
-                    if ntoks >= max_tokens:
-                        round_done = True
-                    else:
-                        last_committed_tok_id = bonus_id
-                        last_committed_hidden = hidden[:, k_len : k_len + 1, :]
-                        y = mx.array([bonus_id], mx.uint32)
-                else:
-                    # Reject at position ``accepted_count``. Emit target's
-                    # pre-sampled residual there (byte-equal to the prior
-                    # ``verify_pred.item()`` on greedy since residual ==
-                    # target argmax at temp=0), and drop the remaining
-                    # (k_len - accepted_count) unaccepted drafts from the
-                    # caches.
-                    n_to_drop = k_len - accepted_count
-                    if pending_is_prompt_lookup:
-                        _rollback_draft(n_to_drop, verify_size=k_len + 1)
-                        _sync_prompt_lookup_history(
-                            hidden, y, drafts_arr, accepted_count
-                        )
-                    else:
-                        _rollback_verify_round(n_to_drop, verify_size=k_len + 1)
-                    if logits_processors and prev_tokens is not None:
-                        # Discard the ``n_to_drop`` rejected positions
-                        # from prev_tokens (they were appended by
-                        # _step_backbone during the batched verify).
-                        prev_tokens = prev_tokens[:-n_to_drop]
-
-                    verify_tok_id = int(residual_ids[accepted_count])
-
-                    ntoks += 1
-                    _remember_generated(verify_tok_id)
-                    # ``lps[position]`` is the full target-model logprob row,
-                    # not a scalar attached to the independently pre-sampled
-                    # ``toks[position]``.  Indexing this row later with the
-                    # emitted residual token therefore reports its target
-                    # probability, while rejection sampling preserves the
-                    # target marginal.
-                    emissions.append(
-                        (
-                            verify_tok_id,
-                            lp_rows[accepted_count],
-                            processor_position_states[accepted_count],
-                            False,
-                            "reject",
-                        )
-                    )
-                    if ntoks >= max_tokens:
-                        round_done = True
-                    else:
-                        last_committed_tok_id = verify_tok_id
-                        # hidden at position ``accepted_count`` is the state
-                        # AFTER the last accepted draft (or after y when
-                        # accepted_count=0) — this is what MTP conditions on
-                        # for the next draft chain.
-                        last_committed_hidden = hidden[
-                            :, accepted_count : accepted_count + 1, :
-                        ]
-                        y = mx.array([verify_tok_id], mx.uint32)
-
-            if not round_done:
-                # The drafter reads processor state, so it has to see the
-                # round's last committed position -- the state the old
-                # per-yield walk left behind when it drafted last.
-                if emissions:
-                    _restore_processor_state(emissions[-1][2])
-                # Decide K for the next round BEFORE generating the
-                # next chain (a park decision skips drafter cost).
-                plan, plan_arg = _plan_next(_next_depth())
-                if plan == "lookup":
-                    if rebuild_head_history:
-                        head_seed = last_committed_hidden
-                    pending_drafts = _lookup_drafts(plan_arg)
-                    pending_is_prompt_lookup = True
-                elif plan == "mtp":
-                    # Chain-carry: on all-accept the mtp_cache must
-                    # advance by one extra position for the just-accepted
-                    # LAST draft so the head's attention sees it before
-                    # predicting the next round's first draft.
-                    if accepted_count == k_len and not rebuild_head_history:
-                        align_h = hidden[:, accepted_count - 1 : accepted_count, :]
-                        align_tok = draft_toks_arr[accepted_count - 1]
-                        cache_commit = (align_h, align_tok)
-                    else:
-                        cache_commit = None
-                    last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
-                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                        last_committed_hidden,
-                        last_committed_tok,
-                        prev_tokens,
-                        plan_arg,
-                        cache_commit=cache_commit,
-                    )
-                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                    pending_is_prompt_lookup = False
-                else:
-                    if rebuild_head_history and head_pending is not None:
-                        # No chain will append the usual new row for y on
-                        # this handoff either. Settle it along with the rebuild
-                        # before parks begin advancing the target alone.
-                        align_h, align_tok = head_pending
-                        head_pending = (
-                            mx.concatenate([align_h, last_committed_hidden], axis=1),
-                            mx.concatenate([align_tok, y]),
-                        )
-                    pending_drafts = None
-                    pending_is_prompt_lookup = False
-                    if _pipeline_parks and _may_run_ahead():
-                        # The next round parks; start its step now so it
-                        # runs while the caller handles this round's tokens.
-                        prefetched_step = _launch_park_step(
-                            y, timed_by_this_round=False
-                        )
-
-            if (
-                rebuild_head_history
-                and head_pending is not None
-                and round_done
-                and not eos_cut
-                and len(emissions) == accepted_count + 1
-            ):
-                # A final bonus/residual has no next chain to append its
-                # usual new row. Accepted-prefix caps are already included.
-                align_h, align_tok = head_pending
-                head_pending = (
-                    mx.concatenate(
-                        [align_h, hidden[:, accepted_count : accepted_count + 1, :]],
-                        axis=1,
-                    ),
-                    mx.concatenate(
-                        [align_tok, mx.array([emissions[-1][0]], mx.uint32)]
-                    ),
-                )
-            if rebuild_head_history:
-                # A park/lookup handoff or terminal round has no next head
-                # call to prepend these rows to. Flush now, before yielding.
-                _flush_head()
-
-            for (
-                _emit_tok_id,
-                _emit_lp,
-                _emit_state,
-                _emit_from_draft,
-                _emit_accounting,
-            ) in emissions:
-                _restore_processor_state(_emit_state)
-                if _emit_accounting == "accept":
-                    accept_counter.record_accept(tokens_saved=1)
-                elif _emit_accounting == "reject":
-                    accept_counter.record_reject()
-                yield _emit_tok_id, _emit_lp, _emit_from_draft
-            if round_done:
-                return
-        block = ntoks // _CACHE_CLEAR_INTERVAL
-        if block > last_cache_block:
-            mx.clear_cache()
-            last_cache_block = block
+                for (
+                    _emit_tok_id,
+                    _emit_lp,
+                    _emit_state,
+                    _emit_from_draft,
+                    _emit_accounting,
+                ) in emissions:
+                    _restore_processor_state(_emit_state)
+                    if _emit_accounting == "accept":
+                        accept_counter.record_accept(tokens_saved=1)
+                    elif _emit_accounting == "reject":
+                        accept_counter.record_reject()
+                    yield _emit_tok_id, _emit_lp, _emit_from_draft
+                if round_done:
+                    return
+            block = ntoks // _CACHE_CLEAR_INTERVAL
+            if block > last_cache_block:
+                mx.clear_cache()
+                last_cache_block = block
+    except BaseException:
+        # On any abnormal exit (an error, or a close at a yield) the head may
+        # hold rows the caller never consumed, so drop its history instead of
+        # settling it. The head only proposes drafts the target verifies, so an
+        # empty head beside a populated backbone costs acceptance, never
+        # correctness. Cleanup must never replace the original error.
+        if rebuild_head_history:
+            _settle_head_after_error(_discard_head_history)
+        raise
