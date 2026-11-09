@@ -1775,9 +1775,8 @@ async def _non_stream(
             from ..service.helpers import _inject_json_instruction
 
             _schema_can_guide = False
-            messages = _inject_json_instruction(
-                messages, build_json_system_prompt(_rf_for_strict)
-            )
+            if json_instruction := build_json_system_prompt(_rf_for_strict):
+                messages = _inject_json_instruction(messages, json_instruction)
             guided_warning = (
                 "MLLM schema decoding is unconstrained: reasoning parser has no "
                 "supported atomic reasoning-end marker. Strict final-text "
