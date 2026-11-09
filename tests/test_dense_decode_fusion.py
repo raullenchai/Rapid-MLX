@@ -502,3 +502,25 @@ def test_embeddings_without_input_ids_keep_optional_backbone_contract():
     assert fusion.install_dense_decode_fusion(root) == 1
     h = mx.ones((1, 1, 128), mx.bfloat16)
     assert fusion._bits_equal(b(input_embeddings=h), original(b, input_embeddings=h))
+
+
+def test_declined_gemma_layer_restores_whole_decoder(monkeypatch):
+    class Decoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = [gemma_tiny(), gemma_tiny()]
+
+    model = Decoder()
+    classes = [type(layer) for layer in model.layers]
+    original = fusion._enroll_gemma
+    calls = []
+
+    def second_declines(layer):
+        calls.append(layer)
+        return original(layer) and len(calls) == 1
+
+    monkeypatch.setattr(fusion, "_enroll_gemma", second_declines)
+    assert fusion.install_dense_decode_fusion(model) == 0
+    assert len(calls) == 2
+    assert [type(layer) for layer in model.layers] == classes
+    assert not any(hasattr(layer.mlp, "_rapid_dense_group") for layer in model.layers)

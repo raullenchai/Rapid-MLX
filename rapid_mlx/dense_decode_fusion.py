@@ -476,23 +476,31 @@ def install_dense_decode_fusion(model, *, spec_decode="none"):
     if not callable(getattr(model, "named_modules", None)):
         return 0
     count = 0
-    for _, backbone in list(model.named_modules()):
-        cls = type(backbone)
-        if cls.__name__ == "DecoderLayer" and cls.__module__ in {
+    modules = [m for _, m in model.named_modules()]
+    gemma = [
+        m
+        for m in modules
+        if type(m).__name__ == "DecoderLayer"
+        and type(m).__module__
+        in {
             "rapid_mlx.models.gemma4_vendored.language",
             "mlx_vlm.models.gemma4.language",
-        }:
-            snapshot = None
-            try:
-                snapshot = _snapshot(backbone)
-                if _enroll_gemma(backbone):
-                    count += 1
-                else:
-                    _restore(snapshot)
-            except Exception:
-                if snapshot is not None:
-                    _restore(snapshot)
-                logger.debug("Gemma decode enrollment declined", exc_info=True)
+        }
+    ]
+    if gemma:
+        # The decoder enrolls as a unit: any declined layer restores them all.
+        snapshot = [entry for layer in gemma for entry in _snapshot(layer)]
+        try:
+            if all([_enroll_gemma(layer) for layer in gemma]):
+                count += len(gemma)
+            else:
+                _restore(snapshot)
+        except Exception:
+            _restore(snapshot)
+            logger.debug("Gemma decode enrollment declined", exc_info=True)
+    for backbone in modules:
+        cls = type(backbone)
+        if any(backbone is layer for layer in gemma):
             continue
         kind = _BACKBONES.get((cls.__module__, cls.__name__))
         if kind is None or getattr(backbone, "_rapid_dense_enrolled", False):
