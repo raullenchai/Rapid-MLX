@@ -5060,19 +5060,7 @@ async def _create_chat_completion_impl(
     if cfg.pin_system_prompt:
         _maybe_pin_system_prompt(messages)
 
-    # Handle response_format - inject system prompt if needed
     response_format = request.response_format
-    if response_format:
-        try:
-            json_instruction = build_json_system_prompt(response_format)
-        except Exception as e:
-            logger.warning(f"Failed to build JSON system prompt: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid response_format schema: {e}",
-            )
-        if json_instruction:
-            messages = _inject_json_instruction(messages, json_instruction)
 
     # #448 — translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
     # native controls. MUST run BEFORE the tool auto-disable below so a
@@ -5143,7 +5131,9 @@ async def _create_chat_completion_impl(
     # kwarg below from one source. Mirrors the ``rapid-mlx chat``
     # REPL's ``--no-think`` default for thinking-capable models on
     # the OpenAI-SDK surface.
-    if maybe_auto_disable_thinking_for_casual_chat(request):
+    if not _is_structured_output_requested(
+        response_format
+    ) and maybe_auto_disable_thinking_for_casual_chat(request):
         logger.info(
             "R12-T2F auto-disable: /v1/chat/completions casual chat "
             "request to a thinking-capable model (parser=%s) with no "
@@ -5160,6 +5150,64 @@ async def _create_chat_completion_impl(
     # max_tokens default (thinking models need more headroom) and the
     # chat_template kwarg below. (#387)
     resolved_thinking = _resolve_enable_thinking(request)
+
+    # Select the constraint before augmenting messages or counting prompt tokens.
+    # The legacy model-owning decode loop masks token zero; reasoning requests
+    # instead use the scheduler's existing reasoning-gated grammar processor.
+    _response_schema = extract_json_schema_for_guided(response_format)
+    if getattr(response_format, "type", None) == "json_object":
+        _response_schema = {"type": ["object", "array"]}
+    _schema_processor = None
+    _schema_reasoning = (
+        cfg.reasoning_parser is not None and resolved_thinking is not False
+    )
+    _legacy_guided = bool(
+        _response_schema
+        and not request.tools
+        and not _schema_reasoning
+        and engine.supports_guided_generation
+    )
+    _fallback_reason = "guided decoding unavailable for this engine/tokenizer/schema"
+    if _response_schema and not request.tools and (engine.is_mllm or _schema_reasoning):
+        from ..api.guided import build_json_schema_logits_processor
+
+        _end_id = None
+        _can_gate = not _schema_reasoning
+        if _schema_reasoning:
+            _marker = getattr(cfg.reasoning_parser, "reasoning_end_str", None)
+            if _marker and engine.tokenizer is not None:
+                try:
+                    _ids = engine.tokenizer.encode(_marker, add_special_tokens=False)
+                    if len(_ids) == 1 and engine.tokenizer.decode(_ids) == _marker:
+                        _end_id = int(_ids[0])
+                        _can_gate = True
+                except Exception:
+                    logger.debug(
+                        "Unable to resolve response_format reasoning gate",
+                        exc_info=True,
+                    )
+            if not _can_gate:
+                _fallback_reason = (
+                    "reasoning parser has no supported atomic reasoning-end marker"
+                )
+        if _can_gate:
+            _builder_kwargs = (
+                {"reasoning_end_id": _end_id} if _end_id is not None else {}
+            )
+            _schema_processor = await asyncio.to_thread(
+                build_json_schema_logits_processor,
+                engine.tokenizer,
+                _response_schema,
+                **_builder_kwargs,
+            )
+        _legacy_guided = False
+    if request.tools:
+        _fallback_reason = "response_format guided decoding is unavailable with tools"
+    if not _legacy_guided and _schema_processor is None:
+        json_instruction = build_json_system_prompt(response_format)
+        if json_instruction:
+            messages = _inject_json_instruction(messages, json_instruction)
+            logger.info("prompt augmented for response_format: %s", _fallback_reason)
 
     # Prepare kwargs
     chat_kwargs: dict[str, Any] = {
@@ -5771,48 +5819,23 @@ async def _create_chat_completion_impl(
             incr_strict_request()
 
     if response_format and not request.tools:
-        json_schema = extract_json_schema_for_guided(response_format)
+        json_schema = _response_schema
         if json_schema:
-            # MLLM continuous batching owns its decode loop, so the legacy
-            # model-owning ``GuidedGenerator`` cannot be used without routing
-            # the request away from the vision-capable lane. Build the same
-            # llguidance grammar as a request-local logits processor instead.
-            _mllm_schema_processor = None
-            if engine.is_mllm:
-                from ..api.guided import build_json_schema_logits_processor
-
-                _mllm_schema_processor = await asyncio.to_thread(
-                    build_json_schema_logits_processor,
-                    engine.tokenizer,
-                    json_schema,
-                )
-                if _mllm_schema_processor is not None:
-                    chat_kwargs["grammar_logits_processor"] = _mllm_schema_processor
-                    # The schema grammar owns token zero, so the request cannot
-                    # also carry a processor that forces a ``</think>`` token
-                    # after a reasoning budget.  That token is outside the JSON
-                    # grammar and would make the constraint fail open.
+            # Scheduler constraints preserve the normal streaming and reasoning
+            # postprocessing paths, on both text and multimodal engines.
+            if _schema_processor is not None:
+                chat_kwargs["grammar_logits_processor"] = _schema_processor
+                # A budget may safely force the boundary only when the grammar
+                # waits for it. With thinking disabled the grammar owns token zero.
+                if not _schema_reasoning:
                     chat_kwargs.pop("reasoning_budget_logits_processor", None)
-                    # The schema grammar owns the complete assistant payload
-                    # from token zero, so it cannot admit a reasoning preamble.
-                    # Keep prompt rendering and output classification aligned.
-                    chat_kwargs["enable_thinking"] = False
-
-            # ``supports_guided_generation`` and ``generate_with_schema``
-            # are on the BaseEngine contract — defaults are False /
-            # NotImplementedError, so engines without guided decoding
-            # opt out by leaving the property at False. The previous
-            # ``hasattr`` guards were artifacts of the engine API being
-            # informal; they're the same silent-skip shape that produced
-            # #500 and the v0.6.70 hotfix and have no role now that the
-            # contract is explicit.
-            use_guided = engine.supports_guided_generation
+            use_guided = _legacy_guided
             if strict_mode:
                 # Tick the strict-request counter BEFORE any branching
                 # so operators see uniform traffic shape across the
                 # guided / postgen-validation / disabled arms.
                 incr_strict_request()
-                if _mllm_schema_processor is not None and strict_enforcement_active:
+                if _schema_processor is not None and strict_enforcement_active:
                     # The request-local matcher intentionally fails open if a
                     # committed token desynchronizes it. Strict mode therefore
                     # keeps the existing post-generation validator as a second
@@ -5821,11 +5844,11 @@ async def _create_chat_completion_impl(
                     # response.
                     use_strict_postgen_validation = True
                     logger.info(
-                        "Strict json_schema mode on the MLLM lane — engaging "
+                        "Strict json_schema mode — engaging "
                         "request-local constrained decoding plus post-generate "
                         "validation."
                     )
-                elif not use_guided and _mllm_schema_processor is None:
+                elif not use_guided and _schema_processor is None:
                     # R12-4: pre-R12-4 this branch raised 400
                     # ``guided_extra_required``. That broke
                     # pydantic-ai end-to-end (Astrid r3) — every
@@ -5847,7 +5870,7 @@ async def _create_chat_completion_impl(
                         use_strict_postgen_validation = True
                         logger.info(
                             "Strict json_schema mode active without "
-                            "[guided] extra — engaging R12-4 "
+                            "request-compatible guided decoding — engaging R12-4 "
                             "post-generate validation + single "
                             "repair retry path."
                         )
@@ -5865,7 +5888,7 @@ async def _create_chat_completion_impl(
                         "Using guided generation for JSON schema "
                         "enforcement (strict=true)"
                     )
-            elif use_guided or _mllm_schema_processor is not None:
+            elif use_guided or _schema_processor is not None:
                 logger.info("Using guided generation for JSON schema enforcement")
             else:
                 from rapid_mlx.connect import package_install_command
@@ -5880,11 +5903,12 @@ async def _create_chat_completion_impl(
                 # above.
                 logger.warning(
                     "json_schema response_format requested but guided "
-                    "generation is unavailable (engine="
-                    "%s.supports_guided_generation=False). Falling back "
+                    "generation is unavailable for this request (%s; engine="
+                    "%s). Falling back "
                     "to unconstrained decoding — schema will NOT be "
                     "enforced. Install with `%s` to enable llguidance-backed "
                     "schema enforcement.",
+                    _fallback_reason,
                     type(engine).__name__,
                     package_install_command("rapid-mlx[guided]"),
                 )
@@ -6158,11 +6182,9 @@ async def _create_chat_completion_impl(
                 )
         elif use_guided and json_schema:
             # ``generate_with_schema`` owns a legacy best-effort fallback to
-            # ordinary chat. That is valid for suggestion-only schemas but not
-            # for strict=true: an unconstrained result that happens to validate
-            # is still not evidence that the requested constraint was applied.
-            # Own the flag at the route boundary and remove any colliding
-            # internal kwarg, matching the streaming and Responses paths.
+            # ordinary chat. Own fallback here so best-effort requests get a
+            # logged prompt instruction only after guided decoding has failed.
+            # Strict requests still reject the failure without a retry.
             _guided_kwargs = {
                 key: value
                 for key, value in chat_kwargs.items()
@@ -6173,7 +6195,7 @@ async def _create_chat_completion_impl(
                     engine.generate_with_schema(
                         messages=messages,
                         json_schema=json_schema,
-                        raise_on_failure=strict_mode,
+                        raise_on_failure=True,
                         **_guided_kwargs,
                     ),
                     raw_request,
@@ -6257,6 +6279,19 @@ async def _create_chat_completion_impl(
                     f"Guided generation failed, falling back to standard: {guided_err}"
                 )
                 logger.debug(f"Problematic schema: {json_schema}")
+                json_instruction = build_json_system_prompt(response_format)
+                if json_instruction:
+                    messages = _inject_json_instruction(messages, json_instruction)
+                    logger.info(
+                        "prompt augmented for response_format: guided decoding failed at runtime"
+                    )
+                    enforce_context_length_for_messages(
+                        engine,
+                        messages,
+                        max_tokens=chat_kwargs.get("max_tokens"),
+                        enable_thinking=chat_kwargs.get("enable_thinking"),
+                        chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+                    )
                 # Fallback runs under the outer admission reservation
                 # still held by the wrapper's ``finally`` — no
                 # re-acquire needed (the helper does not release on
@@ -6422,7 +6457,13 @@ async def _create_chat_completion_impl(
         and output is not None
         and not _strict_tool_turn
     ):
-        ok, failure_details = validate_and_envelope(output.text or "", json_schema)
+        _validation_text = output.text or ""
+        if cfg.reasoning_parser is not None:
+            _, _validation_content = cfg.reasoning_parser.extract_reasoning(
+                _validation_text, enable_thinking=resolved_thinking
+            )
+            _validation_text = _validation_content or ""
+        ok, failure_details = validate_and_envelope(_validation_text, json_schema)
         attempts = 1
         repair_attempted = False
         if (
@@ -6465,13 +6506,8 @@ async def _create_chat_completion_impl(
                 "grammar_logits_processor",
             ):
                 repair_kwargs.pop(_k, None)
-            if engine.is_mllm and "grammar_logits_processor" in chat_kwargs:
-                # A whole-response schema grammar owns token zero on MLLM and
-                # explicitly rendered the first attempt with thinking off.
-                # Its reasoning processor (if one was prepared before that
-                # decision) is stateful and inapplicable to the fresh repair.
-                # Other engines keep their pre-existing reasoning budget, and
-                # token suppression remains intact on every lane.
+            if "grammar_logits_processor" in chat_kwargs:
+                # The first attempt's budget cursor belongs to that generation.
                 repair_kwargs.pop("reasoning_budget_logits_processor", None)
             # H-06 #267b: re-check the context-length gate AGAINST the
             # POST-BUILD repair prompt. ``build_repair_messages`` builds a
@@ -6600,8 +6636,14 @@ async def _create_chat_completion_impl(
                         },
                     ) from repair_err
             if repair_output is not None:
+                _repair_validation_text = repair_output.text or ""
+                if cfg.reasoning_parser is not None:
+                    _, _repair_content = cfg.reasoning_parser.extract_reasoning(
+                        _repair_validation_text, enable_thinking=resolved_thinking
+                    )
+                    _repair_validation_text = _repair_content or ""
                 ok2, failure2 = validate_and_envelope(
-                    repair_output.text or "", json_schema
+                    _repair_validation_text, json_schema
                 )
                 if ok2:
                     incr_strict_repair_success()
@@ -9199,6 +9241,19 @@ async def stream_chat_completion_guided(
                 "Guided streaming generation failed, falling back to "
                 f"unconstrained streaming: {guided_err}"
             )
+            json_instruction = build_json_system_prompt(request.response_format)
+            if json_instruction:
+                messages = _inject_json_instruction(messages, json_instruction)
+                logger.info(
+                    "prompt augmented for response_format: guided decoding failed at runtime"
+                )
+                enforce_context_length_for_messages(
+                    engine,
+                    messages,
+                    max_tokens=kwargs.get("max_tokens"),
+                    enable_thinking=kwargs.get("enable_thinking"),
+                    chat_template_kwargs=kwargs.get("chat_template_kwargs"),
+                )
             # Forward the pre-computed response_id + _sse_created so the
             # fallback stream's chunks share id/created with this outer
             # helper's would-be chunks. Without this, a client that

@@ -3717,27 +3717,25 @@ def _validate_tool_call_params(
 
 
 def _inject_json_instruction(messages: list, instruction: str) -> list:
-    """Inject JSON instruction into messages (prepend to system message)."""
-    messages = list(messages)
+    """Append a fallback instruction while preserving the user's system prefix."""
+    from copy import deepcopy
 
-    system_idx = None
-    for i, msg in enumerate(messages):
+    messages = deepcopy(messages)
+    for msg in messages:
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
-        if role == "system":
-            system_idx = i
-            break
-
-    if system_idx is not None:
-        msg = messages[system_idx]
-        if isinstance(msg, dict):
-            existing = msg.get("content", "")
-            msg["content"] = f"{instruction}\n\n{existing}"
+        if role != "system":
+            continue
+        content = msg.get("content") if isinstance(msg, dict) else msg.content
+        if isinstance(content, list):
+            content = [*content, {"type": "text", "text": instruction}]
         else:
-            existing = getattr(msg, "content", "") or ""
-            msg.content = f"{instruction}\n\n{existing}"
-    else:
-        messages.insert(0, {"role": "system", "content": instruction})
-
+            content = f"{content}\n\n{instruction}" if content else instruction
+        if isinstance(msg, dict):
+            msg["content"] = content
+        else:
+            msg.content = content
+        return messages
+    messages.insert(0, {"role": "system", "content": instruction})
     return messages
 
 

@@ -609,7 +609,7 @@ class TestBuildUsageReasoningBreakdown:
 class TestInjectJsonInstruction:
     """Tests for _inject_json_instruction function."""
 
-    def test_prepend_to_existing_system_dict(self):
+    def test_append_to_existing_system_dict(self):
         from rapid_mlx.server import _inject_json_instruction
 
         messages = [
@@ -618,11 +618,11 @@ class TestInjectJsonInstruction:
         ]
         result = _inject_json_instruction(messages, "Respond in JSON.")
 
-        assert result[0]["content"].startswith("Respond in JSON.\n\n")
+        assert result[0]["content"] == "You are helpful.\n\nRespond in JSON."
         assert "You are helpful." in result[0]["content"]
         assert len(result) == 2
 
-    def test_prepend_to_existing_system_object(self):
+    def test_append_to_existing_system_object(self):
         from rapid_mlx.server import _inject_json_instruction
 
         class Msg:
@@ -633,7 +633,7 @@ class TestInjectJsonInstruction:
         messages = [Msg("system", "You are helpful."), Msg("user", "Hi")]
         result = _inject_json_instruction(messages, "JSON only.")
 
-        assert result[0].content.startswith("JSON only.\n\n")
+        assert result[0].content == "You are helpful.\n\nJSON only."
         assert "You are helpful." in result[0].content
 
     def test_create_system_when_missing(self):

@@ -366,37 +366,19 @@ def test_repair_skipped_when_repair_prompt_exceeds_context():
 
 
 def test_repair_skipped_at_exact_one_token_overflow():
-    """Edge of the gate: pick a context window such that the
-    initial prompt fits (with room for ``max_tokens=64``
-    completion) but the repair prompt — at ``count_prompt_tokens``
-    + completion budget — is exactly one token over the cap.
-
-    The boundary is checked with ``<=`` (request <= max_context),
-    so "exactly one over" must fail cleanly. We do NOT need to
-    compute the exact token count — we ratchet the cap up to a
-    value that we KNOW the initial passes but the repair fails on,
-    and we assert the same observable contract as Test 2:
-
-      * 422 (NOT 502)
-      * single chat call
-      * skip counter == 1, attempt counter == 0
-
-    This is the "one token over" boundary because we already
-    proved (Test 1) that a much-larger cap allows the repair, and
-    we now sit at the smallest cap that still excludes the repair
-    prompt. Concretely: 128 tokens is tight enough that the
-    several-hundred-character repair prompt (instructions +
-    schema + failed-output quote) at 4 chars/token cannot fit.
-    """
-    # Sizing math (4 chars/token stub tokenizer):
-    #   * REPAIR prompt tokens (concat of all repair messages) = 302.
-    #   * ``max_tokens=64`` completion budget.
-    #   * ``requested_total = 302 + 64 = 366``.
-    # The gate's check is ``requested_total <= max_context``. Setting
-    # ``max_position_embeddings=365`` puts the repair exactly one
-    # token over the cap — boundary case. The initial prompt
-    # (~116+64=180 tokens) still fits trivially.
-    client, engine = _client(body=_VIOLATING_BODY, max_position_embeddings=365)
+    """A repair exactly one token over the window must be skipped."""
+    # Measure the rendered repair instead of depending on instruction wording.
+    probe_client, probe_engine = _client(
+        body=_VIOLATING_BODY, max_position_embeddings=10000
+    )
+    probe_client.post("/v1/chat/completions", json=_payload())
+    assert len(probe_engine.chat_calls) == 2
+    repair_prompt = probe_engine.build_prompt(probe_engine.chat_calls[1]["messages"])
+    repair_tokens = len(probe_engine.tokenizer.encode(repair_prompt))
+    response_format_metrics.reset_for_tests()
+    client, engine = _client(
+        body=_VIOLATING_BODY, max_position_embeddings=repair_tokens + 64 - 1
+    )
 
     resp = client.post("/v1/chat/completions", json=_payload())
     assert resp.status_code == 422, resp.text

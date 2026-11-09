@@ -672,7 +672,9 @@ class GuidedGenerator:
             return None
 
 
-def build_json_schema_logits_processor(tokenizer, json_schema: dict):
+def build_json_schema_logits_processor(
+    tokenizer, json_schema: dict, *, reasoning_end_id: int | None = None
+):
     """Build the shared incremental JSON-schema processor for a scheduler.
 
     Unlike :class:`GuidedGenerator`, this does not own a model or a decode
@@ -700,6 +702,7 @@ def build_json_schema_logits_processor(tokenizer, json_schema: dict):
             lltokenizer,
             grammar,
             tokenizer=tokenizer,
+            reasoning_end_id=reasoning_end_id,
             stop_token_ids=model_stop_token_ids(tokenizer),
             force_stop_when_accepting=True,
         )

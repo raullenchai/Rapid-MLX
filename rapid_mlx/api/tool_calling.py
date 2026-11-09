@@ -979,73 +979,24 @@ def build_json_system_prompt(
 
     if format_type == "json_object":
         return (
-            "⚠️ JSON OUTPUT REQUIRED ⚠️\n\n"
-            "You MUST respond with ONLY valid JSON.\n\n"
-            "RULES:\n"
-            "- Start response with { or [\n"
-            "- NO text before or after JSON\n"
-            "- NO thinking or explanations\n"
-            "- NO markdown code blocks (```)\n"
-            "- ONLY the raw JSON\n"
-            "- If the user asks for a list/array, respond with a JSON array []\n"
-            "- If the user asks for multiple items, include ALL requested items\n"
-            "- Follow the exact structure/keys the user specifies"
+            "Return the final answer as valid JSON, without markdown code blocks. "
+            "Follow the structure and keys requested by the user. "
+            "This format requirement applies to the final answer only; "
+            "reasoning may precede it in the model's reasoning channel."
         )
 
     if format_type == "json_schema":
-        json_schema_spec = rf_dict.get("json_schema", {})
-        schema = json_schema_spec.get("schema", {})
-        name = json_schema_spec.get("name", "response")
-        description = json_schema_spec.get("description", "")
-        strict = json_schema_spec.get("strict", False)
-
-        # If strict mode is enabled and guided generation is available,
-        # the server should use guided decoding instead of prompt injection
-        if strict:
-            # Return stronger instruction for strict mode
-            prompt = (
-                f"⚠️ STRICT JSON OUTPUT REQUIRED ⚠️\n\n"
-                f"You MUST respond with ONLY a valid JSON object matching the '{name}' schema.\n"
-            )
-            if description:
-                prompt += f"Purpose: {description}\n"
-            try:
-                schema_str = json.dumps(schema, indent=2)
-            except (TypeError, ValueError) as e:
-                logger.warning(f"Failed to serialize JSON schema: {e}")
-                schema_str = str(schema)
-            prompt += (
-                f"\nJSON Schema:\n```json\n{schema_str}\n```\n\n"
-                "STRICT RULES:\n"
-                "- Start response with {{ or [\n"
-                "- NO text before or after JSON\n"
-                "- NO thinking, reasoning, or explanations\n"
-                "- NO markdown code blocks\n"
-                "- ONLY the JSON object"
-            )
-            return prompt
-
-        # Standard (non-strict) mode - still strong but less aggressive
-        prompt = (
-            f"⚠️ JSON OUTPUT REQUIRED ⚠️\n\n"
-            f"Respond with a valid JSON object matching the '{name}' schema.\n"
+        spec = rf_dict.get("json_schema") or {}
+        schema_str = json.dumps(spec.get("schema", {}), indent=2)
+        name = spec.get("name", "response")
+        description = spec.get("description", "")
+        return (
+            f"Response schema: {name}. {description}\n"
+            "Return the final answer as valid JSON matching this JSON Schema, "
+            "without markdown code blocks. This format requirement applies "
+            "to the final answer only; reasoning may precede it in the model's "
+            f"reasoning channel.\n\nJSON Schema:\n{schema_str}"
         )
-        if description:
-            prompt += f"Purpose: {description}\n"
-        try:
-            schema_str = json.dumps(schema, indent=2)
-        except (TypeError, ValueError) as e:
-            logger.warning(f"Failed to serialize JSON schema: {e}")
-            schema_str = str(schema)
-        prompt += (
-            f"\nJSON Schema:\n```json\n{schema_str}\n```\n\n"
-            "RULES:\n"
-            "- Start response with { or [\n"
-            "- NO text before or after JSON\n"
-            "- NO markdown code blocks\n"
-            "- ONLY the JSON object"
-        )
-        return prompt
 
     return None
 
