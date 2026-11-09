@@ -659,6 +659,8 @@ rapid_mlx = [
     "templates/*.jinja",
     "agents/profiles/*.yaml",
     "kernels/*.metal",
+    "patches/qwen35_affine4_*.metal",
+    "patches/QWEN35_AFFINE4_LICENSE",
     "chat_runtime/LICENSE-PROMPTS",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
     "kernels/LICENSE-QSA-STAGE1",

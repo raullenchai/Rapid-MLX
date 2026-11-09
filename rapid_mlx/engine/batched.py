@@ -2382,6 +2382,12 @@ class BatchedEngine(BaseEngine):
                 install_qwen35_moe_router, self._model
             ).result()
 
+            from ..patches.qwen35_affine4 import install_qwen35_affine4
+
+            self._model_load_executor.submit(  # type: ignore[attr-defined]
+                install_qwen35_affine4, self._model
+            ).result()
+
             from ..patches.moe_decode_fusion import install_moe_decode_fusion
 
             self._model_load_executor.submit(  # type: ignore[attr-defined]
