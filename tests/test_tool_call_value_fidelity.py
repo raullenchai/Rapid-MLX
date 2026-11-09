@@ -1092,3 +1092,29 @@ def test_scanner_raw_non_json_arguments_keep_siblings():
         ("write_file", "{raw text}"),
         ("unknown", "x"),
     ]
+
+
+def test_scanner_parameter_literal_call_pairs_scan_linear_ranges():
+    from rapid_mlx.tool_call_scan import split_marked_calls
+
+    class ScanCountingText(str):
+        searched = 0
+
+        def rfind(self, sub, start=0, end=None):
+            stop = len(self) if end is None else end
+            self.searched += stop - start
+            return super().rfind(sub, start, stop)
+
+    value = "</function><function=phantom>" * 20000
+    body = f"<parameter=path>{value}</parameter>"
+    first = f"<function=write_file>{body}</function>"
+    tail = '<function=unknown>{"path":"y"}</function>'
+    text = ScanCountingText(first + tail)
+    assert split_marked_calls(text, r"<function=([^>]+)>", "</function>") == [
+        ("write_file", body, 0, len(first)),
+        ("unknown", '{"path":"y"}', len(first), len(text)),
+    ]
+    # Count searched characters rather than relying on machine timing. A
+    # growing-prefix rfind for each phantom opener exceeds this by orders
+    # of magnitude; boundary scans may visit each byte only a bounded amount.
+    assert text.searched <= 4 * len(text)

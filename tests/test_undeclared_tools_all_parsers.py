@@ -1340,3 +1340,41 @@ def test_nemotron_fenced_example_beside_real_call(example_first):
         content += parser.flush_held_content(text)
         assert content.strip() == example
         assert [tc["function"]["name"] for tc in calls] == ["write_file"]
+
+
+def test_nemotron_unfinished_fenced_example_before_real_call():
+    from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
+
+    example = "```xml\n<function=example>\n```"
+    text = example + "\n" + VALID
+    parser = NemotronToolParser()
+    result = parser.extract_tool_calls(text, {"tools": TOOLS})
+    assert result.content == example
+    assert [(tc["name"], json.loads(tc["arguments"])) for tc in result.tool_calls] == [
+        ("write_file", {"path": "x"})
+    ]
+    # Check every two-chunk boundary, plus bytewise and one-shot streaming.
+    for chunks in (
+        [text],
+        list(text),
+        *([text[:i], text[i:]] for i in range(1, len(text))),
+    ):
+        parser.reset()
+        previous, content, calls = "", "", []
+        for delta in chunks:
+            current = previous + delta
+            event = (
+                parser.extract_tool_calls_streaming(
+                    previous, current, delta, request={"tools": TOOLS}
+                )
+                or {}
+            )
+            content += event.get("content", "")
+            calls.extend(event.get("tool_calls", []))
+            previous = current
+        content += parser.flush_held_content(text)
+        assert content.strip() == example
+        assert [
+            (tc["function"]["name"], json.loads(tc["function"]["arguments"]))
+            for tc in calls
+        ] == [("write_file", {"path": "x"})]

@@ -274,8 +274,9 @@ class NemotronToolParser(ToolParser):
     @classmethod
     def _function_spans(cls, text: str, valid_names=None):
         """Bound shared literal-safe spans before post-call narration."""
+        scan_text = cls.mask_markdown_fenced_regions(text)
         calls = split_marked_calls(
-            text, r"<function=([^>]+)>", "</function>", valid_names=valid_names
+            scan_text, r"<function=([^>]+)>", "</function>", valid_names=valid_names
         )
         from .qwen3coder_tool_parser import _MarkdownCodeTracker
 
@@ -292,6 +293,9 @@ class NemotronToolParser(ToolParser):
             code.skip_fence_span(text, start, end)
             wrapped = cls._is_wrapped(text, start, previous_end, wrapped)
             body_start = text.index(">", start) + 1
+            # Masking preserves offsets; arguments must retain their original
+            # bytes even when they contain Markdown fences themselves.
+            body = text[body_start : end - len("</function>")]
             close = None
             if wrapped:
                 next_opener = bisect_left(openers, body_start)

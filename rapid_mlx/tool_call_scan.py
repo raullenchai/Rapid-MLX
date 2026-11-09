@@ -196,19 +196,24 @@ def _next_call_sibling(text, openers, index, closer):
             _, start = json.JSONDecoder().raw_decode(text, start)
         except json.JSONDecodeError:
             pass  # Raw non-JSON arguments still use marker boundaries.
-    first_close = text.find(closer, start)
-    if first_close < 0:
-        return len(openers)
+    boundaries = re.compile(r"<parameter=|</parameter>|" + re.escape(closer)).finditer(
+        text, start
+    )
+    boundary = next(boundaries, None)
+    in_parameter = False
+    close_in_parameter = True
     for j in range(index + 1, len(openers)):
-        if openers[j].start() < first_close + len(closer):
-            continue
-        close = text.rfind(closer, start, openers[j].start())
-        # A literal function close before the parameter's close is payload.
-        if text.rfind("<parameter=", start, close) > text.rfind(
-            "</parameter>", start, close
-        ):
-            continue
-        return j
+        while boundary is not None and boundary.end() <= openers[j].start():
+            marker = boundary.group()
+            if marker == closer:
+                # Snapshot state at the last close, not at the next opener:
+                # parameter tags following that close cannot change its role.
+                close_in_parameter = in_parameter
+            else:
+                in_parameter = marker == "<parameter="
+            boundary = next(boundaries, None)
+        if not close_in_parameter:
+            return j
     return len(openers)
 
 
