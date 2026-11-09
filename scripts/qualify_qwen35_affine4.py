@@ -75,6 +75,12 @@ def functional(model, tokenizer):
                     len(tree.body) == 1
                     and isinstance(fn, ast.FunctionDef)
                     and fn.name == "square"
+                    and [a.arg for a in fn.args.args] == ["n"]
+                    and not fn.args.posonlyargs
+                    and not fn.args.kwonlyargs
+                    and fn.args.vararg is None
+                    and fn.args.kwarg is None
+                    and not fn.args.defaults
                     and len(fn.body) == 1
                     and isinstance(fn.body[0], ast.Return)
                     and isinstance(ret, ast.BinOp)
