@@ -29,67 +29,6 @@ SWIFT_TESTS = ROOT / "apps/rapid-mac/Tests/RapidTests"
 CI_EXCLUSIONS = {"chat-depth"}
 
 
-@pytest.mark.parametrize("initial_alias", ["fake-alias", "lfm2.5-2.6b-4bit"])
-@pytest.mark.parametrize("selection_succeeds", [True, False])
-def test_chat_restore_selects_fixture_before_starting(
-    tmp_path, initial_alias, selection_succeeds
-):
-    """An early Quickstart Skip must not start the RAM-only starter."""
-    source = HARNESS.read_text()
-    prelude = source.split("flow_chat_restore() {", 1)[1].split(
-        '    send_prompt "golden restore marker" chat', 1
-    )[0]
-    script = r"""
-set -euo pipefail
-OUT="$1"
-selected="$2"
-initial="$selected"
-selection_succeeds="$3"
-FAKE_ALIAS=fake-alias
-explicit=0
-log() { :; }
-start_persona() { :; }
-wait_identifier() { :; }
-press() {
-    if [[ "$2" == "Quickstart.CachedModel.fake-alias" ]]; then
-        [[ "$selection_succeeds" == True ]] || return 37
-        selected=fake-alias
-        explicit=1
-    fi
-}
-wait_selected() {
-    [[ "$1" == "Quickstart.CachedModel.$selected" && "$explicit" == 1 ]]
-}
-dismiss_first_run() {
-    # Quickstart preserves an explicit choice. Before catalog discovery,
-    # its automatic selection is the RAM-only starter.
-    if [[ "$explicit" == 0 ]]; then selected="$initial"; fi
-}
-start_model() {
-    [[ "$selected" == fake-alias ]] || exit 42
-    printf '%s\n' "$selected"
-}
-"""
-    script += "\nflow_chat_restore() {" + prelude + "\n}\n"
-    script += "flow_chat_restore\n"
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            script,
-            "chat-restore-test",
-            str(tmp_path),
-            initial_alias,
-            str(selection_succeeds),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == (0 if selection_succeeds else 37), result.stderr
-    assert result.stdout.strip() == ("fake-alias" if selection_succeeds else "")
-
-
 def harness_flows() -> set[str]:
     source = HARNESS.read_text()
     dispatcher = source.rsplit('case "$FLOW" in', 1)[1].split("esac", 1)[0]

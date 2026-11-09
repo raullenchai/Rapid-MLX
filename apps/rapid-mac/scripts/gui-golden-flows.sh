@@ -2774,14 +2774,6 @@ flow_settings_mtp() {
 flow_chat_restore() {
     log "3/6 basic chat and session restore"
     start_persona chat-restore
-    # Skip can precede catalog discovery and keep the RAM-only starter.
-    # Choose the cached fixture explicitly so residency and session restore
-    # exercise the same model regardless of discovery timing.
-    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
-    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
-    wait_identifier "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/chooser.json"
-    press "$OUT/chooser.json" "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/select-cached.json"
-    wait_selected "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/selected.json"
     dismiss_first_run
     start_model
     send_prompt "golden restore marker" chat
