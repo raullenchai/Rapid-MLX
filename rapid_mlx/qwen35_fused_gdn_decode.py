@@ -379,7 +379,7 @@ def _patch_class(gdn_class: type) -> None:
     dynamic_class._rapid_qwen35_fused_gdn_original_call = original
 
 
-def _structurally_eligible(layer: Any) -> bool:
+def _structurally_eligible(layer: Any, *, allow_dense: bool = False) -> bool:
     try:
         return bool(
             (
@@ -396,7 +396,17 @@ def _structurally_eligible(layer: Any) -> bool:
                 _VALUE_HEAD_DIM,
                 _CONV_KERNEL,
             )
-            and layer.hidden_size == 2048
+            # The fused kernel consumes projected tensors, independent of the
+            # input width. Preserve legacy enrollment unless a plain dense
+            # loader explicitly opts in; runtime projection checks still apply.
+            and (
+                layer.hidden_size == 2048
+                or (
+                    allow_dense
+                    and type(layer.hidden_size) is int
+                    and layer.hidden_size > 0
+                )
+            )
             and (hasattr(layer, "in_proj_fused") or _has_split_projections(layer))
             and _shape(layer.conv1d.weight) == (_CONV_DIM, _CONV_KERNEL, 1)
             and _shape(layer.A_log) == (_NUM_VALUE_HEADS,)
@@ -407,8 +417,12 @@ def _structurally_eligible(layer: Any) -> bool:
         return False
 
 
-def install_qwen35_fused_gdn_decode(model: Any) -> int:
-    """Enroll exact Qwen3.5-family GDN layers and return their count."""
+def install_qwen35_fused_gdn_decode(model: Any, *, allow_dense: bool = False) -> int:
+    """Enroll exact Qwen3.5-family GDN layers and return their count.
+
+    ``allow_dense`` admits other input widths with the same projected geometry.
+    Callers must restrict this opt-in to plain autoregressive decode.
+    """
     if env_falsey("RAPID_MLX_QWEN35_FUSED_GDN_DECODE"):
         return 0
     families: list[type] = []
@@ -433,7 +447,7 @@ def install_qwen35_fused_gdn_decode(model: Any) -> int:
         module
         for module in modules
         if any(type(module) is family for family in families)
-        and _structurally_eligible(module)
+        and _structurally_eligible(module, allow_dense=allow_dense)
     ]
     if not layers:
         return 0
