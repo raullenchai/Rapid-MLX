@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Desktop LAN boundary, without starting an engine or downloading weights."""
 
+import logging
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -416,3 +418,58 @@ def test_lan_banner_uses_interface_ipv4_and_actual_port(monkeypatch, capsys, lan
         )
     else:
         assert output == ""
+
+
+def test_lan_banner_reports_missing_interface_address(monkeypatch, capsys):
+    import socket
+    from types import SimpleNamespace
+
+    import psutil
+
+    from rapid_mlx._uvicorn import _print_lan_banner
+
+    monkeypatch.setenv("RAPID_MLX_LAN_INFERENCE_ONLY", "1")
+    monkeypatch.setattr(
+        psutil,
+        "net_if_addrs",
+        lambda: {"lo0": [SimpleNamespace(family=socket.AF_INET, address="127.0.0.1")]},
+    )
+    with socket.socket() as listener:
+        listener.bind(("0.0.0.0", 0))
+        _print_lan_banner([SimpleNamespace(sockets=[listener])])
+    assert capsys.readouterr().out == (
+        "  LAN inference: API key required (Authorization: Bearer <key>)\n"
+        "  LAN: no non-loopback IPv4 address currently available\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_lan_banner_failure_never_stops_server(monkeypatch, caplog):
+    import uvicorn
+
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+    def banner(listeners):
+        raise RuntimeError("interface enumeration failed")
+
+    monkeypatch.setattr("rapid_mlx._uvicorn._print_lan_banner", banner)
+
+    async def app(scope, receive, send):
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    def accepting():
+        instance.should_exit = True
+
+    instance = AcceptingConnectionsServer(
+        uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"),
+        on_server_accepting=accepting,
+    )
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx._uvicorn"):
+        await instance.serve()
+    assert "Could not enumerate LAN URLs" in caplog.text
