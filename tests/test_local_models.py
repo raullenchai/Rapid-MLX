@@ -119,6 +119,38 @@ def test_empty_and_catalog_cache(cache):
     assert row["chat_fit"] is None
 
 
+@pytest.mark.parametrize("ram_gb", [8, 16, 32, 96])
+@pytest.mark.parametrize("command", ["chat", "run"])
+@pytest.mark.parametrize("cached_alias", [None, "qwen3.5-4b-4bit", "lfm2.5-1b-4bit"])
+@pytest.mark.parametrize("tty", [False, True])
+def test_installed_chat_resolves_default_before_download(
+    cache, monkeypatch, hub_online_env, ram_gb, command, cached_alias, tty
+):
+    """Keep resolution real from the installed entry point to the download."""
+    from rapid_mlx.dependency_repair import cli_entrypoint
+
+    if cached_alias is not None:
+        profile = ma.list_profiles()[cached_alias]
+        snapshot(cache, profile.hf_path, subfolder=profile.subfolder)
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    monkeypatch.setattr(pf, "physical_ram_bytes", lambda: ram_gb << 30)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", command])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: tty)
+    monkeypatch.delenv("RAPID_MLX_CHAT_HARNESS", raising=False)
+    downloads = []
+
+    def stop_before_download(model, **kwargs):
+        downloads.append(model)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", stop_before_download)
+    with pytest.raises(SystemExit) as exc:
+        cli_entrypoint()
+    assert exc.value.code == 0
+    expected = cached_alias or "lfm2.5-2.6b-4bit"
+    assert downloads == [ma.list_profiles()[expected].hf_path]
+
+
 def test_serve_cached_catalog(cache, monkeypatch, capsys, stub_serve_port_resolution):
     repo = snapshot_starter(cache)
     args = capture_cli(monkeypatch, ["serve"])
