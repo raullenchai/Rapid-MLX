@@ -120,6 +120,9 @@ ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
 ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
         "RAPID_MLX_STEP_WORKGROUP",  # opt out of macOS step scheduling hint; no routing
+        # Opt-in fused affine-4 MoE expert kernels for Qwen3.6 MoE; picks a
+        # kernel implementation for the same model, never a model or route.
+        "RAPID_MLX_QWEN35_AFFINE4",
         # Read-only diagnostic override for doctor: selects which existing
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
