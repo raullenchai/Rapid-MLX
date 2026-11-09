@@ -277,7 +277,7 @@ def video_runtime_issue(
     if _is_ltx25_name(model_name):
         return _ltx25_runtime_issue(provision=provision)
     if _is_hunyuan_name(model_name):
-        missing = [
+        hunyuan_missing = [
             name
             for name in (
                 "mlx",
@@ -289,11 +289,11 @@ def video_runtime_issue(
             if importlib.util.find_spec(name) is None
         ]
         if _resolve_ffmpeg() is None:
-            missing.append("ffmpeg")
-        if not missing:
+            hunyuan_missing.append("ffmpeg")
+        if not hunyuan_missing:
             return None
         return VideoRuntimeIssue(
-            detail="HunyuanVideo 1.5 requires " + ", ".join(missing),
+            detail="HunyuanVideo 1.5 requires " + ", ".join(hunyuan_missing),
             install_hint=optional_extra_install_hint("video", status="broken"),
             status="broken",
             marker_reason="runtime_dependency_missing",
@@ -945,8 +945,9 @@ class VideoEngine:
         """Video weights load lazily; startup must not trigger a 40+ GB pull."""
 
     async def stop(self) -> None:
-        if getattr(self, "_hunyuan_engine", None) is not None:
-            await self._hunyuan_engine.close()
+        hunyuan_engine = getattr(self, "_hunyuan_engine", None)
+        if hunyuan_engine is not None:
+            await hunyuan_engine.close()
         minimax_engine = getattr(self, "_minimax_engine", None)
         if minimax_engine is not None:
             minimax_engine.stop()
