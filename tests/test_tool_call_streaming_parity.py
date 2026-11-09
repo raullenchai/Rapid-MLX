@@ -146,6 +146,12 @@ def _extract_stream(parser_name: str, text: str) -> list:
 # concrete example).
 # --------------------------------------------------------------------------
 PARITY_FIXTURES: list = [
+    (
+        "pythonic",
+        "pythonic_bracket",
+        '[get_current_weather(location="Paris", unit="celsius")]',
+        [("get_current_weather", {"location": "Paris", "unit": "celsius"})],
+    ),
     # MiniCPM5 — documented native XML without a <tool_call> wrapper.
     (
         "minicpm",
