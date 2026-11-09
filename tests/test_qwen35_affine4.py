@@ -215,9 +215,7 @@ def test_reload_multiple_models_fallbacks_and_kill_switch(monkeypatch, caplog):
     gc.collect()
     assert ref() is None  # class patch has no model/weight closure
     monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4")
-    assert second(x).sum().item() == 0
-    assert fused.install_qwen35_affine4(object()) == 0
-    monkeypatch.setenv("RAPID_MLX_QWEN35_AFFINE4", "1")
+    assert second(x).sum().item() == 2048
     third = cls()
     monkeypatch.setattr(fused, "forward", lambda b, x: mx.zeros_like(x))
     assert enroll(third) == 1

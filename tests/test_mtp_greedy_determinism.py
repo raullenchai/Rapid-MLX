@@ -407,7 +407,7 @@ def test_steep_host_drafts_only_where_this_request_drafts_well(monkeypatch, draf
         assert settled.count(1) > len(settled) * 3 // 4, runs[0][1]
 
 
-def test_requests_decide_on_the_class_curve_not_the_timings():
+def test_requests_use_frozen_measured_costs_without_a_class_curve():
     from rapid_mlx.spec_decode.mtp.reproducible_depth import (
         GreedySchedule,
         class_round_costs,
@@ -416,16 +416,26 @@ def test_requests_decide_on_the_class_curve_not_the_timings():
         round_costs,
     )
 
-    # Two boots of an M4 Pro-like host whose timings differ by a few percent
-    # read the same class, so they decide on the same curve.
+    # Two boots retain their own measured curve. Small timing changes produce
+    # small price changes, without choosing one of two distant fixed curves.
     boots = [(21.8, (26.0, 30.4), 3.0), (23.1, (27.9, 31.0), 3.3)]
     schedules = [
         reproducible_schedule(f"boot-{i}", 2, lambda k, t=t: t)
         for i, t in enumerate(boots)
     ]
-    assert schedules[0] == schedules[1]
-    assert schedules[0] == GreedySchedule(
-        depth=2, steep_verify=False, round_costs=class_round_costs(False, 2)
+    assert schedules[0] != schedules[1]
+    for schedule, (step, widths, draft) in zip(schedules, boots):
+        assert schedule == GreedySchedule(
+            depth=2,
+            round_costs=round_costs(step, widths, draft),
+            verify_costs=(1.0,) + tuple(v / step for v in widths),
+        )
+    assert (
+        max(
+            abs(a / b - 1.0)
+            for a, b in zip(schedules[0].round_costs, schedules[1].round_costs)
+        )
+        < 0.03
     )
     # The class curves: dearer per depth on a steep host.
     cheap, steep = class_round_costs(False, 2), class_round_costs(True, 2)
@@ -495,8 +505,8 @@ def test_verify_is_steep():
 def test_reproducible_schedule_is_decided_once_and_survives_a_failed_measurement():
     from rapid_mlx.spec_decode.mtp.reproducible_depth import (
         GreedySchedule,
-        class_round_costs,
         reproducible_schedule,
+        round_costs,
     )
 
     calls: list[int] = []
@@ -506,7 +516,10 @@ def test_reproducible_schedule_is_decided_once_and_survives_a_failed_measurement
         return 10.0, (20.0, 30.0), 5.0
 
     expected = GreedySchedule(
-        depth=0, steep_verify=True, round_costs=class_round_costs(True, 2)
+        depth=0,
+        steep_verify=True,
+        round_costs=round_costs(10.0, (20.0, 30.0), 5.0),
+        verify_costs=(1.0, 2.0, 3.0),
     )
     assert reproducible_schedule("host-a", 2, dear) == expected
     assert reproducible_schedule("host-a", 2, dear) == expected
