@@ -124,7 +124,8 @@ def _group_attention(module, dtype):
             for y, p in zip(mx.split(group(x), bounds, axis=-1), parts)
         ):
             return False
-    module._rapid_dense_qkv = group
+    # Unregistered: the public parameter tree keeps only the stock names.
+    object.__setattr__(module, "_rapid_dense_qkv", group)
     object.__setattr__(module, "_rapid_dense_qkv_bounds", bounds)
     start = 0
     for p, width in zip(parts, widths):
@@ -210,7 +211,7 @@ def _group_mlp(module, dtype):
         gate, up = mx.split(self._rapid_dense_group(x), 2, axis=-1)
         return getattr(self, names[2])(activation(gate, up))
 
-    module._rapid_dense_group = group
+    object.__setattr__(module, "_rapid_dense_group", group)
     # Keep original parameter names as views, including the stock wide path.
     width = parts[0].weight.shape[0]
     for i, part in enumerate(parts):

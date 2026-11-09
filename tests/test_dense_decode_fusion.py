@@ -9,6 +9,7 @@ pytestmark = pytest.mark.requires_mlx
 
 mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
+from mlx.utils import tree_flatten
 from mlx_lm.models import lfm2, qwen3_5
 
 from rapid_mlx import dense_decode_fusion as fusion
@@ -78,8 +79,15 @@ def test_decode_prefill_batch_and_interleaving(family, dtype):
     original = type(backbone).__call__
     x = mx.array([[1]])
     expected = original(backbone, x)
+    keys = [k for k, _ in tree_flatten(model.parameters())]
     assert fusion.install_dense_decode_fusion(model) == 1
     assert fusion._bits_equal(backbone(x), expected)
+    # Grouped projections stay outside the public parameter tree.
+    assert [k for k, _ in tree_flatten(model.parameters())] == keys
+    assert hasattr(
+        backbone.layers[0].feed_forward if family == "lfm" else backbone.layers[0].mlp,
+        "_rapid_dense_group",
+    )
     assert fusion.install_dense_decode_fusion(model) == 0
     # Independent graphs may be evaluated in reverse request order.
     first = backbone(x)
