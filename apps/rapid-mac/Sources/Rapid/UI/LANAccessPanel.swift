@@ -14,6 +14,7 @@ struct LANAccessPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             Button("Connect phone") { showingPhoneConnect = true }
+                .accessibilityIdentifier("LANAccess.ConnectPhone")
                 .sheet(isPresented: $showingPhoneConnect) { PhoneConnectSheet(server: server) }
 
             Toggle("Allow access from other devices on your network", isOn: Binding(

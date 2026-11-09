@@ -2,6 +2,176 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Applying LAN setting…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applying LAN setting…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在应用局域网设置…"
+          }
+        }
+      }
+    },
+    "Connect phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect phone"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接手机"
+          }
+        }
+      }
+    },
+    "Enable LAN access": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable LAN access"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用局域网访问"
+          }
+        }
+      }
+    },
+    "Enable LAN access to connect your phone. This saves a persistent API key and restarts a running model, interrupting active requests.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable LAN access to connect your phone. This saves a persistent API key and restarts a running model, interrupting active requests."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用局域网访问以连接手机。这会保存持久 API 密钥并重启正在运行的模型，中断正在处理的请求。"
+          }
+        }
+      }
+    },
+    "Keep both devices on the same Wi-Fi and the Mac running. Traffic is plain HTTP. The QR contains your API key; share it only with people you trust.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep both devices on the same Wi-Fi and the Mac running. Traffic is plain HTTP. The QR contains your API key; share it only with people you trust."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请让两台设备连接同一 Wi-Fi，并保持 Mac 运行。通信使用明文 HTTP。二维码包含你的 API 密钥，请仅与信任的人分享。"
+          }
+        }
+      }
+    },
+    "Network address": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络地址"
+          }
+        }
+      }
+    },
+    "No LAN IPv4 address found. Connect your Mac to Wi-Fi.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No LAN IPv4 address found. Connect your Mac to Wi-Fi."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到局域网 IPv4 地址。请将 Mac 连接到 Wi-Fi。"
+          }
+        }
+      }
+    },
+    "No active API key. Restart the model and try again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No active API key. Restart the model and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可用的 API 密钥。请重启模型后重试。"
+          }
+        }
+      }
+    },
+    "Scan with iPhone Camera to open Rapid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan with iPhone Camera to open Rapid"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 iPhone 相机扫描以打开 Rapid"
+          }
+        }
+      }
+    },
+    "Start a chat model on your Mac to connect your phone.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start a chat model on your Mac to connect your phone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在 Mac 上启动聊天模型以连接手机。"
+          }
+        }
+      }
+    },
     "Changing network access restarts a running model and interrupts active requests.": {
       "extractionState": "manual",
       "localizations": {

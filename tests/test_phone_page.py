@@ -33,10 +33,16 @@ def test_phone_accessibility_contract():
         ("new-chat", "button", "New chat"),
         ("model-button", "button", "Choose model"),
         ("apps-button", "button", "Use an app"),
+        ("copy-base", "button", "Copy Base URL"),
+        ("copy-key", "button", "Copy API key"),
     ]:
         actual_tag, attrs = elements.by_id[name]
         assert actual_tag == tag
         assert attrs["aria-label"] == label
+    for name, target in [("copy-base", "base"), ("copy-key", "key")]:
+        assert elements.by_id[name][1]["data-copy"] == target
+        assert elements.by_id[target][0] == "input"
+        assert "readonly" in elements.by_id[target][1]
     for name in ["model-sheet", "apps-sheet"]:
         tag, attrs = elements.by_id[name]
         assert tag == "dialog"
@@ -89,3 +95,65 @@ def test_secret_is_read_from_fragment_not_query():
     assert "innerHTML" not in PAGE
     assert "insertAdjacentHTML" not in PAGE
     assert 'credentials: "omit"' in PAGE or 'credentials:"omit"' in PAGE
+
+
+@pytest.mark.parametrize(
+    "clipboard,legacy,copied",
+    [("success", False, True), ("missing", True, True), ("reject", False, False)],
+)
+def test_apps_copy_click_and_fallback(clipboard, legacy, copied):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is needed to execute the page's copy handlers")
+    handler = PAGE.split('      document.querySelectorAll("[data-copy]").forEach(', 1)[
+        1
+    ].split("      const manifest", 1)[0]
+    script = """
+const assert = require('node:assert/strict');
+const buttons = ['base', 'key'].map(target => ({dataset: {copy: target}}));
+const fields = Object.fromEntries(['base', 'key'].map(target => [target, {
+  value: target === 'base' ? 'http://192.0.2.1:8000/v1' : 'fragment-only-test-key',
+  focus() { this.focused = true; },
+  select() { this.selected = true; },
+  setSelectionRange(start, end) { assert.equal(start, 0); assert.equal(end, this.value.length); }
+}]));
+fields.status = {};
+const $ = id => fields[id];
+let timers = [], writes = [];
+const setTimeout = (callback, delay) => {
+  assert.equal(delay, 2000); timers.push(callback); return timers.length;
+};
+const clearTimeout = () => {};
+"""
+    script += f"""
+const mode = '{clipboard}';
+const navigator = mode === 'missing' ? {{}} : {{clipboard: {{
+  writeText(value) {{
+    writes.push(value);
+    return mode === 'reject' ? Promise.reject(Error('Denied')) : Promise.resolve();
+  }}
+}}}};
+const document = {{
+  querySelectorAll: () => buttons,
+  execCommand: command => {{ assert.equal(command, 'copy'); return {str(legacy).lower()}; }}
+}};
+"""
+    script += 'document.querySelectorAll("[data-copy]").forEach(' + handler
+    script += f"""
+(async () => {{
+  assert.equal(writes.length, 0);
+  for (const button of buttons) {{
+    await button.onclick();
+    const field = fields[button.dataset.copy];
+    assert.equal(button.textContent, {repr("Copied" if copied else "Select to copy")});
+    if (mode !== 'success') {{ assert.ok(field.focused); assert.ok(field.selected); }}
+    if (mode !== 'missing') assert.equal(writes.at(-1), field.value);
+    timers.pop()();
+    assert.equal(button.textContent, 'Copy');
+  }}
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+"""
+    result = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr

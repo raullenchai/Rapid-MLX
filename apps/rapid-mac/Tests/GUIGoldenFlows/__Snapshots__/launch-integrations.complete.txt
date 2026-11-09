@@ -84,6 +84,7 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="ConnectTools.Copy.Model" desc="Copy Model" help="Copy Model" enabled=true
+            AXButton id="LANAccess.ConnectPhone" desc="Connect phone" enabled=true
             AXCheckBox id="Settings.API.LAN.Enabled" desc="Allow access from other devices on your network" value=bool:false enabled=true
             AXStaticText value=text enabled=true
             AXHeading desc="Claude Desktop, Use its official in-app Gateway setup." enabled=true

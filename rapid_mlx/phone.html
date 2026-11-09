@@ -654,6 +654,7 @@
       <label for="base">Base URL</label>
       <div class="copy-row">
         <input id="base" readonly /><button
+          id="copy-base"
           data-copy="base"
           aria-label="Copy Base URL"
         >
@@ -663,6 +664,7 @@
       <label for="key">API key</label>
       <div class="copy-row">
         <input id="key" type="password" readonly /><button
+          id="copy-key"
           data-copy="key"
           aria-label="Copy API key"
         >
@@ -1276,19 +1278,32 @@
         e.preventDefault();
         send();
       };
-      document.querySelectorAll("[data-copy]").forEach(
-        (button) =>
-          (button.onclick = async () => {
+      document.querySelectorAll("[data-copy]").forEach((button) => {
+        let resetTimer;
+        button.onclick = async () => {
+          clearTimeout(resetTimer);
+          const field = $(button.dataset.copy);
+          let copied = false;
+          try {
+            await navigator.clipboard.writeText(field.value);
+            copied = true;
+          } catch {
+            field.focus();
+            field.select();
+            field.setSelectionRange(0, field.value.length);
             try {
-              await copyText($(button.dataset.copy).value);
-              button.textContent = "Copied";
-              $("status").textContent = "Copied";
-            } catch {
-              $("status").textContent = "Select and copy the field manually.";
-              button.textContent = "Select to copy";
-            }
-          }),
-      );
+              copied = document.execCommand("copy");
+            } catch {}
+          }
+          button.textContent = copied ? "Copied" : "Select to copy";
+          $("status").textContent = copied
+            ? "Copied"
+            : "Select and copy the field manually.";
+          resetTimer = setTimeout(() => {
+            button.textContent = "Copy";
+          }, 2000);
+        };
+      });
       const manifest = document.createElement("link");
       manifest.rel = "manifest";
       manifest.href =

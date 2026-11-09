@@ -20,7 +20,9 @@ struct PhoneConnectSheet: View {
                 HStack {
                     Text("Connect phone").font(.title2)
                     Spacer()
-                    Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("PhoneConnect.Done")
                 }
                 if !server.lanAccessEnabled {
                     Text("Enable LAN access to connect your phone. This saves a persistent API key and restarts a running model, interrupting active requests.")
@@ -28,6 +30,7 @@ struct PhoneConnectSheet: View {
                         Task { await server.setLANAccessEnabled(true) }
                     }
                     .disabled(server.isChangingLANAccess || server.isOperating)
+                    .accessibilityIdentifier("PhoneConnect.EnableLANAccess")
                 } else if !ready {
                     Text("Start a chat model on your Mac to connect your phone.")
                 } else if network.addresses.isEmpty {
@@ -39,6 +42,7 @@ struct PhoneConnectSheet: View {
                         )) {
                             ForEach(network.addresses, id: \.self) { Text($0).tag($0) }
                         }
+                        .accessibilityIdentifier("PhoneConnect.NetworkAddress")
                     }
                     if let key = server.activeBearer,
                        let url = PhoneConnect.url(address: address, port: server.activePort, key: key, lanEnabled: server.lanAccessEnabled),
