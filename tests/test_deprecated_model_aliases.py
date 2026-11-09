@@ -170,3 +170,61 @@ def test_existing_user_alias_target_does_not_break_raw_resolution(name, row):
     assert registry.resolve_profile("my-legacy-model") == registry._coerce(name, row)
     assert registry.list_aliases()["my-legacy-model"] == row["hf_path"]
     assert user_aliases.config_path().read_bytes() == before
+
+
+def _pinned_repo_only_row():
+    curated = {p.hf_path.casefold() for p in registry.list_profiles().values()}
+    return next(
+        row
+        for row in ROWS.values()
+        if row.get("revision") and row["hf_path"].casefold() not in curated
+    )
+
+
+def test_repo_profile_keys_must_not_overlap_curated_aliases(monkeypatch):
+    name = next(iter(ROWS))
+    monkeypatch.setattr(registry, "_repo_profiles", None)
+    monkeypatch.setattr(registry, "_load", lambda: {name: object()})
+    with pytest.raises(ValueError, match="provenance keys overlap"):
+        registry._load_repo_profiles()
+
+
+def test_cached_repository_launch_path_uses_repo_profile_pin(monkeypatch):
+    import huggingface_hub
+
+    row = _pinned_repo_only_row()
+    calls = []
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, filename, revision: calls.append((repo, filename, revision)),
+    )
+    assert (
+        registry.cached_repository_launch_path(row["hf_path"], external=False) is None
+    )
+    prefix = f"{row['subfolder']}/" if row.get("subfolder") else ""
+    assert calls == [(row["hf_path"], f"{prefix}config.json", row["revision"])]
+
+
+def test_served_catalog_name_maps_retired_name_to_repo():
+    from rapid_mlx.api.utils import served_model_catalog_name
+    from rapid_mlx.config import reset_config
+
+    name, row = next(iter(ROWS.items()))
+    cfg = reset_config()
+    try:
+        engine = object()
+        cfg.engine = engine
+        cfg.model_alias = name
+        assert served_model_catalog_name(engine) == row["hf_path"]
+    finally:
+        reset_config()
+
+
+def test_dflash_registry_gate_consults_repo_profile_and_fails_closed():
+    from rapid_mlx.speculative.dflash.eligibility import is_registry_verified_pair
+
+    row = _pinned_repo_only_row()
+    assert not is_registry_verified_pair(
+        row["hf_path"], row["revision"], "org/drafter", "0" * 40, "dflash"
+    )
