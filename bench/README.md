@@ -42,3 +42,8 @@ end-to-end serving benchmarks use `rapid-mlx bench`).
   per-step boundaries: LTX-2.5 emits authenticated sampler events, while
   MLX-2.3 currently has no per-step hook, so its step metrics are reported
   as `null` (follow-up: add a progress callback to `VideoEngine.generate`).
+
+- [`dense_decode/`](dense_decode/README.md) — locked, idle-gated singleton
+  decode ablations for grouped projections, residual/RMS fusion, submission
+  cadence and wired-memory budgets. Emits timings and output digests without
+  generated text. Experimental graph mutations are confined to the benchmark.

@@ -1906,6 +1906,15 @@ class MLXMultimodalLM:
                 # exact decode optimization as explicit text-only serving.
                 install_qwen35_fused_gdn_decode(self.model)
 
+            if config_model_type == "qwen3_5" and self.spec_decode == "none":
+                from ..gdn_in_proj_fusion import fuse_gdn_in_proj
+                from ..qwen35_fused_gdn_decode import install_qwen35_fused_gdn_decode
+
+                # Dense backbones share the projected recurrent geometry.
+                # Verification and rollback require the original split modules.
+                fuse_gdn_in_proj(self.model)
+                install_qwen35_fused_gdn_decode(self.model, allow_dense=True)
+
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
             # Gemma 3 / 3n VL variants are the canonical case:
