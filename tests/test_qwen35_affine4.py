@@ -200,7 +200,8 @@ def test_reload_multiple_models_fallbacks_and_kill_switch(monkeypatch):
     assert first(x).sum().item() == 2048
     assert untouched(x).sum().item() == 0
     assert first(mx.zeros((2, 1, 2048), mx.bfloat16)).sum().item() == 0
-    assert first(mx.zeros((1, 2, 2048), mx.bfloat16)).sum().item() == 0
+    assert first(mx.zeros((1, 2, 2048), mx.bfloat16)).sum().item() == 4096
+    assert first(mx.zeros((1, 10, 2048), mx.bfloat16)).sum().item() == 0
     assert first(x.astype(mx.float32)).sum().item() == 0
     assert first(x.astype(mx.float16)).sum().item() == 0
     for value in ("0", "off", "false"):
@@ -275,3 +276,147 @@ def test_nonfinite_router_never_returns_out_of_bounds_experts():
         )
         mx.eval(ids, scores, glog)
         assert mx.all(ids < 256).item()
+
+
+@pytest.mark.parametrize("width", [2, 3, 5, 9])
+@pytest.mark.parametrize("gate_rows,down_rows", [(1, 1), (4, 4), (2, 4)])
+def test_short_width_experts_match_independent_singletons(width, gate_rows, down_rows):
+    """Every position has distinct routes, activations, scores and shared output.
+
+    Bitwise singleton parity checks token/expert strides and keeps expert
+    arithmetic independent of the verifier width, including the final expert.
+    The singleton dense-oracle test above separately checks the mathematics.
+    """
+    experts, k, n, h, topk = 8, 1024, 128, 128, 3
+    key = mx.random.key(92)
+    gu = mx.quantize(
+        mx.random.normal((experts, 2 * n, k), key=key).astype(mx.bfloat16) * 0.05,
+        group_size=64,
+        bits=4,
+    )
+    dp = mx.quantize(
+        mx.random.normal((experts, h, n), key=key).astype(mx.bfloat16) * 0.05,
+        group_size=64,
+        bits=4,
+    )
+    x = mx.sin(mx.arange(width * k) * 0.31).reshape(width, k).astype(mx.bfloat16)
+    ids = mx.array(
+        [[(t + j) % 7 for j in range(topk - 1)] + [7] for t in range(width)], mx.uint32
+    )
+    scores = mx.softmax(
+        mx.cos(mx.arange(width * topk)).reshape(width, topk), precise=True
+    ).astype(mx.bfloat16)
+    shared = mx.sin(mx.arange(width * h)).reshape(width, h).astype(mx.bfloat16)
+    glog = mx.linspace(-2, 2, width).astype(mx.bfloat16)
+    gate, down, sig = fused.kernels()
+
+    def run(xx, ii, ss, sh, gl):
+        t = xx.shape[0]
+        act = gate(
+            inputs=[xx, *gu, *gu, ii, sig],
+            template=[
+                ("T", mx.bfloat16),
+                ("ROWS", gate_rows),
+                ("K", k),
+                ("N", n),
+                ("GS", 64),
+                ("TOPK", topk),
+            ],
+            grid=(32, n // gate_rows, topk * t),
+            threadgroup=(32, 2, 1),
+            output_shapes=[(t, topk, n)],
+            output_dtypes=[mx.bfloat16],
+        )[0]
+        out = down(
+            inputs=[act, *dp, ii, ss, sh, gl],
+            template=[
+                ("T", mx.bfloat16),
+                ("ROWS", down_rows),
+                ("I", n),
+                ("H", h),
+                ("GS", 64),
+                ("TOPK", topk),
+                ("SHARED", 1),
+            ],
+            grid=(32, h // down_rows, t),
+            threadgroup=(32, 2, 1),
+            output_shapes=[(t, h)],
+            output_dtypes=[mx.bfloat16],
+        )[0]
+        return act, out
+
+    actual = run(x, ids, scores, shared, glog)
+    singles = [
+        run(
+            x[t : t + 1],
+            ids[t : t + 1],
+            scores[t : t + 1],
+            shared[t : t + 1],
+            glog[t : t + 1],
+        )
+        for t in range(width)
+    ]
+    for index in (0, 1):
+        expected = mx.concatenate([pair[index] for pair in singles], axis=0)
+        assert mx.array_equal(actual[index], expected).item()
+
+
+@pytest.mark.parametrize("width", [2, 3, 5, 9])
+def test_short_width_router_matches_independent_singletons(width):
+    block = SimpleNamespace(
+        _rapid_affine4_shared_weight=mx.sin(mx.arange(2048)).astype(mx.float32) / 2048
+    )
+    x = mx.cos(mx.arange(width * 2048)).reshape(1, width, 2048).astype(mx.bfloat16)
+    logits = (
+        mx.sin(mx.arange(width * 256) * 0.731)
+        .reshape(1, width, 256)
+        .astype(mx.bfloat16)
+    )
+    actual = fused.fused_route(block, x, logits)
+    singles = [
+        fused.fused_route(block, x[:, t : t + 1], logits[:, t : t + 1])
+        for t in range(width)
+    ]
+    for index in range(3):
+        expected = mx.concatenate([pair[index] for pair in singles], axis=1)
+        assert mx.array_equal(actual[index], expected).item()
+
+
+@pytest.mark.parametrize("rows", [1, 2, 4])
+def test_down_rounds_projection_and_weight_before_route_sum(rows):
+    """The composed BF16 weighted terms sum to .0303955, not .0302734."""
+    _, down, _ = fused.kernels()
+    act = mx.zeros((2, 64), mx.bfloat16)
+    act[:, 0] = 1
+    weight = mx.zeros((2, 64, 8), mx.uint32)
+    scales = mx.zeros((2, 64, 1), mx.bfloat16)
+    biases = mx.broadcast_to(
+        mx.array([0.010009765625, 0.0390625], mx.bfloat16)[:, None, None],
+        (2, 64, 1),
+    )
+    actual = down(
+        inputs=[
+            act,
+            weight,
+            scales,
+            biases,
+            mx.array([0, 1], mx.uint32),
+            mx.array([0.30078125, 0.69921875], mx.bfloat16),
+            mx.zeros((64,), mx.bfloat16),
+            mx.zeros((1,), mx.bfloat16),
+        ],
+        template=[
+            ("T", mx.bfloat16),
+            ("ROWS", rows),
+            ("I", 64),
+            ("H", 64),
+            ("GS", 64),
+            ("TOPK", 2),
+            ("SHARED", 0),
+        ],
+        grid=(32, 64 // rows, 1),
+        threadgroup=(32, 2, 1),
+        output_shapes=[(64,)],
+        output_dtypes=[mx.bfloat16],
+    )[0]
+    assert mx.array_equal(actual, mx.full((64,), 0.0303955078125, mx.bfloat16)).item()

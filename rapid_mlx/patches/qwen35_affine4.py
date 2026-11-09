@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Fused affine-4 selected experts and parallel routing for B1 Qwen decode.
+"""Fused affine-4 selected experts and parallel routing for short Qwen decode blocks.
 
 Adapted from mlx-serve, MIT License, Copyright (c) 2026 David Dalcu.
 See QWEN35_AFFINE4_LICENSE for the complete copyright and permission notice.
@@ -22,10 +22,13 @@ _GATE = None
 _DOWN = None
 _SIG = None
 _ROUTER256 = None
+_GATE_ROWS = 1
+_DOWN_ROWS = 1
 _LOCK = threading.RLock()
 
 _ROUTER256_SOURCE = r"""
     uint tid = thread_position_in_threadgroup.x;
+    uint token = thread_position_in_grid.y;
     uint lane = thread_index_in_simdgroup;
     uint sg = simdgroup_index_in_threadgroup;
     threadgroup float probs[256];
@@ -34,7 +37,7 @@ _ROUTER256_SOURCE = r"""
     threadgroup float normalizer[1];
     threadgroup float chosen[8];
     threadgroup uint chosen_i[8];
-    float high = simd_max(float(logits[tid]));
+    float high = simd_max(float(logits[token * 256 + tid]));
     if (lane == 0) partial[sg] = high;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (sg == 0) {
@@ -42,13 +45,13 @@ _ROUTER256_SOURCE = r"""
         if (lane == 0) normalizer[0] = high;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    float p = metal::precise::exp(float(logits[tid]) - normalizer[0]);
+    float p = metal::precise::exp(float(logits[token * 256 + tid]) - normalizer[0]);
     float total = simd_sum(p);
     if (lane == 0) partial[sg] = total;
     float dot = 0.0f;
     for (uint j = 0; j < 8; ++j) {
         uint k = tid * 8 + j;
-        dot += float(x[k]) * shared_w[k];
+        dot += float(x[token * 2048 + k]) * shared_w[k];
     }
     dot = simd_sum(dot);
     if (lane == 0) gate_partial[sg] = dot;
@@ -56,7 +59,7 @@ _ROUTER256_SOURCE = r"""
     if (sg == 0) {
         total = simd_sum(lane < 8 ? partial[lane] : 0.0f);
         dot = simd_sum(lane < 8 ? gate_partial[lane] : 0.0f);
-        if (lane == 0) { normalizer[0] = total; glog[0] = T(dot); }
+        if (lane == 0) { normalizer[0] = total; glog[token] = T(dot); }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     probs[tid] = float(T(p / normalizer[0]));
@@ -83,7 +86,7 @@ _ROUTER256_SOURCE = r"""
             T norm = T(0);
             for (int j = 7; j >= 0; --j) norm += T(chosen[j]);
             for (uint j = 0; j < 8; ++j) {
-                inds[7-j] = chosen_i[j]; scores[7-j] = T(chosen[j]) / norm;
+                inds[token * 8 + 7-j] = chosen_i[j]; scores[token * 8 + 7-j] = T(chosen[j]) / norm;
             }
         }
     }
@@ -103,9 +106,9 @@ def fused_route(block, x, logits):
     return _ROUTER256(
         inputs=[x, logits, block._rapid_affine4_shared_weight],
         template=[("T", x.dtype)],
-        grid=(256, 1, 1),
+        grid=(256, x.shape[1], 1),
         threadgroup=(256, 1, 1),
-        output_shapes=[(1, 1, 8), (1, 1, 8), (1, 1, 1)],
+        output_shapes=[(1, x.shape[1], 8), (1, x.shape[1], 8), (1, x.shape[1], 1)],
         output_dtypes=[mx.uint32, x.dtype, x.dtype],
     )
 
@@ -118,7 +121,7 @@ def kernels():
 
 
 def _initialize_kernels():
-    global _GATE, _DOWN, _SIG
+    global _GATE, _DOWN, _SIG, _GATE_ROWS, _DOWN_ROWS
     if _SIG is None:
         root = Path(__file__).parent
         header = (root / "qwen35_affine4_dot.metal").read_text()
@@ -157,6 +160,11 @@ def _initialize_kernels():
         )
         sig = mx.sigmoid(mx.arange(65536, dtype=mx.uint16).view(mx.bfloat16))
         mx.eval(sig)
+        # Each projection keeps its tile across singleton and verification.
+        # M4 Pro benefits from fewer output-row threadgroups in both kernels.
+        _GATE_ROWS, _DOWN_ROWS = (
+            (2, 4) if mx.device_info().get("device_name") == "Apple M4 Pro" else (1, 1)
+        )
         _GATE, _DOWN, _SIG = gate, down, sig
 
 
@@ -165,7 +173,8 @@ def forward(block, x):
     sm = block.switch_mlp
     gu = sm.gate_up_proj
     dp = sm.down_proj
-    rows = 1
+    tokens = x.shape[1]
+    gate_rows, down_rows = _GATE_ROWS, _DOWN_ROWS
     gw, gs, gb = gu.weight, gu.scales, gu.biases
     dw, ds, db = dp.weight, dp.scales, dp.biases
     logits = block.gate(x)
@@ -185,15 +194,15 @@ def forward(block, x):
         ],
         template=[
             ("T", x.dtype),
-            ("ROWS", rows),
+            ("ROWS", gate_rows),
             ("K", 2048),
             ("N", 512),
             ("GS", 64),
             ("TOPK", 8),
         ],
-        grid=(32, 512 // rows, 8),
+        grid=(32, 512 // gate_rows, 8 * tokens),
         threadgroup=(32, 2, 1),
-        output_shapes=[(8, 512)],
+        output_shapes=[(tokens, 8, 512)],
         output_dtypes=[x.dtype],
     )[0]
     out = down(
@@ -209,16 +218,16 @@ def forward(block, x):
         ],
         template=[
             ("T", x.dtype),
-            ("ROWS", rows),
+            ("ROWS", down_rows),
             ("I", 512),
             ("H", 2048),
             ("GS", 64),
             ("TOPK", 8),
             ("SHARED", 1),
         ],
-        grid=(32, 2048 // rows, 1),
+        grid=(32, 2048 // down_rows, tokens),
         threadgroup=(32, 2, 1),
-        output_shapes=[(1, 1, 2048)],
+        output_shapes=[(1, tokens, 2048)],
         output_dtypes=[x.dtype],
     )[0]
     return out
@@ -294,7 +303,10 @@ def _patch_class(cls):
         if (
             getattr(self, "_rapid_affine4", False)
             and env_truthy("RAPID_MLX_QWEN35_AFFINE4")
-            and x.shape == (1, 1, 2048)
+            and x.ndim == 3
+            and x.shape[0] == 1
+            and 1 <= x.shape[1] <= 9
+            and x.shape[2] == 2048
             and x.dtype == mx.bfloat16
         ):
             return forward(self, x)
@@ -306,7 +318,7 @@ def _patch_class(cls):
 
 
 def install_qwen35_affine4(model):
-    """Enroll compatible B1 decode blocks; wider batches/verification fall back.
+    """Enroll compatible short decode blocks; larger batches/widths fall back.
 
     Full banks remain explicit kernel inputs. No pointers escape their MLX
     arrays, and no class closure retains models, weights or request state.

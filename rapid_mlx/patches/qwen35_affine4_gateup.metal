@@ -3,6 +3,7 @@
 const uint lane = thread_index_in_simdgroup;
 const int row0 = int(thread_position_in_grid.y) * ROWS;
 const uint e = thread_position_in_grid.z;
+const uint token = e / TOPK;
 constexpr int KW2 = K / 16;
 constexpr int KG = K / GS;
 const size_t row = size_t(inds[e]) * (2 * N) + row0;
@@ -19,7 +20,7 @@ for (int k = 0; k < K; k += 512) {
   if (kk < K) {
     float xr[16];
     float xs = 0.0f;
-    for (int i = 0; i < 16; ++i) { xr[i] = float(x[kk + i]); xs += xr[i]; }
+    for (int i = 0; i < 16; ++i) { xr[i] = float(x[size_t(token) * K + kk + i]); xs += xr[i]; }
     const int gi = kk / GS;
     for (int r = 0; r < ROWS; ++r) {
       const size_t sg = (row + r) * KG + gi;
