@@ -19,7 +19,20 @@ enum MemoryProbe {
     struct Snapshot: Equatable, Sendable {
         let totalBytes: UInt64
         let usedBytes: UInt64
-        var freeBytes: UInt64 { totalBytes &- usedBytes }
+        let appBytes: UInt64?
+        let wiredBytes: UInt64?
+        let compressedBytes: UInt64?
+
+        init(totalBytes: UInt64, usedBytes: UInt64, appBytes: UInt64? = nil,
+             wiredBytes: UInt64? = nil, compressedBytes: UInt64? = nil) {
+            self.totalBytes = totalBytes
+            self.usedBytes = min(usedBytes, totalBytes)
+            self.appBytes = appBytes
+            self.wiredBytes = wiredBytes
+            self.compressedBytes = compressedBytes
+        }
+
+        var freeBytes: UInt64 { totalBytes - usedBytes }
         var usedRatio: Double {
             guard totalBytes > 0 else { return 0 }
             return Double(usedBytes) / Double(totalBytes)
@@ -68,10 +81,17 @@ enum MemoryProbe {
         let internalPages = UInt64(vm.internal_page_count)
         let purgeablePages = UInt64(vm.purgeable_count)
         let appPages = internalPages - min(internalPages, purgeablePages)
-        let usedPages = appPages + UInt64(vm.wire_count) + UInt64(vm.compressor_page_count)
-        // Clamp transient over-counts to physical memory, keeping freeBytes safe.
-        let (usedBytes, overflow) = usedPages.multipliedReportingOverflow(by: pageSize)
-        return Snapshot(totalBytes: totalBytes, usedBytes: overflow ? totalBytes : min(usedBytes, totalBytes))
+        // Cap each component against the remaining physical RAM. During a
+        // transient over-count the segments still sum to used, without overflow.
+        func bytes(_ pages: UInt64, remaining: UInt64) -> UInt64 {
+            let (value, overflow) = pages.multipliedReportingOverflow(by: pageSize)
+            return overflow ? remaining : min(value, remaining)
+        }
+        let app = bytes(appPages, remaining: totalBytes)
+        let wired = bytes(UInt64(vm.wire_count), remaining: totalBytes - app)
+        let compressed = bytes(UInt64(vm.compressor_page_count), remaining: totalBytes - app - wired)
+        return Snapshot(totalBytes: totalBytes, usedBytes: app + wired + compressed,
+                        appBytes: app, wiredBytes: wired, compressedBytes: compressed)
     }
 
     /// Format the pill body: "12.3 GB used · 256 GB total". Kept
