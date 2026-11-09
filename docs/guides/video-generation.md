@@ -376,6 +376,14 @@ The weights are downloaded from the upstream Hugging Face repositories and are n
 
 ## HunyuanVideo 1.5 480p text-to-video
 
+Use `hunyuan-video-1.5-480p-distilled` for faster text-to-video. It serves
+`hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled`, pinned at
+`1abb14f06518f37448dcf3a6917dd086dd7045c7`. It uses the same transformer and
+scheduler with guidance 1: one conditional forward per step, without an embedded
+guidance input or negative-prompt encoding. Use **50 steps** and flow shift 5;
+CFG distillation does not reduce the recommended step count. The smoke script
+defaults to this variant. No family-only alias is defined.
+
 `hunyuan-video-1.5-480p` serves the non-distilled 8.3B DiT checkpoint
 `hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v`, pinned at
 `286be7ce72277246578a3e3cc2487e95ddae5bcf`. Use Apple Silicon with **64 GB or more
@@ -396,7 +404,7 @@ shift 5. Explicit frames must be `4n+1`, between 5 and 121. Width and height mus
 be multiples of 16, with short edge 256–480 and long edge at most 848. Portrait
 480×848 is supported. FPS is fixed at 24. Negative prompts and CFG overrides use
 the existing request fields. Image conditioning, extension, audio, 720p and
-step/CFG-distilled checkpoints are not implemented or advertised.
+step-distilled checkpoints are not implemented or advertised.
 
 The native MLX transformer and causal VAE decoder port the Diffusers model,
 retaining checkpoint parameter names. Prompt conditioning reuses MLX-LM's Qwen2
@@ -432,6 +440,7 @@ python scripts/check_hunyuan_video15_parity.py \
   --json-output /private/tmp/hunyuan-video15-parity.json
 
 python scripts/smoke_hunyuan_video15.py \
+  --alias hunyuan-video-1.5-480p-distilled \
   --output /private/tmp/hunyuan-video15-smoke.mp4 \
   --frames 33 --steps 50 --seed 42
 ```
@@ -445,8 +454,9 @@ HUNYUAN_VIDEO15_REFERENCE_PYTHON=/path/to/torch-diffusers-venv/bin/python \
 
 The smoke uses the serving worker and real weights, reports prompt/DiT load time,
 denoise time, VAE load time, decode time and `mx.get_peak_memory()` in bytes.
-`--model` can point at an existing Diffusers snapshot. `--steps 2` is a fast
-plumbing check; use the default 50 for a model-quality check. No Metal inference,
+`--model` (also `--alias`) selects either variant or an existing Diffusers snapshot.
+The smoke prints effective steps, guidance and flow shift after loading.
+`--steps 2` is a fast plumbing check; use the default 50 for a model-quality check. No Metal inference,
 real-weight output quality, throughput or 64 GB peak-memory qualification is
 claimed from CPU tiny-model parity.
 

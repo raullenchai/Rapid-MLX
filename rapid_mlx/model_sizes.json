@@ -32,6 +32,7 @@
     "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8": 16640011867,
     "filipstrand/Z-Image-Turbo-mflux-4bit": 5907434624,
     "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": 53384315789,
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled": 53384315789,
     "ibm-granite/granite-4.2-30b-q4-mlx": 16476267189,
     "ibm-granite/granite-4.2-30b-q8-mlx": 31114388716,
     "ibm-granite/granite-4.2-3b-q4-mlx": 2066160672,
