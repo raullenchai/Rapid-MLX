@@ -5158,7 +5158,6 @@ async def _create_chat_completion_impl(
     if getattr(response_format, "type", None) == "json_object":
         _response_schema = {"type": ["object", "array"]}
     _schema_processor = None
-    guided_warning = None
     _schema_reasoning = (
         cfg.reasoning_parser is not None and resolved_thinking is not False
     )
@@ -5175,12 +5174,18 @@ async def _create_chat_completion_impl(
         _end_id = None
         _can_gate = not _schema_reasoning
         if _schema_reasoning:
-            from ..api.guided import resolve_schema_reasoning_end_id
-
-            _end_id = resolve_schema_reasoning_end_id(
-                engine.tokenizer, cfg.reasoning_parser
-            )
-            _can_gate = _end_id is not None
+            _marker = getattr(cfg.reasoning_parser, "reasoning_end_str", None)
+            if _marker and engine.tokenizer is not None:
+                try:
+                    _ids = engine.tokenizer.encode(_marker, add_special_tokens=False)
+                    if len(_ids) == 1 and engine.tokenizer.decode(_ids) == _marker:
+                        _end_id = int(_ids[0])
+                        _can_gate = True
+                except Exception:
+                    logger.debug(
+                        "Unable to resolve response_format reasoning gate",
+                        exc_info=True,
+                    )
             if not _can_gate:
                 _fallback_reason = (
                     "reasoning parser has no supported atomic reasoning-end marker"
@@ -5203,18 +5208,6 @@ async def _create_chat_completion_impl(
         if json_instruction:
             messages = _inject_json_instruction(messages, json_instruction)
             logger.info("prompt augmented for response_format: %s", _fallback_reason)
-        if _response_schema and engine.is_mllm:
-            from ..api.guided import is_guided_available
-
-            if not is_guided_available() and not request.tools:
-                _fallback_reason = "llguidance backend is unavailable"
-            guided_warning = (
-                f"MLLM schema decoding is unconstrained: {_fallback_reason}. "
-                "Strict final-text validation remains active when enabled. "
-                "Check rapid-mlx[guided], the schema and the reasoning marker; "
-                "for text-only requests, --no-mllm selects the text engine."
-            )
-            logger.warning(guided_warning)
 
     # Prepare kwargs
     chat_kwargs: dict[str, Any] = {
@@ -5945,12 +5938,6 @@ async def _create_chat_completion_impl(
         _thinking_warning = enable_thinking_warning_header(
             request, getattr(cfg, "reasoning_parser_name", None)
         )
-        if guided_warning:
-            _thinking_warning["X-RapidMLX-Warning"] = "; ".join(
-                filter(
-                    None, [_thinking_warning.get("X-RapidMLX-Warning"), guided_warning]
-                )
-            )
         _sse_headers = (
             {**SSE_RESPONSE_HEADERS, **_thinking_warning}
             if _thinking_warning
@@ -6572,18 +6559,6 @@ async def _create_chat_completion_impl(
                 )
                 try:
                     if request.tools:
-                        if engine.is_mllm and _schema_reasoning:
-                            from ..api.guided import resolve_schema_reasoning_end_id
-
-                            repair_kwargs["reasoning_end_id"] = (
-                                resolve_schema_reasoning_end_id(
-                                    engine.tokenizer, cfg.reasoning_parser
-                                )
-                            )
-                            if repair_kwargs["reasoning_end_id"] is None:
-                                raise RuntimeError(
-                                    "MLLM schema repair requires an atomic reasoning-end marker"
-                                )
                         repair_coro = engine.generate_with_schema(
                             messages=repair_messages,
                             json_schema=json_schema,
@@ -6591,12 +6566,6 @@ async def _create_chat_completion_impl(
                             **repair_kwargs,
                         )
                     else:
-                        if engine.is_mllm:
-                            guided_warning = (
-                                "MLLM strict schema repair is unconstrained; "
-                                "the repaired final text will be schema-validated."
-                            )
-                            logger.warning(guided_warning)
                         repair_coro = engine.chat(
                             messages=repair_messages, **repair_kwargs
                         )
@@ -6718,9 +6687,6 @@ async def _create_chat_completion_impl(
             raise HTTPException(
                 status_code=502 if request.tools and repair_attempted else 422,
                 detail=envelope,
-                headers={"X-RapidMLX-Warning": guided_warning}
-                if guided_warning
-                else None,
             )
 
     # Parse tool calls from output using configured parser.
@@ -7366,10 +7332,6 @@ async def _create_chat_completion_impl(
     response_headers = enable_thinking_warning_header(
         request, getattr(cfg, "reasoning_parser_name", None)
     )
-    if guided_warning:
-        response_headers["X-RapidMLX-Warning"] = "; ".join(
-            filter(None, [response_headers.get("X-RapidMLX-Warning"), guided_warning])
-        )
     # #4092: tell the client when PFlash shortened its prompt.
     response_headers = {
         **response_headers,

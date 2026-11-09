@@ -672,21 +672,6 @@ class GuidedGenerator:
             return None
 
 
-def resolve_schema_reasoning_end_id(tokenizer, parser) -> int | None:
-    """Resolve the atomic boundary required by the shared schema grammar gate."""
-    marker = getattr(parser, "reasoning_end_str", None)
-    if marker and tokenizer is not None:
-        try:
-            ids = tokenizer.encode(marker, add_special_tokens=False)
-            if len(ids) == 1 and tokenizer.decode(ids) == marker:
-                return int(ids[0])
-        except Exception:
-            logger.debug(
-                "Unable to resolve response_format reasoning gate", exc_info=True
-            )
-    return None
-
-
 def build_json_schema_logits_processor(
     tokenizer, json_schema: dict, *, reasoning_end_id: int | None = None
 ):
