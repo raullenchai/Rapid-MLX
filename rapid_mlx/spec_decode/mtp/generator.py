@@ -1367,24 +1367,17 @@ def mtp_generate_step(
 
     def _draft_chain_timed(*args, **kwargs):
         """``_step_mtp_chain`` with its wall time held for the next round."""
-        nonlocal pending_draft_ms, head_pending
+        nonlocal pending_draft_ms
         _t0 = time.perf_counter()
         boundary = _snapshot_processor_state()
         if rebuild_head_history:
             _reset_parked_probe_head()
-            head_start = mtp_cache[0].offset if mtp_cache else 0
-            saved_pending = head_pending
-            saved_parked = list(parked_head_rows)
         try:
             result = _step_mtp_chain(*args, **kwargs)
         except BaseException:
             if rebuild_head_history:
                 # A partial chain may already have consumed the align rows.
-                # Restore the pre-chain prefix, then settle those true rows.
-                _trim_head((mtp_cache[0].offset if mtp_cache else 0) - head_start)
-                head_pending = saved_pending
-                parked_head_rows[:] = saved_parked
-                _settle_head_after_error(_flush_head)
+                _settle_head_after_error(_discard_head_history)
             raise
         finally:
             # Draft-side interventions shape q(d), but only target-verified,
@@ -1805,10 +1798,7 @@ def mtp_generate_step(
                     )
                 except BaseException:
                     if rebuild_head_history:
-                        if not pending_is_prompt_lookup:
-                            _trim_head(k_len)
-                        head_pending = (head_seed, y)
-                        _settle_head_after_error(_flush_head)
+                        _settle_head_after_error(_discard_head_history)
                     _restore_processor_state(processor_boundary)
                     raise
                 # Verification computes every target row eagerly, but none is
@@ -1910,10 +1900,7 @@ def mtp_generate_step(
                             k_len - accepted_count, verify_size=k_len + 1
                         )
                     if rebuild_head_history:
-                        if not pending_is_prompt_lookup:
-                            _trim_head(k_len)
-                        head_pending = (head_seed, y)
-                        _settle_head_after_error(_flush_head)
+                        _settle_head_after_error(_discard_head_history)
                     _restore_processor_state(processor_boundary)
                     raise
 
@@ -2258,10 +2245,11 @@ def mtp_generate_step(
                 mx.clear_cache()
                 last_cache_block = block
     except BaseException:
-        # Failures between yields must settle deferred committed history too.
-        # _finish_head discards request-private server history and flushes
-        # caller-owned caches so they remain reusable after a target error.
-        # Settlement is best-effort: it must never replace the original error.
+        # On any abnormal exit (an error, or a close at a yield) the head may
+        # hold rows the caller never consumed, so drop its history instead of
+        # settling it. The head only proposes drafts the target verifies, so an
+        # empty head beside a populated backbone costs acceptance, never
+        # correctness. Cleanup must never replace the original error.
         if rebuild_head_history:
-            _settle_head_after_error(_finish_head)
+            _settle_head_after_error(_discard_head_history)
         raise

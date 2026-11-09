@@ -45,7 +45,7 @@ def _harness(legacy=False, fused=False):
     target_drops = []
 
     def forward(hidden, ids, caches, return_hidden=False):
-        cache.rows.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
+        caches[0].rows.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
         logits = np.eye(64)[ids + 1]
         cascade = np.full(hidden.shape, -99.0)
         return (logits, cascade) if return_hidden else logits
@@ -76,7 +76,13 @@ def _harness(legacy=False, fused=False):
         _is_greedy=True,
         _mtp_supports_fused_greedy=fused,
         _mtp_supports_hidden=True,
-        model=SimpleNamespace(mtp_forward=forward, mtp_greedy=greedy),
+        model=SimpleNamespace(
+            mtp_forward=forward,
+            mtp_greedy=greedy,
+            make_mtp_cache=lambda: [_Cache()],
+            layers=[object(), object()],
+        ),
+        prompt_cache=["b0", "b1", cache],
         quantize_cache_fn=lambda caches: quantized.append(caches),
         _process_and_sample=lambda prev, logits, *a, **kw: (
             logits.argmax(axis=-1),
@@ -125,6 +131,17 @@ def _harness(legacy=False, fused=False):
     module = _Standalone().visit(ast.Module(body=funcs, type_ignores=[]))
     exec(compile(ast.fix_missing_locations(module), str(SOURCE), "exec"), env)
     return env, cache, quantized, target_drops
+
+
+def _assert_head_discarded(env, original):
+    fresh = env["mtp_cache"][0]
+    assert fresh is not original
+    assert fresh.offset == 0
+    assert fresh.rows == []
+    assert env["prompt_cache"][:2] == ["b0", "b1"]
+    assert env["prompt_cache"][2:] == [fresh]
+    assert env["head_pending"] is None
+    assert env["parked_head_rows"] == []
 
 
 def _settle_verify(env, accepted, emitted=None, *, lookup=False, k=3):
@@ -554,7 +571,7 @@ def test_rebuild_park_and_resume():
 
 
 @pytest.mark.parametrize("lookup", [False, True])
-def test_failed_chain_restores_deferred_rows(lookup):
+def test_failed_chain_discards_deferred_rows(lookup):
     env, cache, _, _ = _harness()
     assert "_draft_chain_timed" in env
     count = 4 if lookup else 1
@@ -577,8 +594,7 @@ def test_failed_chain_restores_deferred_rows(lookup):
     env["_step_mtp"] = fail_second
     with pytest.raises(RuntimeError, match="injected draft fault"):
         env["_draft_chain_timed"](np.array([[[110.0]]]), np.array([12]), None, 3)
-    assert cache.rows == expected
-    assert env["head_pending"] is None
+    _assert_head_discarded(env, cache)
 
 
 def test_prefill_shift_and_first_chain():
@@ -624,7 +640,7 @@ def test_terminal_bonus_or_residual_is_committed(accepted, lookup):
 
 @pytest.mark.parametrize("sync_failure", [False, True])
 @pytest.mark.parametrize("lookup", [False, True])
-def test_verify_exception_keeps_true_y(sync_failure, lookup):
+def test_verify_exception_discards_head_history(sync_failure, lookup):
     env, cache, _, drops = _harness()
     cache.rows = [(90.0, 10)]
     if lookup:
@@ -635,15 +651,8 @@ def test_verify_exception_keeps_true_y(sync_failure, lookup):
         n
         for n in ast.walk(GENERATOR)
         if isinstance(n, ast.ExceptHandler)
-        and any(
-            isinstance(child, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "head_pending"
-                for t in child.targets
-            )
-            and ast.unparse(child.value) == "(head_seed, y)"
-            for child in ast.walk(n)
-        )
+        and "_settle_head_after_error(_discard_head_history)" in ast.unparse(n)
+        and "_restore_processor_state(processor_boundary)" in ast.unparse(n)
     ]
     assert len(handlers) == 2
     handler = next(
@@ -669,7 +678,7 @@ def test_verify_exception_keeps_true_y(sync_failure, lookup):
             ),
             env,
         )
-    assert cache.rows == [(90.0, 10), (100.0, 11)]
+    _assert_head_discarded(env, cache)
     assert bool(drops) == sync_failure
 
 
@@ -794,20 +803,21 @@ def test_parked_head_defers_work_until_resume_or_exit(prefetch, end):
         ]
     if end == "budget":
         assert [t for t, _, _ in generated] == list(range(15, 19))
-        count = 8
+        assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 19)]
     elif end == "close":
         generated.close()
-        count = 4
+        _assert_head_discarded(env, cache)
     else:
-        with pytest.raises(RuntimeError, match="cancel"):
-            generated.throw(RuntimeError("cancel"))
-        count = 4
-    assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 11 + count)]
+        error = RuntimeError("cancel")
+        with pytest.raises(RuntimeError, match="cancel") as caught:
+            generated.throw(error)
+        assert caught.value is error
+        _assert_head_discarded(env, cache)
     assert env["parked_head_rows"] == []
     assert env["head_pending"] is None
 
 
-def test_resumed_chain_failure_settles_deferred_park_history():
+def test_resumed_chain_failure_discards_deferred_park_history():
     env, cache, _, _ = _harness()
     env["parked_head_rows"] = [
         (np.array([[[100.0]]]), np.array([11])),
@@ -822,9 +832,7 @@ def test_resumed_chain_failure_settles_deferred_park_history():
     env["_step_mtp"] = fail_after_forward
     with pytest.raises(RuntimeError, match="draft failed"):
         env["_draft_chain_timed"](np.array([[[120.0]]]), np.array(13), None, 1)
-    assert cache.rows == [(100.0, 11), (110.0, 12)]
-    assert env["head_pending"] is None
-    assert env["parked_head_rows"] == []
+    _assert_head_discarded(env, cache)
 
 
 def test_long_park_bounds_replay_and_preserves_all_rows():
@@ -847,7 +855,7 @@ def test_long_park_bounds_replay_and_preserves_all_rows():
 @pytest.mark.parametrize("lookup", [False, True])
 @pytest.mark.parametrize("prefetch", [False, True])
 @pytest.mark.parametrize("close_at", [12, 14])
-def test_verify_park_handoff_defers_head_until_resume_or_close(
+def test_verify_park_handoff_defers_head_then_discards_on_close(
     lookup, prefetch, close_at
 ):
     env, cache = _generation_harness(12, [], prefetch=prefetch)
@@ -858,13 +866,30 @@ def test_verify_park_handoff_defers_head_until_resume_or_close(
     for token in range(11, close_at + 1):
         assert next(generated)[0] == token
         assert cache.rows == ([(100.0, 11)] if not lookup else [])
-    # At the first verify yield, the round has already collected its bonus.
-    # Preserve the old cache handoff on close even when that bonus is undelivered.
-    committed = max(close_at, 13)
+    # Verify can collect an undelivered bonus before yielding; closing must
+    # discard that row along with all deferred history, never flush it.
     generated.close()
-    assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, committed + 1)]
-    assert env["head_pending"] is None
-    assert env["parked_head_rows"] == []
+    _assert_head_discarded(env, cache)
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_close_at_parked_yield_discards_caller_head_without_forward(prefetch):
+    env, cache = _generation_harness(8, [0] * 8, prefetch=prefetch)
+    generated = env["run"]()
+    assert next(generated)[0] == 11
+    assert _deferred_rows(env) == [(100.0, 11)]
+    forwards = []
+    forward = env["model"].mtp_forward
+
+    def observed_forward(*args, **kwargs):
+        forwards.append(args)
+        return forward(*args, **kwargs)
+
+    env["model"].mtp_forward = observed_forward
+    generated.close()
+    assert forwards == []
+    assert cache.rows == []
+    _assert_head_discarded(env, cache)
 
 
 @pytest.mark.parametrize("prefetch", [False, True])
@@ -1021,22 +1046,24 @@ def test_failed_head_settlement_discards_history(fail_at):
     assert env["parked_head_rows"] == []
 
 
-def test_draft_failure_keeps_error_when_recovery_settlement_fails():
+def test_draft_failure_keeps_error_when_discard_allocation_fails():
     env, _, _, _ = _harness()
     env["head_pending"] = (np.full((1, 1, 1), 7.0), np.array([4]))
 
-    def draft_fail(*args, **kwargs):
-        raise RuntimeError("draft failed")
+    error = RuntimeError("draft failed")
 
-    def settle_fail(*args, **kwargs):
-        raise ValueError("head settlement failed")
+    def draft_fail(*args, **kwargs):
+        raise error
+
+    def discard_fail():
+        raise ValueError("head allocation failed")
 
     env["_step_mtp_chain"] = draft_fail
-    env["model"].mtp_forward = settle_fail
-    env["model"].make_mtp_cache = lambda: []
+    env["model"].make_mtp_cache = discard_fail
     env["prompt_cache"] = None
-    with pytest.raises(RuntimeError, match="draft failed"):
+    with pytest.raises(RuntimeError, match="draft failed") as caught:
         env["_draft_chain_timed"]()
+    assert caught.value is error
     assert env["head_pending"] is None
 
 
@@ -1087,7 +1114,7 @@ def test_verify_keeps_first_committed_head_pair_without_replay(k, accepted, fuse
 
 @pytest.mark.parametrize("private", [False, True])
 @pytest.mark.parametrize("prefetch", [False, True])
-def test_parked_target_failure_settles_committed_head_history(private, prefetch):
+def test_parked_target_failure_discards_head_history(private, prefetch):
     env, cache = _generation_harness(8, [0] * 8, prefetch=prefetch)
     if private:
         env["server_bootstrap"] = (np.array([[[100.0]]]), np.zeros(64))
@@ -1104,29 +1131,36 @@ def test_parked_target_failure_settles_committed_head_history(private, prefetch)
     env["_step_backbone"] = fail
     with pytest.raises(RuntimeError, match="target forward failed"):
         next(generated)
-    assert cache.offset == (0 if private else committed)
-    assert env["parked_head_rows"] == []
-    assert env["head_pending"] is None
+    _assert_head_discarded(env, cache)
 
 
-@pytest.mark.parametrize("settle_error", [ValueError, KeyboardInterrupt])
-def test_parked_settlement_failure_preserves_original_error(settle_error):
+@pytest.mark.parametrize("discard_error", [ValueError, KeyboardInterrupt])
+def test_parked_discard_failure_preserves_original_error(discard_error):
     env, cache = _generation_harness(8, [0] * 8)
     generated = env["run"]()
     next(generated)
     next(generated)
 
-    def fail(*args, **kwargs):
-        raise RuntimeError("target forward failed")
+    error = RuntimeError("target forward failed")
 
-    def settle_fail():
-        raise settle_error("head settlement failed")
+    def fail(*args, **kwargs):
+        raise error
+
+    attempts = []
+
+    def discard_fail():
+        attempts.append(True)
+        raise discard_error("head allocation failed")
 
     env["_step_backbone"] = fail
-    env["_finish_head"] = settle_fail
+    env["model"].make_mtp_cache = discard_fail
     env["logger"] = logging.getLogger("test_mtp_head_history")
-    with pytest.raises(RuntimeError, match="target forward failed"):
+    with pytest.raises(RuntimeError, match="target forward failed") as caught:
         next(generated)
+    assert caught.value is error
+    assert attempts == [True]
+    assert env["head_pending"] is None
+    assert env["parked_head_rows"] == []
 
 
 def test_fixed_park_eventually_discovers_profitable_deeper_acceptance():
