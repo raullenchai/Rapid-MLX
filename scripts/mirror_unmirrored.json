@@ -305,6 +305,11 @@
       "hf_path": "Pika-Labs/Pika-H3-Flex",
       "reason": "license: MiniMax H3 Community License (Model Derivative; NOTICE attribution required) restricts redistribution by territory; serve from the upstream Hub only",
       "since": "2026-11-02"
+    },
+    {
+      "hf_path": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+      "reason": "license: Tencent Hunyuan Community License excludes EU, UK and South Korea; upstream Hub direct only (~53 GB)",
+      "since": "2026-11-08"
     }
   ]
 }

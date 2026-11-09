@@ -698,6 +698,10 @@ rapid_mlx = [
     "models/deepseek_v41_native/LICENSE",
     "models/deepseek_v41_native/LICENSE-DSPARK",
     "models/deepseek_v41_native/NOTICE",
+    # Native video port notices and separately licensed model terms.
+    "video/hunyuan_video15/NOTICE",
+    "video/hunyuan_video15/LICENSE-APACHE",
+    "video/hunyuan_video15/LICENSE-TENCENT",
     # The vendored mlx-vlm APC/cache implementation is MIT-licensed; its
     # license text must travel with every wheel that redistributes the source.
     "models/mlx_vlm_vendored/LICENSE",

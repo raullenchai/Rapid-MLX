@@ -45,6 +45,7 @@ _VIDEO_REQUEST_BYTES = _MAX_REFERENCE_BYTES + 1024 * 1024
 _MAX_JOBS = 100
 _MAX_PIXEL_FRAMES = 768 * 512 * 97
 _H3_MAX_PIXEL_FRAMES = 768 * 512 * 345
+_HUNYUAN_MAX_PIXEL_FRAMES = 848 * 480 * 121
 _MAX_EXTEND_PIXEL_FRAMES = 24_000_000
 _MAX_EXTEND_OUTPUT_FRAMES = 97
 _MAX_REFERENCE_PIXELS = 16_777_216
@@ -835,6 +836,17 @@ def _video_capabilities(engine) -> dict:
         }
         seconds = {"minimum": 1, "maximum": 20, "default": 4}
         frames = {"minimum": 5, "maximum": 1201, "step": 4, "offset": 1}
+    elif family == "hunyuan-video-1.5":
+        modes = ["text-to-video"]
+        size = {
+            "type": "range",
+            "default": "848x480",
+            "width": {"minimum": 256, "maximum": 848, "multiple_of": 16},
+            "height": {"minimum": 256, "maximum": 848, "multiple_of": 16},
+            "maximum_short_edge": 480,
+        }
+        seconds = {"minimum": 1, "maximum": 5, "default": 5}
+        frames = {"minimum": 5, "maximum": 121, "step": 4, "offset": 1, "default": 121}
     elif family == "minimax-h3":
         modes = ["text-to-video", "image-to-video"]
         size = {
@@ -876,22 +888,32 @@ def _video_capabilities(engine) -> dict:
             "size": size,
             "seconds": seconds,
             "fps": {
-                "minimum": native_fps if family in ("wan", "minimax-h3") else 1,
-                "maximum": native_fps if family in ("wan", "minimax-h3") else 60,
+                "minimum": native_fps
+                if family in ("wan", "minimax-h3", "hunyuan-video-1.5")
+                else 1,
+                "maximum": native_fps
+                if family in ("wan", "minimax-h3", "hunyuan-video-1.5")
+                else 60,
                 "default": native_fps,
-                "fixed": family in ("wan", "minimax-h3"),
+                "fixed": family in ("wan", "minimax-h3", "hunyuan-video-1.5"),
             },
             "frames": frames,
             "workload": {
                 "metric": "pixel_frames",
-                "maximum": _H3_MAX_PIXEL_FRAMES
-                if family == "minimax-h3"
-                else _MAX_PIXEL_FRAMES,
+                "maximum": (
+                    _HUNYUAN_MAX_PIXEL_FRAMES
+                    if family == "hunyuan-video-1.5"
+                    else _H3_MAX_PIXEL_FRAMES
+                    if family == "minimax-h3"
+                    else _MAX_PIXEL_FRAMES
+                ),
                 "dimension_rounding": (
                     "none"
                     if family == "cogvideox-fun"
                     else (
-                        "ceil_to_32"
+                        "ceil_to_16"
+                        if family == "hunyuan-video-1.5"
+                        else "ceil_to_32"
                         if family in ("ltx-2.5", "minimax-h3")
                         else "ceil_to_64"
                     )
@@ -1459,7 +1481,13 @@ async def _run_job(
     generation_gate = _generation_gate_for_current_loop()
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
     alignment = (
-        32 if getattr(engine, "video_family", "") in ("ltx-2.5", "minimax-h3") else 64
+        16
+        if getattr(engine, "video_family", "") == "hunyuan-video-1.5"
+        else (
+            32
+            if getattr(engine, "video_family", "") in ("ltx-2.5", "minimax-h3")
+            else 64
+        )
     )
     generation_width = (
         width if is_cogvideox else ((width + alignment - 1) // alignment) * alignment
@@ -1645,7 +1673,7 @@ async def create_video(
     prompt: str = Form(..., min_length=1, max_length=4096),
     model: str = Form("ltx-2.3-mlx-q4"),
     seconds: str | None = Form(None),
-    size: str = Form("768x512"),
+    size: Annotated[str | None, Form()] = None,
     seed: int = Form(42),
     fps: Annotated[int | None, Form()] = None,
     frames: Annotated[int | None, Form()] = None,
@@ -1664,6 +1692,14 @@ async def create_video(
     is_wan = getattr(engine, "video_family", "") == "wan"
     is_ltx25 = getattr(engine, "video_family", "") == "ltx-2.5"
     is_h3 = getattr(engine, "video_family", "") == "minimax-h3"
+    is_hunyuan = getattr(engine, "video_family", "") == "hunyuan-video-1.5"
+    if size is None:
+        size = "848x480" if is_hunyuan else "768x512"
+    if is_hunyuan and input_reference is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="HunyuanVideo 1.5 currently supports text-to-video only",
+        )
     if references:
         if not _supports_references(engine):
             raise HTTPException(
@@ -1684,7 +1720,7 @@ async def create_video(
             status_code=400, detail="last_frame is not supported by this model"
         )
     if seconds is None:
-        seconds = "5" if is_h3 else "4"
+        seconds = "5" if (is_h3 or is_hunyuan) else "4"
     with _jobs_lock:
         if not _accepting_jobs:
             raise HTTPException(status_code=503, detail="video server is shutting down")
@@ -1695,7 +1731,7 @@ async def create_video(
     profile = resolve_profile(model)
     if profile is not None and profile.hf_path == engine.model_name:
         allowed_models.add(model)
-    if not (is_cogvideox or is_wan or is_ltx25 or is_h3):
+    if not (is_cogvideox or is_wan or is_ltx25 or is_h3 or is_hunyuan):
         allowed_models.add("ltx-2.3-mlx-q4")
     if model not in allowed_models:
         raise HTTPException(
@@ -1732,13 +1768,17 @@ async def create_video(
     else:
         width, height = _parse_size(
             size,
-            multiple=32 if (is_ltx25 or is_h3) else 64,
+            multiple=16 if is_hunyuan else (32 if (is_ltx25 or is_h3) else 64),
             also_supported={_WAN_STANDARD_OUTPUT_SIZE} if is_wan else None,
         )
     native_fps = 5 if is_cogvideox else getattr(engine, "native_fps", 24)
     request_fps = native_fps if fps is None else fps
     if not 1 <= request_fps <= 60:
         raise HTTPException(status_code=400, detail="fps must be between 1 and 60")
+    if is_hunyuan and request_fps != 24:
+        raise HTTPException(
+            status_code=400, detail="HunyuanVideo 1.5 output fps is fixed at 24"
+        )
     if is_h3 and request_fps != 24:
         raise HTTPException(
             status_code=400, detail="MiniMax-H3 output fps is fixed at 24"
@@ -1767,7 +1807,7 @@ async def create_video(
                 status_code=400,
                 detail="conditioning_strength must be between 0 and 1",
             )
-        if is_cogvideox or is_wan or is_h3:
+        if is_cogvideox or is_wan or is_h3 or is_hunyuan:
             raise HTTPException(
                 status_code=400,
                 detail="conditioning_strength is currently supported by LTX only",
@@ -1799,13 +1839,15 @@ async def create_video(
                 "or guidance_scale"
             ),
         )
-    alignment = 32 if (is_ltx25 or is_h3) else 64
+    alignment = 16 if is_hunyuan else (32 if (is_ltx25 or is_h3) else 64)
     generation_width = ((width + alignment - 1) // alignment) * alignment
     generation_height = ((height + alignment - 1) // alignment) * alignment
     if frames is not None:
         request_frames = frames
     elif is_cogvideox:
         request_frames = 5
+    elif is_hunyuan:
+        request_frames = min(121, max(5, round((seconds_int * 24 - 1) / 4) * 4 + 1))
     elif supports_last_frame:
         from ..video.pika_h3_flex import align_frames
 
@@ -1838,16 +1880,30 @@ async def create_video(
             status_code=400,
             detail="MiniMax-H3 frames must be 17n+5 and between 120 and 360",
         )
-    if not (is_cogvideox or is_wan or is_h3):
+    if not (is_cogvideox or is_wan or is_h3 or is_hunyuan):
         if request_frames < 9 or request_frames % 8 != 1:
             raise HTTPException(
                 status_code=400,
                 detail="LTX frames must be 8n+1 and at least 9 (for example 9, 17, 25)",
             )
+    if is_hunyuan:
+        from ..video.hunyuan_video15 import validate_request
+
+        if frames is None and seconds_int > 5:
+            raise HTTPException(
+                status_code=400,
+                detail="HunyuanVideo 1.5 seconds must be between 1 and 5",
+            )
+        try:
+            validate_request(width=width, height=height, num_frames=request_frames)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     workload_width = width if is_cogvideox else generation_width
     workload_height = height if is_cogvideox else generation_height
     if workload_width * workload_height * request_frames > (
-        _H3_MAX_PIXEL_FRAMES if is_h3 else _MAX_PIXEL_FRAMES
+        _HUNYUAN_MAX_PIXEL_FRAMES
+        if is_hunyuan
+        else (_H3_MAX_PIXEL_FRAMES if is_h3 else _MAX_PIXEL_FRAMES)
     ):
         family = (
             "CogVideoX-Fun"
@@ -1940,7 +1996,7 @@ async def create_video(
         job = _VideoJob(
             id=job_id,
             model=model
-            if (is_cogvideox or is_wan or is_ltx25 or is_h3)
+            if (is_cogvideox or is_wan or is_ltx25 or is_h3 or is_hunyuan)
             else "ltx-2.3-mlx-q4",
             prompt=prompt,
             seconds=str(seconds_int),

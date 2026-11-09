@@ -1,0 +1,10 @@
+Tencent Hunyuan is licensed under the Tencent Hunyuan Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate.
+
+The native transformer and VAE decoder are modified ports of Diffusers:
+Copyright 2025 The Hunyuan Team and The HuggingFace Team. All rights reserved.
+Licensed under the Apache License, Version 2.0; see LICENSE-APACHE.
+The Tencent license applies to the model weights, distributed separately.
+
+Rapid-MLX provides this integration. Tencent is not affiliated with, associated
+with, sponsoring, or endorsing Rapid-MLX. Service operators must disclose their
+actual legal provider identity to end users as required by the model license.

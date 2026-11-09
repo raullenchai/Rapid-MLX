@@ -373,3 +373,112 @@ MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, Copyrig
 FL2VA and Ref2VA adapters Copyright © 2026 Mellis, Inc. (Pika). It is a Model Derivative of MiniMax H3 distributed under the MiniMax H3 Community License Agreement.
 
 The weights are downloaded from the upstream Hugging Face repositories and are never mirrored.
+
+## HunyuanVideo 1.5 480p text-to-video
+
+`hunyuan-video-1.5-480p` serves the non-distilled 8.3B DiT checkpoint
+`hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v`, pinned at
+`286be7ce72277246578a3e3cc2487e95ddae5bcf`. Use Apple Silicon with **64 GB or more
+unified memory**. The checkpoint downloads about **53.4 GB** directly from Hugging
+Face into the default cache; it is excluded from the mirror inventory.
+
+```bash
+rapid-mlx serve hunyuan-video-1.5-480p
+curl http://localhost:8000/v1/videos \
+  -F model=hunyuan-video-1.5-480p \
+  -F 'prompt=A fox walking through a snowy forest' \
+  -F size=848x480 -F frames=33 -F seed=42
+```
+
+The existing `/v1/videos` job, progress, cancellation, retrieval and MP4 endpoints
+apply. Defaults are 848×480, 121 frames, 24 fps, 50 denoising steps, CFG 6 and flow
+shift 5. Explicit frames must be `4n+1`, between 5 and 121. Width and height must
+be multiples of 16, with short edge 256–480 and long edge at most 848. Portrait
+480×848 is supported. FPS is fixed at 24. Negative prompts and CFG overrides use
+the existing request fields. Image conditioning, extension, audio, 720p and
+step/CFG-distilled checkpoints are not implemented or advertised.
+
+The native MLX transformer and causal VAE decoder port the Diffusers model,
+retaining checkpoint parameter names. Prompt conditioning reuses MLX-LM's Qwen2
+text layers (the Qwen2.5-VL text-only path, taking hidden_states[-3]) and the
+repository's configurable T5 primitives, with ByT5 glyph extraction and masking.
+Both prompt encoders are released before denoising; the DiT is released before
+loading the decoder. FP32 transformer shards are converted to BF16 one shard at
+a time. The released VAE encoder is unused by T2V and is not loaded.
+
+Decoding uses the reference 256-pixel spatial tiles with 25% overlap and blending.
+Each tile retains the full temporal context, preserving causal attention and
+first-frame upsampling. Layers and tiles are explicitly evaluated, decoded tiles
+move to host memory, and the shared 1 GiB MLX buffer-cache cap bounds retained
+buffers. The intended working set is in the roughly 36 GB model class; real
+480p peak memory and performance still require the Mac smoke test below.
+
+Scheduler, guider, DiT and VAE parameters come from checkpoint configs. Resolution,
+task and distillation remain separate config concerns so later variants can use
+this structure; unsupported configurations currently fail explicitly.
+
+### Validation and real-weight smoke
+
+The parity harness generates tiny random models in a separate Torch/Diffusers
+process, then checks native MLX outputs in FP32. Torch is not a serving dependency.
+It covers a masked joint transformer block, a full two-layer transformer in FP32
+and BF16 (outputs compared in FP32), Qwen and ByT5 hidden states, 3-axis
+RoPE, causal VAE decode including tiled blending, and every shifted Euler step.
+VAE encode is not exercised because this backend does not use it.
+
+```bash
+python scripts/check_hunyuan_video15_parity.py \
+  --reference-python /path/to/torch-diffusers-venv/bin/python \
+  --json-output /private/tmp/hunyuan-video15-parity.json
+
+python scripts/smoke_hunyuan_video15.py \
+  --output /private/tmp/hunyuan-video15-smoke.mp4 \
+  --frames 33 --steps 50 --seed 42
+```
+
+The optional parity and lifecycle tests can also run through pytest:
+
+```bash
+HUNYUAN_VIDEO15_REFERENCE_PYTHON=/path/to/torch-diffusers-venv/bin/python \
+  python -m pytest tests/test_hunyuan_video15*.py -q
+```
+
+The smoke uses the serving worker and real weights, reports prompt/DiT load time,
+denoise time, VAE load time, decode time and `mx.get_peak_memory()` in bytes.
+`--model` can point at an existing Diffusers snapshot. `--steps 2` is a fast
+plumbing check; use the default 50 for a model-quality check. No Metal inference,
+real-weight output quality, throughput or 64 GB peak-memory qualification is
+claimed from CPU tiny-model parity.
+
+### License and attribution
+
+The model weights use the **Tencent Hunyuan Community License Agreement**,
+which excludes the **European Union, United Kingdom and South Korea**. Licensees
+with more than 100 million monthly active users under the release-date test in
+section 4 must obtain a separate Tencent license. The Acceptable Use Policy
+(Exhibit A) and redistribution/service-provider disclosure obligations apply.
+Read the bundled [license](../../rapid_mlx/video/hunyuan_video15/LICENSE-TENCENT)
+and [NOTICE](../../rapid_mlx/video/hunyuan_video15/NOTICE) before use or deployment.
+This integration follows the documentation and upstream-direct download policy
+used for MiniMax H3 / Pika; it does not infer the operator's location.
+
+Tencent Hunyuan is licensed under the Tencent Hunyuan Community License Agreement,
+Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent
+Hunyuan” are owned by Tencent or its affiliate.
+
+Rapid-MLX provides this integration. Tencent is not affiliated with, associated
+with, sponsoring, or endorsing Rapid-MLX. Operators offering it to end users must
+identify their actual legal service provider as required by the license.
+The native Diffusers ports retain their Apache 2.0 notices; model terms are
+separate from those software notices.
+
+
+Port provenance: Diffusers commit `8c54b38fea3d624d23d0e43c0c96037f080a79f9`
+(`transformer_hunyuan_video15.py`, `autoencoder_kl_hunyuanvideo15.py` and
+`pipelines/hunyuan_video1_5/`); official Tencent cross-check commit
+`60783e704160023913bee78f0b47036d393d4dfa`.
+Existing [distributed transformer](https://github.com/sgl-project/sglang/blob/main/python/sglang/multimodal_gen/runtime/models/dits/hunyuanvideo.py)
+and [serving pipeline](https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/models/hunyuan_video/pipeline_hunyuan_video_1_5.py)
+implementations were inspected for established patterns. Their Torch and
+distributed-kernel dependencies cannot run directly on MLX; the portable
+Diffusers definitions remain this port's numeric reference.
