@@ -854,7 +854,7 @@ def test_qwen3_engine_routed_truncated_think_no_duplicate():
 #
 # Bug class is the same as PR #722 (multi-block <think> sweep) but the leak
 # surface is the ``_apply_reasoning_cap`` overflow-into-cleaned_text
-# fallback, NOT the parser's tag-handling. Live vibethinker-3b-8bit repro:
+# fallback, NOT the parser's tag-handling. Live mlx-community/VibeThinker-3B-8bit repro:
 #
 #   reasoning_max_tokens=30, max_tokens=300, prompt="What is the capital of
 #   Japan?" → reasoning_content cut mid-word at 120 chars (30 * 4); content

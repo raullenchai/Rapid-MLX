@@ -20,10 +20,13 @@ class UnmirroredEntry:
 
 def _catalog_hf_paths(main_aliases_path: Path, audio_aliases_path: Path) -> set[str]:
     paths: set[str] = set()
-    for path, key in (
-        (main_aliases_path, "hf_path"),
-        (audio_aliases_path, "hf_id"),
-    ):
+    # Repo profiles keep pinned execution metadata for retired alias names,
+    # so their repositories stay part of the mirrored catalog.
+    repo_profiles_path = main_aliases_path.with_name("repo_profiles.json")
+    catalogs = [(main_aliases_path, "hf_path"), (audio_aliases_path, "hf_id")]
+    if repo_profiles_path.exists():
+        catalogs.insert(1, (repo_profiles_path, "hf_path"))
+    for path, key in catalogs:
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict):
             raise ValueError(f"{path} must contain a JSON object")

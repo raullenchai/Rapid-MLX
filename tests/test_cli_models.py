@@ -253,15 +253,15 @@ def test_models_command_renders_parser_for_hermes3_8b():
     alias registry, (2) the suffix-tier cell shows the tier currently
     recorded in ``aliases.json``. Reading the expected tier from the
     registry (not hardcoding it) means a future bench re-sweep that
-    reclassifies hermes3-8b-4bit doesn't break this test, while a *display*
+    reclassifies llama-3.1-8b-4bit doesn't break this test, while a *display*
     regression (tier dropped from the row entirely) still does.
     """
     out = _capture_models_output()
-    matches = [line for line in out.splitlines() if "hermes3-8b-4bit " in line]
-    assert matches, "no row found for hermes3-8b-4bit"
+    matches = [line for line in out.splitlines() if "llama-3.1-8b-4bit " in line]
+    assert matches, "no row found for llama-3.1-8b-4bit"
     row = matches[0]
-    profile = list_profiles().get("hermes3-8b-4bit")
-    assert profile is not None, "hermes3-8b-4bit alias missing — fixture drift"
+    profile = list_profiles().get("llama-3.1-8b-4bit")
+    assert profile is not None, "llama-3.1-8b-4bit alias missing — fixture drift"
     assert (profile.tool_call_parser or "") in row, (
         f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
     )
@@ -349,7 +349,7 @@ def test_retired_qwopus_8bit_alias_points_to_live_sibling(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "no longer accessible" in captured.err
-    assert "qwopus-27b-4bit" in captured.err
+    assert "Jackrong/MLX-Qwopus3.5-27B-v3-4bit" in captured.err
 
 
 # ----------------------------------------------------------------------

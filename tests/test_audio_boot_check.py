@@ -61,7 +61,7 @@ def test_is_audio_model_alias_ignores_non_audio() -> None:
     non_audio = [
         "qwen3.6-27b-4bit",
         "qwen3.5-122b-mxfp4",
-        "ui-tars-1.5-7b-4bit",
+        "mlx-community/UI-TARS-1.5-7B-4bit",
         "gemma-3-27b-4bit",
         "embeddinggemma-300m-6bit",
         "mlx-community/Qwen3.6-27B-4bit",

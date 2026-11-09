@@ -32,8 +32,8 @@ def test_unavailable_qwopus_8bit_alias_is_retired_with_migration_note():
     assert retired not in list_aliases()
     with pytest.raises(RetiredModelAliasError, match="no longer accessible") as exc:
         resolve_model(retired)
-    assert "'qwopus-27b-4bit'" in str(exc.value)
-    # The migration target must stay a live catalog alias.
+    assert "'Jackrong/MLX-Qwopus3.5-27B-v3-4bit'" in str(exc.value)
+    # The migration target remains directly loadable.
     assert resolve_model("qwopus-27b-4bit") == "Jackrong/MLX-Qwopus3.5-27B-v3-4bit"
 
 
@@ -84,7 +84,7 @@ def test_hermes_alias_not_llama():
     """Hermes-3 should be under its own name, not llama3-8b."""
     aliases = list_aliases()
     assert "llama3-8b" not in aliases
-    assert "hermes3-8b-4bit" in aliases
+    assert "hermes3-8b-4bit" not in aliases
 
 
 def test_suggest_similar_stays_within_family():
@@ -128,11 +128,11 @@ def test_suggest_similar_one_letter_no_match():
 
 
 def test_suggest_similar_matches_partial_family_token():
-    """A bare family name like ``hermes`` should suggest aliases that
-    share that prefix (``hermes3-8b-4bit``), not return [] just because there's
+    """A bare family name like ``llama`` should suggest aliases that
+    share that prefix (``llama3-3b-4bit``), not return [] just because there's
     no exact ``hermes-foo`` separator pattern."""
-    suggestions = suggest_similar("hermes")
-    assert "hermes3-8b-4bit" in suggestions, suggestions
+    suggestions = suggest_similar("llama")
+    assert "llama3-3b-4bit" in suggestions, suggestions
 
 
 # --- Letter-only fallback (separator-mismatched names) ----------------

@@ -2188,15 +2188,20 @@ def _host_is_desktop() -> bool:
 
 
 def _catalog_profile(model_name: object):
-    """Built-in catalog profile for an alias or HF path, else ``None``.
+    """Built-in execution profile for lane guidance, excluding user aliases."""
+    from ..model_aliases import (
+        _DEPRECATED_MODEL_ALIASES,
+        _profile_for_hf_path,
+        catalog_alias_for,
+    )
 
-    Built-in only: user aliases live in a file that can be edited (or broken)
-    while the server runs, and are not needed to explain a lane decision.
-    """
-    from ..model_aliases import catalog_alias_for
-
-    alias = catalog_alias_for(model_name) if isinstance(model_name, str) else None
-    return resolve_profile(alias) if alias is not None else None
+    if not isinstance(model_name, str):
+        return None
+    alias = catalog_alias_for(model_name)
+    if alias is not None:
+        return resolve_profile(alias)
+    repo = _DEPRECATED_MODEL_ALIASES.get(model_name, model_name)
+    return _profile_for_hf_path(repo) if "/" in repo else None
 
 
 def text_lane_image_guidance(
@@ -2394,6 +2399,8 @@ def served_model_catalog_name(engine: object) -> str | None:
         alias = catalog_alias_for(name)
         if alias is not None:
             return alias
+        if profile := _catalog_profile(name):
+            return str(profile.hf_path)
     return names[0] if names else None
 
 

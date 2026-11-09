@@ -31,7 +31,7 @@ from rapid_mlx.runtime.resident_models import estimate_model_bytes
 )
 def test_explicit_precision_selects_curated_klein_alias(source):
     assert resolve_image_weight_precision(source, "q4") == FLUX2_KLEIN_Q4_ALIAS
-    assert resolve_image_weight_precision(source, "bf16") == FLUX2_KLEIN_BF16_ALIAS
+    assert resolve_image_weight_precision(source, "bf16") == FLUX2_KLEIN_BF16_REPO
 
 
 @pytest.mark.parametrize(
@@ -86,7 +86,7 @@ def test_real_cli_selects_bf16_before_serve_dispatch(monkeypatch):
 
     def _serve_command(args):
         captured["model_name"] = args.model
-        captured["alias"] = args._original_alias
+        captured["alias"] = getattr(args, "_original_alias", args.model)
 
     monkeypatch.setattr(cli, "serve_command", _serve_command)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
@@ -108,7 +108,7 @@ def test_real_cli_selects_bf16_before_serve_dispatch(monkeypatch):
 
     assert captured == {
         "model_name": FLUX2_KLEIN_BF16_REPO,
-        "alias": FLUX2_KLEIN_BF16_ALIAS,
+        "alias": FLUX2_KLEIN_BF16_REPO,
     }
 
 

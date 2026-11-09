@@ -44,7 +44,9 @@ def _fake_aliases() -> dict[str, dict]:
         # In-band (6-12 B, 4-bit, no special excludes)
         "qwen3.5-9b-4bit": {"hf_path": "mlx-community/Qwen3.5-9B-4bit"},
         "qwen3-8b-4bit": {"hf_path": "mlx-community/Qwen3-8B-4bit"},
-        "hermes3-8b-4bit": {"hf_path": "mlx-community/Hermes-3-Llama-3.1-8B-4bit"},
+        "llama-3.1-8b-4bit": {
+            "hf_path": "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
+        },
         # Excluded: the 4 B tier cannot hold an agentic loop. It does not
         # fail fast either — it retries malformed tool calls until the
         # per-profile clock runs out, so the gauntlet goes red on a healthy
@@ -58,7 +60,7 @@ def _fake_aliases() -> dict[str, dict]:
         # parser regex extracted ``4`` from ``-4bit`` and admitted this
         # entry as a 4 B model — codex PR #693 review caught it. The
         # post-fix parser refuses to guess and skips the entry.
-        "glm4.5-air-4bit": {"hf_path": "mlx-community/GLM-4.5-Air-4bit"},
+        "glm4.7-4bit": {"hf_path": "mlx-community/GLM-4.7-4bit"},
         # Out-of-band: far below the floor — harnesses would false-fail.
         "qwen3-0.6b-4bit": {"hf_path": "mlx-community/Qwen3-0.6B-4bit"},
         "llama3-1b-4bit": {"hf_path": "mlx-community/Llama-3.2-1B-Instruct-4bit"},
@@ -82,7 +84,7 @@ def _fake_aliases() -> dict[str, dict]:
 def test_eligible_aliases_filters_correctly(g12, tmp_path):
     """The 3 in-band entries survive; everything else is filtered.
 
-    Note ``glm4.5-air-4bit`` is **expected** to be excluded — its repo
+    Note ``glm4.7-4bit`` is **expected** to be excluded — its repo
     name (``GLM-4.5-Air-4bit``) carries no parameter-count token, so
     the post-codex-#693 parser fails closed rather than mis-attributing
     a 4 B size from the ``-4bit`` quantization suffix.
@@ -94,7 +96,7 @@ def test_eligible_aliases_filters_correctly(g12, tmp_path):
     assert names == {
         "qwen3.5-9b-4bit",
         "qwen3-8b-4bit",
-        "hermes3-8b-4bit",
+        "llama-3.1-8b-4bit",
     }
 
 

@@ -18,8 +18,8 @@ from rapid_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_e
 def test_cogvideox_aliases_route_to_video_lane() -> None:
     for alias in (
         "cogvideox-fun-5b-q4",
-        "cogvideox-fun-5b-q8",
-        "cogvideox-fun-5b-bf16",
+        "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
+        "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
     ):
         profile = resolve_profile(alias)
         assert profile is not None
@@ -327,7 +327,7 @@ async def test_cogvideox_rejects_alias_for_different_served_checkpoint(
     with pytest.raises(HTTPException, match="must match"):
         await video.create_video(
             prompt="test",
-            model="cogvideox-fun-5b-q8",
+            model="dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
             seconds="1",
             size="672x384",
             seed=1,

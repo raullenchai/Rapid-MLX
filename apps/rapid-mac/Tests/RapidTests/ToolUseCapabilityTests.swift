@@ -28,6 +28,31 @@ import Testing
 @Suite("ToolUseCapability — desktop-side tool-call capability map")
 struct ToolUseCapabilityTests {
 
+    // Preserve the origin/main verdicts while deprecated aliases still resolve.
+    @Test("Deprecated short names retain their pre-deprecation tool-use verdicts", arguments: [
+        ("ornith-1.5-9b-bf16", ToolUseConfidence.known),
+        ("ornith-1.5-35b-a3b-bf16", ToolUseConfidence.known),
+        ("glm4.5-air-4bit", ToolUseConfidence.known),
+        ("minimax-m2.5-4bit", ToolUseConfidence.known),
+        ("hermes3-8b-4bit", ToolUseConfidence.broken),
+        ("vibethinker-1.5b-4bit", ToolUseConfidence.broken),
+        ("vibethinker-3b-8bit", ToolUseConfidence.broken),
+    ])
+    func deprecatedAliasVerdicts(alias: String, expected: ToolUseConfidence) {
+        #expect(ToolUseCapability.confidence(for: alias) == expected)
+    }
+
+    @Test("Repo IDs added for deprecated aliases retain the same verdicts", arguments: [
+        ("ornith-ai/Ornith-1.5-9B-MLX", ToolUseConfidence.known),
+        ("ornith-ai/Ornith-1.5-35B-A3B-MLX", ToolUseConfidence.known),
+        ("mlx-community/Hermes-3-Llama-3.1-8B-4bit", ToolUseConfidence.broken),
+        ("mlx-community/VibeThinker-1.5B-mlx-4bit", ToolUseConfidence.broken),
+        ("mlx-community/VibeThinker-3B-8bit", ToolUseConfidence.broken),
+    ])
+    func deprecatedAliasRepoVerdicts(repo: String, expected: ToolUseConfidence) {
+        #expect(ToolUseCapability.confidence(for: repo) == expected)
+    }
+
     // MARK: - .broken bucket
 
     @Test("phi-4-mini-reasoning-4bit is .broken (F-11-5)")

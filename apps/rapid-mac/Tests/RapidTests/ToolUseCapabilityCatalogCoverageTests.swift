@@ -152,7 +152,6 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "lfm3-vl-2b-8bit": .unknown,
         "lfm2.5-1b-4bit": .unknown,
         "lfm2.5-8b-a1b-4bit": .unknown,
-        "lfm2-24b-a2b-4bit": .unknown,
         "lfm2.5-24b-a2b-4bit": .unknown,
         // This exact quant has CLI qualification; desktop tool confidence
         // remains conservative until its product-path bench is complete.
@@ -224,7 +223,6 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "gemma3-27b-qat-4bit": .unknown,
         "gemma3-4b-qat-4bit": .unknown,
         // glm — glm47 parser, verified in eval suite.
-        "glm4.5-air-4bit": .known,
         "glm4.7-9b-4bit": .known,
         // gpt-oss — harmony parser (cycle-7 confirmed clean on safety
         // + tool-edge probes). The mxfp4-q8 quant suffix was the
@@ -234,7 +232,6 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "granite4-h-micro-4bit": .unknown,
         "granite4-tiny-4bit": .unknown,
         // hermes3 — empirically broken (cycle-4 F-1 silent-degradation).
-        "hermes3-8b-4bit": .broken,
         // hermes4-70b — hermes parser, large model, distinct from
         // hermes3 SFT issue. No loop evidence either way; conservatively
         // .known because the parser/family are well-understood at this
@@ -242,13 +239,11 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "hermes4-70b-4bit": .known,
         // llama-3.1 ≥ 8B — cycle-6 F-1/F-2 confirm tool_call path works
         "llama-3.1-8b-4bit": .known,
-        "llama-3.1-8b-8bit": .known,
         // llama3-1b — cycle-9 F9-001 schema-leak, .broken
         "llama3-1b-4bit": .broken,
         // llama3-3b — cycle-10 verified 5/5 clean weather tool calls.
         "llama3-3b-4bit": .known,
         // minimax — minimax parser; M2.x is 235B MoE family
-        "minimax-m2.5-4bit": .known,
         "minimax-m2.7-mxfp4": .known,
         // mistral-24b — Mistral-family. The 2026-07-09 parser-misconfig
         // leak is fixed now that the "mistral" parser ships bundled
@@ -258,15 +253,12 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // nanbeige4.1-3b — brand-new family from cycle-1 fuzz; flagged
         // for hallucination on Swift codegen but no tool-call signal.
         // Conservatively .unknown.
-        "nanbeige4.1-3b-4bit": .unknown,
         // nemotron-30b — cycle-7 headline confirmed engine works,
         // but tool-calling specifically not benched. Take the
         // conservative side and mark .known because nemotron's
         // hermes parser + 30B size is on the same family contour as
         // qwen3-coder-30b which is known-good.
-        "nemotron-30b-4bit": .known,
         // phi-3.5-mini — parser=None in aliases.json. Unknown.
-        "phi-3.5-mini-4bit": .unknown,
         // phi-4-14b — hermes parser; phi-4 distinct from phi-4-mini-
         // reasoning. No first-hand evidence either direction. Take
         // conservative .unknown rather than promote based on family
@@ -351,10 +343,8 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "qwen3.8-27b-mixed-3.5bpw": .known,
         // qwopus — Qwen+Opus distillation, hermes parser. PR #333
         // closure-verified 5/5 weather tool calls on qwopus-27b-8bit.
-        "qwopus-27b-4bit": .known,
         "qwopus-27b-8bit": .known,
         // qwopus-9b — sibling at 9B, same family.
-        "qwopus-9b-4bit": .known,
         // smollm3-3b — small-family-3B, hermes parser. Loop hasn't
         // benched tool-calling specifically. Conservatively .unknown
         // (3B small-llm SFT tends to schema-leak per cycle-9).
@@ -366,18 +356,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // action selection, not generic tool_call wire-protocol.
         // Conservatively ``.unknown`` until empirically verified.
         // v0.8.11 submodule bump (PR #379) introduced these aliases.
-        "ui-tars-1.5-7b-4bit": .unknown,
-        "ui-tars-1.5-7b-6bit": .unknown,
-        "ui-tars-1.5-7b-8bit": .unknown,
-        "ui-tars-72b-dpo-4bit": .unknown,
-        "ui-tars-7b-dpo-4bit": .unknown,
-        "ui-tars-7b-dpo-6bit": .unknown,
-        "ui-tars-7b-dpo-8bit": .unknown,
-        "ui-tars-7b-sft-4bit": .unknown,
-        "ui-tars-7b-sft-8bit": .unknown,
         // vibethinker — cycle-2 <JSON>-wrapper. .broken.
-        "vibethinker-1.5b-4bit": .broken,
-        "vibethinker-3b-8bit": .broken,
         // ── v0.8.19 submodule bump (rapid-mlx v0.9.8 → v0.9.9) ──
         // New aliases pulled in by the engine bump. The loop has not
         // benched tool-calling on the exotic families below, so they
@@ -396,7 +375,6 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // glm-5.2-reap50 — GLM 5.2 (REAP-pruned); NOT the glm4.5/4.7
         // namespace the catalog verifies, and the loop has not benched
         // the 5.2 tool path. Conservative .unknown.
-        "glm-5.2-reap50": .unknown,
         // kimi-k2.6 — Moonshot Kimi K2.6; agentic-capable upstream but
         // never benched by the loop here. Conservative .unknown until
         // empirically verified.
@@ -410,17 +388,9 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // tmax-9b / tmax-27b — TMAX family; unbenched by the loop, no
         // catalog family row. Conservative .unknown.
         "tmax-9b": .unknown,
-        "tmax-9b-6bit": .unknown,
-        "tmax-9b-8bit": .unknown,
-        "tmax-9b-bf16": .unknown,
-        "tmax-27b": .unknown,
-        "tmax-27b-6bit": .unknown,
-        "tmax-27b-8bit": .unknown,
         // holo3.1-35b-a3b — Holo GUI/computer-use family; screenshot-
         // grounded action selection, not generic tool_call wire-protocol
         // (same rationale as ui-tars). Conservative .unknown.
-        "holo3.1-35b-a3b": .unknown,
-        "holo3.1-35b-a3b-8bit": .unknown,
         // ── v0.10.5 submodule bump reconciliation (2026-07-09, #514) ──
         // The catalog grew from 128 → 158 aliases across the v0.9.9 →
         // v0.10.5 engine bumps (gpt-oss quant fan-out, qwen3.6 mtp/optiq/

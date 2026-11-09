@@ -624,6 +624,7 @@ rapid_mlx = [
     "kernels/LICENSE-RMS",
     "chat_runtime/store/migrations/*.sql",
     "aliases.json",
+    "repo_profiles.json",
     "model_digests.json",
     "model_catalog_lock.json",
     "utils/kimi_tokenizer/LICENSE",

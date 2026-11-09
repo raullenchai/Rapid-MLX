@@ -442,8 +442,8 @@ def _lane_failure(monkeypatch, lane: str) -> tuple[OptionalRuntimeMissing, str]:
             "vision_runtime_status",
             lambda: (mllm.VisionRuntimeStatus.ABSENT, "mlx_vlm"),
         )
-        call = lambda: mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
-        model = "ui-tars-1.5-7b-4bit"
+        call = lambda: mllm.require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
+        model = "mlx-community/UI-TARS-1.5-7B-4bit"
     elif lane == "video":
         from rapid_mlx.runtime import video_lane
 
@@ -524,11 +524,16 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
 @pytest.mark.parametrize(
     ("lane", "model", "status", "marker_reason"),
     [
-        ("vision", "ui-tars-1.5-7b-4bit", "absent", "runtime_extra_missing"),
-        ("vision", "ui-tars-1.5-7b-4bit", "broken", "runtime_broken"),
         (
             "vision",
-            "ui-tars-1.5-7b-4bit",
+            "mlx-community/UI-TARS-1.5-7B-4bit",
+            "absent",
+            "runtime_extra_missing",
+        ),
+        ("vision", "mlx-community/UI-TARS-1.5-7B-4bit", "broken", "runtime_broken"),
+        (
+            "vision",
+            "mlx-community/UI-TARS-1.5-7B-4bit",
             "incompatible",
             "runtime_incompatible",
         ),
@@ -766,7 +771,7 @@ def test_real_dispatch_with_present_vision_extra_emits_no_failure(tmp_path) -> N
     proc, events, _child_executable = _run_real_missing_extra_dispatch(
         tmp_path,
         lane="vision-present",
-        model="ui-tars-1.5-7b-4bit",
+        model="mlx-community/UI-TARS-1.5-7B-4bit",
         status="present",
     )
 
@@ -870,7 +875,7 @@ def test_present_extras_emit_no_failure(monkeypatch) -> None:
     monkeypatch.setattr(image_lane, "image_runtime_issue", lambda _name: None)
     monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
 
-    mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
+    mllm.require_mlx_vlm_or_exit("mlx-community/UI-TARS-1.5-7B-4bit")
 
     monkeypatch.setattr(video_lane, "_is_ltx25_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_is_cogvideox_name", lambda _name: False)

@@ -37,7 +37,7 @@ from PIL import Image, ImageOps
 GIB = 1 << 30
 ALIASES = {
     "q4": "flux2-klein-4b",
-    "bf16": "flux2-klein-4b-bf16",
+    "bf16": "mflux-community/flux2-klein-4b-mflux-bf16",
 }
 DEFAULT_SEQUENCE = ("q4", "bf16", "bf16", "q4")
 DEFAULT_WORKLOADS = ("generate:512x512:4", "generate:1024x1024:4", "edit:1024x1024:4")

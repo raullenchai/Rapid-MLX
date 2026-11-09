@@ -9,7 +9,9 @@ it with an identity that is safe by construction:
 
 1. **Catalog alias** — the model is in the shipped text/image or audio
    ``aliases.json`` (matched by alias spelling, or by its resolved Hub path
-   case-insensitively). Public by definition: we publish the catalogs.
+   case-insensitively). Resolved repos moved to ``repo_profiles.json`` keep
+   their former catalog IDs for telemetry continuity. Public by definition:
+   we publish both stores.
 2. **``org/name``** — only when we have *fresh* proof the repo is public,
    i.e. a Hugging Face Hub call for it succeeded while **no token was in
    use** (see :func:`note_hub_fetch`), within the last
@@ -584,9 +586,12 @@ def telemetry_model_id(model_ref: object) -> str:
             return ref
         if _looks_local(ref):
             return LOCAL
-        from rapid_mlx.model_aliases import catalog_alias_for
+        from rapid_mlx.model_aliases import (
+            catalog_alias_for,
+            repo_profile_telemetry_alias,
+        )
 
-        alias = catalog_alias_for(ref)
+        alias = catalog_alias_for(ref) or repo_profile_telemetry_alias(ref)
         if alias is not None:
             return _capped(alias)
         from rapid_mlx.audio.registry import resolve_audio_alias

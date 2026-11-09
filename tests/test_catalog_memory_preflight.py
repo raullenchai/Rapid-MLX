@@ -232,7 +232,6 @@ def test_same_task_pick_prefers_cache_disk_and_small_download(
     else:
         assert pick == expected_pick
     if free_gb == 15.2 and cached_repo is None:
-        assert pick != "flux2-klein-4b-bf16"
         assert (
             size_bytes(resolve_profile(pick).hf_path) * (1 + _DOWNLOAD_DISK_HEADROOM)
             <= 15.2e9

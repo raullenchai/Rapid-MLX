@@ -413,7 +413,6 @@ enum ModelCatalog {
         "wan2.1-t2v-1.3b-bf16",
         "wan2.2-i2v-a14b-q8",
         "wan2.2-t2v-a14b-bf16",
-        "wan2.2-ti2v-5b-bf16",
         "wan2.2-ti2v-5b-q8",
     ]
 

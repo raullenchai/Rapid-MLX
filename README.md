@@ -271,14 +271,13 @@ headroom for macOS and the serving process. Omit `steps` to use the validated
 family default shown below.
 
 <!-- image-model-matrix:start -->
-| Alias | Best fit | Modes | Download | Minimum unified memory | Default steps |
+| Alias or HF repo ID | Best fit | Modes | Download | Minimum unified memory | Default steps |
 | --- | --- | --- | ---: | ---: | ---: |
 | `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 16 GB | 4 |
 | `bonsai-image-4b-2bit` | Smallest download | Generate | 3.6 GiB | 12 GB | 4 |
 | `z-image-turbo` | Photorealistic images | Generate | 5.5 GiB | 16 GB | 8 |
 | `flux-schnell` | FLUX.1 compatibility | Generate | 9.0 GiB | 32 GB | 4 |
 | `sdxl-base` | SDXL compatibility | Generate | 6.5 GiB | 16 GB | 30 |
-| `flux2-klein-4b-bf16` | Explicit full-precision Klein path | Generate + edit | 14.9 GiB | 32 GB | 4 |
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
 | `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
 | `qwen-image-2.1` | Text-rich images on low-memory Macs | Generate + edit | 8.9 GiB | 8 GB | 40 |
@@ -300,7 +299,7 @@ request and memory behavior.
 At 1024×1024 with the four-step Klein default, measured warm generation was
 about **9.2 seconds per image on an M3 Ultra**. On a 32 GB M2 Pro, the q4 path
 measured a 52.7-second median; explicitly selecting
-`flux2-klein-4b-bf16` reduced that median to 41.8 seconds (1.26× throughput).
+`mflux-community/flux2-klein-4b-mflux-bf16` reduced that median to 41.8 seconds (1.26× throughput).
 The eight-step `z-image-turbo` baseline was about 34 seconds on the M3 Ultra
 and 150 seconds on the M2 Pro.
 The q4 alias remains the predictable default; on the measured 32 GB M2 Pro,

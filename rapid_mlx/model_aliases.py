@@ -10,6 +10,11 @@ Optional ``revision`` is a full lowercase 40-hex checkpoint SHA (null means
 absent). Aliases sharing a case-insensitive repo must agree on it. Parser and
 catalog are bundled together; user alias files persist only string targets.
 
+Execution metadata for uncurated repositories lives in ``repo_profiles.json``.
+Its keys record former alias names for provenance; only HF-path reverse lookup
+uses those rows. The one-release deprecation map translates old names to repo
+IDs without adding them to any catalog or discovery API.
+
 The legacy short form (``"alias": "hf_path"``) is still accepted for
 backward compatibility with any external tool that hand-edits the file —
 that entry just gets default capability flags.
@@ -17,6 +22,7 @@ that entry just gets default capability flags.
 
 import difflib
 import json
+import logging
 import os
 from typing import cast
 
@@ -123,10 +129,61 @@ _RETIRED_MODEL_ALIASES: dict[str, str] = {
     ),
     "qwopus-27b-8bit": (
         "The 'qwopus-27b-8bit' alias was retired because its upstream "
-        "repository is no longer accessible. Use 'qwopus-27b-4bit' for the "
+        "repository is no longer accessible. Use "
+        "'Jackrong/MLX-Qwopus3.5-27B-v3-4bit' for the "
         "same Qwopus3.5 27B v3 model from the same publisher."
     ),
 }
+
+
+# One-release compatibility names; never a source of public discovery.
+_DEPRECATED_MODEL_ALIASES: dict[str, str] = {
+    "k2-horizon-7b-4bit": "abenzerps/K2-Horizon-7B-MLX-4bit",
+    "north-mini-code-bf16": "mlx-community/North-Mini-Code-1.0-bf16",
+    "tmax-9b-6bit": "mlx-community/Tmax-9B-MLX-6bit",
+    "tmax-9b-8bit": "mlx-community/Tmax-9B-MLX-8bit",
+    "tmax-9b-bf16": "mlx-community/Tmax-9B-MLX-bf16",
+    "tmax-27b": "mlx-community/Tmax-27B-MLX-4bit",
+    "tmax-27b-6bit": "mlx-community/Tmax-27B-MLX-6bit",
+    "tmax-27b-8bit": "mlx-community/Tmax-27B-MLX-8bit",
+    "llama-3.1-8b-8bit": "mlx-community/Meta-Llama-3.1-8B-Instruct-8bit",
+    "hermes3-8b-4bit": "mlx-community/Hermes-3-Llama-3.1-8B-4bit",
+    "glm4.5-air-4bit": "mlx-community/GLM-4.5-Air-4bit",
+    "minimax-m2.5-4bit": "lmstudio-community/MiniMax-M2.5-MLX-4bit",
+    "qwopus-9b-4bit": "Jackrong/MLX-Qwopus3.5-9B-v3-4bit",
+    "qwopus-27b-4bit": "Jackrong/MLX-Qwopus3.5-27B-v3-4bit",
+    "muse-glimmer-30b-bf16": "mlx-community/Muse-Glimmer-30B-bf16",
+    "nemotron-30b-4bit": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-4bit",
+    "nemotron-labs-diffusion-3b-4bit": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+    "vibethinker-1.5b-4bit": "mlx-community/VibeThinker-1.5B-mlx-4bit",
+    "vibethinker-3b-8bit": "mlx-community/VibeThinker-3B-8bit",
+    "granite-4.2-30b-8bit": "ibm-granite/granite-4.2-30b-q8-mlx",
+    "granite-4.2-8b-8bit": "ibm-granite/granite-4.2-8b-q8-mlx",
+    "granite-4.2-3b-8bit": "ibm-granite/granite-4.2-3b-q8-mlx",
+    "nanbeige4.1-3b-4bit": "mlx-community/Nanbeige4.1-3B-4bit",
+    "phi-3.5-mini-4bit": "mlx-community/Phi-3.5-mini-instruct-4bit",
+    "cogvideox-fun-5b-q8": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
+    "cogvideox-fun-5b-bf16": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
+    "wan2.2-ti2v-5b-bf16": "rickylin20260522/Wan2.2-TI2V-5B-mlx",
+    "flux2-klein-4b-bf16": "mflux-community/flux2-klein-4b-mflux-bf16",
+    "ui-tars-1.5-7b-4bit": "mlx-community/UI-TARS-1.5-7B-4bit",
+    "ui-tars-1.5-7b-6bit": "mlx-community/UI-TARS-1.5-7B-6bit",
+    "ui-tars-1.5-7b-8bit": "mlx-community/UI-TARS-1.5-7B-8bit",
+    "ui-tars-7b-dpo-4bit": "mlx-community/UI-TARS-7B-DPO-4bit",
+    "ui-tars-7b-dpo-6bit": "mlx-community/UI-TARS-7B-DPO-6bit",
+    "ui-tars-7b-dpo-8bit": "mlx-community/UI-TARS-7B-DPO-8bit",
+    "ui-tars-7b-sft-4bit": "mlx-community/UI-TARS-7B-SFT-4bit",
+    "ui-tars-7b-sft-8bit": "mlx-community/UI-TARS-7B-SFT-8bit",
+    "ui-tars-72b-dpo-4bit": "mlx-community/UI-TARS-72B-DPO-4bit",
+    "holo3.1-35b-a3b": "pipenetwork/Holo-3.1-35B-A3B-MLX-4bit",
+    "holo3.1-35b-a3b-8bit": "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit",
+    "glm-5.2-reap50": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
+    "lfm2-24b-a2b-4bit": "lmstudio-community/LFM2-24B-A2B-MLX-4bit",
+    "minicpm5-1b-optiq-4bit": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+    "ornith-1.5-9b-bf16": "ornith-ai/Ornith-1.5-9B-MLX",
+    "ornith-1.5-35b-a3b-bf16": "ornith-ai/Ornith-1.5-35B-A3B-MLX",
+}
+_repo_profiles: dict[str, "AliasProfile"] | None = None
 
 
 # ``AliasProfile`` is a DEPRECATED alias of the unified ``ModelProfile``
@@ -889,6 +946,49 @@ def _alias_for_hf_path(hf_path: str) -> str | None:
     return _hf_to_alias.get(hf_path.lower()) if _hf_to_alias is not None else None
 
 
+def _load_repo_profiles() -> dict[str, AliasProfile]:
+    """Validated execution data; keys are provenance, never public aliases."""
+    global _repo_profiles
+    if _repo_profiles is None:
+        path = os.path.join(os.path.dirname(__file__), "repo_profiles.json")
+        with open(path) as f:
+            raw = json.load(f)
+        parsed = {
+            key: _coerce(key, value) for key, value in raw.items() if key != "_comment"
+        }
+        if parsed.keys() & _load().keys():
+            raise ValueError("alias and repo profile provenance keys overlap")
+        _assert_subfolder_is_unambiguous(parsed)
+        _assert_revision_is_unambiguous(parsed)
+        _repo_profiles = parsed
+    return _repo_profiles
+
+
+def _profile_for_hf_path(repo: str) -> AliasProfile | None:
+    """Execution reverse lookup: curated rows win over repo-only profiles."""
+    canonical = _alias_for_hf_path(repo)
+    if canonical is not None:
+        return _load()[canonical]
+    lowered = repo.lower()
+    return next(
+        (p for p in _load_repo_profiles().values() if p.hf_path.lower() == lowered),
+        None,
+    )
+
+
+def repo_profile_telemetry_alias(repo: str) -> str | None:
+    """Preserve historical telemetry IDs for resolved repos, never typed names."""
+    lowered = repo.lower()
+    return next(
+        (
+            key
+            for key, p in _load_repo_profiles().items()
+            if p.hf_path.lower() == lowered
+        ),
+        None,
+    )
+
+
 def _assert_subfolder_is_unambiguous(profiles: dict[str, AliasProfile]) -> None:
     """Reject an aliases.json where ``subfolder`` cannot be recovered.
 
@@ -997,10 +1097,8 @@ def resolve_revision(name: str) -> str | None:
         # Preserve implicit downloads' tolerance of profile lookup failures.
         # Consult the validated catalog independently before treating the pin
         # as unknown; never discard a known pin along with optional metadata.
-        profiles = _load()
         repo = resolve_hub_model(name)
-        canonical = _alias_for_hf_path(repo)
-        profile = profiles[canonical] if canonical is not None else None
+        profile = _profile_for_hf_path(repo)
     if profile is not None:
         return profile.revision
     from .audio.registry import resolve_audio_revision
@@ -1082,13 +1180,13 @@ def draft_only_conflict(model_ref: object, *, action: str = "Serve") -> str | No
     if os.path.exists(model_ref) and not local_dir_shadows_alias(model_ref):
         return None
     try:
-        profiles = _load()
+        profiles = _load() | _load_repo_profiles()
     except Exception:  # noqa: BLE001 — the gate must never break resolution
         return None
+    model_ref = _DEPRECATED_MODEL_ALIASES.get(model_ref, model_ref)
     profile = profiles.get(model_ref)
     if profile is None and "/" in model_ref:
-        canonical = _alias_for_hf_path(model_ref)
-        profile = profiles.get(canonical) if canonical is not None else None
+        profile = _profile_for_hf_path(model_ref)
     if profile is None:
         return None
     hf_path = profile.hf_path
@@ -1171,6 +1269,14 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)
+    if repo := _DEPRECATED_MODEL_ALIASES.get(name):
+        logging.getLogger(__name__).warning(
+            "Model alias '%s' is deprecated and will be removed in the next release; "
+            "use 'rapid-mlx serve %s' instead.",
+            name,
+            repo,
+        )
+        name = repo
     from .user_aliases import validated_user_aliases
 
     builtins = {alias: profile.hf_path for alias, profile in _load().items()}
@@ -1188,15 +1294,15 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     # must not introduce a cache/download-gate probe.
     if not include_external_roots or not external_model_root_paths():
         if "/" in name:
-            canonical = _alias_for_hf_path(name)
-            if canonical is not None:
-                return _load()[canonical].hf_path
+            profile = _profile_for_hf_path(name)
+            if profile is not None:
+                return profile.hf_path
             return name
         profile = _load().get(name)
         return profile.hf_path if profile is not None else _imported_or(name)
     if "/" in name:
-        canonical = _alias_for_hf_path(name)
-        repo_name = _load()[canonical].hf_path if canonical is not None else name
+        profile = _profile_for_hf_path(name)
+        repo_name = profile.hf_path if profile is not None else name
         if not _managed_hub_model_is_runnable(repo_name):
             if external := _resolve_external_model_path(repo_name):
                 return external
@@ -1233,6 +1339,10 @@ def cached_repository_launch_path(repo: str, *, external: bool) -> str | None:
         for p in list_profiles().values()
         if p.hf_path.casefold() == repo.casefold()
     }
+    if not identities:
+        profile = _profile_for_hf_path(repo)
+        if profile is not None:
+            identities.add((profile.revision, profile.subfolder))
     if len(identities) > 1:
         return None
     revision, subfolder = next(iter(identities), (None, None))
@@ -1430,7 +1540,12 @@ def user_alias_reserved_names() -> frozenset[str]:
         # must not take down legacy text discovery; the combined atomic shadow
         # is omitted by its caller until that registry is healthy again.
         audio_aliases = frozenset()
-    return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES) | audio_aliases
+    return (
+        frozenset(_load())
+        | frozenset(_RETIRED_MODEL_ALIASES)
+        | frozenset(_DEPRECATED_MODEL_ALIASES)
+        | audio_aliases
+    )
 
 
 def list_profiles() -> dict[str, AliasProfile]:
@@ -1446,9 +1561,7 @@ def list_profiles() -> dict[str, AliasProfile]:
     for alias, target in users.items():
         target_profile = profiles.get(target)
         if target_profile is None:
-            canonical = _alias_for_hf_path(target)
-            if canonical is not None:
-                target_profile = profiles[canonical]
+            target_profile = _profile_for_hf_path(target)
         profiles[alias] = target_profile or AliasProfile(hf_path=target)
     return profiles
 
@@ -1461,11 +1574,12 @@ def resolve_profile(name: str) -> AliasProfile | None:
     2. Case-insensitive reverse HF-path match
        (``mlx-community/Qwen3.5-4B-MLX-4bit``) via the pre-built
        ``_hf_to_alias`` index — O(1). When paths are shared, the first alias
-       in aliases.json wins.
+       in aliases.json wins. Repo-only execution profiles are consulted last.
 
     Returns ``None`` if no alias covers this name/path — caller should
     then fall back to the regex-based ``detect_model_config``.
     """
+    name = _DEPRECATED_MODEL_ALIASES.get(name, name)
     profiles = _load()  # also populates _hf_to_alias on first call
     direct = profiles.get(name)
     if direct is not None:
@@ -1479,14 +1593,10 @@ def resolve_profile(name: str) -> AliasProfile | None:
     if target := users.get(name):
         target_profile = profiles.get(target)
         if target_profile is None:
-            canonical = _alias_for_hf_path(target)
-            if canonical is not None:
-                target_profile = profiles[canonical]
+            target_profile = _profile_for_hf_path(target)
         return target_profile or AliasProfile(hf_path=target)
     if "/" in name:
-        canonical = _alias_for_hf_path(name)
-        if canonical is not None:
-            return profiles[canonical]
+        return _profile_for_hf_path(name)
     return None
 
 

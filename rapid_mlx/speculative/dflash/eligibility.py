@@ -183,9 +183,13 @@ def is_registry_verified_pair(
     ):
         return False
     try:
-        from rapid_mlx.model_aliases import list_profiles
+        from rapid_mlx.model_aliases import list_profiles, resolve_profile
 
-        for alias, profile in list_profiles().items():
+        profiles = list_profiles()
+        if not any(p.hf_path == main_model_repo for p in profiles.values()):
+            if repo_profile := resolve_profile(main_model_repo):
+                profiles[main_model_repo] = repo_profile
+        for alias, profile in profiles.items():
             if (
                 profile.hf_path == main_model_repo
                 and profile.dflash_target_revision == main_model_revision

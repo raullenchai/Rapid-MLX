@@ -26,7 +26,7 @@ Usage:
     python3.12 scripts/gen_model_sizes.py            # regenerate in place
     python3.12 scripts/gen_model_sizes.py --check     # fail if stale (CI)
 
-Run this whenever ``aliases.json`` or ``audio/aliases.json`` change.
+Run this whenever ``aliases.json``, ``repo_profiles.json`` or ``audio/aliases.json`` change.
 """
 
 from __future__ import annotations
@@ -65,9 +65,11 @@ _REPAIR_ATTEMPTS = 2
 
 def _collect_hf_paths() -> list[str]:
     """Every distinct repo id referenced by the text and audio registries."""
-    from rapid_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import _load_repo_profiles, list_profiles
 
-    paths: set[str] = {p.hf_path for p in list_profiles().values()}
+    paths: set[str] = {
+        p.hf_path for p in (_load_repo_profiles() | list_profiles()).values()
+    }
 
     # Audio registry is optional (import may fail on a text-only checkout);
     # a missing audio section must not abort the text manifest.

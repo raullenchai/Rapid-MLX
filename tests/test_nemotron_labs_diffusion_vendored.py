@@ -218,7 +218,7 @@ def test_alias_resolves_to_ar_text_lane():
     from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.model_auto_config import detect_model_config
 
-    prof = resolve_profile("nemotron-labs-diffusion-3b-4bit")
+    prof = resolve_profile("mlx-community/Nemotron-Labs-Diffusion-3B-4bit")
     assert prof.hf_path == "mlx-community/Nemotron-Labs-Diffusion-3B-4bit"
     assert prof.modality == "text"  # AR text lane, not a vision/diffusion lane.
     assert prof.is_hybrid is False
@@ -228,7 +228,7 @@ def test_alias_resolves_to_ar_text_lane():
     assert prof.supports_spec_decode is True
 
     # detect_model_config resolves the alias BEFORE regex heuristics, so the
-    # user-facing ``--model nemotron-labs-diffusion-3b-4bit`` hits the text
+    # user-facing ``--model mlx-community/Nemotron-Labs-Diffusion-3B-4bit`` hits the text
     # engine without needing the model_type regex to recognize the arch.
-    cfg = detect_model_config("nemotron-labs-diffusion-3b-4bit")
+    cfg = detect_model_config("mlx-community/Nemotron-Labs-Diffusion-3B-4bit")
     assert cfg.modality == "text"

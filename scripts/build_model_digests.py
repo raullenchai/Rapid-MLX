@@ -40,6 +40,8 @@ def selections() -> dict[str, dict]:
     )
 
     main = json.loads((ROOT / "rapid_mlx/aliases.json").read_text())
+    repo_profiles = json.loads((ROOT / "rapid_mlx/repo_profiles.json").read_text())
+    main = {k: v for k, v in repo_profiles.items() if k != "_comment"} | main
     audio = json.loads((ROOT / "rapid_mlx/audio/aliases.json").read_text())
     excluded = {
         entry["hf_path"]

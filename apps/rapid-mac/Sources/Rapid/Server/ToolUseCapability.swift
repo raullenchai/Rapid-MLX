@@ -125,6 +125,8 @@ enum ToolUseCapability {
         "minicpm5-2b-4bit",
         "ornith-1.5-9b-bf16",
         "ornith-1.5-35b-a3b-bf16",
+        "ornith-ai/ornith-1.5-9b-mlx",
+        "ornith-ai/ornith-1.5-35b-a3b-mlx",
     ]
 
     /// One family-level rule: "aliases whose name starts with
@@ -195,6 +197,9 @@ enum ToolUseCapability {
     /// deepseek-r1 / qwen-thinker variants exist that DO emit
     /// tool_calls, and we don't want to lock out an untested sibling.
     static let brokenPrefixes: [String] = [
+        "mlx-community/hermes-3-llama-3.1-8b-4bit",
+        "mlx-community/vibethinker-1.5b-mlx-4bit",
+        "mlx-community/vibethinker-3b-8bit",
         // F-11-5 (2026-06-20): phi-4-mini-reasoning-4bit advertises
         // tool_call_parser="hermes" but emits no <tool_call> tokens;
         // model hallucinates the answer with tool_calls: null. Family

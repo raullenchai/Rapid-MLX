@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -59,11 +58,13 @@ class TestRegistration:
         assert get_parser("north") is CohereCommand4ReasoningParser
 
     def test_aliases_use_protocol_name(self):
-        aliases = json.loads(
-            (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
-        )
-        for alias in ("north-mini-code-4bit", "north-mini-code-bf16"):
-            assert aliases[alias]["reasoning_parser"] == "cohere_command4"
+        from rapid_mlx.model_aliases import resolve_profile
+
+        for reference in (
+            "north-mini-code-4bit",
+            "mlx-community/North-Mini-Code-1.0-bf16",
+        ):
+            assert resolve_profile(reference).reasoning_parser == "cohere_command4"
 
     def test_raw_checkpoint_path_uses_protocol_name(self):
         from rapid_mlx.model_auto_config import detect_model_config

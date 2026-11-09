@@ -14,7 +14,7 @@ struct ModelPresentationConsistencyTests {
         ("wan2.1-t2v-1.3b-bf16", "Wan 2.1 · T2V 1.3B · BF16"),
         ("wan2.2-i2v-a14b-q8", "Wan 2.2 · I2V A14B · 8-bit"),
         ("wan2.2-t2v-a14b-bf16", "Wan 2.2 · T2V A14B · BF16"),
-        ("wan2.2-ti2v-5b-bf16", "Wan 2.2 · TI2V 5B · BF16"),
+        ("rickylin20260522/Wan2.2-TI2V-5B-mlx", "Wan 2.2 · TI2V 5B · BF16"),
         ("wan2.2-ti2v-5b-q8", "Wan 2.2 · TI2V 5B · 8-bit")
     ])
     func videoAliasesHaveExactFriendlyNames(alias: String, name: String) {
@@ -35,7 +35,7 @@ struct ModelPresentationConsistencyTests {
     @Test func imageAliasesHaveExactFriendlyNames() {
         let names = [
             "flux2-klein-4b": "FLUX.2 Klein · 4B",
-            "flux2-klein-4b-bf16": "FLUX.2 Klein · 4B · BF16",
+            "mflux-community/flux2-klein-4b-mflux-bf16": "FLUX.2 Klein · 4B · BF16",
             "flux-schnell": "FLUX.1 Schnell",
             "z-image-turbo": "Z-Image Turbo",
             "qwen-image": "Qwen Image",

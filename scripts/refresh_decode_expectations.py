@@ -151,21 +151,49 @@ def build_snapshot(runs: list[dict], refreshed_at: str) -> dict:
     }
 
 
+def rekey_uncurated_models(snapshot: dict) -> dict:
+    """Retain existing benchmark evidence by repo after alias curation changes.
+
+    This offline migration preserves every measurement and execution setting.
+    It does not create discovery entries or read repo execution profiles.
+    """
+    aliases = json.loads((ROOT / "rapid_mlx/aliases.json").read_text())
+    models = {}
+    for name, row in snapshot["models"].items():
+        key = name if name in aliases else row["repo_id"]
+        if key in models and models[key] != row:
+            raise ValueError(f"conflicting decode expectations for {key}")
+        models[key] = row
+    return {**snapshot, "models": models}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--input", type=Path)
+    parser.add_argument(
+        "--rekey-uncurated",
+        action="store_true",
+        help="Rekey the existing output's uncurated names to repo IDs, preserving measured data offline",
+    )
     parser.add_argument(
         "--refreshed-at",
-        required=True,
         help="UTC date of the complete export (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--output", type=Path, default=ROOT / "rapid_mlx/decode_expectations.json"
     )
     args = parser.parse_args()
+    if args.rekey_uncurated:
+        if args.input is not None or args.refreshed_at is not None:
+            parser.error("--rekey-uncurated uses the existing output only")
+        payload = rekey_uncurated_models(json.loads(args.output.read_text()))
+    else:
+        if args.input is None or args.refreshed_at is None:
+            parser.error("--input and --refreshed-at are required for a refresh")
+        payload = build_snapshot(json.loads(args.input.read_text()), args.refreshed_at)
     args.output.write_text(
         json.dumps(
-            build_snapshot(json.loads(args.input.read_text()), args.refreshed_at),
+            payload,
             separators=(",", ":"),
             sort_keys=True,
         )
