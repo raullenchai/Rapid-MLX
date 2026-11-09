@@ -2432,6 +2432,14 @@ class BatchedEngine(BaseEngine):
                     install_qwen35_fused_gdn_decode, self._model
                 ).result()
 
+            from ..dense_decode_fusion import install_dense_decode_fusion
+
+            self._model_load_executor.submit(  # type: ignore[attr-defined]
+                install_dense_decode_fusion,
+                self._model,
+                spec_decode=getattr(self._scheduler_config, "spec_decode", "none"),
+            ).result()
+
         # Capture persistence identity from the exact immutable snapshot
         # selected by the loader before this engine is published through
         # ServerConfig and concurrent cache load/save tasks can observe it.
