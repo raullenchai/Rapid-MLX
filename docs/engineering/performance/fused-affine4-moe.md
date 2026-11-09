@@ -227,5 +227,5 @@ Studio also passes 430 selected tests and all fixed-prompt emitted-content
 ID/text comparisons, including repeated requests and candidate-versus-stock
 MTP. The same unchanged terminal-EOS reporting distinction applies to dense
 models. Both hosts enroll 40 eligible expert blocks under the unset switch;
-dense controls enroll none. A new M5 controller qualification is pending
-availability of the owner's machine.
+dense controls enroll none. The M5 Max controller qualification is recorded
+in the M5 Max section above.
