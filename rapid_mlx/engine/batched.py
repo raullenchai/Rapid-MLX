@@ -2432,7 +2432,7 @@ class BatchedEngine(BaseEngine):
 
             from ..dense_decode_fusion import install_dense_decode_fusion
 
-            self._model_load_executor.submit(
+            self._model_load_executor.submit(  # type: ignore[attr-defined]
                 install_dense_decode_fusion,
                 self._model,
                 spec_decode=getattr(self._scheduler_config, "spec_decode", "none"),
