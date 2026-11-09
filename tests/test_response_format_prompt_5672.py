@@ -134,7 +134,10 @@ def test_reasoning_gate_tokenizer_failure_uses_logged_fallback(
     payload["enable_thinking"] = True
     payload["messages"].insert(0, {"role": "system", "content": "<|think|>My rules"})
 
-    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.routes.chat"):
+    with (
+        caplog.at_level(logging.DEBUG, logger="rapid_mlx.routes.chat"),
+        caplog.at_level(logging.DEBUG, logger="rapid_mlx.api.guided"),
+    ):
         response = client.post("/v1/chat/completions", json=payload)
 
     assert response.status_code == 200, response.text

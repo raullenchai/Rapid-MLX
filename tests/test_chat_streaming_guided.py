@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -743,8 +744,12 @@ async def test_guided_strict_failures_emit_failed(monkeypatch, failure_kind):
     ]
 
 
-def test_mllm_streaming_schema_stays_on_scheduler_with_request_processor(
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("with_image", [False, True])
+def test_mllm_schema_stays_on_scheduler_with_request_processor(
     monkeypatch,
+    stream,
+    with_image,
 ):
     """Vision-capable serving keeps its lane and constrains decode in place."""
     from rapid_mlx.api import guided
@@ -764,16 +769,25 @@ def test_mllm_streaming_schema_stays_on_scheduler_with_request_processor(
     )
     engine = _GuidedEngine(guided_text=_GUIDED_OUTPUT)
     engine.is_mllm = True
-    engine.supports_guided_generation = False
+    engine.supports_guided_generation = True
+    engine.chat = AsyncMock(return_value=GenerationOutput(text=_GUIDED_OUTPUT))
     client = _make_client(engine)
+    content = (
+        [
+            {"type": "text", "text": "pick a color"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,FAKE"}},
+        ]
+        if with_image
+        else "pick a color"
+    )
 
     resp = client.post(
         "/v1/chat/completions",
         json={
             "model": "test-model",
-            "stream": True,
+            "stream": stream,
             "max_tokens": 64,
-            "messages": [{"role": "user", "content": "pick a color"}],
+            "messages": [{"role": "user", "content": content}],
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "Pick", "schema": _SCHEMA},
@@ -783,11 +797,60 @@ def test_mllm_streaming_schema_stays_on_scheduler_with_request_processor(
 
     assert resp.status_code == 200, resp.text
     assert engine.guided_calls == []
-    assert len(engine.stream_calls) == 1
-    assert engine.stream_calls[0]["kwargs"]["grammar_logits_processor"] is marker
-    assert "reasoning_budget_logits_processor" not in engine.stream_calls[0]["kwargs"]
-    assert engine.stream_calls[0]["kwargs"]["enable_thinking"] is False
-    assert "data: [DONE]" in resp.text
+    if stream:
+        assert len(engine.stream_calls) == 1
+        kwargs = engine.stream_calls[0]["kwargs"]
+        messages = engine.stream_calls[0]["messages"]
+        assert "data: [DONE]" in resp.text
+    else:
+        kwargs = engine.chat.call_args.kwargs
+        messages = kwargs["messages"]
+    assert kwargs["grammar_logits_processor"] is marker
+    assert "reasoning_budget_logits_processor" not in kwargs
+    assert kwargs["enable_thinking"] is False
+    if with_image:
+        assert messages[-1]["content"] == content
+    assert "X-RapidMLX-Warning" not in resp.headers
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("available", [False, True])
+def test_mllm_schema_setup_failure_warns_client_and_operator(
+    monkeypatch, caplog, strict, stream, available
+):
+    from rapid_mlx.api import guided
+
+    monkeypatch.setattr(
+        guided, "build_json_schema_logits_processor", lambda *_args: None
+    )
+    monkeypatch.setattr(guided, "is_guided_available", lambda: available)
+    engine = _GuidedEngine()
+    engine.is_mllm = True
+    engine.supports_guided_generation = available
+    engine.chat = AsyncMock(return_value=GenerationOutput(text=_GUIDED_OUTPUT))
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": stream,
+            "messages": [{"role": "user", "content": "pick a color"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": strict},
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    warning = resp.headers["X-RapidMLX-Warning"]
+    assert "MLLM" in warning
+    assert ("engine/tokenizer/schema" if available else "backend") in warning
+    assert "--no-mllm" in warning
+    assert any(
+        warning in record.message and record.levelname == "WARNING"
+        for record in caplog.records
+    )
 
 
 def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
