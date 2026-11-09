@@ -1037,3 +1037,58 @@ def test_no_tools_service_preserves_text_without_changing_low_level_scanner():
     _, calls = parse_tool_calls(text, None)
     assert [c.function.name for c in calls] == ["whatever"]
     assert _parse_tool_calls_with_parser(text, None) == (text, None)
+
+
+@pytest.mark.parametrize(
+    "names", [("write_file", "unknown"), ("unknown", "write_file")]
+)
+@pytest.mark.parametrize("body_format", ["parameters", "json"])
+def test_scanner_mixed_call_names_are_siblings(names, body_format):
+    from rapid_mlx.tool_call_scan import split_marked_calls
+
+    bodies = [
+        f"<parameter=path>{i}</parameter>"
+        if body_format == "parameters"
+        else json.dumps({"path": str(i)})
+        for i in range(2)
+    ]
+    wires = [f"<function={name}>{body}</function>" for name, body in zip(names, bodies)]
+    text = "".join(wires)
+    calls = split_marked_calls(
+        text, r"<function=([^>]+)>", "</function>", valid_names={"write_file"}
+    )
+    assert [(name, body) for name, body, _, _ in calls] == list(zip(names, bodies))
+    assert [(a, b) for _, _, a, b in calls] == [
+        (0, len(wires[0])),
+        (len(wires[0]), len(text)),
+    ]
+
+
+@pytest.mark.parametrize("body_format", ["parameters", "json"])
+@pytest.mark.parametrize("name", ["write_file", "unknown"])
+def test_scanner_call_markers_inside_arguments_are_payload(body_format, name):
+    from rapid_mlx.tool_call_scan import split_marked_calls
+
+    value = "literal </function><function=phantom> payload"
+    body = (
+        f"<parameter=path>{value}</parameter>"
+        if body_format == "parameters"
+        else json.dumps({"path": value})
+    )
+    text = f"<function={name}>{body}</function>"
+    assert split_marked_calls(
+        text, r"<function=([^>]+)>", "</function>", valid_names={"write_file"}
+    ) == [(name, body, 0, len(text))]
+
+
+def test_scanner_raw_non_json_arguments_keep_siblings():
+    from rapid_mlx.tool_call_scan import split_marked_calls
+
+    text = "<function=write_file>{raw text}</function><function=unknown>x</function>"
+    calls = split_marked_calls(
+        text, r"<function=([^>]+)>", "</function>", valid_names={"write_file"}
+    )
+    assert [(name, body) for name, body, _, _ in calls] == [
+        ("write_file", "{raw text}"),
+        ("unknown", "x"),
+    ]

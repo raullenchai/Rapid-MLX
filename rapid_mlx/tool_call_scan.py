@@ -33,6 +33,7 @@ the same defect could be fixed in ``tool_calling.py`` and still be live in
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -186,6 +187,31 @@ def segment_by_next_opener(
     return body[:cut], openers[index].end() + cut + len(closer)
 
 
+def _next_call_sibling(text, openers, index, closer):
+    """Find a sibling outside the current call's structured argument value."""
+    start = openers[index].end()
+    start = re.compile(r"\s*").match(text, start).end()
+    if text.startswith("{", start):
+        try:
+            _, start = json.JSONDecoder().raw_decode(text, start)
+        except json.JSONDecodeError:
+            pass  # Raw non-JSON arguments still use marker boundaries.
+    first_close = text.find(closer, start)
+    if first_close < 0:
+        return len(openers)
+    for j in range(index + 1, len(openers)):
+        if openers[j].start() < first_close + len(closer):
+            continue
+        close = text.rfind(closer, start, openers[j].start())
+        # A literal function close before the parameter's close is payload.
+        if text.rfind("<parameter=", start, close) > text.rfind(
+            "</parameter>", start, close
+        ):
+            continue
+        return j
+    return len(openers)
+
+
 def split_marked_calls(
     text: str,
     opener: str,
@@ -200,7 +226,8 @@ def split_marked_calls(
     that is absorbed into the span so callers can excise the whole
     invocation from surrounding prose in one step — a second, differently
     truncating regex pass over the same text is how tag fragments leak into
-    user-visible content.
+    user-visible content. ``valid_names`` is retained for caller compatibility;
+    call boundaries follow argument structure regardless of the tool name.
     """
     openers = list(re.finditer(opener, text, re.DOTALL))
     calls: list[tuple[str, str, int, int]] = []
@@ -212,15 +239,14 @@ def split_marked_calls(
         # turn is ordinary agent behaviour — read_file /a then read_file /b —
         # and suppressing the second opener merges both into one body and
         # silently drops a call the model asked for.
-        # Unknown names are still calls. Keep the declared-name boundary for
-        # siblings so literal markers inside argument values stay payload.
-        boundary_names = (
-            valid_names
-            if valid_names and openers[i].group(1).strip() in valid_names
-            else None
+        # Names do not bound calls: an unknown sibling must reach the client.
+        # Ignore call markers while a parameter or JSON argument is still open.
+        sibling = _next_call_sibling(text, openers, i, closer)
+        limit = openers[sibling].start() if sibling < len(openers) else len(text)
+        cut = text.rfind(closer, openers[i].end(), limit)
+        segmented = (
+            (text[openers[i].end() : cut], cut + len(closer)) if cut >= 0 else None
         )
-        segmented = segment_by_next_opener(text, openers, i, closer, boundary_names)
-        sibling = _next_sibling(text, openers, i, closer, boundary_names)
         if segmented is not None:
             body, span_end = segmented
             emit = True

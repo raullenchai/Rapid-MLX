@@ -427,8 +427,12 @@ def test_nemotron_boundaries_and_logging(caplog):
     assert pp._undeclared_dropped == 0
     assert sum("dropped undeclared" in r.message for r in caplog.records) == 0
     assert not any("unhandled variant" in r.message for r in caplog.records)
+    fenced = "```xml\n" + REJECTED + "\n```"
+    pp.reset()
+    result = pp.extract_tool_calls(fenced, {"tools": TOOLS})
+    assert result.content == fenced
+    assert not result.tool_calls
     for text in [
-        "```xml\n" + REJECTED + "\n```",
         REJECTED.replace("<tool_call>", "").replace("</tool_call>", ""),
         REJECTED.replace("today's price", "x" * 32768),
     ]:
@@ -1187,3 +1191,152 @@ def test_rejected_channel_call_preserves_held_reasoning_on_finalize():
     assert all(not event.content for event in events)
     assert any(event.tool_calls for event in events)
     assert not pp.undeclared_tool_dropped
+
+
+@pytest.mark.parametrize(
+    "names", [("write_file", "unknown"), ("unknown", "write_file")]
+)
+@pytest.mark.parametrize("body_format", ["parameters", "json"])
+@pytest.mark.parametrize("chunk_size", [None, 1, 4096])
+def test_nemotron_mixed_call_names_are_siblings(names, body_format, chunk_size):
+    from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
+
+    bodies = [
+        f"<parameter=path>file{i}</parameter>"
+        if body_format == "parameters"
+        else json.dumps({"path": f"file{i}"})
+        for i in range(2)
+    ]
+    text = "".join(
+        f"<tool_call><function={name}>{body}</function></tool_call>"
+        for name, body in zip(names, bodies)
+    )
+    parser = NemotronToolParser()
+    parser.reset()
+    if chunk_size is None:
+        result = parser.extract_tool_calls(text, {"tools": TOOLS})
+        calls = [(tc["name"], json.loads(tc["arguments"])) for tc in result.tool_calls]
+        content = result.content or ""
+    else:
+        calls, content, previous = [], "", ""
+        for i in range(0, len(text), chunk_size):
+            delta = text[i : i + chunk_size]
+            current = previous + delta
+            result = (
+                parser.extract_tool_calls_streaming(
+                    previous, current, delta, request={"tools": TOOLS}
+                )
+                or {}
+            )
+            calls.extend(
+                (tc["function"]["name"], json.loads(tc["function"]["arguments"]))
+                for tc in result.get("tool_calls", [])
+            )
+            content += result.get("content", "")
+            previous = current
+        content += parser.flush_held_content(text)
+    assert calls == [(name, {"path": f"file{i}"}) for i, name in enumerate(names)]
+    assert content == ""
+
+
+@pytest.mark.parametrize("fence", ["```xml", "~~~xml"])
+@pytest.mark.parametrize("name", ["write_file", "unknown"])
+def test_nemotron_fenced_example_stays_text_at_every_split(fence, name):
+    from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
+
+    text = f'{fence}\n<tool_call><function={name}>{{"path":"x"}}</function></tool_call>\n{fence[:3]}'
+    parser = NemotronToolParser()
+    result = parser.extract_tool_calls(text, {"tools": TOOLS})
+    assert result.content == text
+    assert not result.tool_calls
+    for split in range(1, len(text)):
+        parser.reset()
+        content, previous = "", ""
+        for delta in (text[:split], text[split:]):
+            current = previous + delta
+            result = (
+                parser.extract_tool_calls_streaming(
+                    previous, current, delta, request={"tools": TOOLS}
+                )
+                or {}
+            )
+            assert not result.get("tool_calls"), split
+            content += result.get("content", "")
+            previous = current
+        content += parser.flush_held_content(text)
+        assert content == text, split
+
+
+@pytest.mark.parametrize("body_format", ["parameters", "json"])
+@pytest.mark.parametrize("name", ["write_file", "unknown"])
+def test_nemotron_literal_call_markers_in_arguments(body_format, name):
+    from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
+
+    value = "literal <function=phantom> payload"
+    body = (
+        f"<parameter=path>{value}</parameter>"
+        if body_format == "parameters"
+        else json.dumps({"path": value})
+    )
+    text = f"<tool_call><function={name}>{body}</function></tool_call>"
+    parser = NemotronToolParser()
+    result = parser.extract_tool_calls(text, {"tools": TOOLS})
+    assert [(tc["name"], json.loads(tc["arguments"])) for tc in result.tool_calls] == [
+        (name, {"path": value})
+    ]
+    assert not result.content
+    # Split immediately after the literal opener as well as at every byte.
+    for chunks in (
+        [text],
+        [text[: text.index(" payload")], text[text.index(" payload") :]],
+        list(text),
+    ):
+        parser.reset()
+        previous, content, calls = "", "", []
+        for delta in chunks:
+            current = previous + delta
+            result = (
+                parser.extract_tool_calls_streaming(
+                    previous, current, delta, request={"tools": TOOLS}
+                )
+                or {}
+            )
+            calls.extend(result.get("tool_calls", []))
+            content += result.get("content", "")
+            previous = current
+        content += parser.flush_held_content(text)
+        assert [
+            (tc["function"]["name"], json.loads(tc["function"]["arguments"]))
+            for tc in calls
+        ] == [(name, {"path": value})]
+        assert not content
+
+
+@pytest.mark.parametrize("example_first", [False, True])
+def test_nemotron_fenced_example_beside_real_call(example_first):
+    from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
+
+    example = '```xml\n<tool_call><function=unknown>{"path":"example"}</function></tool_call>\n```'
+    text = example + "\n" + VALID if example_first else VALID + "\n" + example
+    parser = NemotronToolParser()
+    result = parser.extract_tool_calls(text, {"tools": TOOLS})
+    assert result.content == example
+    assert [tc["name"] for tc in result.tool_calls] == ["write_file"]
+    for size in (1, len(text)):
+        parser.reset()
+        previous, content, calls = "", "", []
+        for i in range(0, len(text), size):
+            delta = text[i : i + size]
+            current = previous + delta
+            result = (
+                parser.extract_tool_calls_streaming(
+                    previous, current, delta, request={"tools": TOOLS}
+                )
+                or {}
+            )
+            content += result.get("content", "")
+            calls.extend(result.get("tool_calls", []))
+            previous = current
+        content += parser.flush_held_content(text)
+        assert content.strip() == example
+        assert [tc["function"]["name"] for tc in calls] == ["write_file"]
