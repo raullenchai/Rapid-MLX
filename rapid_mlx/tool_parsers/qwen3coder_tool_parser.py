@@ -29,6 +29,7 @@ import logging
 import re
 import uuid
 from collections.abc import Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple, cast
 
 from ..api.tool_calling import _decode_json_like, _schema_type
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 # no exponent. Under a ``number`` schema such a literal is an integer (issue
 # #4037); anything else keeps the historical ``float()`` conversion.
 _INTEGER_LITERAL_RE = re.compile(r"[+-]?[0-9]+")
+# Integral decimals past the float range (for example ``1e999``) stay strings,
+# as they did before exact decimal parsing, rather than becoming huge ints.
+_MAX_INTEGER_EXPONENT = 308
 
 # Longest call block to an undeclared tool that is dropped (#4038). Streaming
 # must hold the block back until it closes; a longer one is released as
@@ -610,13 +614,18 @@ def _convert_param_value(
         except (ValueError, TypeError):
             pass
         # Models can spell integer arguments as floats (issue #5692).
-        # Only integral values qualify; preserve invalid input for validation.
+        # Only exactly integral values qualify (decimal, not binary float, so
+        # no rounding); preserve invalid input for validation.
         try:
-            float_value = float(keyword)
-            if float_value.is_integer():
-                return int(float_value)
-        except (ValueError, TypeError):
-            pass
+            decimal_value = Decimal(keyword)
+        except (InvalidOperation, TypeError, ValueError):
+            return param_value
+        if (
+            decimal_value.is_finite()
+            and decimal_value.adjusted() <= _MAX_INTEGER_EXPONENT
+            and decimal_value == decimal_value.to_integral_value()
+        ):
+            return int(decimal_value)
         return param_value
     elif param_type.startswith(("num", "float", "double")):
         # ``number`` follows JSON number semantics (issue #4037): ``10000``

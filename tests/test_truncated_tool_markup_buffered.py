@@ -734,6 +734,16 @@ def test_streaming_unchanged_against_base():
                         "_convert_param_value",
                     }
                 )
+                # #5692's exact decimal parsing adds this import and constant.
+                and not (isinstance(node, ast.ImportFrom) and node.module == "decimal")
+                and not (
+                    isinstance(node, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name)
+                        and target.id == "_MAX_INTEGER_EXPONENT"
+                        for target in node.targets
+                    )
+                )
             ]
             return ast.dump(tree, include_attributes=False)
 
