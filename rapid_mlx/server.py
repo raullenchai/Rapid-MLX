@@ -3874,6 +3874,7 @@ from .routes.mcp_routes import admin_router as _mcp_admin_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
+from .routes.phone import router as _phone_router
 from .routes.prefill import router as _prefill_router
 from .routes.rerank import router as _rerank_router
 from .routes.residency import router as _residency_router
@@ -3881,6 +3882,7 @@ from .routes.responses import router as _responses_router
 from .routes.runtime_config import router as _runtime_config_router
 from .routes.video import router as _video_router
 
+app.include_router(_phone_router)
 app.include_router(_probe_router)
 app.include_router(_health_router)
 # Destructive control-plane routes (F-150 / F-151). Distinct router so the

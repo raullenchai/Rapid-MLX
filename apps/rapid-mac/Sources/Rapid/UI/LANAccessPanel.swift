@@ -3,6 +3,7 @@ import SwiftUI
 /// Shared by API security settings and the integration endpoint panel.
 struct LANAccessPanel: View {
     @Bindable var server: ServerManager
+    @State private var showingPhoneConnect = false
     @State private var network = LANAddressMonitor()
 
     private var ready: Bool {
@@ -12,6 +13,9 @@ struct LANAccessPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            Button("Connect phone") { showingPhoneConnect = true }
+                .sheet(isPresented: $showingPhoneConnect) { PhoneConnectSheet(server: server) }
+
             Toggle("Allow access from other devices on your network", isOn: Binding(
                 get: { server.lanAccessEnabled },
                 set: { enabled in Task { await server.setLANAccessEnabled(enabled) } }
