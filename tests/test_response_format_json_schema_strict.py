@@ -3705,3 +3705,104 @@ def test_mllm_strict_tools_repair_requires_reasoning_gate(marker_resolves):
         assert response.status_code == 502, response.text
         assert response.json()["error"]["code"] == "strict_repair_engine_failure"
         assert not engine.guided_calls
+
+
+@pytest.mark.parametrize("marker_resolves", [True, False])
+@pytest.mark.parametrize("tools", [True, False])
+@pytest.mark.parametrize("stream", [True, False])
+def test_responses_mllm_implicit_thinking_schema_gate(
+    _rate_limiter_state, marker_resolves, tools, stream
+):
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    class Tokenizer:
+        def encode(self, text, **kwargs):
+            return [7] if text == "</think>" else [1, 2]
+
+        def decode(self, ids):
+            return "</think>" if ids == [7] and marker_resolves else "prompt"
+
+    raw = f"<think>Check the schema.</think>{_VALID_PAYLOAD}"
+
+    class RepairEngine(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            self._chat_text = (
+                _INVALID_PAYLOAD_WRONG_KEY if tools and not self.chat_calls else raw
+            )
+            return await super().chat(messages=messages, **kwargs)
+
+    engine = RepairEngine(guided_text=raw)
+    engine.is_mllm = True
+    engine.tokenizer = Tokenizer()
+    client = _make_responses_client(engine, _rate_limiter_state)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    payload = (
+        _responses_tools_payload(stream=stream)
+        if tools
+        else _responses_payload(strict=True, stream=stream)
+    )
+    payload["reasoning_effort"] = "high"
+    response = client.post("/v1/responses", json=payload)
+    assert response.status_code == 200, response.text
+    assert "Check the schema." in response.text
+    assert "42" in response.text
+    if marker_resolves:
+        assert len(engine.guided_calls) == 1
+        assert engine.guided_calls[0]["kwargs"]["reasoning_end_id"] == 7
+        assert engine.guided_calls[0]["kwargs"].get("enable_thinking") is not False
+        assert "X-RapidMLX-Warning" not in response.headers
+    else:
+        assert not engine.guided_calls
+        assert "atomic reasoning-end marker" in response.headers["X-RapidMLX-Warning"]
+        assert len(engine.chat_calls) == (2 if tools else 1)
+        assert "JSON" in str(engine.chat_calls[0]["messages"])
+
+
+@pytest.mark.parametrize("tools", [True, False])
+def test_responses_mllm_missing_marker_still_rejects_invalid_json(
+    _rate_limiter_state, tools
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    engine = _Engine(chat_text=_INVALID_PAYLOAD_WRONG_KEY)
+    engine.is_mllm = True
+    engine.tokenizer = SimpleNamespace(encode=lambda *a, **k: [1, 2])
+    client = _make_responses_client(engine, _rate_limiter_state)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    payload = _responses_tools_payload() if tools else _responses_payload(strict=True)
+    payload["reasoning_effort"] = "high"
+    response = client.post("/v1/responses", json=payload)
+    assert response.status_code == (502 if tools else 422), response.text
+    assert "atomic reasoning-end marker" in response.headers["X-RapidMLX-Warning"]
+    assert not engine.guided_calls
+    assert len(engine.chat_calls) == 2
+
+
+@pytest.mark.parametrize("parser_configured", [True, False])
+def test_responses_mllm_no_reasoning_uses_token_zero_constraint(
+    _rate_limiter_state, parser_configured
+):
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    engine = _Engine()
+    engine.is_mllm = True
+    client = _make_responses_client(engine, _rate_limiter_state)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser = Qwen3ReasoningParser() if parser_configured else None
+    payload = _responses_payload(strict=True)
+    if parser_configured:
+        payload["enable_thinking"] = False
+    response = client.post("/v1/responses", json=payload)
+    assert response.status_code == 200, response.text
+    assert len(engine.guided_calls) == 1
+    assert "reasoning_end_id" not in engine.guided_calls[0]["kwargs"]
+    assert "X-RapidMLX-Warning" not in response.headers
