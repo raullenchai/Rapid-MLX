@@ -515,6 +515,8 @@ curl http://localhost:8000/v1/audio/translations \
 
 Generate speech from text (OpenAI TTS API compatible).
 
+`tts-1`, `tts-1-hd`, and `gpt-4o-mini-tts` select the default TTS model (served TTS model, otherwise Kokoro).
+
 **Parameters:**
 - `model`: Model name or alias
 - `input`: Text to synthesize
