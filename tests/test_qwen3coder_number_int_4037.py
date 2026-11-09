@@ -4,7 +4,8 @@
 Codex rejected ``{"max_output_tokens": 10000.0}`` ("invalid type: floating
 point `10000.0`, expected usize") because the parser forced every ``number``
 value through ``float()``. A ``number`` literal with no fraction and no
-exponent is now emitted as a JSON integer. Every other (schema, literal) pair
+exponent is now emitted as a JSON integer. Issue #5692 also accepts integral
+float literals under integer schemas. Every other (schema, literal) pair
 is pinned to origin/main's output by a golden file captured from 9221ff773,
 and streaming must produce the same arguments as non-streaming at any chunk
 granularity.
@@ -63,8 +64,20 @@ def _non_streaming(wire: str, request: dict) -> str | None:
     GOLDEN,
     ids=[f"{c['schema_key']}-{c['literal']!r}" for c in GOLDEN],
 )
-def test_non_streaming_matches_main_except_integer_numbers(case):
+def test_non_streaming_matches_main_except_integer_numbers_and_floats(case):
     got = _non_streaming(case["wire"], _request(case["schema"]))
+    if case["schema_key"] == "integer" and case["literal"] in {
+        "1.0",
+        "1e3",
+        "-2.5e+3",
+        "5.",
+    }:
+        value = json.loads(got)["v"]
+        assert type(value) is int
+        assert (
+            value == {"1.0": 1, "1e3": 1000, "-2.5e+3": -2500, "5.": 5}[case["literal"]]
+        )
+        return
     if not _changed_by_4037(case):
         assert got == case["arguments"]
         return
