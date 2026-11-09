@@ -34,7 +34,15 @@ struct MarkdownCJKEmphasisTests {
         ("これは**「重要」**です", "「重要」", true),
         ("*（注）*を参照", "（注）", false),
         ("中文**（括号开头）**中文", "（括号开头）", true),
-        ("**한국어**입니다", "한국어", true)
+        ("**한국어**입니다", "한국어", true),
+        ("©*。*", "。", false),
+        ("版权©**（2026）**", "（2026）", true),
+        ("°**（25）**", "（25）", true),
+        ("×**（2）**", "（2）", true),
+        ("€**（5）**", "（5）", true),
+        ("**（2026）**©", "（2026）", true),
+        ("$**x**", "x", true),
+        ("+**x**", "x", true)
     ])
     func cjkEmphasis(_ example: (String, String, Bool)) {
         for complete in [true, false] {
@@ -96,8 +104,12 @@ struct MarkdownCJKEmphasisTests {
         }
         #expect(!F.isWhitespace("\u{b}"))
         #expect(!F.isPunctuation(nil))
-        for scalar: Unicode.Scalar in ["!", ":", "[", "{", "©", "—", "。", "😀"] {
+        for scalar: Unicode.Scalar in ["!", ":", "[", "{", "$", "+", "—", "。"] {
             #expect(F.isPunctuation(scalar))
+        }
+        for scalar: Unicode.Scalar in ["©", "°", "×", "€", "＾", "😀"] {
+            #expect(!F.isPunctuation(scalar))
+            #expect(F.isPunctuation(scalar, cjkFriendly: true))
         }
         #expect(!F.isPunctuation("a"))
         #expect(F.isCJK("中"))
@@ -180,8 +192,56 @@ struct MarkdownCJKEmphasisTests {
         let source = "由**（x）**现"
         let fullRange = source.startIndex..<source.endIndex
         let document = Document(Paragraph(InlineCode(source), InlineHTML("<b>")), CodeBlock(source), HTMLBlock("<hr>"))
-        #expect(CJKEmphasisFlanking.opaqueRanges(in: document, source: source, enclosing: fullRange)
+        #expect(CJKEmphasisFlanking.opaqueRanges(in: document, sourceIndex: .init(source), enclosing: fullRange)
                 == Array(repeating: fullRange, count: 4))
+    }
+
+    @Test(arguments: ["\n", "\r", "\r\n"])
+    func indexedRangesMatchOriginalConversion(_ newline: String) {
+        let source = [
+            "由**（x）**现 👩🏽‍💻 e\u{301}", "", "> 中文 `代码` and <i title=\"中\">html</i>",
+            "", "- ```swift", "  由**（x）**现", "  ```", "", "| 中文 |", "| --- |", "| `代码` |", ""
+        ].joined(separator: newline)
+        let sourceIndex = CJKEmphasisFlanking.SourceIndex(source)
+        let document = Document(parsing: source, options: MarkdownCompiler.parseOptions)
+        func check(_ markup: Markup) {
+            #expect(sourceIndex.range(of: markup) == MarkdownCompiler.sourceRange(of: markup, in: source))
+            for child in markup.children { check(child) }
+        }
+        check(document)
+        #expect(sourceIndex.index(at: .init(line: 0, column: 1, source: nil)) == nil)
+        #expect(sourceIndex.index(at: .init(line: 1, column: 0, source: nil)) == nil)
+        #expect(sourceIndex.index(at: .init(line: 100, column: 1, source: nil)) == nil)
+        #expect(sourceIndex.index(at: .init(line: 1, column: 1000, source: nil)) == nil)
+        #expect(sourceIndex.index(at: .init(line: 1, column: 2, source: nil)) == nil)
+        #expect(sourceIndex.index(at: .init(line: 12, column: 1, source: nil)) == source.endIndex)
+    }
+
+    @Test func prepareIndexWorkScalesLinearly() {
+        func work(paragraphs: Int) -> Int {
+            let body = String(repeating: "paragraph with ordinary prose 中文\n\n", count: paragraphs)
+            let opaque = "```\n由**（x）**现\n```\n"
+            let source = "、*x*\n\n" + body + opaque
+            var steps = 0
+            let prepared = CJKEmphasisFlanking.prepare(source, onIndexStep: { steps += 1 })
+            let expected = "、\(CJKEmphasisFlanking.sentinel)*x*\n\n" + body + opaque
+            #expect(Array(prepared.utf8) == Array(expected.utf8))
+
+            let document = Document(parsing: source, options: MarkdownCompiler.parseOptions)
+            func locationSteps(_ markup: Markup) -> Int {
+                let own = markup.range.map { $0.lowerBound.column + $0.upperBound.column } ?? 0
+                if markup is CodeBlock { return own }
+                return own + markup.children.reduce(0) { $0 + locationSteps($1) }
+            }
+            // One full byte scan, then only each location's own column.
+            #expect(steps == source.utf8.count + locationSteps(document))
+            #expect(steps < source.utf8.count * 4)
+            return steps
+        }
+        let small = work(paragraphs: 128)
+        let large = work(paragraphs: 256)
+        #expect(large > small)
+        #expect(large < small * 22 / 10)
     }
 
     @Test func bridgeSelection() {
