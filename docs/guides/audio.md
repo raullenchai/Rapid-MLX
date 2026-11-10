@@ -520,7 +520,8 @@ fields (all five formats above) — except the output is always English and
 any `language` hint is ignored. Whisper models only: non-Whisper STT
 aliases (e.g. `parakeet`, `sensevoice`) are rejected with
 `400 invalid_model_for_translation` because they cannot force English
-output.
+output. `whisper-large-v3-turbo` does not support translation; use
+`whisper-large-v3`.
 
 **Example:**
 ```bash

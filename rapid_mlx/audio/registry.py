@@ -95,6 +95,8 @@ class AudioAliasEntry:
       ``None`` for STT entries.
     * ``languages`` — STT-only; ``"multilingual"`` or a comma-separated
       ISO list. ``None`` for TTS entries.
+    * ``translation`` — whether the checkpoint supports translation; defaults
+      to ``True``. Non-Whisper engines remain subject to the route family guard.
     * ``notes`` — free-form operator-facing description (shown in
       ``rapid-mlx info <alias>``).
     """
@@ -108,6 +110,7 @@ class AudioAliasEntry:
     notes: str = ""
     revision: str | None = None
     catalog_hf_id: str | None = None
+    translation: bool = True
 
 
 _LOCAL_MODEL_TYPE_FAMILIES = {
@@ -349,6 +352,11 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
                 f"audio aliases.json: entry {key!r}.hf_id={hf_id!r} "
                 "must be a HuggingFace ``org/name`` repo id"
             )
+        translation = value.get("translation", True)
+        if not isinstance(translation, bool):
+            raise ValueError(
+                f"audio aliases.json: entry {key!r}.translation must be a bool"
+            )
         entries[key] = AudioAliasEntry(
             alias=key,
             type=kind,
@@ -358,6 +366,7 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
             languages=value.get("languages"),
             notes=value.get("notes", ""),
             revision=_revision(value),
+            translation=translation,
         )
 
     known_families = {entry.family for entry in entries.values()}

@@ -43,3 +43,26 @@ def test_whisper1_guards_classify_served_model(monkeypatch):
     with pytest.raises(HTTPException) as timestamps:
         audio._reject_word_timestamps_for_non_whisper("whisper-1", ["word"])
     assert timestamps.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "whisper-large-v3-turbo",
+        "mlx-community/whisper-large-v3-turbo",
+        "whisper-1",
+        "default",
+    ],
+)
+def test_translation_guard_rejects_turbo(monkeypatch, model):
+    _serve(monkeypatch, "whisper-large-v3-turbo")
+    with pytest.raises(HTTPException) as translation:
+        audio._reject_non_whisper_for_translation(model)
+    assert translation.value.status_code == 400
+    assert translation.value.detail["error"]["code"] == "invalid_model_for_translation"
+
+
+@pytest.mark.parametrize("model", ["whisper-large-v3", "whisper-1"])
+def test_translation_guard_accepts_supported_whisper(monkeypatch, model):
+    _serve(monkeypatch, "whisper-large-v3")
+    audio._reject_non_whisper_for_translation(model)
