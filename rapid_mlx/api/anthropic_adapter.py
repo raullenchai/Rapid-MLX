@@ -389,6 +389,12 @@ def anthropic_to_openai(
         stop=request.stop_sequences,
         tools=tools,
         tool_choice=tool_choice,
+        parallel_tool_calls=(
+            False
+            if request.tool_choice
+            and request.tool_choice.get("disable_parallel_tool_use") is True
+            else None
+        ),
         response_format=response_format,
         enable_thinking=request.enable_thinking,
         chat_template_kwargs=chat_template_kwargs or None,
