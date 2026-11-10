@@ -134,7 +134,13 @@ enum TelemetryIdentity {
     }
 
     /// Returns the published identity, including another process's winning ID.
-    private static func persist(_ value: String, at url: URL) -> String? {
+    static func persist(
+        _ value: String,
+        at url: URL,
+        write: (Data, URL, Bool) throws -> Void = {
+            try OwnerOnlyFile.writeAtomically($0, to: $1, replaceExisting: $2)
+        }
+    ) -> String? {
         let fm = FileManager.default
         do {
             try fm.createDirectory(
@@ -144,12 +150,21 @@ enum TelemetryIdentity {
             )
             let data = Data("\(value)\n".utf8)
             do {
-                try OwnerOnlyFile.writeAtomically(data, to: url, replaceExisting: false)
-            } catch let error as POSIXError where error.code == .EEXIST {
-                let shared = try String(contentsOf: url, encoding: .utf8)
-                if let existing = usableID(shared) { return existing }
-                // An existing invalid file still needs intentional replacement.
-                try OwnerOnlyFile.writeAtomically(data, to: url)
+                try write(data, url, false)
+            } catch let publishError as POSIXError where [
+                .EEXIST, .ENOTSUP, .EOPNOTSUPP, .EPERM, .EXDEV
+            ].contains(publishError.code) {
+                do {
+                    let shared = try Data(contentsOf: url)
+                    if let decoded = String(data: shared, encoding: .utf8),
+                       let existing = usableID(decoded) { return existing }
+                } catch let error as CocoaError where
+                    error.code == .fileReadNoSuchFile && publishError.code != .EEXIST {
+                    // Unsupported hard links can leave no published file.
+                }
+                // Repair unusable bytes or retain atomic replacement on filesystems
+                // without exclusive publication, after checking for another winner.
+                try write(data, url, true)
             }
             return value
         } catch {
