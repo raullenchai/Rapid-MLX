@@ -15,6 +15,7 @@ from pathlib import Path
 import mlx.core as mx
 
 from .._env import env_falsey
+from ..tuning import QWEN35_AFFINE4, enabled
 
 logger = logging.getLogger(__name__)
 _GATE = None
@@ -24,17 +25,19 @@ _ROUTER256 = None
 _GATE_ROWS = 1
 _DOWN_ROWS = 1
 _LOCK = threading.RLock()
-_BANK_VIEWS_SUPPORTED = None
 
 
 def _singleton_bank_views_enabled():
-    """Keep the binding optimization on its measured device and row width."""
-    global _BANK_VIEWS_SUPPORTED
-    if env_falsey("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS"):
-        return False
-    if _BANK_VIEWS_SUPPORTED is None:
-        _BANK_VIEWS_SUPPORTED = mx.device_info().get("device_name") == "Apple M3 Ultra"
-    return _BANK_VIEWS_SUPPORTED
+    """Request measured policy only within the already-qualified expert path."""
+    return enabled(
+        "qwen35_affine4_bank_views",
+        mx.device_info(),
+        family="qwen35_moe",
+        geometry=QWEN35_AFFINE4,
+        # This binding is identical in plain decode and MTP singleton calls.
+        mode="plain",
+        width=1,
+    )
 
 
 def _bank_bindings(projection):

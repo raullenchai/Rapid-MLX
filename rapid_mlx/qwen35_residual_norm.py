@@ -15,6 +15,7 @@ import mlx.core as mx
 
 from ._env import env_falsey
 from .dense_decode_fusion import _bits_equal, _decode, _norm_probe, _probe_cache
+from .tuning import QWEN35_AFFINE4, enabled
 
 logger = logging.getLogger(__name__)
 _SWITCH = "RAPID_MLX_QWEN35_RESIDUAL_NORM"
@@ -122,7 +123,14 @@ def install_qwen35_residual_norm(model, *, spec_decode="none"):
     """Enroll only measured plain-serving models; never patch a global class."""
     if spec_decode != "none" or env_falsey(_SWITCH):
         return 0
-    if mx.device_info().get("device_name") != "Apple M3 Ultra":
+    if not enabled(
+        "qwen35_residual_norm",
+        mx.device_info(),
+        family="qwen35_moe",
+        geometry=QWEN35_AFFINE4,
+        mode="plain",
+        width=1,
+    ):
         return 0
     named = getattr(model, "named_modules", None)
     if not callable(named):
