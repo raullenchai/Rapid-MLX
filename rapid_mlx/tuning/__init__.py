@@ -120,10 +120,21 @@ def _valid(knob, value):
 
 def _score(entry, ctx):
     hw = ctx.hardware
+    if any(
+        getattr(ctx.model, key) != value
+        for key, value in entry.get("model", {}).items()
+    ):
+        return None
     # Never borrow across generations, tiers, or pinned software versions.
     if any(getattr(hw, k) != entry[k] for k in ("gpu_generation", "tier")):
         return None
     if any(getattr(ctx, k) != entry[k] for k in ("mlx", "macos") if k in entry):
+        return None
+    if entry.get("exact_hardware") and any(
+        getattr(hw, key) != entry[key]
+        for key in ("gpu_cores", "memory_size")
+        if key in entry
+    ):
         return None
     # Exact feature matches win; otherwise choose nearest known cores/memory
     # within the qualified generation+tier. Missing features add no evidence.

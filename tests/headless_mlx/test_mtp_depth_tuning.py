@@ -82,7 +82,7 @@ def test_adapter_preserves_explicit_and_requires_real_head(monkeypatch):
     import mlx.core as mx
 
     probe = Mock(side_effect=AssertionError("no hardware probe"))
-    monkeypatch.setattr(mx, "device_info", probe)
+    monkeypatch.setattr(mx, "device_info", probe, raising=False)
     monkeypatch.setenv(ENV, "4")
     assert resolve_max_depth(model(), 2, explicit=True) == 2
     assert resolve_max_depth(object(), 1, explicit=False) == 1
@@ -173,20 +173,36 @@ def test_installed_gate_resolves_before_checkpoint_limit(monkeypatch, caplog):
 
 def test_calibration_uses_every_resolved_width(monkeypatch):
     import contextlib
-
-    import mlx.core as mx
-    from mlx_lm.models import cache
+    import sys
+    from types import ModuleType
 
     from rapid_mlx.spec_decode.mtp import reproducible_depth as rd
 
-    seen = []
-    monkeypatch.setattr(mx, "device_info", lambda: {}, raising=False)
+    # Keep the mutable import stubs intact for later lifecycle tests.
+    mx = ModuleType("mlx.core")
+    mx.device_info = lambda: {}
+    mx.zeros = lambda shape, **kwargs: shape
+    mx.eval = lambda *args: None
+    mx.stream = lambda stream: contextlib.nullcontext()
+    mx.default_stream = lambda device: None
+    mx.default_device = lambda: None
+    mx.uint32 = object()
+    mlx = ModuleType("mlx")
+    mlx.core = mx
+    cache = ModuleType("mlx_lm.models.cache")
+    cache.make_prompt_cache = lambda model: []
+    models = ModuleType("mlx_lm.models")
+    models.cache = cache
+    for name, module in (
+        ("mlx", mlx),
+        ("mlx.core", mx),
+        ("mlx_lm.models", models),
+        ("mlx_lm.models.cache", cache),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setenv(ENV, "4")
     cap = resolve_max_depth(model(), 1, explicit=False)
-    monkeypatch.setattr(mx, "zeros", lambda shape, **kwargs: shape)
-    monkeypatch.setattr(mx, "eval", lambda *args: None)
-    monkeypatch.setattr(mx, "stream", lambda stream: contextlib.nullcontext())
-    monkeypatch.setattr(cache, "make_prompt_cache", lambda m: [])
+    seen = []
 
     class Hidden:
         def __getitem__(self, index):

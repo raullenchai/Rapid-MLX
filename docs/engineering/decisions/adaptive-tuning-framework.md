@@ -49,8 +49,18 @@ building the greedy calibration profile. `RAPID_MLX_MTP_MAX_DEPTH` accepts integ
 caps 1 through 4; invalid values defer to policy. Explicit speculative JSON
 `num_speculative_tokens` (including normalized legacy depth flags) takes priority.
 The knob requires an installed head and MTP mode; it selects no model or lane.
-Checkpoint depth limits still clamp the result. No measured depth entry is
-installed: an unmeasured decision preserves the configured cap, ordinarily K=1,
+Checkpoint depth limits still clamp the result. A measured cap-4 entry is scoped
+to the 36 GiB M5 Max, pinned software and qualified 35B affine expert geometry
+(see [evidence](../performance/2026-11-10-m5-mtp-depth.md)). An unmeasured decision
+preserves the configured cap, ordinarily K=1,
 including existing catalog and force-opt-in depths. The existing acceptance
 controller may choose shallower rounds, while calibration measures every verify
 width through the resolved cap plus the primary row.
+
+Model-scoped rows match their model facts before hardware scoring. Rows marked
+`exact_hardware` require every pinned core/memory feature, including its presence;
+other historical rows retain their nearest-feature behavior. MTP depth
+qualification permits width-dependent greedy differences: the measured cap uses
+a paired quality gate (at least 100 fixed questions, absolute accuracy difference
+<=3 points and exact paired p>=0.05 against plain and main MTP) plus the existing
+>=2% non-overlapping speed gate. This does not relax kernel arithmetic probes.
