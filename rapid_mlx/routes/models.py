@@ -1061,7 +1061,7 @@ def _always_reasoning(model_id: str, reasoning_parser: str | None) -> bool | Non
             return False
         # The renderer maps thinking-off onto a template's own boolean switch.
         if template_thinking_switch(template) is not None:
-            return False
+            return _should_start_in_thinking(template, False, unconditional=True)
         return "enable_thinking" not in template or _should_start_in_thinking(
             template, False, unconditional=True
         )

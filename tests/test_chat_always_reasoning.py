@@ -42,6 +42,18 @@ SWITCHABLE = (
         (ALWAYS, None, False),
         ("{{ '<think>old</think>' }}", "deepseek_r1", True),
         ("{% if reasoning %}<think>{% endif %}", "deepseek_r1", False),
+        (
+            "{% if reasoning %}<think>optional</think>{% endif %}" + ALWAYS,
+            "deepseek_r1",
+            True,
+        ),
+        (
+            "{% set reasoning = reasoning if reasoning is defined else true %}"
+            "{% if add_generation_prompt %}<think>"
+            "{% if not reasoning %}</think>{% endif %}{% endif %}",
+            "deepseek_r1",
+            False,
+        ),
         ("{% if enable_thinking", "qwen3", False),
         (None, "deepseek_r1", None),
         ({"default": MODEL_EMITTED_THINK, "tool_use": SWITCHABLE}, "deepseek_r1", True),

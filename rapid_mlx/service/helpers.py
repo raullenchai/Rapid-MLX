@@ -972,6 +972,15 @@ def _should_start_in_thinking(
             effective_enable_thinking = (
                 True if enable_thinking is None else enable_thinking
             )
+            # Match the renderer's thinking-off mapping for native switches.
+            from ..utils.chat_template import template_thinking_switch
+
+            switch = template_thinking_switch(chat_template)
+            switch_kwargs = (
+                {switch: False}
+                if enable_thinking is False and switch is not None
+                else {}
+            )
             rendered = _compile_jinja_template(chat_template).render(
                 messages=[{"role": "user", "content": "probe"}],
                 tools=[tool_probe] if tools_requested else None,
@@ -981,6 +990,7 @@ def _should_start_in_thinking(
                 eos_token="",
                 pad_token="",
                 unk_token="",
+                **switch_kwargs,
             )
         except Exception:
             # An unrenderable custom template is indeterminate. Do not claim it
