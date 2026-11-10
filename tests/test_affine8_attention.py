@@ -269,10 +269,12 @@ def test_malformed_cache_and_geometry_never_reach_kernel(dispatcher):
 
 
 def test_runtime_qualification_does_not_expand_silently(monkeypatch):
+    from rapid_mlx.tuning import profiles
+
     check = attn._qualified_runtime.__wrapped__
     monkeypatch.setattr(mx.metal, "is_available", lambda: True)
     monkeypatch.setattr(mx, "__version__", "0.32.3")
-    monkeypatch.setattr(attn.platform, "mac_ver", lambda: ("26.5.2", (), ""))
+    monkeypatch.setattr(profiles, "macos_version", lambda: "26.5.2")
     monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
     assert check()
     monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M2"})

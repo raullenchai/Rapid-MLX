@@ -1,12 +1,26 @@
-"""Performance policy is portable, scoped, and subordinate to explicit switches."""
+"""Policy precedence, combination measurements, qualification and diagnostics."""
 
+import json
 import os
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from rapid_mlx import tuning
+
+PAIR = ("qwen35_affine4_bank_views", "qwen35_residual_norm")
+
+
+def context(chip="Apple M3 Ultra", **kwargs):
+    return tuning.runtime_context(
+        {"device_name": chip},
+        model=tuning.ModelProfile("qwen35_moe", *tuning.QWEN35_AFFINE4),
+        library_version=kwargs.pop("library_version", "0.32.4"),
+        macos="26.5.2",
+        **kwargs,
+    )
 
 
 @pytest.mark.parametrize(
@@ -24,62 +38,164 @@ from rapid_mlx import tuning
 )
 def test_device_key(name, key):
     assert tuning.device_key({"device_name": name}) == key
-    assert tuning.device_key({}) == "unknown"
 
 
-def resolve(name="qwen35_affine4_bank_views", chip="Apple M3 Ultra", **kw):
-    args = dict(
-        family="qwen35_moe",
-        geometry=tuning.QWEN35_AFFINE4,
-        mode="plain",
-        width=1,
-        library_version="0.32.4",
-    )
-    args.update(kw)
-    return tuning.enabled(name, {"device_name": chip}, **args)
-
-
-@pytest.mark.parametrize("name", tuning.KNOBS)
+@pytest.mark.parametrize("name", PAIR)
 def test_precedence_and_fallback(monkeypatch, name):
     switch = tuning.KNOBS[name].env
     monkeypatch.delenv(switch, raising=False)
-    assert resolve(name)
-    assert not resolve(name, chip="Apple M99 Max")
-    assert not resolve(name, library_version="unmeasured")
+    assert tuning.resolve(name, context()).value
+    assert not tuning.resolve(name, context("Apple M99 Max")).value
+    assert not tuning.resolve(name, context(library_version="unmeasured")).value
+    monkeypatch.setattr(tuning, "local_calibration", lambda c: {name: False})
+    assert tuning.resolve(name, context()).source == "local-calibration"
+    assert not tuning.resolve(name, context()).value
     monkeypatch.setenv(switch, "yes")
-    assert resolve(name, chip="unknown", library_version="unmeasured")
+    assert tuning.resolve(name, context("unknown")).value
     monkeypatch.setenv(switch, "0")
-    assert not resolve(name)
+    assert not tuning.resolve(name, context()).value
     monkeypatch.setenv(switch, "garbage")
-    assert resolve(name)
-    assert not resolve(name, chip="unknown")
+    assert not tuning.resolve(name, context()).value
 
 
-@pytest.mark.parametrize("name", tuning.KNOBS)
+@pytest.mark.parametrize("name", PAIR)
 @pytest.mark.parametrize(
-    "change", [{"family": "other"}, {"geometry": (1,)}, {"width": 2}, {"mode": "other"}]
+    "change",
+    [{"model": tuning.ModelProfile()}, {"width": 2}, {"mode": "other"}, {"batch": 2}],
 )
-def test_override_cannot_expand_scope(monkeypatch, name, change):
-    monkeypatch.setenv(tuning.KNOBS[name].env, "1")
-    assert not resolve(name, **change)
+def test_override_cannot_expand_scope(name, change):
+    assert not tuning.resolve(
+        name, replace(context(), **change), environ={tuning.KNOBS[name].env: "1"}
+    ).value
 
 
-def test_mtp_scope(monkeypatch):
-    for knob in tuning.KNOBS.values():
-        monkeypatch.setenv(knob.env, "1")
-    assert resolve(mode="mtp")
-    assert not resolve("qwen35_residual_norm", mode="mtp")
+def test_mtp_scope():
+    ctx = context(mode="mtp")
+    assert tuning.resolve(PAIR[0], ctx, environ={}).value
+    assert not tuning.resolve(
+        PAIR[1], ctx, environ={tuning.KNOBS[PAIR[1]].env: "1"}
+    ).value
+
+
+def test_combination_gate_and_nearest_fallback(monkeypatch):
+    for name in PAIR:
+        assert tuning.resolve(name, context("Apple M5 Max"), environ={}).value
+        assert not tuning.resolve(name, context("Apple M4 Pro"), environ={}).value
+    entry = next(e for e in tuning.MEASURED_DEFAULTS if e["id"] == "singleton-17-max")
+    assert entry["repetitions"]["plain"] >= 3
+    assert entry["plain_ranges_tps"][0][1] < entry["plain_ranges_tps"][1][0]
+    assert entry["plain_tps"][1] / entry["plain_tps"][0] >= 1.02
+    ctx = replace(
+        context(),
+        hardware=replace(context().hardware, gpu_cores=72, memory_size=192 * 2**30),
+    )
+    assert tuning.resolve(PAIR[0], ctx, environ={}).source == "table:singleton-15-ultra"
+    closer = dict(
+        tuning.MEASURED_DEFAULTS[0],
+        id="closer",
+        gpu_cores=72,
+        memory_size=192 * 2**30,
+        knobs={PAIR[0]: False},
+    )
+    monkeypatch.setattr(
+        tuning, "MEASURED_DEFAULTS", [tuning.MEASURED_DEFAULTS[0], closer]
+    )
+    assert not tuning.resolve(PAIR[0], ctx, environ={}).value
+    # Equidistant conflicts fall back conservatively, independent of order.
+    monkeypatch.setattr(
+        tuning, "MEASURED_DEFAULTS", [closer, dict(closer, knobs={PAIR[0]: True})]
+    )
+    assert tuning.resolve(PAIR[0], ctx, environ={}).source == "default"
+
+
+@pytest.mark.parametrize(
+    "name,arch,width",
+    [("qsa_stage1", "applegpu_g14s", 64), ("qsa_indexed_splitk", "applegpu_g15d", 3)],
+)
+def test_capabilities_before_environment(name, arch, width):
+    ctx = tuning.runtime_context(
+        {"architecture": arch}, library_version="0.32.2", width=width
+    )
+    env = {tuning.KNOBS[name].env: "1"}
+    assert tuning.resolve(name, ctx, environ=env).value
+    assert not tuning.resolve(name, replace(ctx, mlx="0.32.4"), environ=env).value
+    assert not tuning.resolve(
+        name,
+        replace(ctx, hardware=replace(ctx.hardware, architecture="applegpu_g17s")),
+        environ=env,
+    ).value
+
+
+def test_preserved_qualified_choices():
+    ctx = context("Apple M4 Pro", library_version="future", width=9)
+    assert tuning.resolve("qwen35_affine4_rows", ctx).value == (2, 4)
+    assert tuning.resolve("qwen35_affine4_rows", context()).value == (1, 1)
+    for arch, units, probe in [
+        ("applegpu_g14s", False, True),
+        ("applegpu_g15d", False, False),
+        ("applegpu_g17s", True, False),
+        ("applegpu_g18s", True, False),
+        ("unknown", False, True),
+    ]:
+        ctx = tuning.runtime_context({"architecture": arch})
+        assert tuning.resolve("lane_tensor_units", ctx).value is units
+        assert tuning.resolve("lane_simd_probe", ctx).value is probe
+    ctx = replace(context(library_version="0.32.3"), macos="26.5.2")
+    assert tuning.resolve("affine8_attention", ctx, environ={}).value
+    assert not tuning.resolve(
+        "affine8_attention",
+        replace(ctx, macos="27.0"),
+        environ={"RAPID_MLX_AFFINE8_ATTENTION": "1"},
+    ).value
+
+
+def test_loaded_profile_immutable_and_dump_private():
+    config = {
+        "_name_or_path": "/Users/private/model",
+        "text_config": {
+            "model_type": "qwen3_5_moe_text",
+            "hidden_size": 2048,
+            "moe_intermediate_size": 512,
+            "num_experts": 256,
+            "num_experts_per_tok": 8,
+            "layer_types": ["linear_attention", "full_attention"],
+        },
+        "quantization": {"bits": 4, "group_size": 64},
+    }
+    ctx = tuning.runtime_context(
+        {
+            "device_name": "Apple M3 Ultra",
+            "architecture": "applegpu_g15d",
+            "gpu_cores": 80,
+            "memory_size": 256 * 2**30,
+            "serial": "private-id",
+        },
+        config=config,
+    )
+    assert ctx.model.geometry == tuning.QWEN35_AFFINE4
+    assert tuning.resolve(PAIR[0], replace(ctx, mlx="0.32.4"), environ={}).value
+    assert ctx.model.attention_kinds == ("full_attention", "linear_attention")
+    assert ctx.model.quant_mode == "affine"
+    config["text_config"]["hidden_size"] = 9
+    assert ctx.model.hidden_size == 2048
+    with pytest.raises(FrozenInstanceError):
+        ctx.width = 2
+    payload = tuning.dump(ctx)
+    assert isinstance(payload, dict)
+    assert all(
+        s not in json.dumps(payload)
+        for s in ("/Users", "private-id", "Apple M3 Ultra", "_name_or_path")
+    )
 
 
 def test_import_does_not_load_mlx():
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     subprocess.run(
         [
             sys.executable,
             "-c",
             "import sys; import rapid_mlx.tuning; assert 'mlx.core' not in sys.modules",
         ],
-        env=env,
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
         check=True,
     )
 
@@ -100,42 +216,40 @@ def test_both_gates_consult_registry(monkeypatch):
     monkeypatch.setattr(residual, "enabled", decline)
     assert not affine._singleton_bank_views_enabled()
     assert residual.install_qwen35_residual_norm(object()) == 0
-    assert [name for name, _ in calls] == list(tuning.KNOBS)
+    assert [name for name, _ in calls] == list(PAIR)
     assert all(scope["width"] == 1 for _, scope in calls)
 
 
-@pytest.mark.parametrize("name", tuning.KNOBS)
-def test_table_entry_precedes_knob_default(monkeypatch, name):
-    from dataclasses import replace
-
-    monkeypatch.delenv(tuning.KNOBS[name].env, raising=False)
-    monkeypatch.setitem(tuning.KNOBS, name, replace(tuning.KNOBS[name], default=True))
-    monkeypatch.setitem(
-        tuning.MEASURED_DEFAULTS,
-        ("M4 Pro", "test-version"),
-        {"knobs": {name: False}},
-    )
-    assert not resolve(name, chip="Apple M4 Pro", library_version="test-version")
-    assert resolve(name, chip="unknown", library_version="test-version")
-
-
 def test_missing_mlx_metadata_is_conservative(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", raising=False)
+    from rapid_mlx.tuning import profiles
 
     def missing(name):
-        raise tuning.PackageNotFoundError(name)
+        raise profiles.PackageNotFoundError(name)
 
-    tuning.mlx_version.cache_clear()
-    monkeypatch.setattr(tuning, "version", missing)
+    profiles.mlx_version.cache_clear()
+    monkeypatch.setattr(profiles, "version", missing)
     try:
-        assert tuning.mlx_version() == "unknown"
-        assert not tuning.enabled(
-            "qwen35_affine4_bank_views",
-            {"device_name": "Apple M3 Ultra"},
-            family="qwen35_moe",
-            geometry=tuning.QWEN35_AFFINE4,
-            mode="plain",
-            width=1,
-        )
+        assert profiles.mlx_version() == "unknown"
+        assert not tuning.resolve(
+            PAIR[0], context(library_version="unknown"), environ={}
+        ).value
     finally:
-        tuning.mlx_version.cache_clear()
+        profiles.mlx_version.cache_clear()
+
+
+def test_runtime_facts_are_read_once(monkeypatch):
+    from rapid_mlx.tuning import profiles
+
+    calls = []
+    profiles.macos_version.cache_clear()
+    monkeypatch.setattr(
+        profiles.platform, "mac_ver", lambda: (calls.append(1) or "26.5.2", (), "")
+    )
+    try:
+        contexts = [
+            tuning.runtime_context({"device_name": "Apple M3 Ultra"}) for _ in range(40)
+        ]
+        assert calls == [1]
+        assert all(c is contexts[0] for c in contexts)
+    finally:
+        profiles.macos_version.cache_clear()

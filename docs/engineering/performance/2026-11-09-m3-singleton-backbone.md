@@ -14,8 +14,8 @@ buffers. Two changes address the measured path without changing its arithmetic:
   width-one output and cache state byte-for-byte. Unsupported calls retain
   the original backbone. No projection weights are rewritten by this helper.
 
-Measured defaults currently enable both knobs only on M3 Ultra / MLX 0.32.4
-and the existing 35B MoE geometry; round-14 per-chip decisions are below.
+Round-14 defaults enabled both knobs only on M3 Ultra / MLX 0.32.4
+and the existing 35B MoE geometry; the round-15 combination policy is below.
 The residual helper enrolls only when serving resolves to `spec_decode="none"`.
 Hidden capture, extra arguments, training, wider inputs, unsupported cache
 classes, and ragged recurrent caches retain the original call. Existing
@@ -203,3 +203,14 @@ receipts live under `/private/tmp/rapid-mlx-gap-round14/`, including `REPORT.md`
 The final focused roster passes 276 tests, plus 136 dense/native-cache neighbors
 in a fresh process: 412 total (the original 385 plus 27 new cases).
 Scoped Ruff check/format, tuning-module type check and `git diff --check` pass.
+
+## Round 15: combination policy
+
+The [MVP tuning framework](../decisions/adaptive-tuning-framework.md) permits
+a measured configuration to set a combination of knobs. Under this rule the
+existing M5 Max three-repetition evidence above qualifies **the pair** for
+MLX 0.32.4: plain +2.71%, baseline range 167.07–167.46 versus pair
+171.72–172.13 tok/s, with no overlap. MTP -0.06% is within observed spread.
+The table therefore enables the pair on M5 Max, while residual carry remains
+plain-only. This supersedes the round-14 per-knob decision without claiming
+an isolated >=2% gain. M4 Pro's +1.27% pair remains measured-off.

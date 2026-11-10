@@ -1,80 +1,177 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Measured performance policy; callers retain all correctness qualification.
-
-Importing this module does not import MLX. Decisions are deliberately separate
-from the output/cache probes that authorize executing an optimization.
-"""
+"""Small, measured policy layer. Execution sites retain correctness probes."""
 
 from __future__ import annotations
 
 import os
-import re
-from collections.abc import Mapping
-from dataclasses import dataclass
-from functools import cache
-from importlib.metadata import PackageNotFoundError, version
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
 
 from .._env import is_falsey, is_truthy
+from .capabilities import requirement_reason
 from .defaults import MEASURED_DEFAULTS
+from .profiles import (  # noqa: F401 -- public construction surface
+    HardwareProfile,
+    ModelProfile,
+    TuningContext,
+    device_key,
+    mlx_version,
+    model_profile,
+    runtime_context,
+)
 
 QWEN35_AFFINE4 = (2048, 512, 256, 8, 4, 64)
 
 
+def _expert(c):
+    return (
+        c.model.family
+        in {
+            "qwen35_moe",
+            "qwen3_5_moe",
+            "qwen3_6_moe",
+            "qwen3_5_moe_text",
+            "qwen3_6_moe_text",
+        }
+        and c.model.geometry == QWEN35_AFFINE4
+        and c.batch == 1
+        and c.mode in {"plain", "mtp"}
+    )
+
+
 @dataclass(frozen=True)
 class Knob:
-    description: str
-    env: str
-    family: str
-    geometry: tuple[int, ...]
-    modes: tuple[str, ...]
-    widths: tuple[int, ...]
-    default: bool = False
+    scope: Callable[[TuningContext], bool]
+    requirement: Callable[[TuningContext], str | None]
+    env: str | None = None
+    default: object = False
+
+
+def _knob(name, scope, env=None, default=False):
+    return Knob(scope, lambda c: requirement_reason(name, c), env, default)
 
 
 KNOBS = {
-    "qwen35_affine4_bank_views": Knob(
-        "Allocation-backed singleton expert-bank bindings",
+    "qwen35_affine4_bank_views": _knob(
+        "qwen35_affine4_bank_views",
+        lambda c: _expert(c) and c.width == 1,
         "RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS",
-        "qwen35_moe",
-        QWEN35_AFFINE4,
-        ("plain", "mtp"),
-        (1,),
     ),
-    "qwen35_residual_norm": Knob(
-        "Exact residual/RMSNorm carry in a qualified 40-layer BF16 backbone",
+    "qwen35_residual_norm": _knob(
+        "qwen35_residual_norm",
+        lambda c: _expert(c) and c.width == 1 and c.mode == "plain",
         "RAPID_MLX_QWEN35_RESIDUAL_NORM",
-        "qwen35_moe",
-        QWEN35_AFFINE4,
-        ("plain",),
-        (1,),
+    ),
+    "qwen35_affine4_rows": _knob(
+        "qwen35_affine4_rows",
+        lambda c: _expert(c) and 1 <= c.width <= 9,
+        default=(1, 1),
+    ),
+    "affine8_attention": _knob(
+        "affine8_attention", lambda c: c.batch == 1, "RAPID_MLX_AFFINE8_ATTENTION"
+    ),
+    "qsa_stage1": _knob(
+        "qsa_stage1", lambda c: c.batch == 1 and c.width >= 64, "RAPID_MLX_QSA_STAGE1"
+    ),
+    "qsa_indexed_splitk": _knob(
+        "qsa_indexed_splitk",
+        lambda c: c.batch == 1 and c.width in {1, 3},
+        "RAPID_MLX_QSA_INDEXED_SPLITK",
+    ),
+    "lane_tensor_units": _knob("lane_tensor_units", lambda c: True, default=True),
+    "lane_simd_probe": Knob(
+        lambda c: True,
+        lambda c: (
+            "known pipeline limits"
+            if c.hardware.gpu_generation is not None and c.hardware.gpu_generation >= 15
+            else None
+        ),
+        default=True,
     ),
 }
 
 
-@cache
-def _parse_device_name(name: str) -> str:
-    match = re.fullmatch(r"Apple (M[1-9][0-9]*)(?: (Pro|Max|Ultra))?", name.strip())
-    return " ".join(part for part in match.groups() if part) if match else "unknown"
+@dataclass(frozen=True)
+class Decision:
+    value: object
+    source: str
+    reason: str | None = None
 
 
-def device_key(info: Mapping[str, object]) -> str:
-    """Preserve generation and variant; never guess from core count or memory."""
-    name = info.get("device_name")
-    return _parse_device_name(name) if isinstance(name, str) else "unknown"
+def local_calibration(ctx: TuningContext) -> Mapping[str, object]:
+    """Reserved precedence slot: no files, probes, or calibration in this MVP."""
+    return {}
 
 
-@cache
-def mlx_version() -> str:
-    """Library identity without importing MLX, including on non-Mac hosts."""
-    try:
-        return version("mlx")
-    except PackageNotFoundError:
-        return "unknown"
+def _valid(knob, value):
+    return (
+        type(value) is bool if type(knob.default) is bool else value in ((1, 1), (2, 4))
+    )
+
+
+def _score(entry, ctx):
+    hw = ctx.hardware
+    # Never borrow across generations, tiers, or pinned software versions.
+    if any(getattr(hw, k) != entry[k] for k in ("gpu_generation", "tier")):
+        return None
+    if any(getattr(ctx, k) != entry[k] for k in ("mlx", "macos") if k in entry):
+        return None
+    # Exact feature matches win; otherwise choose nearest known cores/memory
+    # within the qualified generation+tier. Missing features add no evidence.
+    distances = [
+        abs(getattr(hw, k) - entry[k]) / max(entry[k], 1)
+        for k in ("gpu_cores", "memory_size")
+        if getattr(hw, k) is not None and k in entry
+    ]
+    return (len(distances), -sum(distances))
+
+
+def resolve(
+    name: str, ctx: TuningContext, *, environ: Mapping[str, str] | None = None
+) -> Decision:
+    knob = KNOBS[name]
+    reason = knob.requirement(ctx)
+    if reason or not knob.scope(ctx):
+        return Decision(
+            False if type(knob.default) is bool else knob.default,
+            "blocked",
+            reason or "outside knob scope",
+        )
+    override = (
+        (os.environ if environ is None else environ).get(knob.env) if knob.env else None
+    )
+    if is_falsey(override):
+        return Decision(False, "env")
+    if is_truthy(override):
+        return Decision(True, "env")
+    local = local_calibration(ctx).get(name)
+    if local is not None and _valid(knob, local):
+        return Decision(local, "local-calibration")
+    candidates = [
+        (score, e)
+        for e in MEASURED_DEFAULTS
+        if name in e["knobs"] and (score := _score(e, ctx)) is not None
+    ]
+    if candidates:
+        best = max(score for score, _ in candidates)
+        entries = [e for score, e in candidates if score == best]
+        values = [e["knobs"][name] for e in entries]
+        if all(v == values[0] for v in values) and _valid(knob, values[0]):
+            return Decision(values[0], "table:" + min(e["id"] for e in entries))
+    return Decision(knob.default, "default")
+
+
+def dump(ctx: TuningContext) -> dict:
+    """Pure identifier-free diagnostic data; no raw device names/config/env."""
+    return {
+        **asdict(ctx),
+        "knobs": {name: asdict(resolve(name, ctx)) for name in KNOBS},
+    }
 
 
 def enabled(
     name: str,
-    info: Mapping[str, object],
+    info: Mapping,
     *,
     family: str,
     geometry: tuple[int, ...],
@@ -82,26 +179,14 @@ def enabled(
     width: int,
     library_version: str | None = None,
 ) -> bool:
-    """Scope, then env override > exact device/library table > safe default.
-
-    Overrides request an attempt, never bypass scope or a caller's probes.
-    Empty/unrecognized environment values behave like an unset override.
-    """
-    knob = KNOBS[name]
-    if (
-        family != knob.family
-        or geometry != knob.geometry
-        or mode not in knob.modes
-        or width not in knob.widths
-    ):
+    """Adapter for already-qualified round-13 callers; no per-token probes."""
+    if len(geometry) != 6:
         return False
-    override = os.environ.get(knob.env)
-    if is_falsey(override):
-        return False
-    if is_truthy(override):
-        return True
-    key = (
-        device_key(info),
-        library_version if library_version is not None else mlx_version(),
+    ctx = runtime_context(
+        info,
+        model=ModelProfile(family, *geometry),
+        library_version=library_version,
+        mode=mode,
+        width=width,
     )
-    return MEASURED_DEFAULTS.get(key, {}).get("knobs", {}).get(name, knob.default)
+    return bool(resolve(name, ctx).value)

@@ -15,7 +15,7 @@ from pathlib import Path
 import mlx.core as mx
 
 from .._env import env_falsey
-from ..tuning import QWEN35_AFFINE4, enabled
+from ..tuning import QWEN35_AFFINE4, ModelProfile, enabled, resolve, runtime_context
 
 logger = logging.getLogger(__name__)
 _GATE = None
@@ -198,10 +198,18 @@ def _initialize_kernels():
         sig = mx.sigmoid(mx.arange(65536, dtype=mx.uint16).view(mx.bfloat16))
         mx.eval(sig)
         # Each projection keeps its tile across singleton and verification.
-        # M4 Pro benefits from fewer output-row threadgroups in both kernels.
-        _GATE_ROWS, _DOWN_ROWS = (
-            (2, 4) if mx.device_info().get("device_name") == "Apple M4 Pro" else (1, 1)
+        profile = ModelProfile(
+            family="qwen35_moe",
+            hidden_size=2048,
+            intermediate_size=512,
+            num_experts=256,
+            top_k=8,
+            bits=4,
+            group_size=64,
         )
+        _GATE_ROWS, _DOWN_ROWS = resolve(
+            "qwen35_affine4_rows", runtime_context(mx.device_info(), model=profile)
+        ).value
         _GATE, _DOWN, _SIG = gate, down, sig
 
 

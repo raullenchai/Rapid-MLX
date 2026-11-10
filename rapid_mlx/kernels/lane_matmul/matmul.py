@@ -46,12 +46,12 @@ LICENSE-LANE-MATMUL).
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from typing import Any
 
 import mlx.core as mx
 
+from ...tuning import resolve, runtime_context
 from . import simd
 
 QUANT_BITS = (2, 3, 4, 5, 6, 8)
@@ -573,13 +573,9 @@ def _tensor_units() -> bool:
                 if hasattr(mx, "device_info")
                 else mx.metal.device_info()
             )
-            arch = re.match(r"applegpu_g(\d+)", str(info.get("architecture", "")))
             _M5.append(
                 mx.metal.is_available()
-                and (
-                    "M5" in str(info.get("device_name", ""))
-                    or (arch is not None and int(arch.group(1)) >= 17)
-                )
+                and bool(resolve("lane_tensor_units", runtime_context(info)).value)
             )
         except Exception:  # noqa: BLE001 - absent Metal means unavailable
             _M5.append(False)

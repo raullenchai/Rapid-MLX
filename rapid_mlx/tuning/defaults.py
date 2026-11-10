@@ -1,30 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reviewed measurements, keyed by exact device variant and MLX version.
+"""Reviewed configurations, including combinations; gains are not additive."""
 
-The evidence describes configurations, not independent additive knob gains.
-"""
-
-from typing import TypedDict
-
-
-class Measurement(TypedDict, total=False):
-    knobs: dict[str, bool]
-    date: str
-    commit: str
-    evidence: str
-    plain_tps: tuple[float, float]
-    mtp_tps: tuple[float, float]
-    repetitions: dict[str, int]
-    plain_arms_tps: dict[str, float]
-    decision: str
-
-
-MEASURED_DEFAULTS: dict[tuple[str, str], Measurement] = {
-    ("M3 Ultra", "0.32.4"): {
-        "knobs": {
-            "qwen35_affine4_bank_views": True,
-            "qwen35_residual_norm": True,
-        },
+MEASURED_DEFAULTS = [
+    {
+        "id": "singleton-15-ultra",
+        "gpu_generation": 15,
+        "tier": "Ultra",
+        "mlx": "0.32.4",
+        "gpu_cores": 80,
+        "memory_size": 274877906944,
+        "knobs": {"qwen35_affine4_bank_views": True, "qwen35_residual_norm": True},
         "date": "2026-11-09",
         "commit": "75444b54d95db2ad96db630c8fd6afd7333f2ced",
         "evidence": "docs/engineering/performance/2026-11-09-m3-singleton-backbone.md",
@@ -32,11 +17,14 @@ MEASURED_DEFAULTS: dict[tuple[str, str], Measurement] = {
         "mtp_tps": (168.68, 169.17),
         "repetitions": {"plain": 3, "mtp": 6},
     },
-    ("M4 Pro", "0.32.4"): {
-        "knobs": {
-            "qwen35_affine4_bank_views": False,
-            "qwen35_residual_norm": False,
-        },
+    {
+        "id": "singleton-16-pro",
+        "gpu_generation": 16,
+        "tier": "Pro",
+        "mlx": "0.32.4",
+        "gpu_cores": 16,
+        "memory_size": 51539607552,
+        "knobs": {"qwen35_affine4_bank_views": False, "qwen35_residual_norm": False},
         "date": "2026-11-09",
         "commit": "e79576e4bd94a19f3e299fb86d70d1dad1565996",
         "evidence": "docs/engineering/performance/2026-11-09-m3-singleton-backbone.md",
@@ -49,13 +37,16 @@ MEASURED_DEFAULTS: dict[tuple[str, str], Measurement] = {
             "both": 101.56,
         },
         "repetitions": {"plain": 3, "mtp": 3},
-        "decision": "Measured off: each isolated plain gain is below 2%; combined gain alone does not qualify either knob.",
+        "decision": "Pair stays off: plain +1.27%, below the 2% gate.",
     },
-    ("M5 Max", "0.32.4"): {
-        "knobs": {
-            "qwen35_affine4_bank_views": False,
-            "qwen35_residual_norm": False,
-        },
+    {
+        "id": "singleton-17-max",
+        "gpu_generation": 17,
+        "tier": "Max",
+        "mlx": "0.32.4",
+        "gpu_cores": 40,
+        "memory_size": 38654705664,
+        "knobs": {"qwen35_affine4_bank_views": True, "qwen35_residual_norm": True},
         "date": "2026-11-09",
         "commit": "e79576e4bd94a19f3e299fb86d70d1dad1565996",
         "evidence": "docs/engineering/performance/2026-11-09-m3-singleton-backbone.md",
@@ -68,6 +59,25 @@ MEASURED_DEFAULTS: dict[tuple[str, str], Measurement] = {
             "both": 171.81,
         },
         "repetitions": {"plain": 3, "mtp": 3},
-        "decision": "Measured off: each isolated plain gain is below 2%; combined gain alone does not qualify either knob.",
+        "decision": "Enable the measured pair: plain +2.71%, n=3 non-overlapping ranges (167.07–167.46 "
+        "vs 171.72–172.13); MTP -0.06% within spread. No isolated gain claimed.",
+        "plain_ranges_tps": ((167.07, 167.46), (171.72, 172.13)),
     },
-}
+    {
+        "id": "affine4-m4-pro-rows",
+        "gpu_generation": 16,
+        "tier": "Pro",
+        "knobs": {"qwen35_affine4_rows": (2, 4)},
+        "evidence": "docs/engineering/performance/fused-affine4-moe.md",
+        "decision": "Preserve previously qualified row tiles; historical gate had no software pin.",
+    },
+    {
+        "id": "affine8-m3-ultra",
+        "gpu_generation": 15,
+        "tier": "Ultra",
+        "mlx": "0.32.3",
+        "macos": "26.5.2",
+        "knobs": {"affine8_attention": True},
+        "evidence": "docs/engineering/performance/affine8-attention-m3-ultra.json",
+    },
+]

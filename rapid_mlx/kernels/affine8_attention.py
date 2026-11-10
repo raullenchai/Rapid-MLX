@@ -6,11 +6,12 @@ It does not change the cache representation or the default KV dtype policy.
 
 import logging
 import os
-import platform
 from functools import lru_cache
 from pathlib import Path
 
 import mlx.core as mx
+
+from ..tuning import resolve, runtime_context
 
 _LOG = logging.getLogger(__name__)
 _DISABLED = False
@@ -19,11 +20,11 @@ _WARMED_VARIANTS: set[tuple[object, int, int, int, bool]] = set()
 
 @lru_cache(maxsize=1)
 def _qualified_runtime():
-    return (
-        mx.metal.is_available()
-        and mx.__version__ == "0.32.3"
-        and platform.mac_ver()[0] == "26.5.2"
-        and mx.device_info().get("device_name") == "Apple M3 Ultra"
+    return mx.metal.is_available() and bool(
+        resolve(
+            "affine8_attention",
+            runtime_context(mx.device_info(), library_version=mx.__version__),
+        ).value
     )
 
 
