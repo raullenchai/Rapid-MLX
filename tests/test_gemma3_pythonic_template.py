@@ -55,7 +55,7 @@ def tokenizer():
         tokenizer_object=Tokenizer(models.WordLevel({"<unk>": 0}, unk_token="<unk>")),
         bos_token="<bos>",
     )
-    resolve_profile_chat_template(result, "gemma3-1b-4bit")
+    resolve_profile_chat_template(result, "gemma3-12b-4bit")
     return result
 
 
