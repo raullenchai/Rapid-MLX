@@ -501,7 +501,7 @@
     "supports_spec_decode": false,
     "supports_native_mtp": true,
     "mtp_speculative_tokens": 1,
-    "mtp_default_enabled": false,
+    "mtp_default_enabled": true,
     "min_memory_gb": 128,
     "enforce_min_memory": true,
     "experimental": true

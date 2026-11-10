@@ -3620,7 +3620,7 @@ def _alias_mtp_default_enabled(model_name) -> bool:
 
 
 def _alias_native_mtp_capable(model_name) -> bool:
-    """Whether an exact alias declares the isolated native-MTP backend."""
+    """Whether an exact alias declares native MTP support."""
     if not model_name:
         return False
     try:
@@ -4277,9 +4277,18 @@ def _normalize_speculative_config_or_exit(args):
             and not getattr(args, "mllm", False)
             and _alias_native_mtp_capable(_mtp_catalog_identity(args))
             and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
-            and _native_mtp_runtime_ready(_mtp_catalog_identity(args))
+            and (
+                _alias_mtp_declaration(_mtp_catalog_identity(args))[0] is None
+                or _native_mtp_runtime_ready(_mtp_catalog_identity(args))
+            )
         ):
-            raw_config = '{"method":"mtp","backend":"native"}'
+            # Embedded heads use the ordinary engine's MTP injector. Only
+            # a declared external native drafter selects the serial backend.
+            raw_config = (
+                '{"method":"mtp"}'
+                if _alias_mtp_declaration(_mtp_catalog_identity(args))[0] is None
+                else '{"method":"mtp","backend":"native"}'
+            )
             args.speculative_config = raw_config
         elif _automatic_continuous_mtp_requested(args):
             # Exact artifacts that passed the mixed-workload qualification
