@@ -38,6 +38,8 @@ def test_call_keeps_cache_identity_and_position_ids(monkeypatch):
     [
         "wide",
         "embeddings",
+        "embeddings-only",
+        "missing-inputs",
         "mask",
         "capture",
         "sink",
@@ -60,6 +62,10 @@ def test_unsupported_calls_keep_original_contract(monkeypatch, case):
         inputs = mx.array([[1, 2]])
     elif case == "embeddings":
         kwargs["inputs_embeds"] = object()
+    elif case in {"embeddings-only", "missing-inputs"}:
+        inputs = None
+        if case == "embeddings-only":
+            kwargs["inputs_embeds"] = object()
     elif case == "mask":
         kwargs["mask"] = object()
     elif case == "capture":
@@ -96,15 +102,38 @@ def test_unsupported_calls_keep_original_contract(monkeypatch, case):
     assert all(calls[0][2][k] is v for k, v in kwargs.items())
 
 
-@pytest.mark.parametrize("mode", ["mtp", "none-disabled", "other-device", "no-modules"])
+@pytest.mark.parametrize("mode", ["mtp", "none-disabled", "no-modules"])
 def test_install_rejects_unqualified_serving(monkeypatch, mode):
     monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
     spec = "mtp" if mode == "mtp" else "none"
     if mode == "none-disabled":
         monkeypatch.setenv("RAPID_MLX_QWEN35_RESIDUAL_NORM", "0")
-    if mode == "other-device":
-        monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M4 Pro"})
     assert fused.install_qwen35_residual_norm(object(), spec_decode=spec) == 0
+
+
+@pytest.mark.parametrize(
+    "chip,expected", [("Apple M3 Ultra", 1), ("Apple M4 Pro", 0), ("unknown", 0)]
+)
+def test_install_respects_device_policy_without_override(monkeypatch, chip, expected):
+    from rapid_mlx.tuning import profiles
+
+    class Backbone:
+        def __call__(self, *args, **kwargs):
+            return None
+
+    backbone = Backbone()
+    model = SimpleNamespace(named_modules=lambda: [("backbone", backbone)])
+    probes = []
+    monkeypatch.delenv("RAPID_MLX_QWEN35_RESIDUAL_NORM")
+    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": chip})
+    monkeypatch.setattr(profiles, "mlx_version", lambda: "0.32.4")
+    monkeypatch.setattr(fused, "_qualified", lambda value: value is backbone)
+    monkeypatch.setattr(
+        fused, "_probe", lambda value, api: probes.append(value) or True
+    )
+    assert fused.install_qwen35_residual_norm(model) == expected
+    assert probes == ([backbone] if expected else [])
+    assert (type(backbone) is not Backbone) == bool(expected)
 
 
 @pytest.mark.parametrize(

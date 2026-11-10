@@ -1,7 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reviewed configurations, including combinations; gains are not additive."""
 
-MEASURED_DEFAULTS = [
+from typing import NotRequired, TypedDict
+
+
+class MeasuredDefault(TypedDict):
+    id: str
+    gpu_generation: int
+    tier: str
+    knobs: dict[str, bool | tuple[int, int]]
+    evidence: str
+    mlx: NotRequired[str]
+    macos: NotRequired[str]
+    gpu_cores: NotRequired[int]
+    memory_size: NotRequired[int]
+    date: NotRequired[str]
+    commit: NotRequired[str]
+    plain_tps: NotRequired[tuple[float, float]]
+    mtp_tps: NotRequired[tuple[float, float]]
+    repetitions: NotRequired[dict[str, int]]
+    plain_arms_tps: NotRequired[dict[str, float]]
+    decision: NotRequired[str]
+    plain_ranges_tps: NotRequired[tuple[tuple[float, float], tuple[float, float]]]
+
+
+MEASURED_DEFAULTS: list[MeasuredDefault] = [
     {
         "id": "singleton-15-ultra",
         "gpu_generation": 15,

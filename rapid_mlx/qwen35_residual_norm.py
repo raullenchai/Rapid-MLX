@@ -53,8 +53,9 @@ def _make_call(original, api, cache_types):
     ):
         if (
             env_falsey(_SWITCH)
-            or inputs.shape != (1, 1)
+            or inputs is None
             or inputs_embeds is not None
+            or inputs.shape != (1, 1)
             or mask is not None
             or capture_layer_ids is not None
             or hidden_sink is not None

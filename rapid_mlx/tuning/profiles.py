@@ -134,7 +134,7 @@ class TuningContext:
 @lru_cache(maxsize=128)
 def _context(
     name, architecture, cores, memory, library_version, macos, model, mode, width, batch
-):
+) -> TuningContext:
     tier = classify_chip_tier(name)
     arch = re.fullmatch(r"applegpu_g(\d+)[a-z]*", architecture)
     # Older MLX device_info omitted architecture. Only known Apple generations
@@ -142,7 +142,11 @@ def _context(
     generation = (
         int(arch[1])
         if arch
-        else {1: 13, 2: 14, 3: 15, 4: 16, 5: 17}.get(tier.generation)
+        else (
+            {1: 13, 2: 14, 3: 15, 4: 16, 5: 17}.get(tier.generation)
+            if tier.generation is not None
+            else None
+        )
     )
     return TuningContext(
         HardwareProfile(architecture, generation, tier.variant, cores, memory),
