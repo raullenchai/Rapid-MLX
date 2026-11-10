@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from rapid_mlx.tool_call_diagnostics import (
     current_rejected_tool_calls,
@@ -79,6 +79,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..errors import BackpressureError
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..middleware.lan_inference import is_loopback_peer
 from ..parsing.prompt_owner import served_model_identity, split_buffered
 from ..request import (
     ClientRequestError,
@@ -4049,6 +4050,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
+    if (
+        request.local_search is not None
+        and os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") == "1"
+        and not is_loopback_peer(raw_request.scope.get("client"))
+    ):
+        return JSONResponse(
+            {"detail": "This route is available only on this Mac"}, status_code=403
+        )
+
     from rapid_mlx.launch.claude_desktop import resolve_model
 
     resolved_model = resolve_model(request.model)
