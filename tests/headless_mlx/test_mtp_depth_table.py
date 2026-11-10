@@ -223,13 +223,16 @@ def test_missing_module_metadata_is_conservative(monkeypatch, broken):
     assert resolve_max_depth(model, 1, explicit=False) == 1
 
 
-def test_entry_has_speed_and_paired_quality_evidence():
-    assert Path(ENTRY["evidence"]).is_file()
-    before, after = ENTRY["mtp_tps"]
+@pytest.mark.parametrize(
+    "entry", [e for e in tuning.MEASURED_DEFAULTS if e["id"].startswith("mtp-depth-")]
+)
+def test_entry_has_speed_and_paired_quality_evidence(entry):
+    assert Path(entry["evidence"]).is_file()
+    before, after = entry["mtp_tps"]
     assert after / before >= 1.02
-    assert ENTRY["mtp_ranges_tps"][0][1] < ENTRY["mtp_ranges_tps"][1][0]
-    assert ENTRY["repetitions"]["mtp"] >= 3
-    q = ENTRY["quality"]
+    assert entry["mtp_ranges_tps"][0][1] < entry["mtp_ranges_tps"][1][0]
+    assert entry["repetitions"]["mtp"] >= 3
+    q = entry["quality"]
     n = q["n"]
     assert n >= 100 and len(q["questions_sha256"]) == 64
     for reference, pair in q["paired"].items():
@@ -246,4 +249,93 @@ def test_entry_has_speed_and_paired_quality_evidence():
         assert pair["mcnemar_exact_two_sided_p"] == p >= 0.05
         assert pair["delta_pp"] == 100 * (wins - losses) / n
         assert abs(pair["delta_pp"]) <= 3
-        assert q["correct"]["cap4"] - q["correct"][reference] == wins - losses
+        assert (
+            q["correct"][f"cap{entry['knobs']['mtp_max_depth']}"]
+            - q["correct"][reference]
+            == wins - losses
+        )
+
+
+def m3_context():
+    return tuning.runtime_context(
+        {
+            "device_name": "Apple M3 Ultra",
+            "architecture": "applegpu_g15d",
+            "memory_size": 256 * 2**30,
+        },
+        model=context().model,
+        library_version="0.32.4",
+        macos="26.5.2",
+        mode="mtp",
+        has_mtp_head=True,
+    )
+
+
+def test_m3_measured_context_and_override():
+    ctx = m3_context()
+    entry = next(
+        e
+        for e in tuning.MEASURED_DEFAULTS
+        if e["id"] == "mtp-depth-15-ultra-256g-qwen35-moe"
+    )
+    assert tuning.resolve("mtp_max_depth", ctx, environ={}) == tuning.Decision(
+        entry["knobs"]["mtp_max_depth"], "table:" + entry["id"]
+    )
+    assert tuning.resolve(
+        "mtp_max_depth", ctx, environ={"RAPID_MLX_MTP_MAX_DEPTH": "1"}
+    ) == tuning.Decision(1, "env")
+
+
+@pytest.mark.parametrize("memory", [None, 192 * 2**30, 512 * 2**30])
+def test_m3_unmeasured_memory_does_not_borrow(memory):
+    ctx = m3_context()
+    assert (
+        tuning.resolve(
+            "mtp_max_depth",
+            replace(ctx, hardware=replace(ctx.hardware, memory_size=memory)),
+            environ={},
+        ).value
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        tuning.ModelProfile(
+            "qwen3_5_text", hidden_size=2560, bits=4, group_size=64, quant_mode="affine"
+        ),
+        tuning.ModelProfile(
+            "qwen3_5_text", hidden_size=4096, bits=4, group_size=64, quant_mode="affine"
+        ),
+        tuning.ModelProfile(
+            "qwen3_5_moe_text", 2048, 512, 256, 8, 8, 64, quant_mode="affine"
+        ),
+    ],
+)
+def test_m3_dense_controls_and_other_quantization_stay_at_one(profile):
+    assert (
+        tuning.resolve(
+            "mtp_max_depth", replace(m3_context(), model=profile), environ={}
+        ).value
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        dict(mlx="0.32.3"),
+        dict(macos="27.0.1"),
+        dict(mode="plain"),
+        dict(batch=2),
+        dict(has_mtp_head=False),
+    ],
+)
+def test_m3_unmeasured_runtime_or_workload_stays_conservative(changes):
+    assert (
+        tuning.resolve(
+            "mtp_max_depth", replace(m3_context(), **changes), environ={}
+        ).value
+        == 1
+    )

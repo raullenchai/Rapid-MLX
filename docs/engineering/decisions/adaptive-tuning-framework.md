@@ -51,9 +51,11 @@ caps 1 through 4; invalid values defer to policy. Explicit speculative JSON
 The knob requires an installed head and MTP mode; it selects no model or lane.
 Checkpoint depth limits still clamp the result. A measured cap-4 entry is scoped
 to the 36 GiB M5 Max, pinned software and qualified 35B affine expert geometry
-(see [evidence](../performance/2026-11-10-m5-mtp-depth.md)). An unmeasured decision
-preserves the configured cap, ordinarily K=1,
-including existing catalog and force-opt-in depths. The existing acceptance
+(see [evidence](../performance/2026-11-10-m5-mtp-depth.md)). The 256 GiB M3 Ultra
+selects cap 3 on its pinned software and the same qualified MoE geometry
+(see [evidence](../performance/2026-11-10-m3-mtp-depth.md)). An unmeasured decision
+preserves the configured cap, ordinarily K=1, including existing catalog and
+force-opt-in depths. The existing acceptance
 controller may choose shallower rounds, while calibration measures every verify
 width through the resolved cap plus the primary row.
 

@@ -154,4 +154,51 @@ MEASURED_DEFAULTS: list[MeasuredDefault] = [
         "within 3 points of both baselines, exact p >=0.05. Other "
         "hardware/model/software configurations retain their existing depth.",
     },
+    {
+        "id": "mtp-depth-15-ultra-256g-qwen35-moe",
+        "gpu_generation": 15,
+        "tier": "Ultra",
+        "memory_size": 274877906944,
+        "exact_hardware": True,
+        "mlx": "0.32.4",
+        "macos": "26.5.2",
+        "model": {
+            "family": "qwen3_5_moe_text",
+            "geometry": (2048, 512, 256, 8, 4, 64),
+            "quant_mode": "affine",
+        },
+        "knobs": {"mtp_max_depth": 3},
+        "date": "2026-11-10",
+        "commit": "e99b6bb1bcdf950932826a3858f383621a243e64",
+        "evidence": "docs/engineering/performance/2026-11-10-m3-mtp-depth.md",
+        "mtp_tps": (168.2, 183.06),
+        "mtp_ranges_tps": ((164.87, 168.34), (181.89, 184.36)),
+        "repetitions": {"mtp": 3, "quality": 1, "control_4b": 3, "control_9b": 6},
+        "quality": {
+            "n": 100,
+            "correct": {"plain": 95, "main-mtp": 96, "cap3": 97},
+            "paired": {
+                "plain": {
+                    "wins": 2,
+                    "losses": 0,
+                    "delta_pp": 2.0,
+                    "mcnemar_exact_two_sided_p": 0.5,
+                },
+                "main-mtp": {
+                    "wins": 1,
+                    "losses": 0,
+                    "delta_pp": 1.0,
+                    "mcnemar_exact_two_sided_p": 1.0,
+                },
+            },
+            "dataset": "gsm8k/test",
+            "revision": "740312add88f781978c0658806c59bc2815b9866",
+            "questions_sha256": "8250c694da690700b1cae9537b50e82318a201ca4d714146371fd99dc7af1b1c",
+            "max_tokens": 1024,
+            "commit": "e99b6bb1bcdf950932826a3858f383621a243e64",
+        },
+        "decision": "Cap 3: MTP +8.83% with non-overlapping spreads; 100 paired questions within "
+        "3 points of both baselines, exact p >=0.05. Dense model defaults remain "
+        "unchanged. Committed-default follow-up varied; see evidence.",
+    },
 ]
