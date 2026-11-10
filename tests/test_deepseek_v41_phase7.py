@@ -532,9 +532,7 @@ def test_pull_uses_pinned_product_resolution(monkeypatch):
             format=None,
         )
     )
-    assert disk == [
-        {"force": False, "revision_override": a.FLASH_1017.target_revision}
-    ]
+    assert disk == [{"force": False, "revision_override": a.FLASH_1017.target_revision}]
     assert resolved == [((a.FLASH_1017,), {"allow_local": False})]
 
 
