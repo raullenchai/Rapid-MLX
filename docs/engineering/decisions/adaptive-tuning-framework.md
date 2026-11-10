@@ -43,3 +43,14 @@ Follow-ups: unify `chip_tier.py`, `telemetry/chip.py` and `optimizations.py`
 parsers; community benchmark tuning block/schema and reviewed data ingestion;
 acceleration-flag mapping; persistent local calibration; runtime adaptation.
 None is implemented here. Further kernel migrations need their own evidence.
+
+MTP's single-request installed-head boundary resolves `mtp_max_depth` before
+building the greedy calibration profile. `RAPID_MLX_MTP_MAX_DEPTH` accepts integer
+caps 1 through 4; invalid values defer to policy. Explicit speculative JSON
+`num_speculative_tokens` (including normalized legacy depth flags) takes priority.
+The knob requires an installed head and MTP mode; it selects no model or lane.
+Checkpoint depth limits still clamp the result. No measured depth entry is
+installed: an unmeasured decision preserves the configured cap, ordinarily K=1,
+including existing catalog and force-opt-in depths. The existing acceptance
+controller may choose shallower rounds, while calibration measures every verify
+width through the resolved cap plus the primary row.

@@ -52,6 +52,12 @@ def _knob(name, scope, env=None, default=False):
 
 
 KNOBS = {
+    "mtp_max_depth": _knob(
+        "mtp_max_depth",
+        lambda c: c.mode == "mtp" and c.batch == 1,
+        "RAPID_MLX_MTP_MAX_DEPTH",
+        default=1,
+    ),
     "qwen35_affine4_bank_views": _knob(
         "qwen35_affine4_bank_views",
         lambda c: _expert(c) and c.width == 1,
@@ -104,6 +110,8 @@ def local_calibration(ctx: TuningContext) -> Mapping[str, object]:
 
 
 def _valid(knob, value):
+    if type(knob.default) is int:
+        return type(value) is int and 1 <= value <= 4
     return (
         type(value) is bool if type(knob.default) is bool else value in ((1, 1), (2, 4))
     )
@@ -140,9 +148,16 @@ def resolve(
     override = (
         (os.environ if environ is None else environ).get(knob.env) if knob.env else None
     )
-    if is_falsey(override):
+    if type(knob.default) is int:
+        try:
+            depth = int(override)
+        except (ValueError, TypeError):
+            depth = None
+        if _valid(knob, depth):
+            return Decision(depth, "env")
+    elif is_falsey(override):
         return Decision(False, "env")
-    if is_truthy(override):
+    elif is_truthy(override):
         return Decision(True, "env")
     local = local_calibration(ctx).get(name)
     if local is not None and _valid(knob, local):

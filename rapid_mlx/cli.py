@@ -2109,6 +2109,7 @@ def _apply_mtp_cli_model_type_reconciliation(
         else:
             print(_msg % (_prior, _eligibility_model_type), file=sys.stderr)
     scheduler_config.mtp_model_type = _eligibility_model_type
+    scheduler_config.mtp_depth_explicit = explicit_depth
     if requested_depth is None:
         return
     try:

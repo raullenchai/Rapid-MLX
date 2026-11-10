@@ -8,7 +8,7 @@ class MeasuredDefault(TypedDict):
     id: str
     gpu_generation: int
     tier: str
-    knobs: dict[str, bool | tuple[int, int]]
+    knobs: dict[str, bool | int | tuple[int, int]]
     evidence: str
     mlx: NotRequired[str]
     macos: NotRequired[str]

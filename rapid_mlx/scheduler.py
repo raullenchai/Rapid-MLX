@@ -599,6 +599,7 @@ class SchedulerConfig:
     # per-position rollback on hybrid SSM targets.
     # ``mtp_disable_auto_k`` fixes depth at ``mtp_max_k`` for A/B benching.
     mtp_max_k: int = 3
+    mtp_depth_explicit: bool = False
     mtp_disable_auto_k: bool = False
 
     # Opt-in prompt-deterministic RESPONSE CACHE (exact-match short-circuit).
@@ -1569,6 +1570,7 @@ def _install_mtp_vendored(
     disable_auto_k: bool = False,
     controller_key: str | None = None,
     execution_receipt: Any = None,
+    explicit_depth: bool = False,
 ) -> bool:
     """Install the vendored PR #990 ``mtp_generate_step`` hot loop into
     ``GenerationBatch._step``.
@@ -1661,7 +1663,9 @@ def _install_mtp_vendored(
         mtp_generate_step,
     )
     from .spec_decode.mtp.reproducible_depth import greedy_schedule
+    from .tuning.mtp import resolve_max_depth
 
+    max_k = resolve_max_depth(mtp_model, max_k, explicit=explicit_depth)
     model_max_k = getattr(mtp_model, "mtp_max_speculative_tokens", max_k)
     if max_k > model_max_k:
         logger.warning(
@@ -5618,6 +5622,7 @@ class Scheduler:
                     execution_receipt=execution_receipt,
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
+                    explicit_depth=getattr(self.config, "mtp_depth_explicit", False),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
                     # Preferred (named) identity for the controller
                     # registry. The previous spelling ended in a bare

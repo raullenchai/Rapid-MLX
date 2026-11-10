@@ -126,6 +126,7 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Singleton expert buffer binding; same model, kernels and arithmetic.
         "RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS",
         "RAPID_MLX_QWEN35_RESIDUAL_NORM",  # exact singleton residual/norm fusion
+        "RAPID_MLX_MTP_MAX_DEPTH",  # depth cap in the already-selected MTP lane
         # Read-only diagnostic override for doctor: selects which existing
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
