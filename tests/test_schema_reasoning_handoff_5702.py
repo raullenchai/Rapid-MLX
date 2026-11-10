@@ -71,6 +71,7 @@ def setup_processor(monkeypatch):
     return SimpleNamespace(
         build=build,
         encode=lambda text: tokenizer.encode(text).ids,
+        decode=lambda ids: tokenizer.decode(ids, skip_special_tokens=False),
         end_id=end_id,
         logits=lambda: np.zeros((1, lltok.vocab_size), dtype=np.float32),
     )
