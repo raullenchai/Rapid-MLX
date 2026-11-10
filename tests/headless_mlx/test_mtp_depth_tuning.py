@@ -41,7 +41,7 @@ def test_invalid_override_defers(raw):
 )
 def test_override_cannot_bypass_capability_or_scope(change):
     decision = tuning.resolve("mtp_max_depth", context(**change), environ={ENV: "4"})
-    assert decision.value == 1 and decision.source == "blocked"
+    assert decision.value == 1 and decision.source == "capability"
 
 
 @pytest.mark.parametrize("chip", ["unknown", "Apple M3 Ultra", "Apple M5 Max"])
@@ -51,15 +51,16 @@ def test_unmeasured_default(chip):
 
 
 def test_typed_local_and_table_precedence(monkeypatch):
-    ctx = context()
+    from rapid_mlx.tuning.defaults import Profile
+
+    ctx = context(hardware=tuning.HardwareProfile(gpu_generation=15, tier="Ultra"))
     entry = dict(
         id="test-depth",
-        gpu_generation=None,
-        tier="unknown",
+        hardware=[dict(gpu_generation=15, tier="Ultra")],
         knobs={"mtp_max_depth": 3},
-        evidence="test only",
+        provenance={"evidence": "test only"},
     )
-    monkeypatch.setattr(tuning, "MEASURED_DEFAULTS", [entry])
+    monkeypatch.setattr(tuning, "builtin_profile", lambda: Profile("test", (entry,)))
     assert tuning.resolve("mtp_max_depth", ctx, environ={}).value == 3
     for invalid in (True, 0, 5, "2"):
         monkeypatch.setattr(
@@ -69,12 +70,10 @@ def test_typed_local_and_table_precedence(monkeypatch):
         )
         assert (
             tuning.resolve("mtp_max_depth", ctx, environ={}).source
-            == "table:test-depth"
+            == "builtin:test-depth"
         )
     monkeypatch.setattr(tuning, "local_calibration", lambda c: {"mtp_max_depth": 2})
-    assert (
-        tuning.resolve("mtp_max_depth", ctx, environ={}).source == "local-calibration"
-    )
+    assert tuning.resolve("mtp_max_depth", ctx, environ={}).source == "local"
     assert tuning.resolve("mtp_max_depth", ctx, environ={ENV: "4"}).value == 4
 
 

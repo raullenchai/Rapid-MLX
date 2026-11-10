@@ -48,7 +48,7 @@ def test_precedence_and_fallback(monkeypatch, name):
     assert not tuning.resolve(name, context("Apple M99 Max")).value
     assert not tuning.resolve(name, context(library_version="unmeasured")).value
     monkeypatch.setattr(tuning, "local_calibration", lambda c: {name: False})
-    assert tuning.resolve(name, context()).source == "local-calibration"
+    assert tuning.resolve(name, context()).source == "local"
     assert not tuning.resolve(name, context()).value
     monkeypatch.setenv(switch, "yes")
     assert tuning.resolve(name, context("unknown")).value
@@ -77,33 +77,32 @@ def test_mtp_scope():
     ).value
 
 
-def test_combination_gate_and_nearest_fallback(monkeypatch):
+def test_combination_gate_and_explicit_generalization(monkeypatch):
+    from rapid_mlx.tuning.defaults import Profile
+
     for name in PAIR:
         assert tuning.resolve(name, context("Apple M5 Max"), environ={}).value
         assert not tuning.resolve(name, context("Apple M4 Pro"), environ={}).value
-    entry = next(e for e in tuning.MEASURED_DEFAULTS if e["id"] == "singleton-17-max")
-    assert entry["repetitions"]["plain"] >= 3
-    assert entry["plain_ranges_tps"][0][1] < entry["plain_ranges_tps"][1][0]
-    assert entry["plain_tps"][1] / entry["plain_tps"][0] >= 1.02
-    ctx = replace(
-        context(),
-        hardware=replace(context().hardware, gpu_cores=72, memory_size=192 * 2**30),
+    entry = next(
+        e for e in tuning.builtin_profile().entries if e["id"] == "singleton-17-max"
     )
-    assert tuning.resolve(PAIR[0], ctx, environ={}).source == "table:singleton-15-ultra"
-    closer = dict(
-        tuning.MEASURED_DEFAULTS[0],
-        id="closer",
-        gpu_cores=72,
-        memory_size=192 * 2**30,
-        knobs={PAIR[0]: False},
+    assert entry["provenance"]["repetitions"]["plain"] >= 3
+    assert (
+        entry["provenance"]["plain_ranges_tps"][0][1]
+        < entry["provenance"]["plain_ranges_tps"][1][0]
     )
+    assert (
+        entry["provenance"]["plain_tps"][1] / entry["provenance"]["plain_tps"][0]
+        >= 1.02
+    )
+    ctx = replace(context(), hardware=replace(context().hardware, gpu_cores=60))
+    assert (
+        tuning.resolve(PAIR[0], ctx, environ={}).source == "builtin:singleton-15-ultra"
+    )
+    original = tuning.builtin_profile().entries[0]
+    conflict = dict(original, id="conflict", knobs={PAIR[0]: False})
     monkeypatch.setattr(
-        tuning, "MEASURED_DEFAULTS", [tuning.MEASURED_DEFAULTS[0], closer]
-    )
-    assert not tuning.resolve(PAIR[0], ctx, environ={}).value
-    # Equidistant conflicts fall back conservatively, independent of order.
-    monkeypatch.setattr(
-        tuning, "MEASURED_DEFAULTS", [closer, dict(closer, knobs={PAIR[0]: True})]
+        tuning, "builtin_profile", lambda: Profile("test", (original, conflict))
     )
     assert tuning.resolve(PAIR[0], ctx, environ={}).source == "default"
 

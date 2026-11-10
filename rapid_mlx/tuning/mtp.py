@@ -70,6 +70,6 @@ def resolve_max_depth(model, requested: int, *, explicit: bool) -> int:
     decision = resolve("mtp_max_depth", ctx)
     return (
         int(cast(int, decision.value))
-        if decision.source not in {"default", "blocked"}
+        if decision.source not in {"default", "capability"}
         else requested
     )

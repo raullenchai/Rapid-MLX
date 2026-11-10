@@ -22,6 +22,14 @@ def mlx_version() -> str:
 
 
 @cache
+def rapid_version() -> str:
+    try:
+        return version("rapid-mlx")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+@cache
 def _device_key(name) -> str:
     match = (
         re.fullmatch(r"Apple (M[1-9][0-9]*)(?: (Pro|Max|Ultra))?", name.strip())
@@ -130,6 +138,7 @@ class TuningContext:
     width: int = 1
     batch: int = 1
     has_mtp_head: bool = False
+    rapid_mlx: str = "unknown"
 
 
 @lru_cache(maxsize=128)
@@ -145,6 +154,7 @@ def _context(
     width,
     batch,
     has_mtp_head,
+    rapid_mlx,
 ) -> TuningContext:
     tier = classify_chip_tier(name)
     arch = re.fullmatch(r"applegpu_g(\d+)[a-z]*", architecture)
@@ -168,6 +178,7 @@ def _context(
         width,
         batch,
         has_mtp_head,
+        rapid_mlx,
     )
 
 
@@ -182,6 +193,7 @@ def runtime_context(
     width=1,
     batch=1,
     has_mtp_head=False,
+    rapid_mlx=None,
 ) -> TuningContext:
     return _context(
         device_key(info),
@@ -195,4 +207,5 @@ def runtime_context(
         width,
         batch,
         has_mtp_head,
+        rapid_version() if rapid_mlx is None else rapid_mlx,
     )

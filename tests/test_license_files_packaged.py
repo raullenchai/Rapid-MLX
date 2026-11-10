@@ -173,15 +173,21 @@ def test_real_distributions_ship_every_tracked_license_file(tmp_path):
     # it would silently replace packaged trust with online metadata lookup.
     manifest = "rapid_mlx/model_catalog_lock.json"
     expected_manifest = (REPO_ROOT / manifest).read_bytes()
+    tuning_profile = "rapid_mlx/tuning/profiles/builtin.json"
+    expected_profile = (REPO_ROOT / tuning_profile).read_bytes()
     top = sdist.name.removesuffix(".tar.gz")
     with zipfile.ZipFile(wheel) as archive:
         wheel_names = set(archive.namelist())
         assert archive.read(manifest) == expected_manifest
+        assert archive.read(tuning_profile) == expected_profile
     with tarfile.open(sdist) as archive:
         sdist_names = set(archive.getnames())
         member = archive.extractfile(f"{top}/{manifest}")
         assert member is not None
         assert member.read() == expected_manifest
+        profile_member = archive.extractfile(f"{top}/{tuning_profile}")
+        assert profile_member is not None
+        assert profile_member.read() == expected_profile
     missing = []
     inventory = _tracked_license_files()
     assert inventory and ("rapid_mlx", "spec_decode/mtp/LICENSE-MTPLX") in inventory
