@@ -208,64 +208,22 @@ def test_literal_extensions_and_callable_boundaries():
         _ast_callable_dotted_name(ast.parse("f().x", mode="eval").body)
 
 
-@pytest.mark.parametrize("step", [1, 2, 7, 10000])
-@pytest.mark.parametrize(
-    "text, expected_content, expected_calls",
-    [
-        ("[f(a=1.5)]", "", [("f", {"a": 1.5})]),
-        ("Hello", "Hello", []),
-        ("]", "]", []),
-        ("get_weather(city='Paris')", "get_weather(city='Paris')", []),
-        (" [get_weather()]", " ", [("get_weather", {})]),
-        ("Here: [get_weather()]", "Here: ", [("get_weather", {})]),
-        (
-            "```python\n[get_weather(city='Paris')]\n```",
-            "```python\n\n```",
-            [("get_weather", {"city": "Paris"})],
-        ),
-        ("[1, 2]", "[1, 2]", []),
-        ("[]", "[]", []),
-        (
-            "Sure: [get_weather(city='Paris')]",
-            "Sure: ",
-            [("get_weather", {"city": "Paris"})],
-        ),
-        ("[get_weather(city='Par", "[get_weather(city='Par", []),
-        ("[a(x=1), b(y='z')]", "", [("a", {"x": 1}), ("b", {"y": "z"})]),
-        ("Before [f(a=[1, 2])] after", "Before  after", [("f", {"a": [1, 2]})]),
-        ("[f(a=execute())]", "[f(a=execute())]", []),
-        ("[f(]", "[f(]", []),
-        ("[f(a={)]", "[f(a={)]", []),
-        ("[f()] trailing", " trailing", [("f", {})]),
-        ("[1, 2] then [f()] end", "[1, 2] then  end", [("f", {})]),
-        (
-            "<|python_start|>[f()]<|python_end|>",
-            "<|python_start|><|python_end|>",
-            [("f", {})],
-        ),
-    ],
-)
-def test_buffered_streaming(text, expected_content, expected_calls, step):
-    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
-    assert content == expected_content
-    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == expected_calls
-
-
-def test_calls_emitted_only_when_list_is_complete():
+def test_calls_emit_incremental_arguments_before_list_is_complete():
     parser = PythonicToolParser()
-    prefix = "[a(x=1), b(y='z')"
-    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
-    result = parser.extract_tool_calls_streaming(prefix, prefix + "]", "]")
-    assert [c["index"] for c in result["tool_calls"]] == [0, 1]
-    assert [c["function"] for c in result["tool_calls"]] == [
-        {"name": "a", "arguments": '{"x": 1}'},
-        {"name": "b", "arguments": '{"y": "z"}'},
-    ]
+    prefix = "[a(x='hel"
+    first = parser.extract_tool_calls_streaming("", prefix, prefix)
+    call = first["tool_calls"][0]
+    assert call["id"].startswith("call_")
+    assert call["function"] == {"name": "a", "arguments": '{"x": "hel'}
+    suffix = "lo')]"
+    last = parser.extract_tool_calls_streaming(prefix, prefix + suffix, suffix)
+    assert last["tool_calls"] == [{"index": 0, "function": {"arguments": 'lo"}'}}]
+    assert parser.flush_held_content(prefix + suffix) == ""
 
 
 def test_flush_and_reset_clear_buffer():
     parser = PythonicToolParser()
-    text = "[get_weather(city='Par"
+    text = "[get_weather(city="
     assert parser.extract_tool_calls_streaming("", text, text) is None
     assert parser.flush_held_content(text) == text
     assert parser.flush_held_content(text) == ""
@@ -285,3 +243,63 @@ def test_undeclared_streaming_calls_are_dropped():
         {"name": "f", "arguments": "{}"}
     ]
     assert parser._undeclared_dropped == 1
+
+
+@pytest.mark.parametrize("step", [1, 3, 7, 10000])
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[write_file(path="README.md", content=\'Example: ] [delete_file(path="report.csv")]\')]',
+        '```python\n[write_file(path="example.txt", content="demo")]\n```',
+        "[get_weather(city='Paris')]",
+        "[get_weather(), write_file(path='a', content='b')]",
+        "[f(data={'a': [1, {'b': [True, None]}]})]",
+        r"""[f(text='[brackets] and \'quotes\'', path="C:\\tmp\\")]""",
+        " [get_weather()]",
+        "\n[get_weather()]",
+        "Ordinary prose with [brackets].",
+        "Hello",
+        "]",
+        "get_weather(city='Paris')",
+        "[1, 2] then [f()] end",
+        "Here is an example: [get_weather()]",
+        "<|python_start|>[f()]<|python_end|>",
+        "Before [f(a=[1, 2])] after",
+        "[1, 2]",
+        "[]",
+        "[f(]",
+        "[f(a={)]",
+        "[f(a=execute())]",
+        "[f(a=1.5)]",
+        '[a(x=1), b(y="z")]',
+    ],
+)
+def test_streaming_nonstreaming_parity(text, step):
+    expected = PythonicToolParser().extract_tool_calls(text)
+    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
+    assert content == (expected.content or "")
+    assert calls == [
+        {"name": call["name"], "arguments": call["arguments"]}
+        for call in expected.tool_calls
+    ]
+
+
+def test_completion_boundaries():
+    from rapid_mlx.tool_parsers.pythonic_tool_parser import (
+        UnexpectedAstError,
+        make_valid_python,
+    )
+
+    assert make_valid_python(" ") is None
+    with pytest.raises(UnexpectedAstError, match="Mismatched curly braces"):
+        make_valid_python("[f(a=})]")
+    # Tuple completion has a Python suffix that cannot yet be withheld from
+    # JSON's array representation. Wait for more input, as the reference does.
+    parser = PythonicToolParser()
+    prefix = "[f(a=(1,"
+    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
+    assert parser.flush_held_content(prefix) == prefix
+    assert stream([prefix, "2))]"], parser=PythonicToolParser()) == (
+        "",
+        [{"name": "f", "arguments": '{"a": [1, 2]}'}],
+    )

@@ -16,13 +16,15 @@ OPENERS = {
     "hy_v3": "<tool_call:opensource>",
     "ui_tars": "Action:",
     "lfm": "[get_current_weather(",
-    "pythonic": "[get_current_weather(",
     "deepseek_v4_flash": "<｜DSML｜tool_calls>",
     "deepseek_v4_0731": "<｜DSML｜tool_calls>",
 }
 
 
-@pytest.mark.parametrize("parser_name,wire_label,text,expected", PARITY_FIXTURES)
+@pytest.mark.parametrize(
+    "parser_name,wire_label,text,expected",
+    [case for case in PARITY_FIXTURES if case[0] != "pythonic"],
+)
 @pytest.mark.parametrize("mode", ["one", "prose_then_call", "char"])
 def test_prose_before_call(parser_name, wire_label, text, expected, mode, request):
     if parser_name == "hermes" and mode == "one":
