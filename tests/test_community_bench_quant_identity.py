@@ -243,3 +243,30 @@ def test_media_receipt_uses_loader_path_not_main(monkeypatch, tmp_path, task):
         assert primary["quantization"]["weight_bits_x2"] == 8
     finally:
         lr._LOADED_IDENTITY.reset(token)
+
+
+def test_malformed_media_receipt_is_ignored(tmp_path):
+    capture = {}
+    token = lr._LOADED_IDENTITY.set(capture)
+    try:
+        with lr._server_identity_receipt() as env:
+            receipt = Path(next(iter(env.values())))
+            receipt.write_text('{"not": "an identity"}', encoding="utf-8")
+        # A receipt that fails identity validation never reaches the run.
+        assert "identity" not in capture
+    finally:
+        lr._LOADED_IDENTITY.reset(token)
+
+
+def test_receipt_write_failure_never_fails_the_load(monkeypatch, tmp_path):
+    from rapid_mlx.community_bench import run_builder
+
+    checkpoint = tmp_path / "snapshots" / ("e" * 40)
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"quantization":{"bits":4}}')
+    # The receipt's parent directory does not exist, so the write raises.
+    monkeypatch.setenv(
+        run_builder._IDENTITY_RECEIPT_ENV, str(tmp_path / "missing" / "receipt.json")
+    )
+    run_builder.record_loaded_identity("org/model", "image_generation", str(checkpoint))
+    assert not (tmp_path / "missing").exists()
