@@ -1,5 +1,9 @@
 # Qwen3.8 Flash-Next native MTP on M3 Ultra
 
+> Historical qualification: the newer pinned-checkpoint decision enables K=1
+> by default. See [the 2026-11-10 requalification](qwen38-flash-next-mtp-default-m3-ultra.md)
+> for current measurements, quality checks, and opt-out behavior.
+
 This follow-up measures the default-off native MTP path for
 `rapid-mlx/Qwen3.8-Flash-Next-4bit`. The comparison uses the same candidate
 engine, immutable checkpoint, prompts, process isolation, and benchmark script

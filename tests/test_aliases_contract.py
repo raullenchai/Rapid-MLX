@@ -164,6 +164,7 @@ def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
     assert profile.supports_spec_decode is False
     assert profile.supports_native_mtp is True
     assert profile.mtp_speculative_tokens == 1
+    assert profile.mtp_default_enabled is True
     assert profile.tool_call_parser == "hermes"
     assert profile.reasoning_parser == "qwen3"
     assert detect_model_config(alias) == profile
@@ -342,14 +343,14 @@ def test_native_mtp_alias_metadata_is_strict_and_unambiguous() -> None:
         )
 
 
-def test_flash_next_native_mtp_capability_label_is_opt_in() -> None:
+def test_flash_next_native_mtp_capability_label_is_default() -> None:
     from rapid_mlx.model_auto_config import _mtp_path_label
 
     profile = _execution_profiles()["qwen3.8-flash-next-4bit"]
 
     assert (
         _mtp_path_label("qwen3.8-flash-next-4bit", profile)
-        == "native (opt-in: --speculative-config)"
+        == "native (default; --no-spec-decode off)"
     )
 
 
