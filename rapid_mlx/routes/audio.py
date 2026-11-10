@@ -677,7 +677,7 @@ def _reject_non_whisper_for_translation(
 ) -> None:
     """Codex r6 NIT: ``/v1/audio/translations`` promises English output.
 
-    Only Whisper engines honor ``task="translate"`` (mlx_audio's
+    Translation-capable Whisper engines honor ``task="translate"`` (mlx_audio's
     Parakeet path ignores the kwarg and emits source-language text).
     Accepting a non-Whisper alias here would silently break the
     translations contract. Inspect the alias (after resolution to its
@@ -686,7 +686,8 @@ def _reject_non_whisper_for_translation(
     ``model_not_found`` envelope (the model is real, it's just the
     wrong engine for this route).
 
-    Routing order: this helper handles ONLY models we positively
+    Catalog entries can explicitly disable translation for checkpoints
+    that were not trained for it. This helper also handles models we
     recognize as non-Whisper (Parakeet aliases, or HF ids with
     ``parakeet``/other-engine markers). Unknown bare strings fall
     through to ``_resolve_stt_model``'s 404 ``model_not_found_error``
@@ -708,12 +709,15 @@ def _reject_non_whisper_for_translation(
         else (_served_local_request(model, "stt") or model)
     )
     entry = resolve_audio_alias(target)
+    translation_unsupported = (
+        entry is not None and entry.type == "stt" and entry.translation is False
+    )
     if entry is not None and entry.type == "stt":
         model = f"registered/{entry.family}"
     resolved = STT_MODEL_ALIASES.get(model, model)
     resolved_lc = resolved.lower()
-    # Whisper-shaped → accept; the engine honors task=translate.
-    if "whisper" in resolved_lc:
+    # Whisper-shaped models are accepted unless the catalog opts out.
+    if not translation_unsupported and "whisper" in resolved_lc:
         return
     # Bare alias not in STT_MODEL_ALIASES → leave for _resolve_stt_model
     # to 404 (so the envelope matches transcriptions' unknown-model
@@ -721,7 +725,11 @@ def _reject_non_whisper_for_translation(
     # _resolve_stt_model, so we MUST classify here: a parakeet/voxtral/
     # other-engine HF id would otherwise reach the engine and produce
     # source-language output.
-    if "/" not in model and model not in STT_MODEL_ALIASES:
+    if (
+        not translation_unsupported
+        and "/" not in model
+        and model not in STT_MODEL_ALIASES
+    ):
         return
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
@@ -739,12 +747,20 @@ def _reject_non_whisper_for_translation(
         detail={
             "error": {
                 "message": (
-                    f"The model `{model}` cannot perform translation. "
-                    "`/v1/audio/translations` requires a Whisper engine "
-                    "(only Whisper honors `task=translate`). Use "
-                    "`/v1/audio/transcriptions` for source-language "
-                    "output, or pass a Whisper alias such as "
-                    "`whisper-large-v3`."
+                    (
+                        f"The model `{target}` was not trained for translation. "
+                        "Use `whisper-large-v3` for English translation or "
+                        "`/v1/audio/transcriptions` for source-language output."
+                    )
+                    if translation_unsupported
+                    else (
+                        f"The model `{model}` cannot perform translation. "
+                        "`/v1/audio/translations` requires a Whisper engine "
+                        "(only Whisper honors `task=translate`). Use "
+                        "`/v1/audio/transcriptions` for source-language "
+                        "output, or pass a Whisper alias such as "
+                        "`whisper-large-v3`."
+                    )
                 ),
                 "type": "invalid_request_error",
                 "code": "invalid_model_for_translation",

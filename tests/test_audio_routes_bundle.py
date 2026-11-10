@@ -434,8 +434,9 @@ class TestTranscriptionsRouteEndToEnd:
     a 200 ``{"text": ..., "language": ..., "duration": ...}`` from
     ``/v1/audio/transcriptions``."""
 
+    @pytest.mark.parametrize("model", ["whisper-large-v3", "whisper-large-v3-turbo"])
     def test_transcriptions_returns_200_with_text(
-        self, monkeypatch, _reset_audio_probe
+        self, monkeypatch, _reset_audio_probe, model
     ):
         from rapid_mlx.routes import audio as audio_route
 
@@ -463,7 +464,7 @@ class TestTranscriptionsRouteEndToEnd:
         try:
             r = client.post(
                 "/v1/audio/transcriptions",
-                data={"model": "whisper-large-v3"},
+                data={"model": model},
                 files={"file": ("tone.wav", _make_tone_wav(), "audio/wav")},
             )
         finally:
@@ -501,7 +502,10 @@ class TestTranslationsRoute:
             "translation-to-English."
         )
 
-    def test_translations_returns_200_with_text(self, monkeypatch, _reset_audio_probe):
+    @pytest.mark.parametrize("model", ["whisper-large-v3", "whisper-1"])
+    def test_translations_returns_200_with_text(
+        self, monkeypatch, _reset_audio_probe, model
+    ):
         from rapid_mlx.routes import audio as audio_route
 
         fake_model = _FakeWhisperModel()
@@ -537,7 +541,7 @@ class TestTranslationsRoute:
         try:
             r = client.post(
                 "/v1/audio/translations",
-                data={"model": "whisper-large-v3"},
+                data={"model": model},
                 files={"file": ("tone.wav", _make_tone_wav(), "audio/wav")},
             )
         finally:
@@ -628,6 +632,34 @@ class TestTranslationsRoute:
             # or transcriptions so the caller knows how to fix the call.
             msg = err["message"].lower()
             assert "whisper" in msg or "transcriptions" in msg, err
+
+    @pytest.mark.parametrize(
+        "model",
+        ["whisper-large-v3-turbo", "mlx-community/whisper-large-v3-turbo"],
+    )
+    def test_translations_rejects_turbo(self, monkeypatch, _reset_audio_probe, model):
+        def unexpected_engine(*args, **kwargs):
+            pytest.fail("Translation-incapable models must be rejected before loading")
+
+        from rapid_mlx.audio import stt
+
+        monkeypatch.setattr(stt, "STTEngine", unexpected_engine)
+        client, restore = _mount_audio_app()
+        try:
+            response = client.post(
+                "/v1/audio/translations",
+                data={"model": model},
+                files={"file": ("tone.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+        assert response.status_code == 400, response.text
+        error = response.json()["detail"]["error"]
+        assert error["code"] == "invalid_model_for_translation"
+        assert error["type"] == "invalid_request_error"
+        assert error["param"] == "model"
+        assert "not trained for translation" in error["message"]
+        assert "whisper-large-v3" in error["message"]
 
     def test_transcriptions_still_accepts_parakeet(
         self, monkeypatch, _reset_audio_probe

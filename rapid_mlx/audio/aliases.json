@@ -306,6 +306,7 @@
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-turbo",
     "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+    "translation": false,
     "family": "whisper",
     "languages": "multilingual",
     "notes": "Whisper large-v3 turbo (faster decode, slight quality drop)."
