@@ -86,12 +86,16 @@ def invoke(monkeypatch, capsys, ref, *flags):
 
 @pytest.mark.parametrize("ref", [REPO, "qwen3.5-4b-4bit", "kokoro"])
 @pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("force", [False, True])
 def test_check_refuses_insufficient_disk(
-    metadata, monkeypatch, capsys, ref, json_output
+    metadata, monkeypatch, capsys, ref, json_output, force
 ):
     monkeypatch.setattr("rapid_mlx._mirror._cache_disk_space", lambda: ("cache", 0))
     with pytest.raises(SystemExit) as exc:
-        invoke(monkeypatch, capsys, ref, *(["--json"] if json_output else []))
+        flags = (["--json"] if json_output else []) + (
+            ["--force-disk-check"] if force else []
+        )
+        invoke(monkeypatch, capsys, ref, *flags)
     assert exc.value.code == 1
     output = capsys.readouterr()
     if json_output:

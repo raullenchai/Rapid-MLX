@@ -251,7 +251,8 @@ def test_implicit_download_tolerates_profile_resolution_failure(monkeypatch):
 
 
 @pytest.mark.usefixtures("ample_pull_disk_space")
-def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
+@pytest.mark.parametrize("force", [False, True])
+def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch, force):
     calls = []
     disk_checks = []
     monkeypatch.setattr(
@@ -276,6 +277,7 @@ def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
     args = SimpleNamespace(
         model=artifacts.TARGET_REPO,
         _original_alias="deepseek-v41-flash-reap-2bit",
+        force_disk_check=force,
         bits=None,
         format=None,
     )
@@ -306,11 +308,12 @@ def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
     assert disk_checks == [
         (
             artifacts.TARGET_REPO,
-            {"revision_override": artifacts.TARGET_REVISION},
+            {"revision_override": artifacts.TARGET_REVISION, "force": force},
         ),
         (
             artifacts.MTP_REPO,
             {
+                "force": force,
                 "revision_override": artifacts.MTP_REVISION,
                 "allow_patterns": list(artifacts.MTP_ALLOW_PATTERNS),
             },

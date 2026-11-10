@@ -387,6 +387,18 @@ def _resolve_cli_version() -> str:
         return "dev"
 
 
+def _add_force_disk_check_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--force-disk-check",
+        action="store_true",
+        help=(
+            "Skip the pre-flight disk-space check that aborts when the model "
+            "is larger than free disk. Use only if you know the HF cache lives "
+            "on a different filesystem (e.g. external drive via HF_HOME)."
+        ),
+    )
+
+
 def _add_system_one_parser(
     subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
 ) -> None:
@@ -552,15 +564,7 @@ def _add_serve_parser(
         default=None,
         help="The model name used in the API. If not specified, the model argument is used.",
     )
-    serve_parser.add_argument(
-        "--force-disk-check",
-        action="store_true",
-        help=(
-            "Skip the pre-flight disk-space check that aborts when the model "
-            "is larger than free disk. Use only if you know the HF cache lives "
-            "on a different filesystem (e.g. external drive via HF_HOME)."
-        ),
-    )
+    _add_force_disk_check_arg(serve_parser)
     serve_parser.add_argument(
         "--image-weight-precision",
         choices=("q4", "bf16"),
@@ -2012,15 +2016,7 @@ def _add_bench_parser(
         "model", type=str, help="Model to benchmark"
     ).completer = alias_completer
 
-    bench_parser.add_argument(
-        "--force-disk-check",
-        action="store_true",
-        help=(
-            "Skip the pre-flight disk-space check that aborts when the model "
-            "is larger than free disk. Use only if you know the HF cache lives "
-            "on a different filesystem (e.g. external drive via HF_HOME)."
-        ),
-    )
+    _add_force_disk_check_arg(bench_parser)
     # Disk-streaming MoE weight loading — same opt-in flags as `serve`,
     # see the `serve_parser` registration above for the full rationale.
     bench_parser.add_argument(
@@ -2514,6 +2510,7 @@ def _add_pull_parser(
     pull_parser.add_argument(  # type: ignore[attr-defined]  # argcomplete attribute
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
+    _add_force_disk_check_arg(pull_parser)
     pull_parser.add_argument(
         "--check",
         action="store_true",
@@ -2712,6 +2709,7 @@ def _add_chat_parser(
         "starter if present, otherwise the best fit for this Mac's memory); if none "
         f"is downloaded yet, downloads the {FIRST_RUN_MODEL} starter ({FIRST_RUN_MODEL_SIZE}) once.",
     ).completer = alias_completer
+    _add_force_disk_check_arg(chat_parser)
     chat_parser.add_argument(
         "--harness",
         action="store_true",

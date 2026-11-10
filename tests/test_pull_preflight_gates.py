@@ -232,6 +232,38 @@ def test_force_disk_check_warns_and_downloads(host, monkeypatch, capsys):
         pull("minimax-h3")
     assert calls == []
     capsys.readouterr()
-    pull("minimax-h3", force_disk_check=True)
+    args = cli.build_parser().parse_args(["pull", "--force-disk-check", "minimax-h3"])
+    cli.pull_command(args)
     assert len(calls) == 2
-    assert "Insufficient disk space" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "Insufficient disk space" in error
+    assert "--force-disk-check set — proceeding anyway." in error
+
+
+@pytest.mark.parametrize("command", ["pull", "chat", "run", "serve", "bench"])
+def test_commands_with_disk_gate_accept_suggested_override(command):
+    parser = cli.build_parser()
+    assert parser.parse_args([command, "--force-disk-check", "m"]).force_disk_check
+    assert not parser.parse_args([command, "m"]).force_disk_check
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_product_artifact_disk_override(host, monkeypatch, capsys, force):
+    from unittest.mock import Mock
+
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+
+    artifact = artifacts.FLASH_1017
+    assert artifact.draft_subfolder
+    monkeypatch.setattr(artifacts, "require_pins", lambda _: None)
+    download = Mock()
+    monkeypatch.setattr(artifacts, "resolve_product_paths", download)
+    monkeypatch.setattr("rapid_mlx._mirror._cache_disk_space", lambda: ("cache", 0))
+    if force:
+        pull(artifact.target_repo, force_disk_check=True)
+        download.assert_called_once_with(artifact, allow_local=False)
+        assert "proceeding anyway" in capsys.readouterr().err
+    else:
+        with pytest.raises(SystemExit):
+            pull(artifact.target_repo)
+        download.assert_not_called()
