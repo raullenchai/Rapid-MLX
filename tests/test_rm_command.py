@@ -367,3 +367,21 @@ def test_rm_only_variant_keeps_root_checkpoint(variant_cache, capsys):
     assert (root / "blobs/config").exists()
     assert not (root / "blobs/four").exists()
     assert "(repository root)" in capsys.readouterr().out
+
+
+def test_rm_variant_drops_emptied_snapshot_and_ref(variant_cache, capsys):
+    import shutil
+
+    root, link = variant_cache
+    shutil.rmtree(root / "snapshots" / ("a" * 40) / "8bit")
+    (root / "snapshots" / ("a" * 40) / "config.json").unlink()
+    link("b" * 40, "8bit/model.safetensors", "eight", b"8" * 2000)
+    refs = root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("b" * 40)
+    (refs / "old").write_text("a" * 40)
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
+    assert not (root / "snapshots" / ("a" * 40)).exists()
+    assert not (refs / "old").exists()
+    assert (refs / "main").read_text() == "b" * 40
+    assert (root / "blobs/eight").exists()

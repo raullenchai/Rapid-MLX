@@ -13244,6 +13244,23 @@ def _cached_variant_removal(repo, subfolder):
     return selected, files, sorted(remaining)
 
 
+def _remove_emptied_snapshot(repo_path, snapshot_path):
+    """Drop a snapshot left without files and the refs naming it.
+
+    The cache scanner treats an empty snapshot directory as corruption.
+    """
+    import shutil
+
+    if any(p.is_file() or p.is_symlink() for p in snapshot_path.rglob("*")):
+        return
+    shutil.rmtree(snapshot_path, ignore_errors=True)
+    refs = repo_path / "refs"
+    if refs.is_dir():
+        for ref in refs.rglob("*"):
+            if ref.is_file() and ref.read_text().strip() == snapshot_path.name:
+                ref.unlink()
+
+
 def rm_command(args):
     """Remove a model from the HuggingFace cache.
 
@@ -13307,6 +13324,9 @@ def rm_command(args):
     if partial:
         import shutil
 
+        # Re-plan after the prompt so blobs a concurrent pull just linked
+        # from another variant are kept.
+        selected, files, _ = _cached_variant_removal(repo, subfolder)
         for path in selected:
             path.unlink()
         for path in files:
@@ -13314,6 +13334,7 @@ def rm_command(args):
                 path.unlink()
         for revision in repo.revisions:
             shutil.rmtree(revision.snapshot_path / subfolder, ignore_errors=True)
+            _remove_emptied_snapshot(repo.repo_path, revision.snapshot_path)
         print(f"  Removed variant {subfolder}; remaining: {', '.join(remaining)}")
     else:
         revisions = [rev.commit_hash for rev in repo.revisions]
