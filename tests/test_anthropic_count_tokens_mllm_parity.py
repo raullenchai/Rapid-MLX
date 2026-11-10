@@ -172,10 +172,11 @@ def test_render_request_prompt_requires_loaded_engine(engine):
         engine.render_request_prompt([{"role": "user", "content": "hello"}])
 
 
-def test_build_prompt_still_refuses_mllm(engine):
-    if engine.is_mllm:
-        with pytest.raises(RuntimeError, match="not supported for MLLM"):
-            engine.build_prompt([{"role": "user", "content": "hello"}])
+def test_build_prompt_renders_on_both_lanes(engine):
+    # The reasoning-budget probe renders both generation-prefix variants on
+    # the vision lane too, so build_prompt must not refuse MLLM engines.
+    prompt = engine.build_prompt([{"role": "user", "content": "hello"}])
+    assert isinstance(prompt, str)
 
 
 def test_count_tokens_accepts_token_id_prompt(engine, monkeypatch):

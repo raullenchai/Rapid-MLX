@@ -2992,13 +2992,20 @@ class BatchedEngine(BaseEngine):
         """
         if not self._loaded:
             raise RuntimeError("Engine not loaded — call start() first")
-        if self._is_mllm:
-            raise RuntimeError("build_prompt is not supported for MLLM models")
+        # Match chat()'s vision-placeholder preparation without loading media.
+        # The reasoning-budget probe needs both generation-prefix renders on
+        # the MLLM lane as well as on the text lane.
+        num_images = (
+            len(extract_multimodal_content(messages)[1])  # type: ignore[arg-type]
+            if self._is_mllm
+            else 0
+        )
         template_tools = convert_tools_for_template(tools) if tools else None
         try:
             prompt = self._apply_chat_template(
                 messages,
                 tools=template_tools,
+                num_images=num_images,
                 enable_thinking=enable_thinking,
                 add_generation_prompt=add_generation_prompt,
                 chat_template_kwargs=chat_template_kwargs,

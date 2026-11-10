@@ -101,6 +101,7 @@ from ..service.helpers import (
     prompt_compression_headers,
     reasoning_stop_scope_kwargs,
 )
+from .chat import _effective_posthoc_reasoning_cap
 
 
 def _apply_anthropic_thinking_defaults(openai_request: ChatCompletionRequest) -> None:
@@ -157,6 +158,19 @@ async def _attach_mllm_schema_processor(engine, openai_request, chat_kwargs) -> 
         # a reasoning preamble is outside its language. Keep prompt rendering
         # and response classification aligned with that decode contract.
         chat_kwargs["enable_thinking"] = False
+
+
+def _attach_mllm_reasoning_budget(engine, request, messages, chat_kwargs) -> None:
+    """Use the shared decode-time budget for multimodal thinking requests."""
+    if not getattr(engine, "is_mllm", False):
+        return
+    from .chat import _build_reasoning_budget_processor
+
+    processor = _build_reasoning_budget_processor(
+        engine, request, get_config(), messages, chat_kwargs.get("enable_thinking")
+    )
+    if processor is not None:
+        chat_kwargs["reasoning_budget_logits_processor"] = processor
 
 
 logger = logging.getLogger(__name__)
@@ -1026,6 +1040,7 @@ async def create_anthropic_message(
         if effective_thinking is not None:
             chat_kwargs["enable_thinking"] = effective_thinking
         await _attach_mllm_schema_processor(engine, openai_request, chat_kwargs)
+        _attach_mllm_reasoning_budget(engine, openai_request, messages, chat_kwargs)
 
         start_time = time.perf_counter()
         timeout = cfg.default_timeout
@@ -1226,7 +1241,9 @@ async def create_anthropic_message(
             # or legacy ``thinking.budget_tokens`` into this field on
             # the OpenAI-side request, so it propagates uniformly across
             # all three API surfaces.
-            reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
+            reasoning_max_tokens=_effective_posthoc_reasoning_cap(
+                chat_kwargs, openai_request
+            ),
             # r5-D shared finalize-on-truncation plug — see chat.py
             # for the rationale. Forwarded so the Anthropic surface
             # gets the same gemma4 / glm4 / minimax fixes.
@@ -1942,6 +1959,7 @@ async def _stream_anthropic_messages(
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
     await _attach_mllm_schema_processor(engine, openai_request, chat_kwargs)
+    _attach_mllm_reasoning_budget(engine, openai_request, messages, chat_kwargs)
     _schema_constrained = "grammar_logits_processor" in chat_kwargs
 
     # Issue #702: per-request alias-level reasoning capability gate.
@@ -2422,7 +2440,7 @@ async def _stream_anthropic_messages(
     # Per-request reasoning cap (upstream vLLM PR #20859 / #42396 backport).
     # Same chars-÷4 heuristic the OpenAI route uses so the same effective
     # budget applies regardless of which API surface the client picked.
-    _reasoning_cap = getattr(openai_request, "reasoning_max_tokens", None)
+    _reasoning_cap = _effective_posthoc_reasoning_cap(chat_kwargs, openai_request)
     _reasoning_tokens_emitted = 0
     _reasoning_cap_hit = False
     _reasoning_close_injected = False
