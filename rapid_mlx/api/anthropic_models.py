@@ -85,8 +85,10 @@ class AnthropicContentBlock(BaseModel):
     text: str | None = None
     # thinking block (echoed assistant block; assistant-only on inputs)
     thinking: str | None = None
-    # redacted_thinking block (opaque echoed assistant history)
-    data: str | None = None
+    # redacted_thinking block (opaque echoed assistant history). Typed
+    # loosely so an unknown block carrying ``data`` still reports the
+    # unknown type; the string check lives in ``_validate_block_shape``.
+    data: Any = None
     # tool_use block
     id: str | None = None
     name: str | None = None
@@ -165,6 +167,10 @@ class AnthropicContentBlock(BaseModel):
             raise ValueError(
                 f"content[].type={block_type!r} is missing required "
                 f"field(s): {field_list}."
+            )
+        if block_type == "redacted_thinking" and not isinstance(self.data, str):
+            raise ValueError(
+                "content[].type='redacted_thinking' data must be a string."
             )
         return self
 
