@@ -107,7 +107,10 @@ def test_install_rejects_unqualified_serving(monkeypatch, mode):
     assert fused.install_qwen35_residual_norm(object(), spec_decode=spec) == 0
 
 
-def test_install_is_model_local_and_idempotent(monkeypatch):
+@pytest.mark.parametrize(
+    "chip", ["Apple M3 Ultra", "Apple M4 Pro", "Apple M5 Max", "unknown"]
+)
+def test_install_is_model_local_and_idempotent(monkeypatch, chip):
     import mlx.nn as nn
 
     class Backbone(nn.Module):
@@ -117,7 +120,7 @@ def test_install_is_model_local_and_idempotent(monkeypatch):
     enrolled, other = Backbone(), Backbone()
     original = Backbone.__call__
     model = SimpleNamespace(named_modules=lambda: [("backbone", enrolled)])
-    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
+    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": chip})
     monkeypatch.setattr(fused, "_qualified", lambda value: True)
     monkeypatch.setattr(fused, "_probe", lambda *a: True)
     assert fused.install_qwen35_residual_norm(model) == 1

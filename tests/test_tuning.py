@@ -102,3 +102,40 @@ def test_both_gates_consult_registry(monkeypatch):
     assert residual.install_qwen35_residual_norm(object()) == 0
     assert [name for name, _ in calls] == list(tuning.KNOBS)
     assert all(scope["width"] == 1 for _, scope in calls)
+
+
+@pytest.mark.parametrize("name", tuning.KNOBS)
+def test_table_entry_precedes_knob_default(monkeypatch, name):
+    from dataclasses import replace
+
+    monkeypatch.delenv(tuning.KNOBS[name].env, raising=False)
+    monkeypatch.setitem(tuning.KNOBS, name, replace(tuning.KNOBS[name], default=True))
+    monkeypatch.setitem(
+        tuning.MEASURED_DEFAULTS,
+        ("M4 Pro", "test-version"),
+        {"knobs": {name: False}},
+    )
+    assert not resolve(name, chip="Apple M4 Pro", library_version="test-version")
+    assert resolve(name, chip="unknown", library_version="test-version")
+
+
+def test_missing_mlx_metadata_is_conservative(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", raising=False)
+
+    def missing(name):
+        raise tuning.PackageNotFoundError(name)
+
+    tuning.mlx_version.cache_clear()
+    monkeypatch.setattr(tuning, "version", missing)
+    try:
+        assert tuning.mlx_version() == "unknown"
+        assert not tuning.enabled(
+            "qwen35_affine4_bank_views",
+            {"device_name": "Apple M3 Ultra"},
+            family="qwen35_moe",
+            geometry=tuning.QWEN35_AFFINE4,
+            mode="plain",
+            width=1,
+        )
+    finally:
+        tuning.mlx_version.cache_clear()

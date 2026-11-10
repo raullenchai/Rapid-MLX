@@ -1,4 +1,4 @@
-# M3 Ultra singleton backbone submission and residual carry
+# Singleton backbone submission, residual carry, and device tuning
 
 Qwen3.6-35B-A3B plain decoding spent avoidable time submitting small command
 buffers. Two changes address the measured path without changing its arithmetic:
@@ -14,7 +14,8 @@ buffers. Two changes address the measured path without changing its arithmetic:
   width-one output and cache state byte-for-byte. Unsupported calls retain
   the original backbone. No projection weights are rewritten by this helper.
 
-Both defaults are limited to Apple M3 Ultra and the existing 35B MoE geometry.
+Measured defaults currently enable both knobs only on M3 Ultra / MLX 0.32.4
+and the existing 35B MoE geometry; round-14 per-chip decisions are below.
 The residual helper enrolls only when serving resolves to `spec_decode="none"`.
 Hidden capture, extra arguments, training, wider inputs, unsupported cache
 classes, and ragged recurrent caches retain the original call. Existing
@@ -130,3 +131,75 @@ Those arms select the same implementation checkout with both new switches off
 or on. The final committed-source measurements, raw emitted-ID comparisons,
 and source/lock verification receipt belong to that run's report. No generated
 text, model files, private caches, or raw benchmark artifacts are committed.
+
+## Round 14: per-chip policy qualification
+
+The device gates now resolve through [measured tuning policy](adaptive-tuning.md).
+The checked-in table keys exact chip variant and MLX version. Both defaults
+remain on for M3 Ultra / MLX 0.32.4; M4 Pro and M5 Max / MLX 0.32.4 are
+explicitly **measured-off** for both knobs. All other device/version combinations
+use the conservative off default. Truthy overrides request a qualified trial;
+falsey overrides win over measured defaults. The output/cache probes and
+geometry restrictions are unchanged.
+
+M4 Pro (48 GiB, macOS 26.5.1) and M5 Max (36 GiB, macOS 27.0.1) used Python
+3.12, MLX 0.32.4, mlx-lm 0.31.3, mlx-vlm 0.7.2, and the same cached target/head
+revisions, prompt, greedy harness, warmup exclusion and streaming timing above.
+Exact clean source: `e79576e4bd94a19f3e299fb86d70d1dad1565996`. Final follow-up
+changes only add typed measurement records, tests and documentation; the gate
+and resolver functions are unchanged. The off/on arms use this same source
+with explicit switch values, rather than different source checkouts.
+
+Each chip has three interleaved fresh-server repetitions of four plain arms
+and two default-MTP arms, reversing the middle repetition. `main` disables
+both knobs, `bank` enables only bank views, `residual` enables only residual
+carry, and `both` forces both on. Residual carry is still excluded from MTP.
+Primary rates are cold requests; repeated requests are retained separately.
+
+| Chip | Arm | Repetitions, tok/s | Median | Delta vs mode baseline | Range / median |
+| --- | --- | --- | ---: | ---: | ---: |
+| M4 Pro | main-plain | 100.59, 100.29, 100.16 | 100.29 | +0.00% | 0.43% |
+| M4 Pro | bank-plain | 100.19, 100.40, 100.07 | 100.19 | -0.10% | 0.33% |
+| M4 Pro | residual-plain | 101.47, 101.42, 101.42 | 101.42 | +1.13% | 0.05% |
+| M4 Pro | both-plain | 101.41, 101.57, 101.56 | 101.56 | +1.27% | 0.16% |
+| M4 Pro | main-mtp | 103.18, 103.15, 103.18 | 103.18 | +0.00% | 0.03% |
+| M4 Pro | both-mtp | 103.17, 103.05, 103.18 | 103.17 | -0.01% | 0.13% |
+| M5 Max | main-plain | 167.07, 167.46, 167.27 | 167.27 | +0.00% | 0.23% |
+| M5 Max | bank-plain | 168.88, 168.94, 169.06 | 168.94 | +1.00% | 0.11% |
+| M5 Max | residual-plain | 168.91, 169.49, 169.06 | 169.06 | +1.07% | 0.34% |
+| M5 Max | both-plain | 171.81, 172.13, 171.72 | 171.81 | +2.71% | 0.24% |
+| M5 Max | main-mtp | 180.10, 179.94, 180.03 | 180.03 | +0.00% | 0.09% |
+| M5 Max | both-mtp | 179.39, 179.93, 180.02 | 179.93 | -0.06% | 0.35% |
+
+M3 Ultra retains round-13 committed evidence: 161.93 -> 178.21 tok/s plain
+(+10.05%, three reps), pooled MTP 168.68 -> 169.17 (+0.29%, six reps).
+Its isolated prototype evidence is 162.21 -> 170.92 for bank views (+5.37%),
+then 170.92 -> 177.13 with residual carry (+3.63%). These prototype rates
+are separate from the committed campaign and must not be mixed into its median.
+
+Neither isolated knob reaches the required 2% gain on M4 Pro or M5 Max.
+M5 Max's combined +2.71% is recorded, but does not establish a >=2% gain
+for either isolated knob or either marginal addition: adding bank views to
+residual-only gives +1.63%; adding residual carry to bank-only gives +1.70%.
+It therefore does not justify enabling either knob under the per-knob rule.
+MTP differences (-0.01% M4, -0.06% M5) are smaller than observed candidate
+spreads; no positive MTP gain is claimed. Both measured-off decisions are
+retained in `rapid_mlx/tuning/defaults.py` with commit/date/rate provenance.
+
+All 36 cells have exact 256-token cold and repeated-request raw ID equality
+against their chip/mode baseline. All 12 residual-enabled plain enrollments
+across the two chips passed the unchanged real norm/output/cache-byte probes
+(12 enrollments: two residual-enabled arms x three reps x two chips).
+Cold-versus-repeat equality is not asserted: the existing MTP prefix-state
+behavior remains separately documented in the round-13 report.
+
+Every cell passed ten-second CPU/GPU admission, held/path lock-inode equality,
+clean source identity, expected output count and intended enrollment checks.
+No model download, CI VM change or foreign process signal occurred. Remote
+scratch was removed after verified evidence transfer; the M5 lease was released.
+Raw scripts, manifests, rows, IDs, logs, lock receipts, summaries and cleanup
+receipts live under `/private/tmp/rapid-mlx-gap-round14/`, including `REPORT.md`.
+
+The final focused roster passes 276 tests, plus 136 dense/native-cache neighbors
+in a fresh process: 412 total (the original 385 plus 27 new cases).
+Scoped Ruff check/format, tuning-module type check and `git diff --check` pass.
