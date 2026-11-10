@@ -12473,6 +12473,57 @@ def _pull_retry_command(args) -> str:
     return " ".join(parts)
 
 
+def _verify_pulled_snapshot(repo_id, snapshot_path, *, retry_hint, **kwargs):
+    """Verify a pull, repairing only corrupt files once at the same commit."""
+    from pathlib import Path
+
+    from rapid_mlx._download_gate import _is_repo_blob
+    from rapid_mlx.model_downloads import hf_hub_download
+    from rapid_mlx.model_integrity import ModelIntegrityError, verify_snapshot
+
+    try:
+        verify_snapshot(repo_id, snapshot_path, **kwargs)
+        return False
+    except ModelIntegrityError as exc:
+        if not exc.corrupt_files:
+            raise
+        corrupt_files = exc.corrupt_files
+
+    snapshot = Path(snapshot_path)
+    repo_root = _hf_cache_root(repo_id)
+    try:
+        if kwargs.get("local_files_only"):
+            raise ModelIntegrityError("Repair requires an online pull")
+        for name in corrupt_files:
+            file = snapshot / name
+            # Reuse the cache ownership check, including its two-hop shared
+            # store validation. Never follow a link into another repository.
+            if not file.parent.resolve().is_relative_to(snapshot.resolve()):
+                raise ModelIntegrityError(f"Unsafe snapshot path: {name}")
+            if file.is_symlink():
+                if repo_root is None or not _is_repo_blob(str(file), str(repo_root)):
+                    raise ModelIntegrityError(f"Unsafe blob link: {name}")
+                file.resolve().unlink()
+            file.unlink()
+            run_cancellable_download(
+                lambda name=name: _retry_hub_download(
+                    lambda: hf_hub_download(
+                        repo_id, name, revision=snapshot.name, force_download=True
+                    ),
+                    repo_id,
+                ),
+                retry_hint=retry_hint,
+            )
+        verify_snapshot(repo_id, snapshot_path, **kwargs)
+    except (ModelIntegrityError, OSError) as exc:
+        print(
+            f"  Error: Download is corrupt: {', '.join(corrupt_files)} ({exc})",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from None
+    return True
+
+
 def _pull_repository(
     args,
     *,
@@ -12486,8 +12537,6 @@ def _pull_repository(
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import HFValidationError
     from huggingface_hub.utils import RepositoryNotFoundError
-
-    from rapid_mlx.model_integrity import verify_snapshot
 
     repo_id = args.model  # already alias-resolved by main()
     emit_lifecycle_event = emit_lifecycle_event and bool(
@@ -12654,16 +12703,18 @@ def _pull_repository(
         if integrity_allow is None:
             subfolder = resolve_subfolder(repo_id)
             integrity_allow = [f"{subfolder}/*"] if subfolder else None
-        verify_snapshot(
+        repaired = _verify_pulled_snapshot(
             repo_id,
             snapshot_dir,
+            retry_hint="  Retry: "
+            + (getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)),
             revision=revision_override or snapshot_dir.name,
             allow_patterns=integrity_allow,
             local_files_only=_offline_hub_mode_active(),
         )
         # ``network_fetch`` is the mirror's authoritative "any bytes fetched
         # this pull" verdict (covers a fetched zero-byte file, codex #4).
-        _was_cached = not _mirror_out.get("network_fetch", True)
+        _was_cached = not repaired and not _mirror_out.get("network_fetch", True)
         # Commit the same pulled-variant transition as the HF fallback before
         # taking this early return.  The default mirror is the common path, so
         # dropping the selection here would make a successful ``pull --bits``
@@ -12789,9 +12840,11 @@ def _pull_repository(
             retry_hint="  Retry: "
             + (getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)),
         )
-        verify_snapshot(
+        _verify_pulled_snapshot(
             repo_id,
             path,
+            retry_hint="  Retry: "
+            + (getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)),
             revision=revision_override,
             allow_patterns=_allow,
             ignore_patterns=_ignore,
