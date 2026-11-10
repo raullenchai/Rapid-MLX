@@ -33,6 +33,62 @@ def run_bash(code, *args, env=None, **kwargs):
     )
 
 
+@pytest.mark.parametrize("audio_present", [True, False])
+def test_audio_preparation_only_runs_for_installed_audio(audio_present):
+    result = run_bash(
+        """
+INSTALLER=(fake-installer)
+run_install_command() {
+    case "$*" in
+        *find_spec*) return "$1" ;;
+        *prepare_runtime_requirement*) printf 'pipeline prepared\\n' ;;
+    esac
+}
+""".replace('return "$1"', "return 0" if audio_present else "return 1")
+        + """
+run_package_command() { printf '%s\\n' "$@"; }
+prepare_installed_audio
+""",
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    if audio_present:
+        assert "misaki>=0.5.0" in result.stdout
+        assert "spacy>=3.7,<3.9" in result.stdout
+        assert "pipeline prepared" in result.stdout
+    else:
+        assert not result.stdout
+
+
+@pytest.mark.parametrize("failure", ["dependencies", "pipeline"])
+def test_audio_preparation_failure_prints_one_fix(failure):
+    result = run_bash(
+        """
+INSTALLER=(fake-installer)
+run_install_command() {
+    case "$*" in
+        *find_spec*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+run_package_command() { return "$1"; }
+""".replace('return "$1"', "return 1" if failure == "dependencies" else "return 0")
+        + "prepare_installed_audio",
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    warning = result.stdout + result.stderr
+    assert warning.count("unavailable.") == 1
+    assert (
+        "misaki>=0.5.0" in warning
+        if failure == "dependencies"
+        else "pull kokoro" in warning
+    )
+    assert "Traceback" not in warning
+
+
 @pytest.mark.parametrize("term", ["dumb", "xterm"])
 def test_no_colour_on_pipe(term):
     result = run_bash(

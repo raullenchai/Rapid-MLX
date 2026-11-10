@@ -863,6 +863,32 @@ standalone_python_reusable() {
        [ "$(run_install_command "$STANDALONE_DIR/bin/python3" -c 'import platform; print(platform.machine())' 2>/dev/null || true)" = arm64 ]
 }
 
+# Base installs stay small. When audio is installed or restored on upgrade,
+# prepare Kokoro's Python dependencies and catalog-pinned English tokenizer.
+prepare_installed_audio() {
+    if ! run_install_command "$INSTALL_DIR/bin/python" -I -c \
+        'import importlib.util, sys; sys.exit(importlib.util.find_spec("mlx_audio") is None)' >/dev/null 2>&1; then
+        return 0
+    fi
+    info "Preparing Kokoro English audio support..."
+    if ! run_package_command "${INSTALLER[@]}" 'misaki>=0.5.0' 'spacy>=3.7,<3.9' 'num2words>=0.5.0'; then
+        warn "Kokoro dependencies unavailable. Run: $INSTALL_DIR/bin/python -m pip install 'misaki>=0.5.0' 'spacy>=3.7,<3.9' 'num2words>=0.5.0'"
+        return 0
+    fi
+    if ! run_install_command "$INSTALL_DIR/bin/python" -I -c '
+from rapid_mlx.audio.registry import runtime_requirements_for
+from rapid_mlx.audio.runtime_requirements import prepare_runtime_requirement
+try:
+    for requirement in runtime_requirements_for("kokoro"):
+        prepare_runtime_requirement(requirement)
+except (Exception, SystemExit):
+    raise SystemExit(1)
+'; then
+        warn "Kokoro English pipeline unavailable. Run '$INSTALL_DIR/bin/rapid-mlx pull kokoro' while online with downloads enabled."
+    fi
+    return 0
+}
+
 install_standalone_python() (
     if standalone_python_reusable; then
         dim "Reusing Python $PY_VERSION in ~/.rapid-mlx-python"
@@ -1138,6 +1164,7 @@ fi
 install_package
 finish_rebuild
 reinstall_preserved_extras
+prepare_installed_audio
 restart_service_hints "$INSTALL_ACTION"
 
 # Query the just-installed CLI's stable JSON surface. Failure is harmless and

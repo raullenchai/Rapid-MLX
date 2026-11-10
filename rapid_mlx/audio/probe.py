@@ -39,6 +39,7 @@ import require_mlx_audio_tts`` without crashing.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import threading
 from dataclasses import dataclass
@@ -625,6 +626,35 @@ _KOKORO_G2P_SPACY_MODEL = "en_core_web_sm"
 _G2P_MODEL_READY: bool | None = None
 
 
+def _kokoro_python_dependencies_hint() -> str | None:
+    """Import the English G2P dependencies without constructing its pipeline."""
+    try:
+        importlib.import_module("misaki.en")
+        importlib.import_module("spacy")
+    except (Exception, SystemExit):  # noqa: BLE001 - broken optional installs
+        return (
+            "Kokoro English TTS requires working misaki, spaCy and num2words. Run `"
+            + package_install_command("misaki")
+            + " 'spacy>=3.7,<3.9' num2words`, then `rapid-mlx pull kokoro` and retry."
+        )
+    return None
+
+
+def warn_if_kokoro_runtime_missing() -> None:
+    """Emit one local-only startup warning; never download or load weights."""
+    reason = _kokoro_python_dependencies_hint()
+    if reason is None:
+        try:
+            from rapid_mlx.audio.runtime_requirements import spacy_pipeline_available
+
+            if not spacy_pipeline_available(_KOKORO_G2P_SPACY_MODEL):
+                reason = _g2p_model_install_hint()
+        except (Exception, SystemExit):  # noqa: BLE001
+            reason = _g2p_model_install_hint()
+    if reason:
+        logger.warning("Kokoro TTS prerequisites missing: %s", reason)
+
+
 def _g2p_model_install_hint() -> str:
     """Fixed operator-facing recovery text with no environment details."""
     return (
@@ -655,6 +685,9 @@ def _probe_kokoro_g2p_model() -> tuple[bool, str | None]:
 
 def _probe_kokoro_g2p_model_impl() -> tuple[bool, str | None]:
     from rapid_mlx.audio.runtime_requirements import spacy_pipeline_available
+
+    if reason := _kokoro_python_dependencies_hint():
+        return False, reason
 
     try:
         available = spacy_pipeline_available(_KOKORO_G2P_SPACY_MODEL)
@@ -784,7 +817,11 @@ def require_kokoro_runtime(voice: str | None = None) -> None:
 
     from fastapi import HTTPException
 
-    if importlib.util.find_spec(_KOKORO_EXTRA_DEP) is None:
+    try:
+        present = importlib.util.find_spec(_KOKORO_EXTRA_DEP) is not None
+    except (Exception, SystemExit):  # noqa: BLE001
+        present = False
+    if not present:
         raise HTTPException(
             status_code=503,
             detail=f"{_KOKORO_EXTRA_HINT}",

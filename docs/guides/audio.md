@@ -13,6 +13,24 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 - **Zero-shot voice cloning**: IndexTTS, Qwen3-TTS Base, F5-TTS, Chatterbox
 - **Audio Processing**: SAM-Audio (voice separation)
 
+## Kokoro prerequisites
+
+For pip installs, install `python3 -m pip install 'rapid-mlx[audio]'` in the
+server environment. This includes Misaki (with Chinese and Japanese
+extras), spaCy, num2words, and the espeak runtime. English Kokoro voices also require the
+`en_core_web_sm` pipeline: prepare it with `rapid-mlx pull kokoro` while online.
+`install.sh` prepares it when audio support is present, including restored
+audio extras on upgrade.
+
+Speech requests never download or install packages. If `misaki`, spaCy or
+the English pipeline is missing, `/v1/audio/speech` returns HTTP 503 JSON with
+the exact repair command, and `serve --enable-audio` logs a startup warning.
+
+Some Homebrew builds bundle only the basic audio runtime. If Kokoro returns
+503, use the repair command in the response, which targets the server's Python
+environment, then run `rapid-mlx pull kokoro` while online. Installing packages
+into an unrelated system Python does not repair the server environment.
+
 ## Idle model release
 
 Pass `--audio-lane-idle-ttl 300` to `rapid-mlx serve` to release cached STT,

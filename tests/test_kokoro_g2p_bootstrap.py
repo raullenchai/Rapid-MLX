@@ -35,6 +35,7 @@ from rapid_mlx.audio.runtime_requirements import (
 
 @pytest.fixture(autouse=True)
 def _fresh_verdict(monkeypatch):
+    monkeypatch.setattr(probe, "_kokoro_python_dependencies_hint", lambda: None)
     monkeypatch.setattr(runtime_requirements, "version", lambda name: "3.8.11")
     _reset_g2p_model_state()
     yield
