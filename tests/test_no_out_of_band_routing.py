@@ -164,6 +164,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # asked for a log level: echoes the benchmark server's log to stderr.
         # It changes diagnostics output only, never model or lane selection.
         "RAPID_MLX_BENCH_SERVER_LOG_ECHO",
+        # Private parent->child handoff of checkpoint identity facts for a
+        # community benchmark run (temp file path); provenance only, no routing.
+        "RAPID_MLX_BENCH_IDENTITY_RECEIPT",
         # Qualification-only destination for generated token-ID evidence.
         # It changes audit storage, never model, parser, or serving-lane choice.
         "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
