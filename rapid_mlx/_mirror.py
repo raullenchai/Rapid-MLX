@@ -60,6 +60,28 @@ class MirrorOnlyPullError(RuntimeError):
     """A pinned mirror cannot prove every requested file without the Hub."""
 
 
+def _raise_if_disk_full(exc: BaseException) -> None:
+    """Preserve ENOSPC before a per-file failure becomes a mirror miss."""
+    import errno
+
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno == errno.ENOSPC:
+            raise current
+        for wrapped in (
+            current.__cause__,
+            current.__context__,
+            getattr(current, "reason", None),
+        ):
+            if isinstance(wrapped, BaseException):
+                pending.append(wrapped)
+
+
 # Cloudflare 403s the default ``Python-urllib/*`` UA — verified by the
 # maintainer. Any plausible browser-ish UA works. Keep ``rapid-mlx`` in
 # the string so the maintainer can spot our traffic in R2 logs.
@@ -918,6 +940,7 @@ def _download_one_from_r2(
         target.parent.mkdir(parents=True, exist_ok=True)
         sidecar_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
+        _raise_if_disk_full(e)
         return False, f"mkdir:{type(e).__name__}"
 
     tmp = sidecar_dir / f"{sidecar_key}.part"
@@ -1185,6 +1208,7 @@ def _do_r2_download(
         OSError,
         ValueError,
     ) as e:
+        _raise_if_disk_full(e)
         # Keep a non-empty prefix for retryable transport failures. The next
         # attempt validates the server's 206/Content-Range response before
         # appending, while all integrity failures above still unlink it.
@@ -1206,6 +1230,7 @@ def _do_r2_download(
     try:
         final_size = tmp.stat().st_size if tmp.exists() else 0
     except OSError as e:
+        _raise_if_disk_full(e)
         _safe_unlink(tmp)
         _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-stat:{type(e).__name__}"
@@ -1252,6 +1277,7 @@ def _do_r2_download(
         try:
             got_oid = _git_blob_oid(tmp)
         except OSError as e:
+            _raise_if_disk_full(e)
             _safe_unlink(tmp)
             _rollback_credits(progress_tracker, chunks_credited)
             return False, f"oid-read:{type(e).__name__}"
@@ -1292,6 +1318,7 @@ def _do_r2_download(
     try:
         tmp.rename(target)
     except OSError as e:
+        _raise_if_disk_full(e)
         _safe_unlink(tmp)
         _rollback_credits(progress_tracker, chunks_credited)
         return False, f"rename:{type(e).__name__}"
@@ -1339,6 +1366,7 @@ def _install_lfs_blob_and_symlink(
     try:
         blobs_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
+        _raise_if_disk_full(e)
         return False, f"blob-mkdir:{type(e).__name__}"
 
     # Per-blob lock keeps two concurrent pulls of the same LFS file
@@ -1369,10 +1397,12 @@ def _install_lfs_blob_and_symlink(
             try:
                 tmp.rename(blob_tmp)
             except OSError as e:
+                _raise_if_disk_full(e)
                 return False, f"blob-stage:{type(e).__name__}"
             try:
                 blob_tmp.rename(blob_path)
             except OSError as e:
+                _raise_if_disk_full(e)
                 _safe_unlink(blob_tmp)
                 return False, f"blob-rename:{type(e).__name__}"
 
@@ -1392,6 +1422,7 @@ def _install_lfs_blob_and_symlink(
         try:
             target.symlink_to(rel)
         except OSError as e:
+            _raise_if_disk_full(e)
             return False, f"symlink:{type(e).__name__}"
         return True, ""
     finally:
@@ -1712,7 +1743,8 @@ def _hf_fallback_one(
         httpx.TransportError,
         OSError,
         TimeoutError,
-    ):
+    ) as exc:
+        _raise_if_disk_full(exc)
         return False, None
 
 
@@ -2610,15 +2642,21 @@ def download_with_mirror_fallback(
                 # stack trace instead of disappearing into the fallback.
                 try:
                     _, kind, size = fut.result()
-                except (
-                    OSError,
-                    TimeoutError,
-                    urllib.error.URLError,
-                    urllib.error.HTTPError,
-                    EntryNotFoundError,
-                    RepositoryNotFoundError,
-                    HfHubHTTPError,
-                ):
+                except Exception as exc:
+                    _raise_if_disk_full(exc)
+                    if not isinstance(
+                        exc,
+                        (
+                            OSError,
+                            TimeoutError,
+                            urllib.error.URLError,
+                            urllib.error.HTTPError,
+                            EntryNotFoundError,
+                            RepositoryNotFoundError,
+                            HfHubHTTPError,
+                        ),
+                    ):
+                        raise
                     kind, size = "miss", 0
                 if kind == "r2":
                     r2_hits += 1
