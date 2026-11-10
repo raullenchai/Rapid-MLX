@@ -16,6 +16,7 @@ OPENERS = {
     "hy_v3": "<tool_call:opensource>",
     "ui_tars": "Action:",
     "lfm": "[get_current_weather(",
+    "pythonic": "[get_current_weather(",
     "deepseek_v4_flash": "<｜DSML｜tool_calls>",
     "deepseek_v4_0731": "<｜DSML｜tool_calls>",
 }

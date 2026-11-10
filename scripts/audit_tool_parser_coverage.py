@@ -77,6 +77,7 @@ MATRIX_EXEMPT: dict[str, str] = {
     # leaving the TODO after adding matrix coverage is harmless — the
     # audit still passes because matrix > exempt).
     "gemma4": "TODO: re-add gemma4 to golden_models when mlx-community ships a tighter instruction-tuned variant (see golden_models.yaml lines 125-141)",
+    "pythonic": "TODO: Gemma 3 12B/27B use pythonic (#5710); not in golden_models yet because the matrix loads every golden model per PR. Verified end-to-end on gemma3-12b-4bit (single, parallel, streamed calls) in #5715",
     "qwen3_xml": "TODO: parser registered to QwenToolParser (JSON body) but name implies XML body; covered by hermes BARE_FUNCTION_PATTERN in practice — fix or deprecate registration in follow-up to #426",
     "qwen3_coder_xml": "TODO: add Qwen3-Coder XML body model to golden_models when capacity allows",
     "glm47": "TODO: add GLM-4.7/5 model to golden_models",

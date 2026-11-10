@@ -74,6 +74,7 @@ from .minimax_tool_parser import MiniMaxToolParser
 from .mistral_tool_parser import MistralToolParser
 from .muse_tool_parser import MuseToolParser
 from .nemotron_tool_parser import NemotronToolParser
+from .pythonic_tool_parser import PythonicToolParser
 from .qwen3coder_tool_parser import Qwen3CoderToolParser
 from .qwen_tool_parser import QwenToolParser
 from .seed_oss_tool_parser import SeedOssToolParser
@@ -111,5 +112,6 @@ __all__ = [
     "DeepSeekV40731ToolParser",
     "DeepSeekV31ToolParser",
     "Qwen3CoderToolParser",
+    "PythonicToolParser",
     "UiTarsToolParser",
 ]

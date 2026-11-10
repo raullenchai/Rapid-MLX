@@ -1001,6 +1001,7 @@ CANONICAL_WIRES = {
         "</atem:invoke></atem:function_calls>"
     ),
     "nemotron": _xml_wire("lookup", "hello"),
+    "pythonic": "[lookup(text='hello')]",
     "qwen3_coder_xml": _xml_wire("lookup", "hello"),
     "qwen3": _json_wire("lookup", "hello"),
     "seed_oss": (

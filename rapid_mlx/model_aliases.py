@@ -97,7 +97,9 @@ VALID_DFLASH_ALGORITHMS: frozenset[str] = frozenset({"dflash", "dflash2"})
 # Bundled chat-template contracts that may be selected by a model profile.
 # The value is declarative model data, not a request-time heuristic: aliases
 # opt into one exact template and the tokenizer loader resolves it once.
-VALID_CHAT_TEMPLATE_IDS: frozenset[str] = frozenset({"gemma4_compact", "gemma4_full"})
+VALID_CHAT_TEMPLATE_IDS: frozenset[str] = frozenset(
+    {"gemma3_pythonic", "gemma4_compact", "gemma4_full"}
+)
 
 
 # Canonical names for block-diffusion speculative-decoding drafter kinds.

@@ -146,6 +146,12 @@ def native_cases():
             [["read_file", {"path": "sample.txt"}]],
         ],
         [
+            "pythonic",
+            "pythonic",
+            "[read_file(path='sample.txt')]",
+            [["read_file", {"path": "sample.txt"}]],
+        ],
+        [
             "xlam",
             "json",
             '[{"name":"read_file","arguments":{"path":"sample.txt"}}]',

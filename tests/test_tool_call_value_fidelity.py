@@ -96,6 +96,10 @@ def _render_raw_json_array(name: str, key: str, value: str) -> str:
     return json.dumps([{"name": name, "arguments": {key: value}}])
 
 
+def _render_pythonic(name: str, key: str, value: object) -> str:
+    return f"[{name}({key}={value!r})]"
+
+
 def _render_xml_body(name: str, key: str, value: str) -> str:
     # Nemotron / Qwen3.6 wire format. No escaping layer exists in this
     # format — that is precisely why literal closing markers are dangerous.
@@ -123,6 +127,7 @@ RENDERERS = {
     "json_body": _render_json_body,
     "raw_json": _render_raw_json,
     "raw_json_array": _render_raw_json_array,
+    "pythonic_bracket": _render_pythonic,
     "xml_body": _render_xml_body,
     "minicpm_native": _render_minicpm,
     "muse_atem": _render_muse_atem,
@@ -149,6 +154,7 @@ COVERED: list[tuple[str, str]] = [
     ("minicpm", "minicpm_native"),
     ("xlam", "raw_json_array"),
     ("muse", "muse_atem"),
+    ("pythonic", "pythonic_bracket"),
 ]
 
 # Formats whose escaping rules this file does not model yet. Each entry is a
@@ -246,6 +252,11 @@ def _known_broken(parser_name: str, wire_format: str, case: str) -> str | None:
 # tool calls from these models, since the scanner is the fallback. Pre-dates
 # this change and is out of its scope, but it should be visible.
 _SCANNER_BLIND: dict[tuple[str, str], str] = {
+    (
+        "pythonic",
+        "pythonic_bracket",
+    ): "parse_tool_calls does not recognise Python-list call syntax; "
+    "Gemma 3 12B/27B tool calling requires the dedicated pythonic parser",
     (
         "minicpm",
         "minicpm_native",
@@ -347,6 +358,31 @@ def test_renderer_is_valid_for_parser(parser_name, wire_format):
         f"the renderer, or move the pair to _FIDELITY_EXEMPT. Do not leave it "
         f"here, where the scanner fallback would mask it."
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "quoted 'text' with \\ and \n",
+        42,
+        -7,
+        1.25,
+        -0.5,
+        True,
+        False,
+        None,
+        [],
+        {},
+        ["text", 2, False, None, {"nested": [True, -3.5]}],
+        {"items": [1, "two"], "enabled": True, "missing": None},
+    ],
+)
+def test_pythonic_literal_values_survive_round_trip(value):
+    text = RENDERERS["pythonic_bracket"](_NAME, _KEY, value)
+    calls = _extract_parser_only("pythonic", text)
+    assert len(calls) == 1
+    assert calls[0][0] == _NAME
+    assert json.loads(calls[0][1]) == {_KEY: value}
 
 
 @pytest.mark.parametrize("parser_name,wire_format", COVERED)
