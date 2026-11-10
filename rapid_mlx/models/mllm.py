@@ -1914,6 +1914,13 @@ class MLXMultimodalLM:
 
                 install_qwen35_affine4(self.model)
 
+                if self.spec_decode == "none":
+                    from ..qwen35_residual_norm import install_qwen35_residual_norm
+
+                    install_qwen35_residual_norm(
+                        self.model, spec_decode=self.spec_decode
+                    )
+
             if config_model_type == "qwen3_5" and self.spec_decode == "none":
                 from ..gdn_in_proj_fusion import fuse_gdn_in_proj
                 from ..qwen35_fused_gdn_decode import install_qwen35_fused_gdn_decode

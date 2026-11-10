@@ -7,7 +7,9 @@ Expert accumulation differs from the composed path; see qualification evidence.
 Enabled by default; set RAPID_MLX_QWEN35_AFFINE4=0 to disable immediately.
 """
 
+import functools
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -15,6 +17,7 @@ from pathlib import Path
 import mlx.core as mx
 
 from .._env import env_falsey
+from ..tuning import QWEN35_AFFINE4, ModelProfile, enabled, resolve, runtime_context
 
 logger = logging.getLogger(__name__)
 _GATE = None
@@ -24,6 +27,50 @@ _ROUTER256 = None
 _GATE_ROWS = 1
 _DOWN_ROWS = 1
 _LOCK = threading.RLock()
+
+
+def _singleton_bank_views_enabled():
+    """Request measured policy only within the already-qualified expert path."""
+    return _bank_views_policy(os.environ.get("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS"))
+
+
+@functools.lru_cache(maxsize=4)
+def _bank_views_policy(_override):
+    # Called per MoE layer per token: resolve once per override value so the
+    # hot path does not re-read device info or rescan the measured table.
+    return enabled(
+        "qwen35_affine4_bank_views",
+        mx.device_info(),
+        family="qwen35_moe",
+        geometry=QWEN35_AFFINE4,
+        # This binding is identical in plain decode and MTP singleton calls.
+        mode="plain",
+        width=1,
+    )
+
+
+def _bank_bindings(projection):
+    """Bind a zero-offset prefix while retaining the complete allocation.
+
+    Metal addresses experts using explicit kernel geometry. MLX charges a
+    command buffer for each input's logical data span; binding every expert
+    unnecessarily forces commits. A prefix view shares the complete backing
+    buffer and its lifetime, including when a pending graph outlives the model.
+    Make the entire bank contiguous BEFORE slicing: contiguating a sliced
+    noncontiguous bank could allocate storage for only the first expert.
+    """
+    full = (projection.weight, projection.scales, projection.biases)
+    cached = getattr(projection, "_rapid_affine4_bank_bindings", None)
+    if cached is not None and all(a is b for a, b in zip(full, cached[0])):
+        return cached[1]
+    if not all(isinstance(a, mx.array) and a.ndim == 3 for a in full):
+        return full
+    views = tuple(mx.contiguous(a)[:1] for a in full)
+    # Keep runtime-only bindings out of the parameter tree. A weight rebind
+    # invalidates this entry; pending graphs retain their own old allocations.
+    object.__setattr__(projection, "_rapid_affine4_bank_bindings", (full, views))
+    return views
+
 
 _ROUTER256_SOURCE = r"""
     uint tid = thread_position_in_threadgroup.x;
@@ -160,10 +207,18 @@ def _initialize_kernels():
         sig = mx.sigmoid(mx.arange(65536, dtype=mx.uint16).view(mx.bfloat16))
         mx.eval(sig)
         # Each projection keeps its tile across singleton and verification.
-        # M4 Pro benefits from fewer output-row threadgroups in both kernels.
-        _GATE_ROWS, _DOWN_ROWS = (
-            (2, 4) if mx.device_info().get("device_name") == "Apple M4 Pro" else (1, 1)
+        profile = ModelProfile(
+            family="qwen35_moe",
+            hidden_size=2048,
+            intermediate_size=512,
+            num_experts=256,
+            top_k=8,
+            bits=4,
+            group_size=64,
         )
+        _GATE_ROWS, _DOWN_ROWS = resolve(
+            "qwen35_affine4_rows", runtime_context(mx.device_info(), model=profile)
+        ).value
         _GATE, _DOWN, _SIG = gate, down, sig
 
 
@@ -174,8 +229,12 @@ def forward(block, x):
     dp = sm.down_proj
     tokens = x.shape[1]
     gate_rows, down_rows = _GATE_ROWS, _DOWN_ROWS
-    gw, gs, gb = gu.weight, gu.scales, gu.biases
-    dw, ds, db = dp.weight, dp.scales, dp.biases
+    if tokens == 1 and _singleton_bank_views_enabled():
+        gw, gs, gb = _bank_bindings(gu)
+        dw, ds, db = _bank_bindings(dp)
+    else:
+        gw, gs, gb = gu.weight, gu.scales, gu.biases
+        dw, ds, db = dp.weight, dp.scales, dp.biases
     logits = block.gate(x)
     inds, scores, glog = fused_route(block, x, logits)
     shared = block.shared_expert(x)
@@ -328,9 +387,9 @@ def _patch_class(cls):
 def install_qwen35_affine4(model):
     """Enroll compatible short decode blocks; larger batches/widths fall back.
 
-    Full banks remain explicit kernel inputs. No pointers escape their MLX
-    arrays, and no class closure retains models, weights or request state.
-    All GPU temporaries belong to the individual forward invocation.
+    Qualified singleton bindings may use allocation-backed prefix views.
+    No pointers escape their MLX arrays, and no class closure retains models,
+    weights or request state. Wider verification retains full-bank bindings.
     """
     if env_falsey("RAPID_MLX_QWEN35_AFFINE4") or not mx.metal.is_available():
         return 0

@@ -16,12 +16,18 @@ from importlib.metadata import PackageNotFoundError, version
 import mlx.core as mx
 
 from .._env import env_truthy
+from ..tuning import resolve, runtime_context
+from ..tuning.capabilities import (
+    QSA_ARCHITECTURES,
+    QSA_MLX_VERSIONS,
+    requirement_reason,
+)
 
 logger = logging.getLogger(__name__)
 
 ENABLE_ENV = "RAPID_MLX_QSA_INDEXED_SPLITK"
-QUALIFIED_MLX_VERSIONS = frozenset({"0.32.2"})
-QUALIFIED_METAL_ARCHITECTURES = frozenset({"applegpu_g15d"})
+QUALIFIED_MLX_VERSIONS = QSA_MLX_VERSIONS
+QUALIFIED_METAL_ARCHITECTURES = QSA_ARCHITECTURES["qsa_indexed_splitk"]
 MAX_QUERY_LENGTH = 3
 QUALIFIED_QUERY_LENGTHS = frozenset({1, 3})
 MIN_KV_LENGTH_VERIFY = 16_384
@@ -75,15 +81,22 @@ def indexed_splitk_decline_reason(
     if physical_kv_length < crossover:
         return "physical KV below crossover"
     installed_version = _mlx_version() if mlx_version is None else mlx_version
-    if installed_version not in QUALIFIED_MLX_VERSIONS:
-        return f"unqualified MLX version {installed_version}"
     if not mx.metal.is_available():
         return "Metal runtime unavailable"
     architecture = (
         _metal_architecture() if metal_architecture is None else metal_architecture
     )
-    if architecture not in QUALIFIED_METAL_ARCHITECTURES:
-        return f"unqualified Metal architecture {architecture}"
+    ctx = runtime_context(
+        {"architecture": architecture},
+        library_version=installed_version,
+        width=query_length,
+        batch=batch_size,
+    )
+    reason = requirement_reason("qsa_indexed_splitk", ctx)
+    if reason:
+        return reason
+    if not resolve("qsa_indexed_splitk", ctx).value:
+        return "disabled"
     return None
 
 

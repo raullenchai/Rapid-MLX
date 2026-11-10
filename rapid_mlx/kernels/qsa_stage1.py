@@ -16,14 +16,20 @@ from types import SimpleNamespace
 import mlx.core as mx
 
 from .._env import env_truthy
+from ..tuning import resolve, runtime_context
+from ..tuning.capabilities import (
+    QSA_ARCHITECTURES,
+    QSA_MLX_VERSIONS,
+    requirement_reason,
+)
 
 _SUPPORTED_DTYPES = (mx.float16, mx.bfloat16, mx.float32)
 _MAX_TOPK = 512
 ENABLE_ENV = "RAPID_MLX_QSA_STAGE1"
 MIN_QUERY_LENGTH = 64
 MIN_PHYSICAL_KV_LENGTH = 65_024
-QUALIFIED_MLX_VERSIONS = frozenset({"0.32.2"})
-QUALIFIED_METAL_ARCHITECTURES = frozenset({"applegpu_g14s", "applegpu_g15d"})
+QUALIFIED_MLX_VERSIONS = QSA_MLX_VERSIONS
+QUALIFIED_METAL_ARCHITECTURES = QSA_ARCHITECTURES["qsa_stage1"]
 
 
 @lru_cache(maxsize=1)
@@ -64,15 +70,22 @@ def qsa_stage1_decline_reason(
     if physical_kv_length < MIN_PHYSICAL_KV_LENGTH:
         return "physical KV below crossover"
     installed = _mlx_version() if mlx_version is None else mlx_version
-    if installed not in QUALIFIED_MLX_VERSIONS:
-        return f"unqualified MLX version {installed}"
     if not mx.metal.is_available():
         return "Metal runtime unavailable"
     architecture = (
         _metal_architecture() if metal_architecture is None else metal_architecture
     )
-    if architecture not in QUALIFIED_METAL_ARCHITECTURES:
-        return f"unqualified Metal architecture {architecture}"
+    ctx = runtime_context(
+        {"architecture": architecture},
+        library_version=installed,
+        width=query_length,
+        batch=batch_size,
+    )
+    reason = requirement_reason("qsa_stage1", ctx)
+    if reason:
+        return reason
+    if not resolve("qsa_stage1", ctx).value:
+        return "disabled"
     return None
 
 

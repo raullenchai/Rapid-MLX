@@ -48,6 +48,8 @@ from typing import Any
 
 import mlx.core as mx
 
+from ...tuning import resolve, runtime_context
+
 MAX_ROWS = 1 << 16
 RT_MAX = 2  # 8-row tiles a threadgroup: more rows than 8 RT_MAX spread over the grid's y axis
 MMA_SGS = 16  # physical simdgroups at most (fewer where a pipeline takes fewer threads): same chunks
@@ -86,22 +88,22 @@ _TRACING = "function transformations"
 _fitted: dict[Any, int] = {}
 
 
-def _architecture() -> int | None:
-    info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
-    found = re.match(r"applegpu_g(\d+)", str(info.get("architecture", "")))
-    return int(found.group(1)) if found else None
-
-
 _PROBING: list[bool] = []
 
 
 def _probing() -> bool:
     if not _PROBING:
         try:
-            arch = _architecture()
-        except Exception:  # noqa: BLE001 - unknown device: probe to be safe
-            arch = None
-        _PROBING.append(arch is None or arch < 15)
+            info = (
+                mx.device_info()
+                if hasattr(mx, "device_info")
+                else mx.metal.device_info()
+            )
+            _PROBING.append(
+                bool(resolve("lane_simd_probe", runtime_context(info)).value)
+            )
+        except Exception:  # noqa: BLE001 - unknown pipeline: fit conservatively
+            _PROBING.append(True)
     return _PROBING[0]
 
 

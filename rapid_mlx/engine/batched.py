@@ -2173,6 +2173,17 @@ class BatchedEngine(BaseEngine):
             else getattr(config, "model_type", None)
         )
         spec_decode = getattr(self._scheduler_config, "spec_decode", "none")
+        if logger.isEnabledFor(logging.DEBUG) and isinstance(config, dict):
+            import mlx.core as mx
+
+            from .. import tuning
+
+            self._tuning_context = tuning.runtime_context(
+                mx.device_info(),
+                config=config,
+                mode="plain" if spec_decode == "none" else spec_decode,
+            )
+            logger.debug("Resolved tuning: %s", tuning.dump(self._tuning_context))
         self._mllm_dense_singleton_fastpath = False
         if _should_start_qwen36_native_text_cache(
             language_model,

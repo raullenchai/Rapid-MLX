@@ -123,6 +123,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Opt-in fused affine-4 MoE expert kernels for Qwen3.6 MoE; picks a
         # kernel implementation for the same model, never a model or route.
         "RAPID_MLX_QWEN35_AFFINE4",
+        # Singleton expert buffer binding; same model, kernels and arithmetic.
+        "RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS",
+        "RAPID_MLX_QWEN35_RESIDUAL_NORM",  # exact singleton residual/norm fusion
         # Read-only diagnostic override for doctor: selects which existing
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
