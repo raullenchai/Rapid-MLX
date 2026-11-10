@@ -13321,12 +13321,15 @@ def rm_command(args):
             print("Aborted.")
             sys.exit(0)
 
+    if subfolder:
+        # Re-plan after the prompt: the cache may have changed meanwhile.
+        selected, files, remaining = _cached_variant_removal(repo, subfolder)
+        partial = bool(remaining)
+        if partial:
+            size_str = _format_bytes(sum(path.stat().st_size for path in files))
     if partial:
         import shutil
 
-        # Re-plan after the prompt so blobs a concurrent pull just linked
-        # from another variant are kept.
-        selected, files, _ = _cached_variant_removal(repo, subfolder)
         for path in selected:
             path.unlink()
         for path in files:

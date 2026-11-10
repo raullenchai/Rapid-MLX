@@ -333,13 +333,14 @@ def test_rm_variant_confirmation(variant_cache, monkeypatch, capsys, response):
     assert (root / "blobs/eight").exists()
 
 
-def test_rm_variant_includes_regular_files(variant_cache, capsys):
+def test_rm_variant_includes_regular_files(variant_cache, monkeypatch, capsys):
     root, _ = variant_cache
+    monkeypatch.setattr(cli, "_format_bytes", lambda size: f"{size} bytes")
     regular = root / "snapshots" / ("a" * 40) / "4bit/local.json"
     regular.write_bytes(b"local")
     cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
     assert not regular.exists()
-    assert f"Freed {cli._format_bytes(1005)}" in capsys.readouterr().out
+    assert "Freed 1005 bytes" in capsys.readouterr().out
 
 
 def test_rm_root_checkpoint_removes_repo(variant_cache, capsys):
@@ -385,3 +386,20 @@ def test_rm_variant_drops_emptied_snapshot_and_ref(variant_cache, capsys):
     assert not (refs / "old").exists()
     assert (refs / "main").read_text() == "b" * 40
     assert (root / "blobs/eight").exists()
+
+
+def test_rm_replans_mode_after_confirmation(variant_cache, monkeypatch, capsys):
+    import shutil
+
+    root, link = variant_cache
+    shutil.rmtree(root / "snapshots" / ("a" * 40) / "8bit")
+
+    def confirm(prompt):
+        # A sibling variant finishes downloading while the prompt is open.
+        link("a" * 40, "8bit/model.safetensors", "eight", b"8" * 2000)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", confirm)
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=False))
+    assert (root / "blobs/eight").exists()
+    assert not (root / "blobs/four").exists()
