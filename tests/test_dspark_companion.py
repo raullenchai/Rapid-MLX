@@ -1050,7 +1050,13 @@ def test_companion_rejects_unsupported_media_before_render_or_generation(
     assert response.status_code == 400
     error = response.json()["error"]
     assert error == {
-        "message": f"Model 'lfm-vl' does not support {media_kind} inputs.",
+        "message": f"Model 'lfm-vl' does not support {media_kind} inputs"
+        + (
+            " in chat; transcribe it with /v1/audio/transcriptions and send "
+            "the text instead."
+            if media_kind == "audio"
+            else "."
+        ),
         "type": "invalid_request_error",
         "code": "unsupported_content_type",
         "param": "messages.content",
