@@ -48,6 +48,7 @@ class Knob:
     env: str | None = None
     default: object = False
     profile_requirement: bool = False
+    candidates: tuple[object, ...] = ()
 
     def valid(self, value):
         if self.default == ():
@@ -75,9 +76,16 @@ class Knob:
         )
 
 
-def _knob(name, scope, env=None, default=False, profile_requirement=False):
+def _knob(
+    name, scope, env=None, default=False, profile_requirement=False, candidates=()
+):
     return Knob(
-        scope, lambda c: requirement_reason(name, c), env, default, profile_requirement
+        scope,
+        lambda c: requirement_reason(name, c),
+        env,
+        default,
+        profile_requirement,
+        candidates,
     )
 
 
@@ -101,6 +109,7 @@ KNOBS = {
         lambda c: c.mode == "mtp" and c.batch == 1,
         "RAPID_MLX_MTP_MAX_DEPTH",
         default=1,
+        candidates=(1, 2, 3, 4),
     ),
     "qwen35_affine4_bank_views": _knob(
         "qwen35_affine4_bank_views",

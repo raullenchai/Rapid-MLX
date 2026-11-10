@@ -11,6 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DESTINATION = ROOT / "rapid_mlx" / "catalog" / "schemas"
 SOURCES = (
     (
+        ROOT / "proto" / "community-benchmark" / "v1" / "benchmark-run.schema.json",
+        "benchmark-run.schema.json",
+    ),
+    (
         ROOT / "proto" / "model-runtime" / "v1" / "model-identity.schema.json",
         "model-identity.schema.json",
     ),

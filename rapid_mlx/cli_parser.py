@@ -2326,6 +2326,17 @@ def _add_benchmark_parser(
         action="store_true",
         help="Measure with every acceleration off (the original Community Benchmark protocol)",
     )
+    community_run.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Interleave the default and registered MTP depth candidates locally",
+    )
+    community_run.add_argument(
+        "--sweep-reps",
+        type=int,
+        default=3,
+        help="Fresh runner repetitions per sweep arm (default: 3, range: 1..10)",
+    )
     acceleration = community_run.add_argument_group(
         "acceleration (same flags and meaning as `rapid-mlx serve`)"
     )

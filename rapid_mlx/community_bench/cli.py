@@ -590,7 +590,14 @@ def _benchmark_command(args) -> int:
                         event_sink = _tagged_event_to_stderr
                     else:
                         progress_sink = None
-                    value = run_local(
+                    runner = run_local
+                    sweep_options = {}
+                    if getattr(args, "sweep", False):
+                        from .sweep import run_sweep
+
+                        runner = run_sweep
+                        sweep_options["repetitions"] = args.sweep_reps
+                    value = runner(
                         args.benchmark_model,
                         archive=archive,
                         inherit_process_group=getattr(
@@ -599,6 +606,7 @@ def _benchmark_command(args) -> int:
                         progress=progress_sink,
                         events=event_sink,
                         acceleration=acceleration,
+                        **sweep_options,
                     )
                 finally:
                     if main_thread:
@@ -741,6 +749,15 @@ def _benchmark_command(args) -> int:
                 )
         else:
             print("Upload cancelled. Nothing was sent.")
+    elif "sweep" in value:
+        from .sweep import summary_lines
+
+        for line in summary_lines(value["sweep"]):
+            print(line)
+        for run in value["sweep"]:
+            print(
+                f"Share arm {run['experiment']['arm_id']}: rapid-mlx benchmark share {run['run_id']}"
+            )
     else:  # run
         print(f"Saved local result {value['run_id']}")
         task = value.get("execution", {}).get("task", {})
