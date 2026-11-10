@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+from typing import cast
 
 from .._env import is_falsey, is_truthy
 from .capabilities import requirement_reason
@@ -150,7 +151,7 @@ def resolve(
     )
     if type(knob.default) is int:
         try:
-            depth = int(override)
+            depth = int(cast(str, override))
         except (ValueError, TypeError):
             depth = None
         if _valid(knob, depth):

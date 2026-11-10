@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Depth policy at the installed single-request MTP capability boundary."""
 
+from typing import cast
+
 from . import resolve, runtime_context
 
 
@@ -32,7 +34,7 @@ def resolve_max_depth(model, requested: int, *, explicit: bool) -> int:
     )
     decision = resolve("mtp_max_depth", ctx)
     return (
-        int(decision.value)
+        int(cast(int, decision.value))
         if decision.source not in {"default", "blocked"}
         else requested
     )
