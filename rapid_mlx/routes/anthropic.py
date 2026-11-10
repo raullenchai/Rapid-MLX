@@ -1034,9 +1034,13 @@ async def create_anthropic_message(
         # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
         # passthrough). Same precedence as the OpenAI route.
         resolved_thinking = _resolve_enable_thinking(openai_request)
-        effective_thinking = _effective_enable_thinking(
-            resolved_thinking, cfg.model_path or cfg.model_name
-        )
+        effective_thinking = resolved_thinking
+        # Preserve the single-model fallback; registry targets must support
+        # reasoning before we synthesize a thinking flag from template defaults.
+        if not cfg.model_registry or _resolve_reasoning_enabled(openai_request.model):
+            effective_thinking = _effective_enable_thinking(
+                resolved_thinking, cfg.model_path or cfg.model_name
+            )
         if effective_thinking is not None:
             chat_kwargs["enable_thinking"] = effective_thinking
         await _attach_mllm_schema_processor(engine, openai_request, chat_kwargs)

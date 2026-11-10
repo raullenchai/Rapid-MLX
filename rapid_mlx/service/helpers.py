@@ -2110,8 +2110,8 @@ def maybe_auto_disable_thinking_for_casual_chat(request, *, extra_signals=None) 
 
     Trigger (all must hold):
 
-      * The server has a reasoning parser configured
-        (``cfg.reasoning_parser_name is not None``). This is the
+      * The targeted model has a reasoning parser configured
+        (resolved from its registry entry in multi-model mode). This is the
         only server-side signal that the active model is in fact
         thinking-capable — when no parser is registered the model
         does not emit ``<think>`` at all, so the budget-burn failure
@@ -2200,7 +2200,7 @@ def maybe_auto_disable_thinking_for_casual_chat(request, *, extra_signals=None) 
     # helper must be a no-op so a non-thinking model (llama / mistral /
     # qwen3-coder / …) keeps whatever resolution the chat-template
     # default would have applied.
-    if not getattr(cfg, "reasoning_parser_name", None):
+    if not _resolve_reasoning_enabled(getattr(request, "model", None)):
         return False
     # Codex r1 NIT: when the operator pinned ``--no-thinking`` at the
     # server level, ``_resolve_enable_thinking`` already forces False
@@ -3041,14 +3041,16 @@ def _resolve_reasoning_enabled(model_name: str | None) -> bool:
     BLOCKING on PR #705.
     """
     cfg = get_config()
-    if cfg.model_registry:
+    if getattr(cfg, "model_registry", None):
         try:
             entry = cfg.model_registry.get_entry(model_name)
         except KeyError:
             entry = None
         if entry is not None:
             return bool(getattr(entry, "reasoning_parser", None))
-    return cfg.reasoning_parser is not None or bool(cfg.reasoning_parser_name)
+    return getattr(cfg, "reasoning_parser", None) is not None or bool(
+        cfg.reasoning_parser_name
+    )
 
 
 # ── Unicode validation (F-130 / F-131) ─────────────────────────────

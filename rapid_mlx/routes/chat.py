@@ -5131,14 +5131,14 @@ async def _create_chat_completion_impl(
     ) and maybe_auto_disable_thinking_for_casual_chat(request):
         logger.info(
             "R12-T2F auto-disable: /v1/chat/completions casual chat "
-            "request to a thinking-capable model (parser=%s) with no "
+            "request to a thinking-capable model (model=%s) with no "
             "client-set thinking preference and no explicit reasoning "
             "intent — injecting chat_template_kwargs."
             "enable_thinking=False so thinking models do not burn the "
             "token budget inside <think> before emitting the answer. "
             "Set chat_template_kwargs.enable_thinking=true (or "
             "reasoning_max_tokens / reasoning_effort) to opt back in.",
-            cfg.reasoning_parser_name,
+            request.model,
         )
 
     # Resolve enable_thinking once and reuse — drives both the

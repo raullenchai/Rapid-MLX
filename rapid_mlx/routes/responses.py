@@ -1342,7 +1342,7 @@ async def create_response(request: Request):
         ):
             logger.info(
                 "R12-T2F auto-disable: /v1/responses casual chat "
-                "request to a thinking-capable model (parser=%s) with "
+                "request to a thinking-capable model (model=%s) with "
                 "no client-set thinking preference and no explicit "
                 "reasoning intent — injecting chat_template_kwargs."
                 "enable_thinking=False so thinking models do not burn "
@@ -1350,7 +1350,7 @@ async def create_response(request: Request):
                 "answer. Set chat_template_kwargs.enable_thinking=true "
                 "(or reasoning / reasoning_max_tokens / reasoning_effort) "
                 "to opt back in.",
-                get_config().reasoning_parser_name,
+                openai_request.model,
             )
 
         try:

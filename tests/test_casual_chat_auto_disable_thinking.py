@@ -67,9 +67,10 @@ from fastapi.testclient import TestClient
 from rapid_mlx.api import response_format_metrics
 from rapid_mlx.api.models import ChatCompletionRequest
 from rapid_mlx.api.responses_models import ResponsesRequest
-from rapid_mlx.config import reset_config
+from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 from rapid_mlx.service.helpers import (
     _resolve_enable_thinking,
     maybe_auto_disable_thinking_for_casual_chat,
@@ -916,6 +917,69 @@ class _ResponsesEngine:
             finish_reason="stop",
             channel=None,
         )
+
+    async def stream_chat(self, *, messages, **kwargs):
+        yield await self.chat(messages=messages, **kwargs)
+
+
+@pytest.mark.parametrize("surface", ["chat", "anthropic", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("target_parser", ["qwen3", None])
+@pytest.mark.parametrize("preference", [None, "top_level", "nested"])
+def test_dynamic_target_casual_thinking_defaults(
+    surface, stream, target_parser, preference, _rate_limiter_state, caplog, tmp_path
+):
+    """#5734: defaults follow the loaded target, regardless of primary parser."""
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+
+    primary = _ResponsesEngine()
+    target = _ResponsesEngine()
+    primary_parser = None if target_parser else "qwen3"
+    if surface == "responses":
+        client = _make_responses_client(primary, reasoning_parser_name=primary_parser)
+        path = "/v1/responses"
+        payload = _responses_payload()
+    else:
+        client = _make_chat_client(primary, reasoning_parser_name=primary_parser)
+        path = "/v1/chat/completions"
+        payload = {
+            "messages": [{"role": "user", "content": "Say hello"}],
+            "max_tokens": 80,
+        }
+        if surface == "anthropic":
+            client.app.include_router(anthropic_router)
+            path = "/v1/messages"
+
+    cfg = get_config()
+    cfg.model_registry = ModelRegistry()
+    for name, engine, parser in (
+        ("primary", primary, primary_parser),
+        ("target", target, target_parser),
+    ):
+        cfg.model_registry.add(
+            ModelEntry(
+                engine=engine,
+                model_name=name,
+                model_path=str(tmp_path / name),
+                aliases={f"{name}-alias"},
+                reasoning_parser=parser,
+            )
+        )
+    payload.update(model="target-alias", stream=stream)
+    if preference == "top_level":
+        payload["enable_thinking"] = True
+    elif preference == "nested":
+        payload["chat_template_kwargs"] = {"enable_thinking": True}
+
+    with caplog.at_level("INFO"):
+        response = client.post(path, json=payload)
+    assert response.status_code == 200, response.text
+    assert not primary.chat_calls
+    assert len(target.chat_calls) == 1
+    expected = True if preference else False if target_parser else None
+    assert target.chat_calls[0]["kwargs"].get("enable_thinking") is expected
+    if target_parser and not preference and surface != "anthropic":
+        assert "model=target-alias" in caplog.text
 
 
 def _make_responses_client(
