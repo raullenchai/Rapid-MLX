@@ -45,6 +45,7 @@ def sample(arm="default", rate=100):
         tuning.ModelProfile("qwen3_5_moe_text", 2048, 512, 256, 8, 4, 64, (), "affine"),
         mode="mtp",
         has_mtp_head=True,
+        rapid_mlx=__version__,
     )
     run["tuning"] = {
         "context": json.loads(json.dumps(tuning.dump(ctx))),
@@ -505,3 +506,93 @@ def test_failed_quality_studies_remain_valid_observations(field, value):
             note["plain"][field] = value
         run["tuning"]["quality"] = note
     assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+
+
+def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    from rapid_mlx.tuning import defaults
+
+    runs = paired()
+    entry = tuning_distill.distill(runs, as_of=NOW)["entries"][0]
+    blocked = {
+        name
+        for name, decision in runs[1]["tuning"]["context"]["knobs"].items()
+        if decision["source"] == "capability"
+    }
+    assert blocked and not blocked.intersection(entry["knobs"])
+    path = tmp_path / "profile.json"
+    path.write_text(
+        json.dumps(
+            dict(
+                schema_version=1,
+                profile_version="sweep.1",
+                generated_at=NOW.isoformat(),
+                entries=[entry],
+            )
+        )
+    )
+    profile = defaults.load_profile(path, tuning.KNOBS)
+    assert len(profile.entries) == 1
+    monkeypatch.setattr(tuning, "overlay_profile", lambda: profile)
+    ctx = tuning.TuningContext(
+        tuning.HardwareProfile(**runs[1]["tuning"]["context"]["hardware"]),
+        "0.32.4",
+        "26.5.2",
+        tuning.ModelProfile("qwen3_5_moe_text", 2048, 512, 256, 8, 4, 64, (), "affine"),
+        mode="mtp",
+        has_mtp_head=True,
+        rapid_mlx=__version__,
+    )
+    decision = tuning.resolve("mtp_max_depth", ctx, environ={})
+    assert decision == tuning.Decision(
+        3, "overlay:" + entry["id"], profile_version="sweep.1"
+    )
+    for changed in (
+        replace(ctx, hardware=replace(ctx.hardware, gpu_cores=79)),
+        replace(ctx, hardware=replace(ctx.hardware, memory_size=None)),
+        replace(ctx, mlx="0.32.5"),
+        replace(ctx, rapid_mlx="0.1"),
+        replace(ctx, model=replace(ctx.model, hidden_size=4096)),
+        replace(ctx, width=2),
+    ):
+        assert not tuning.resolve(
+            "mtp_max_depth", changed, environ={}
+        ).source.startswith("overlay:")
+
+
+@pytest.mark.parametrize("change", ["runtime", "profiles", "geometry"])
+def test_distiller_v2_facts_must_match(change):
+    runs = paired()
+    ctx = runs[1]["tuning"]["context"]
+    if change == "runtime":
+        ctx["rapid_mlx"] = "0.1"
+    elif change == "profiles":
+        ctx["profiles"]["overlay"] = "other.1"
+    else:
+        ctx["model"]["num_experts"] = 0
+    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+
+
+def test_schema_preserves_full_v2_profile_sources_and_versions():
+    run = sample()
+    ctx = run["tuning"]["context"]
+    assert ctx["rapid_mlx"] == __version__
+    assert set(ctx["profiles"]) == {"builtin", "overlay"}
+    decision = ctx["knobs"]["mtp_max_depth"]
+    decision.update(source="overlay:" + "a" * 128, profile_version="test.1")
+    BenchmarkRunValidator().validate(run)
+    for location in (ctx["profiles"], decision):
+        bad = copy.deepcopy(run)
+        target = (
+            bad["tuning"]["context"]["profiles"]
+            if location is ctx["profiles"]
+            else bad["tuning"]["context"]["knobs"]["mtp_max_depth"]
+        )
+        target["builtin" if location is ctx["profiles"] else "profile_version"] = (
+            "private/path"
+        )
+        with pytest.raises(ValueError):
+            BenchmarkRunValidator().validate(bad)

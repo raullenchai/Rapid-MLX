@@ -32,6 +32,7 @@ def cell_key(run: dict) -> str:
             ctx["model"],
             ctx["mlx"],
             ctx["macos"],
+            ctx["profiles"],
             run["execution"]["runtime"],
             primary,
             run["workload"],
@@ -49,7 +50,7 @@ def effective_configuration(run: dict) -> dict:
     knobs = {
         name: decision["value"]
         for name, decision in ctx["knobs"].items()
-        if decision["source"] != "blocked"
+        if decision["source"] != "capability"
     }
     knobs.update(run["tuning"]["overrides"])
     return {"mode": ctx["mode"], "knobs": knobs}
@@ -120,6 +121,7 @@ def distill(
         eligible = (
             0 <= age <= max_age_days
             and runtime["rapid_mlx"] == rapid_version
+            and runtime["rapid_mlx"] == ctx["rapid_mlx"]
             and runtime["mlx"] == ctx["mlx"]
             and ctx["macos"] == run["machine"]["os"]["version"]
             and ctx["mlx"] != "unknown"
@@ -135,8 +137,15 @@ def distill(
             and model["family"] != "unknown"
             and model["quant_mode"] != "unknown"
             and all(
-                model[key] is not None
-                for key in ("hidden_size", "intermediate_size", "bits", "group_size")
+                model[key] is not None and model[key] > 0
+                for key in (
+                    "hidden_size",
+                    "intermediate_size",
+                    "num_experts",
+                    "top_k",
+                    "bits",
+                    "group_size",
+                )
             )
             and hw["tier"] != "unknown"
             and ctx["width"] == ctx["batch"] == 1

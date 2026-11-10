@@ -74,6 +74,7 @@ def candidate_requests(context: dict, request: AccelerationRequest):
         width=1,
         batch=1,
         has_mtp_head=context["has_mtp_head"],
+        rapid_mlx=context["rapid_mlx"],
     )
     from rapid_mlx.cli import _resolve_mtp_depth_for_model
 

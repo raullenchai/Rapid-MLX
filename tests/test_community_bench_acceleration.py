@@ -214,6 +214,8 @@ def acceleration_probes(monkeypatch):
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", core)
+    # Policy probes use inert MLX; skip optional upstream cache registration.
+    monkeypatch.setitem(sys.modules, "mlx_lm", None)
     import rapid_mlx.api.utils as utils
     import rapid_mlx.model_auto_config as auto
     import rapid_mlx.spec_decode.mtp as mtp
