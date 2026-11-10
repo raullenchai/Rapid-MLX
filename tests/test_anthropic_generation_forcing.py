@@ -199,55 +199,28 @@ def _drain(stream):
     return run()
 
 
-def test_forced_stream_preflight_timeout_is_idle_not_total(monkeypatch):
+def test_forced_stream_preflight_has_no_generation_deadline(monkeypatch):
     import asyncio
 
     from rapid_mlx.routes import anthropic as route
 
-    async def steady():
-        for index in range(5):
-            await asyncio.sleep(0.03)
-            yield index
+    async def long_buffered_call():
+        # Forced content is buffered: one packet after a long generation.
+        await asyncio.sleep(0.2)
+        yield "complete-call"
 
-    monkeypatch.setattr(get_config(), "default_timeout", 0.1)
+    monkeypatch.setattr(get_config(), "default_timeout", 0.05)
 
     async def run():
         replay = await route._preflight_forced_tool_stream(
-            steady(), _ConnectedRequest(), engine="engine", request_id_holder=["rid"]
+            long_buffered_call(),
+            _ConnectedRequest(),
+            engine="engine",
+            request_id_holder=["rid"],
         )
         return await _drain(replay)
 
-    # 5 x 30 ms exceeds the 100 ms deadline in total, never between packets.
-    assert asyncio.run(run()) == [0, 1, 2, 3, 4]
-
-
-def test_forced_stream_preflight_stall_times_out_and_aborts(monkeypatch):
-    import asyncio
-
-    from fastapi import HTTPException
-
-    from rapid_mlx.routes import anthropic as route
-
-    async def stalled():
-        yield 0
-        await asyncio.sleep(10)
-        yield 1
-
-    aborted = Mock()
-    monkeypatch.setattr(route, "_force_abort_request", aborted)
-    monkeypatch.setattr(get_config(), "default_timeout", 0.05)
-
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            route._preflight_forced_tool_stream(
-                stalled(),
-                _ConnectedRequest(),
-                engine="engine",
-                request_id_holder=["rid"],
-            )
-        )
-    assert exc.value.status_code == 504
-    aborted.assert_called_once_with("engine", ["rid"])
+    assert asyncio.run(run()) == ["complete-call"]
 
 
 @pytest.mark.parametrize(
