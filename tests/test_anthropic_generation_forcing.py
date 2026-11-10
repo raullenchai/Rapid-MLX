@@ -157,3 +157,31 @@ def test_adapter_preserves_parallel_tool_preference(disabled, expected):
         tool_choice=choice,
     )
     assert anthropic_to_openai(request).parallel_tool_calls is expected
+
+
+def test_forced_stream_preflight_client_disconnect_aborts(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import anthropic as route
+
+    async def gen():
+        yield "packet"
+
+    async def disconnected(coro, request, timeout):
+        coro.close()
+        return None
+
+    aborted = Mock()
+    monkeypatch.setattr(route, "_wait_with_disconnect", disconnected)
+    monkeypatch.setattr(route, "_force_abort_request", aborted)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            route._preflight_forced_tool_stream(
+                gen(), Mock(), engine="engine", request_id_holder=["rid"]
+            )
+        )
+    assert exc.value.status_code == 499
+    aborted.assert_called_once_with("engine", ["rid"])
