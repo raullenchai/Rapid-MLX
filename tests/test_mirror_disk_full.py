@@ -3,6 +3,9 @@
 import argparse
 import errno
 import urllib.error
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +17,7 @@ from tests.test_mirror_pinned_revision import (
     REPO,
     WEIGHTS,
     _install_packaged_digests,
+    _Resp,
     _Router,
     _snap,
 )
@@ -46,6 +50,7 @@ def test_packaged_pull_preserves_disk_full(monkeypatch, tmp_path, source, wrappe
     router = _Router({"config.json": CONFIG})
     monkeypatch.setattr("urllib.request.urlopen", router)
     error = failure(wrapper)
+    ranges = []
 
     def fail(*args, **kwargs):
         raise error
@@ -55,7 +60,14 @@ def test_packaged_pull_preserves_disk_full(monkeypatch, tmp_path, source, wrappe
 
         def urlopen(req, **kwargs):
             if "model.safetensors" in req.full_url:
-                raise error
+                offset = len(WEIGHTS[:8])
+                ranges.append(req.get_header("Range"))
+                response = _Resp(WEIGHTS[offset:])
+                response.status = 206
+                response.headers["Content-Range"] = (
+                    f"bytes {offset}-{len(WEIGHTS) - 1}/{len(WEIGHTS)}"
+                )
+                return response
             return original(req, **kwargs)
 
         monkeypatch.setattr("urllib.request.urlopen", urlopen)
@@ -70,13 +82,46 @@ def test_packaged_pull_preserves_disk_full(monkeypatch, tmp_path, source, wrappe
     (snapshot / "config.json").write_bytes(CONFIG)
     sidecar = snapshot.parents[1] / ".rapid-mlx-mirror"
     sidecar.mkdir()
-    partial = sidecar / "retained.part"
+    partial = sidecar / f"{_mirror._sidecar_key_for('model.safetensors')}.part"
     partial.write_bytes(WEIGHTS[:8])
-    with pytest.raises(OSError) as caught:
-        _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path, revision=PIN)
+    original_open = Path.open
+    writes = []
+
+    def write(chunk):
+        # The transport delivered the resumed body; the disk rejects its write.
+        writes.append(chunk)
+        assert chunk == WEIGHTS[8:]
+        raise error
+
+    @contextmanager
+    def open_with_full_disk(path, mode="r", *args, **kwargs):
+        with original_open(path, mode, *args, **kwargs) as stream:
+            if path == partial and mode == "ab":
+                yield SimpleNamespace(write=write)
+            else:
+                yield stream
+
+    with monkeypatch.context() as attempt:
+        if source == "mirror":
+            attempt.setattr(Path, "open", open_with_full_disk)
+        with pytest.raises(OSError) as caught:
+            _mirror.download_with_mirror_fallback(
+                REPO, cache_dir=tmp_path, revision=PIN
+            )
     assert caught.value.errno == errno.ENOSPC
     assert (snapshot / "config.json").read_bytes() == CONFIG
     assert partial.read_bytes() == WEIGHTS[:8]
+    if source == "mirror":
+        assert writes == [WEIGHTS[8:]]
+        assert ranges == ["bytes=8-"]
+        assert not (snapshot / "model.safetensors").exists()
+        assert _mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, revision=PIN
+        )
+        assert ranges == ["bytes=8-", "bytes=8-"]
+        assert (snapshot / "model.safetensors").read_bytes() == WEIGHTS
+        assert (snapshot / "config.json").read_bytes() == CONFIG
+        assert not partial.exists()
 
 
 @pytest.mark.parametrize("command", ["pull", "serve"])
