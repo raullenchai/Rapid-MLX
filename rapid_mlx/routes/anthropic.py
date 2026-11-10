@@ -3023,11 +3023,11 @@ async def _stream_anthropic_messages(
     tool_calls = _filter_tool_calls_by_tool_choice(
         tool_calls or [], openai_request.tool_choice
     )
-    tool_choice_error = _forced_tool_choice_error(
+    # Headers are already committed here, so a missing forced call is an
+    # SSE error (buffered text is dropped below), never a fabricated call.
+    tool_validation_error: str | None = _forced_tool_choice_error(
         tool_calls, openai_request.tool_choice
     )
-    if tool_choice_error:
-        raise HTTPException(status_code=422, detail=tool_choice_error)
     if getattr(openai_request, "parallel_tool_calls", None) is False:
         tool_calls = tool_calls[:1]
 
@@ -3039,8 +3039,7 @@ async def _stream_anthropic_messages(
     # offending tool_use blocks so the client can recover. Matches the
     # non-stream branch's 400 contract in spirit while staying within
     # the Anthropic streaming protocol.
-    tool_validation_error: str | None = None
-    if tool_calls and openai_request.tools:
+    if tool_calls and openai_request.tools and not tool_validation_error:
         try:
             _validate_tool_call_params(tool_calls, openai_request.tools)
         except HTTPException as exc:

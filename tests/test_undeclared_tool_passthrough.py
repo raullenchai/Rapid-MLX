@@ -191,10 +191,18 @@ def test_explicit_tool_choice_still_constrains_output(
     ):
         assert "tool_choice pinned function" in response.json()["detail"]
         return
-    if choice == "named" and api == "messages" and response.status_code == 422:
-        # A forced Anthropic choice shares chat's contract: when the parsed
-        # output holds no call to the pinned tool it is a 422, never a leak.
-        assert "produced no tool_calls" in response.text
+    if (
+        choice == "named"
+        and api == "messages"
+        and "produced no tool_calls" in response.text
+    ):
+        # A forced Anthropic choice with no call to the pinned tool is an
+        # error, never a leak: 422 before headers, an SSE error once streaming.
+        if stream:
+            assert response.status_code == 200
+            assert "event: error" in response.text
+        else:
+            assert response.status_code == 422
         return
     assert response.status_code == 200, response.text
     if stream:

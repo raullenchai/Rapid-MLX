@@ -17,6 +17,7 @@ context-length DoS gate use.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -94,7 +95,9 @@ class _ToolStreamingEngine(_BaseEngine):
         engine_prompt_tokens: int | None = None,
         engine_cached_tokens: int = 0,
         tool_calls_per_chunk: list[list] | None = None,
+        signal_admission: bool = False,
     ):
+        self._signal_admission = signal_admission
         self._deltas = deltas
         self._engine_prompt_tokens = engine_prompt_tokens
         self._engine_cached_tokens = engine_cached_tokens
@@ -104,6 +107,13 @@ class _ToolStreamingEngine(_BaseEngine):
 
     async def stream_chat(self, messages, **kwargs):
         self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+        if self._signal_admission:
+            # Real engines notify admission before decoding, so headers are
+            # committed and late failures surface as SSE error events.
+            from rapid_mlx.service import helpers
+
+            helpers._stream_admission_event().set()
+            await asyncio.sleep(0)
         for i, text in enumerate(self._deltas):
             payload = {
                 "new_text": text,
@@ -503,11 +513,28 @@ def test_nonstream_tool_choice_auto_does_not_force_tool_call():
 # ──────────────────────────────────────────────────────────────────
 
 
-def test_stream_tool_choice_any_single_tool_rejects_missing_call_before_headers():
+def _assert_forced_stream_error_without_fabrication(r) -> None:
+    """Late forced-choice failure: SSE error, no fabricated call, no text."""
+    assert r.status_code == 200, r.text
+    events = _parse_sse(r.text)
+    errors = [e for e in events if e.get("type") == "error"]
+    assert errors, events
+    assert "tool_choice" in errors[-1]["error"]["message"]
+    assert not [
+        e
+        for e in events
+        if e.get("type") == "content_block_start"
+        and e.get("content_block", {}).get("type") == "tool_use"
+    ]
+    assert "cannot" not in r.text
+
+
+def test_stream_tool_choice_any_single_tool_missing_call_is_sse_error():
     """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I ", "cannot ", "help."],
         engine_prompt_tokens=5,
+        signal_admission=True,
     )
     client = _make_client(engine)
     r = client.post(
@@ -521,16 +548,15 @@ def test_stream_tool_choice_any_single_tool_rejects_missing_call_before_headers(
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 422, r.text
-    assert "tool_choice" in r.json()["detail"]
-    assert "event:" not in r.text
+    _assert_forced_stream_error_without_fabrication(r)
 
 
-def test_stream_tool_choice_any_multi_tool_rejects_missing_call_before_headers():
+def test_stream_tool_choice_any_multi_tool_missing_call_is_sse_error():
     """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I ", "cannot ", "help."],
         engine_prompt_tokens=5,
+        signal_admission=True,
     )
     client = _make_client(engine)
     r = client.post(
@@ -547,16 +573,15 @@ def test_stream_tool_choice_any_multi_tool_rejects_missing_call_before_headers()
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 422, r.text
-    assert "tool_choice" in r.json()["detail"]
-    assert "event:" not in r.text
+    _assert_forced_stream_error_without_fabrication(r)
 
 
-def test_stream_tool_choice_named_text_only_rejected_before_headers():
+def test_stream_tool_choice_named_text_only_is_sse_error():
     """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I ", "cannot ", "help."],
         engine_prompt_tokens=5,
+        signal_admission=True,
     )
     client = _make_client(engine)
     r = client.post(
@@ -573,9 +598,7 @@ def test_stream_tool_choice_named_text_only_rejected_before_headers():
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 422, r.text
-    assert "tool_choice" in r.json()["detail"]
-    assert "event:" not in r.text
+    _assert_forced_stream_error_without_fabrication(r)
 
 
 # ──────────────────────────────────────────────────────────────────

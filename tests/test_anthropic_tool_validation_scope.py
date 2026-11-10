@@ -589,8 +589,8 @@ def test_pinned_tool_required_schema_model_emits_only_wrong_tool_returns_422():
     assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_required_schema_streaming_no_calls_returns_422_before_headers():
-    """A decoder ignoring the constraint returns an error before headers."""
+def test_pinned_tool_required_schema_streaming_no_calls_is_sse_error():
+    """A decoder ignoring the constraint is an SSE error once streaming."""
     distinctive_text = "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy"
     engine = _MultiCallEngine(None, text=distinctive_text)
     client = _make_client(engine)
@@ -604,14 +604,17 @@ def test_pinned_tool_required_schema_streaming_no_calls_returns_422_before_heade
         ),
     )
 
-    assert response.status_code == 422, response.text
-    assert "tool_choice" in response.json()["detail"]
-    assert "event:" not in response.text
+    # Headers are committed for streams: the missing forced call is an SSE
+    # error and the buffered text never reaches the wire.
+    assert response.status_code == 200, response.text
+    assert "event: error" in response.text
+    assert "produced no tool_calls" in response.text
+    assert '"type": "tool_use"' not in response.text
     assert "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy" not in response.text
 
 
-def test_pinned_tool_required_schema_streaming_only_wrong_tool_returns_422_before_headers():
-    """A decoder ignoring the constraint returns an error before headers."""
+def test_pinned_tool_required_schema_streaming_only_wrong_tool_is_sse_error():
+    """A decoder ignoring the constraint is an SSE error once streaming."""
     engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
     client = _make_client(engine)
 
@@ -624,9 +627,12 @@ def test_pinned_tool_required_schema_streaming_only_wrong_tool_returns_422_befor
         ),
     )
 
-    assert response.status_code == 422, response.text
-    assert "tool_choice" in response.json()["detail"]
-    assert "event:" not in response.text
+    # Headers are committed for streams: the missing forced call is an SSE
+    # error and the buffered text never reaches the wire.
+    assert response.status_code == 200, response.text
+    assert "event: error" in response.text
+    assert "produced no tool_calls" in response.text
+    assert '"type": "tool_use"' not in response.text
     assert "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy" not in response.text
 
 

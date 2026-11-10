@@ -1238,9 +1238,13 @@ def test_forced_json_stop_4663(client, route, reasoning, stream):
                 "tool_choice": {"type": "tool", "name": "get_weather"},
             },
         )
-        assert response.status_code == 422, response.text
-        assert "no tool_calls" in response.json()["detail"]
-        assert "event:" not in response.text
+        assert "no tool_calls" in response.text
+        if stream:
+            assert response.status_code == 200, response.text
+            assert "event: error" in response.text
+            assert '"type": "tool_use"' not in response.text
+        else:
+            assert response.status_code == 422, response.text
         return
     content, calls, _ = _reply(
         client,
