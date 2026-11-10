@@ -3,9 +3,9 @@
 
 F3: ``tool_choice={"type":"any"}`` on /v1/messages was a silent no-op.
 The adapter mapped it to OpenAI ``"required"`` but the Anthropic route
-bypasses chat.py so the prompt-suffix + post-parse synth/422 enforcement
-levers never fired. Tests in this module verify both the non-stream and
-stream branches now mirror chat.py's behaviour.
+now shares chat.py generation constraints. These tests retain prompt hints
+and verify that a decoder ignoring the constraints fails before streaming
+headers instead of fabricating an empty tool call.
 
 F5: streaming ``message_start.usage.input_tokens`` was hard-coded to 0
 because the prompt-token count wasn't computed until inside the engine
@@ -26,11 +26,10 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.routes.anthropic import (
-    _enforce_required_tool_choice_present,
     _estimate_anthropic_prompt_tokens,
+    _forced_tool_choice_error,
     _inject_tool_use_required_suffix,
     _is_required_tool_choice,
-    _synthesize_anthropic_forced_tool_call,
     router,
 )
 from rapid_mlx.service.helpers import _TOOL_USE_REQUIRED_SUFFIX
@@ -85,7 +84,7 @@ class _BaseEngine:
 class _ToolStreamingEngine(_BaseEngine):
     """Streaming engine that lets us assert the route saw the
     pre-message_start ``prompt_tokens`` estimate AND that the
-    enforcement levers (suffix injection, synth, error event) fire on
+    enforcement levers (suffix injection and defensive errors) fire on
     the right ``tool_choice`` shapes."""
 
     def __init__(
@@ -296,52 +295,12 @@ def test_inject_suffix_noop_when_tool_choice_is_auto():
     assert messages == before
 
 
-def test_enforce_required_synthesises_call_for_single_tool():
-    """Single-tool unambiguous synthesis path: empty tool_calls →
-    synthesised call with empty arguments + no error detail."""
-    tools = [SimpleNamespace(function={"name": "get_weather"})]
-    calls, err = _enforce_required_tool_choice_present([], "required", tools=tools)
-    assert err is None
-    assert len(calls) == 1
-    assert calls[0].function.name == "get_weather"
-    assert calls[0].function.arguments == "{}"
-
-
-def test_enforce_required_returns_error_for_multi_tool():
-    tools = [
-        SimpleNamespace(function={"name": "a"}),
-        SimpleNamespace(function={"name": "b"}),
-    ]
-    calls, err = _enforce_required_tool_choice_present([], "required", tools=tools)
-    assert calls == []
-    assert err is not None
-    assert "tool_choice" in err
-    assert "no tool_calls" in err
-
-
-def test_enforce_required_passes_through_existing_calls():
-    tools = [SimpleNamespace(function={"name": "x"})]
-    existing = [_synthesize_anthropic_forced_tool_call("x")]
-    calls, err = _enforce_required_tool_choice_present(
-        existing, "required", tools=tools
-    )
-    assert calls is existing
-    assert err is None
-
-
-def test_enforce_required_passes_through_when_choice_is_not_required():
-    """auto / none / named-pin: enforcement is a no-op so the named-pin
-    helper (which runs first) is responsible for its own contract."""
-    tools = [SimpleNamespace(function={"name": "x"})]
-    for tc in (
-        "auto",
-        "none",
-        None,
-        {"type": "function", "function": {"name": "x"}},
-    ):
-        calls, err = _enforce_required_tool_choice_present([], tc, tools=tools)
-        assert calls == []
-        assert err is None
+@pytest.mark.parametrize(
+    "choice", ["required", {"type": "function", "function": {"name": "x"}}]
+)
+def test_forced_choice_missing_call_is_defensive_error(choice):
+    assert "no tool_calls" in _forced_tool_choice_error([], choice)
+    assert _forced_tool_choice_error([object()], choice) is None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -362,9 +321,8 @@ def _tool_dict(name: str, prop: str = "x", *, required: bool = True):
     }
 
 
-def test_nonstream_tool_choice_any_synthesises_single_tool():
-    """Non-stream + tool_choice=any + 1 tool + parser saw no calls →
-    synthesise a tool_use for the sole tool. stop_reason=tool_use."""
+def test_nonstream_tool_choice_any_rejects_missing_single_tool_call():
+    """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I cannot help with that."],
         engine_prompt_tokens=5,
@@ -380,17 +338,14 @@ def test_nonstream_tool_choice_any_synthesises_single_tool():
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["stop_reason"] == "tool_use"
-    tool_uses = [c for c in body["content"] if c["type"] == "tool_use"]
-    assert len(tool_uses) == 1
-    assert tool_uses[0]["name"] == "get_weather"
+    assert r.status_code == 422, r.text
+    assert "tool_choice" in r.json()["detail"]
+    assert "event:" not in r.text
 
 
 def test_nonstream_tool_choice_any_multi_tool_no_call_returns_422():
     """Non-stream + tool_choice=any + 2 tools + parser saw no calls →
-    422 (ambiguous which tool to synthesise)."""
+    422 before headers."""
     engine = _ToolStreamingEngine(
         ["I cannot help."],
         engine_prompt_tokens=5,
@@ -449,10 +404,8 @@ def test_nonstream_tool_choice_any_injects_required_suffix():
     ), seen
 
 
-def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
-    """H-05 regression guard: ``tool_choice={"type":"tool","name":X}``
-    must still pin THAT tool, not synthesise a different one. The new
-    required-branch must not steal the named-pin enforcement."""
+def test_nonstream_tool_choice_named_rejects_missing_pinned_call():
+    """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["text"],
         engine_prompt_tokens=5,
@@ -471,14 +424,12 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
             "messages": [{"role": "user", "content": "anything"}],
         },
     )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    tool_blocks = [b for b in body["content"] if b["type"] == "tool_use"]
-    assert len(tool_blocks) == 1
-    assert tool_blocks[0]["name"] == "get_weather"
+    assert r.status_code == 422, r.text
+    assert "tool_choice" in r.json()["detail"]
+    assert "event:" not in r.text
 
 
-def test_nonstream_tool_choice_named_synth_when_model_emits_the_pinned_tool():
+def test_nonstream_tool_choice_named_preserves_model_call():
     """H-05 / PR #763 round-1 BLOCKING #1 — when the parser DOES
     surface a call to the named tool, the route ships it as a
     ``tool_use`` block and the response stops with ``stop_reason="tool_use"``.
@@ -552,10 +503,8 @@ def test_nonstream_tool_choice_auto_does_not_force_tool_call():
 # ──────────────────────────────────────────────────────────────────
 
 
-def test_stream_tool_choice_any_single_tool_synthesises_tool_use():
-    """Stream variant of the synthesise path: model emits text, route
-    post-parses + synthesises the tool_use for the sole tool, and the
-    terminal ``message_delta`` carries ``stop_reason=tool_use``."""
+def test_stream_tool_choice_any_single_tool_rejects_missing_call_before_headers():
+    """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I ", "cannot ", "help."],
         engine_prompt_tokens=5,
@@ -572,24 +521,13 @@ def test_stream_tool_choice_any_single_tool_synthesises_tool_use():
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 200, r.text
-    events = _parse_sse(r.text)
-    deltas = [e for e in events if e.get("type") == "message_delta"]
-    assert deltas, events
-    assert deltas[-1]["delta"]["stop_reason"] == "tool_use"
-    tool_blocks = [
-        e
-        for e in events
-        if e.get("type") == "content_block_start"
-        and e.get("content_block", {}).get("type") == "tool_use"
-    ]
-    assert len(tool_blocks) == 1
-    assert tool_blocks[0]["content_block"]["name"] == "get_weather"
+    assert r.status_code == 422, r.text
+    assert "tool_choice" in r.json()["detail"]
+    assert "event:" not in r.text
 
 
-def test_stream_tool_choice_any_multi_tool_emits_error_event():
-    """Stream variant of the multi-tool 422: SSE error event with
-    ``invalid_request_error`` and terminal ``message_delta`` close-out."""
+def test_stream_tool_choice_any_multi_tool_rejects_missing_call_before_headers():
+    """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I ", "cannot ", "help."],
         engine_prompt_tokens=5,
@@ -609,25 +547,13 @@ def test_stream_tool_choice_any_multi_tool_emits_error_event():
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 200, r.text
-    events = _parse_sse(r.text)
-    error_events = [e for e in events if e.get("type") == "error"]
-    assert error_events, events
-    assert error_events[0]["error"]["type"] == "invalid_request_error"
-    assert "tool_choice" in error_events[0]["error"]["message"]
-    # The forbidden text bytes must NOT have been streamed to the wire
-    # — buffer-drop semantics same as the named-pin failure branch.
-    text_deltas = [
-        e["delta"]["text"]
-        for e in events
-        if e.get("type") == "content_block_delta"
-        and e.get("delta", {}).get("type") == "text_delta"
-    ]
-    assert "".join(text_deltas) == ""
+    assert r.status_code == 422, r.text
+    assert "tool_choice" in r.json()["detail"]
+    assert "event:" not in r.text
 
 
-def test_stream_tool_choice_named_text_only_emits_synthesized_tool_use():
-    """Named ``tool_choice`` stream path synthesizes the pinned tool_use."""
+def test_stream_tool_choice_named_text_only_rejected_before_headers():
+    """A decoder ignoring the generation constraint must not fabricate a call."""
     engine = _ToolStreamingEngine(
         ["I ", "cannot ", "help."],
         engine_prompt_tokens=5,
@@ -647,23 +573,9 @@ def test_stream_tool_choice_named_text_only_emits_synthesized_tool_use():
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
     )
-    assert r.status_code == 200, r.text
-    events = _parse_sse(r.text)
-    text_deltas = [
-        e["delta"]["text"]
-        for e in events
-        if e.get("type") == "content_block_delta"
-        and e.get("delta", {}).get("type") == "text_delta"
-    ]
-    assert "".join(text_deltas) == ""
-    tool_blocks = [
-        e
-        for e in events
-        if e.get("type") == "content_block_start"
-        and e.get("content_block", {}).get("type") == "tool_use"
-    ]
-    assert len(tool_blocks) == 1
-    assert tool_blocks[0]["content_block"]["name"] == "get_weather"
+    assert r.status_code == 422, r.text
+    assert "tool_choice" in r.json()["detail"]
+    assert "event:" not in r.text
 
 
 # ──────────────────────────────────────────────────────────────────

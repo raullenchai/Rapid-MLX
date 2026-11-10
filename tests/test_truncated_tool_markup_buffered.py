@@ -1197,6 +1197,30 @@ def test_forced_json_stop_4663(client, route, reasoning, stream):
         client[1].reasoning_parser = Qwen3ReasoningParser(None)
     client[1].tool_call_parser = "hermes"
     raw = '<tool_call> {"name": "get_weather", "'
+    if route == "messages":
+        # A truncated forced call must never become a fabricated empty input.
+        client[1].engine = _Engine(raw, "stop", None)
+        response = client[0].post(
+            "/v1/messages",
+            json={
+                "model": "test-model",
+                "max_tokens": 16,
+                "stream": stream,
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": [
+                    {
+                        "name": t["function"]["name"],
+                        "input_schema": t["function"]["parameters"],
+                    }
+                    for t in TOOLS
+                ],
+                "tool_choice": {"type": "tool", "name": "get_weather"},
+            },
+        )
+        assert response.status_code == 422, response.text
+        assert "no tool_calls" in response.json()["detail"]
+        assert "event:" not in response.text
+        return
     content, calls, _ = _reply(
         client,
         route,
