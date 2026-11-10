@@ -13,7 +13,7 @@ catalog are bundled together; user alias files persist only string targets.
 Execution metadata for uncurated repositories lives in ``repo_profiles.json``.
 Its keys record former alias names for provenance; only HF-path reverse lookup
 uses those rows. The one-release deprecation map translates old names to repo
-IDs without adding them to any catalog or discovery API.
+IDs or canonical aliases without adding them to any catalog or discovery API.
 
 The legacy short form (``"alias": "hf_path"``) is still accepted for
 backward compatibility with any external tool that hand-edits the file —
@@ -140,6 +140,7 @@ _RETIRED_MODEL_ALIASES: dict[str, str] = {
 
 # One-release compatibility names; never a source of public discovery.
 _DEPRECATED_MODEL_ALIASES: dict[str, str] = {
+    "glm4.7-9b-4bit": "glm4.7-flash-4bit",
     "k2-horizon-7b-4bit": "abenzerps/K2-Horizon-7B-MLX-4bit",
     "north-mini-code-bf16": "mlx-community/North-Mini-Code-1.0-bf16",
     "tmax-9b-6bit": "mlx-community/Tmax-9B-MLX-6bit",
@@ -1272,12 +1273,19 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)
     if repo := _DEPRECATED_MODEL_ALIASES.get(name):
-        logging.getLogger(__name__).warning(
-            "Model alias '%s' is deprecated and will be removed in the next release; "
-            "use 'rapid-mlx serve %s' instead.",
-            name,
-            repo,
-        )
+        if repo in _load():
+            logging.getLogger(__name__).warning(
+                "Model alias '%s' was renamed to '%s'; use the new name.",
+                name,
+                repo,
+            )
+        else:
+            logging.getLogger(__name__).warning(
+                "Model alias '%s' is deprecated and will be removed in the next release; "
+                "use 'rapid-mlx serve %s' instead.",
+                name,
+                repo,
+            )
         name = repo
     from .user_aliases import validated_user_aliases
 

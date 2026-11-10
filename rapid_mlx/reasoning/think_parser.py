@@ -603,7 +603,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
     # qwen3 / deepseek_r1 / glm4 / gemma4 / hermes / VibeThinker
     # families: bug_report.md:128, cycle-3 F-3, cycle-5 F-1 (hermes-
     # qwen3.5-27b-8bit), cycle-6 F-CORR-2 (gemma-4), cycle-7 F-1
-    # (nemotron-30b), cycle-8 F-801 (glm4.7-9b-4bit), cycle-11 F-11-7
+    # (nemotron-30b), cycle-8 F-801 (glm4.7-flash-4bit), cycle-11 F-11-7
     # (phi-4-mini-reasoning).
     #
     # The shared invariant lives here in the base class so every

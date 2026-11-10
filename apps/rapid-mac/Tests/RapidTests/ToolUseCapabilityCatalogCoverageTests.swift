@@ -223,7 +223,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "gemma3-27b-qat-4bit": .unknown,
         "gemma3-4b-qat-4bit": .unknown,
         // glm — glm47 parser, verified in eval suite.
-        "glm4.7-9b-4bit": .known,
+        "glm4.7-flash-4bit": .known,
         // gpt-oss — harmony parser (cycle-7 confirmed clean on safety
         // + tool-edge probes). The mxfp4-q8 quant suffix was the
         // pre-fix sibling miss.

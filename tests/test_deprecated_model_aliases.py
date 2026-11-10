@@ -49,7 +49,8 @@ def test_names_are_not_public():
     assert not ROWS.keys() & set(_load_alias_names())
     assert len(ROWS) == 44
     assert {
-        k: v["hf_path"] for k, v in ROWS.items()
+        **{k: v["hf_path"] for k, v in ROWS.items()},
+        "glm4.7-9b-4bit": "glm4.7-flash-4bit",
     } == registry._DEPRECATED_MODEL_ALIASES
     for listing in (
         registry.list_aliases(),

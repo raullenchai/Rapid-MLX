@@ -1441,12 +1441,13 @@
       "temperature": 0.15
     }
   },
-  "glm4.7-9b-4bit": {
+  "glm4.7-flash-4bit": {
     "hf_path": "mlx-community/GLM-4.7-Flash-4bit",
     "revision": "1454cffb1a21737e162f508e5bc70be9def89276",
     "tool_call_parser": "glm47",
     "reasoning_parser": "glm4",
     "is_hybrid": false,
+    "is_moe": true,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
