@@ -433,6 +433,14 @@ class ImageGenerationEngine:
         self._denoise_started_at = None
 
     def _model_path_for_mflux(self) -> str | None:
+        from ..community_bench.run_builder import record_loaded_identity
+
+        path = self._resolve_model_path_for_mflux()
+        if path is not None:
+            record_loaded_identity(self.model_name, "image_generation", path)
+        return path
+
+    def _resolve_model_path_for_mflux(self) -> str | None:
         """``model_path`` to hand mflux: a local directory whenever we have one.
 
         A packaged mflux repo / local dir is handed to mflux verbatim; a canonical

@@ -755,11 +755,14 @@ def test_sidecar_snapshot_subfolders_have_distinct_identities(tmp_path):
     snapshot = tmp_path / "models--org--draft" / "snapshots" / ("a" * 40)
     for name in ("one/nested", "two/nested"):
         (snapshot / name).mkdir(parents=True)
+    (snapshot / "one/nested/config.json").write_text('{"quantization":{"bits":4}}')
+    (snapshot / "two/nested/config.json").write_text('{"quantization":{"bits":8}}')
+    (snapshot / "config.json").write_text('{"quantization":{"bits":16}}')
     first = _sidecar_identity(str(snapshot / "one/nested"))
     second = _sidecar_identity(str(snapshot / "two/nested"))
     root = _sidecar_identity(str(snapshot))
-    assert first[:3] == ("org/draft", str(snapshot), "one/nested")
-    assert second[:3] == ("org/draft", str(snapshot), "two/nested")
+    assert first[:3] == ("org/draft", str(snapshot / "one/nested"), "one/nested")
+    assert second[:3] == ("org/draft", str(snapshot / "two/nested"), "two/nested")
     assert first[3] != second[3]
     assert root[:3] == ("org/draft", str(snapshot), None)
     primary = unresolved_model_identity("org/primary", "text_generation")
@@ -769,6 +772,14 @@ def test_sidecar_snapshot_subfolders_have_distinct_identities(tmp_path):
             c for c in combined["components"] if c["component_id"] == "sidecar"
         )
         assert sidecar["source"].get("subfolder") == subfolder
+        assert (
+            sidecar["quantization"]["weight_bits_x2"]
+            == {
+                "one/nested": 8,
+                "two/nested": 16,
+                None: 32,
+            }[subfolder]
+        )
 
 
 @pytest.mark.parametrize(

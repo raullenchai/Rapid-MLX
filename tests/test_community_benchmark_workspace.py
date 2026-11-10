@@ -2449,11 +2449,25 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     calls: list[dict] = []
 
     served = {"open": False}
+    checkpoint = tmp_path / "custom-hub" / "snapshots" / ("d" * 40)
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"quantization":{"bits":4}}')
 
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         assert alias == "example-image"
         assert kwargs["isolate_process_group"] is False
+        from rapid_mlx.image.engine import ImageGenerationEngine
+
+        backend = object.__new__(ImageGenerationEngine)
+        backend.model_name = "mlx-community/example-image-model"
+        with monkeypatch.context() as child:
+            for key, value in kwargs["extra_env"].items():
+                child.setenv(key, value)
+            child.setattr(
+                backend, "_resolve_model_path_for_mflux", lambda: str(checkpoint)
+            )
+            assert backend._model_path_for_mflux() == str(checkpoint)
         served["open"] = True
         try:
             yield {"base_url": "http://local/v1"}
@@ -2502,6 +2516,10 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     )
 
     assert len(calls) == 2  # one warmup plus one measured round
+    primary = run["model"]["components"][0]
+    assert primary["source"]["resolved_revision"] == "d" * 40
+    assert primary["quantization"]["weight_bits_x2"] == 8
+    assert archive.get(run["run_id"])["model"] == run["model"]
     assert events == [
         "probe(served=False, requests=0)",
         "probe(served=True, requests=2)",
@@ -2790,10 +2808,22 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     job_states = iter(("running", "completed"))
 
     served = {"open": False}
+    checkpoint = tmp_path / "custom-hub" / "snapshots" / ("e" * 40)
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(
+        '{"model_type":"t2v","quantization":{"bits":8}}'
+    )
 
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         serve_options.update(kwargs)
+        from rapid_mlx.video import wan
+
+        with monkeypatch.context() as child:
+            for key, value in kwargs["extra_env"].items():
+                child.setenv(key, value)
+            child.setattr(wan, "_resolve_model_path", lambda _: checkpoint)
+            wan.WanVideoEngine("mlx-community/example-video-model")
         served["open"] = True
         try:
             yield {"base_url": "http://local/v1"}
@@ -2856,7 +2886,10 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
     assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
 
-    assert serve_options["extra_env"] == {"RAPID_MLX_WAN_STEPS": "20"}
+    assert serve_options["extra_env"]["RAPID_MLX_WAN_STEPS"] == "20"
+    primary = run["model"]["components"][0]
+    assert primary["source"]["resolved_revision"] == "e" * 40
+    assert primary["quantization"]["weight_bits_x2"] == 16
     assert progress[1].startswith("Starting local video server for example-video")
     assert progress[-4] == "t2v-480p-81f     round 1/1  generating..."
     assert progress[-3] == "t2v-480p-81f     round 1/1  5 s"
@@ -6469,8 +6502,11 @@ def test_text_round_observer_reports_rounds_and_estimates_remaining_time() -> No
     assert lines == ["pp512-tg128      warmup 2/3", "pp512-tg128      round 1/5"]
 
 
+@pytest.mark.parametrize("source_kind", ["unreported", "str", "path"])
 def test_text_measurements_reports_model_load_stage(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_kind: str,
 ) -> None:
     """The load/download stage is the longest silent part of a run."""
     from rapid_mlx import model_metadata
@@ -6483,6 +6519,12 @@ def test_text_measurements_reports_model_load_stage(
     )
     identity_snapshots = []
     original_identity = local_runner.unresolved_model_identity
+    # A loader can use a custom cache and a commit with no refs/main. The
+    # concrete source must survive all the way through the measurement helper.
+    checkpoint = tmp_path / "custom-cache" / "snapshots" / ("f" * 40)
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"quantization":{"bits":4}}')
+    source = str(checkpoint) if source_kind == "str" else checkpoint
 
     def capture_identity(*args, **kwargs):
         identity_snapshots.append(kwargs.get("snapshot_path"))
@@ -6528,7 +6570,11 @@ def test_text_measurements_reports_model_load_stage(
     fake_helpers = types.SimpleNamespace(get_model_max_context=lambda engine: 4096)
     fake_tokenizer = types.SimpleNamespace(
         load_model_with_fallback=lambda repo_id, **kwargs: (
-            (object(), object())
+            (
+                (object(), object())
+                if source_kind == "unreported"
+                else (object(), object(), source)
+            )
             if kwargs.get("return_source") is True
             else pytest.fail("loader must be asked for its source")
         )
@@ -6572,7 +6618,13 @@ def test_text_measurements_reports_model_load_stage(
         )
     )
     assert context == 4096
-    assert identity_snapshots == [None]
+    assert identity_snapshots == [
+        None if source_kind == "unreported" else str(checkpoint)
+    ]
+    if source_kind != "unreported":
+        primary = _identity["components"][0]
+        assert primary["source"]["resolved_revision"] == "f" * 40
+        assert primary["quantization"]["weight_bits_x2"] == 8
     assert _language["speculative_decoding"] == {"method": "none"}
     assert _language["kv_cache"] == {"mode": "unknown", "dtype": "unknown"}
     assert _language["prefill_chunk_size"] == 2048

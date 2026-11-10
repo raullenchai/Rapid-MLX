@@ -12,6 +12,7 @@ import contextvars
 import copy
 import inspect
 import io
+import json
 import logging
 import math
 import multiprocessing
@@ -98,6 +99,33 @@ EventSink = Callable[[dict[str, Any]], None]
 _LOADED_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = (
     contextvars.ContextVar("community_bench_loaded_identity", default=None)
 )
+
+
+@contextlib.contextmanager
+def _server_identity_receipt():
+    """Transfer a media loader's identity across the private serve boundary."""
+    from pathlib import Path
+
+    from rapid_mlx.catalog.validation import ContractValidator
+
+    from .run_builder import _IDENTITY_RECEIPT_ENV
+
+    with tempfile.TemporaryDirectory(prefix="rapid-bench-identity-") as directory:
+        receipt = Path(directory) / "identity.json"
+        try:
+            yield {_IDENTITY_RECEIPT_ENV: str(receipt)}
+        finally:
+            capture = _LOADED_IDENTITY.get()
+            if capture is not None and receipt.is_file():
+                try:
+                    identity = json.loads(receipt.read_text(encoding="utf-8"))
+                    ContractValidator().validate_model_identity(identity)
+                    capture["identity"] = identity
+                except Exception:
+                    logger.debug(
+                        "Could not read benchmark identity receipt", exc_info=True
+                    )
+
 
 _VIDEO_JOB_TIMEOUT_S = 3600.0
 _VIDEO_POLL_INTERVAL_S = 1.0
@@ -890,14 +918,18 @@ def _run_image(
     measurements: list[dict[str, Any]] = []
     _report(progress, f"Starting local image server for {alias} (loads the model)...")
     boot_started = _stage_started(progress)
-    with serve(
-        alias,
-        boot_timeout_s=600,
-        isolate_process_group=isolate_process_group,
-        echo_log=sys.stderr
-        if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
-        else None,
-    ) as server:
+    with (
+        _server_identity_receipt() as identity_env,
+        serve(
+            alias,
+            boot_timeout_s=600,
+            extra_env=identity_env,
+            isolate_process_group=isolate_process_group,
+            echo_log=sys.stderr
+            if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
+            else None,
+        ) as server,
+    ):
         _stage_finished(progress, boot_started, "Server ready")
         endpoint = f"{server['base_url']}/images/generations"
         total = case["warmup_rounds"] + case["measured_rounds"]
@@ -974,17 +1006,20 @@ def _run_video(
     }
     _report(progress, f"Starting local video server for {alias} (loads the model)...")
     boot_started = _stage_started(progress)
-    with serve(
-        alias,
-        boot_timeout_s=900,
-        # The registered protocol is a 20-step Wan workload. Wan otherwise
-        # delegates to a backend default that may change between releases.
-        extra_env={"RAPID_MLX_WAN_STEPS": str(case["steps"])},
-        isolate_process_group=isolate_process_group,
-        echo_log=sys.stderr
-        if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
-        else None,
-    ) as server:
+    with (
+        _server_identity_receipt() as identity_env,
+        serve(
+            alias,
+            boot_timeout_s=900,
+            # The registered protocol is a 20-step Wan workload. Wan otherwise
+            # delegates to a backend default that may change between releases.
+            extra_env={**identity_env, "RAPID_MLX_WAN_STEPS": str(case["steps"])},
+            isolate_process_group=isolate_process_group,
+            echo_log=sys.stderr
+            if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
+            else None,
+        ) as server,
+    ):
         _stage_finished(progress, boot_started, "Server ready")
         _report(progress, f"{case['case_id']:<16} round 1/1  generating...")
         started = time.perf_counter()
@@ -1659,8 +1694,12 @@ def _sidecar_in_target_repo(target_identity, sidecar_repo, sidecar_snapshot):
         from pathlib import Path
 
         snapshot = Path(sidecar_snapshot)
-        if snapshot.parent.name == "snapshots":
-            return revision == snapshot.name
+        # A sidecar can live below the primary snapshot without its own
+        # config.json (embedded MTP heads). Its lexical snapshot still proves
+        # the shared revision, including when the checkpoint is a subfolder.
+        for candidate in (snapshot, *snapshot.parents):
+            if candidate.parent.name == "snapshots":
+                return revision == candidate.name
     source = unresolved_model_identity(
         sidecar_repo, "text_generation", snapshot_path=sidecar_snapshot
     )["components"][0]["source"]
@@ -1769,7 +1808,10 @@ def _sidecar_identity(sidecar):
     from rapid_mlx.catalog import rcj_digest
     from rapid_mlx.speculative.serial_benchmark import pinned_cached_snapshot
 
-    sidecar = pinned_cached_snapshot(sidecar) or sidecar
+    # Preserve the loader's lexical snapshot path: resolving a directory
+    # symlink can discard the repository/revision encoded by the HF layout.
+    if not Path(sidecar).is_dir():
+        sidecar = pinned_cached_snapshot(sidecar) or sidecar
     parts = Path(sidecar).parts
     if "snapshots" in parts:
         index = len(parts) - 1 - parts[::-1].index("snapshots")
@@ -1779,7 +1821,8 @@ def _sidecar_identity(sidecar):
                 "Cannot identify speculative sidecar snapshot"
             )
         repo = cache_name[len("models--") :].replace("--", "/")
-        snapshot = str(Path(*parts[: index + 2]))
+        # Keep the exact checkpoint directory, including a nested variant.
+        snapshot = str(Path(sidecar))
         revision = parts[index + 1]
         subfolder = str(Path(*parts[index + 2 :])) if parts[index + 2 :] else None
     else:
@@ -2041,8 +2084,9 @@ async def _text_measurements(
             "text_generation",
             resolve_subfolder(model_name),
             snapshot_path=(
-                loaded_source
-                if isinstance(loaded_source, str) and os.path.isdir(loaded_source)
+                str(loaded_source)
+                if isinstance(loaded_source, (str, os.PathLike))
+                and os.path.isdir(loaded_source)
                 else None
             ),
         )
