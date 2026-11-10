@@ -70,7 +70,6 @@ from ..service.helpers import (
     _disconnect_guard,
     _effective_enable_thinking,
     _finalize_content_and_reasoning,
-    _force_abort_request,
     _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
     _preflight_stream,
@@ -319,35 +318,6 @@ async def _attach_tool_choice_processor(engine, openai_request, chat_kwargs) -> 
         prefix = _compute_forced_tool_prefix(cfg, openai_request, engine)
         if prefix:
             chat_kwargs["forced_assistant_prefix"] = prefix
-
-
-async def _preflight_forced_tool_stream(stream, request, *, engine, request_id_holder):
-    """Validate buffered forced calls before committing HTTP streaming headers."""
-
-    async def collect():
-        packets = []
-        try:
-            async for packet in stream:
-                packets.append(packet)
-        finally:
-            await stream.aclose()
-        return packets
-
-    try:
-        packets = await _wait_with_disconnect(
-            collect(), request, timeout=get_config().default_timeout
-        )
-        if packets is None:
-            raise HTTPException(status_code=499, detail="Client disconnected")
-    except BaseException:
-        _force_abort_request(engine, request_id_holder)
-        raise
-
-    async def replay():
-        for packet in packets:
-            yield packet
-
-    return replay()
 
 
 def _is_required_tool_choice(tool_choice) -> bool:
@@ -818,13 +788,7 @@ async def create_anthropic_message(
             # reads it and force-calls scheduler.abort_request on
             # client disconnect.
             _anth_rid_holder: list[str | None] = [None]
-            _stream_preflight = (
-                _preflight_forced_tool_stream
-                if _named_tool_choice_target(openai_request.tool_choice)
-                or _is_required_tool_choice(openai_request.tool_choice)
-                else _preflight_stream
-            )
-            _admitted_stream = await _stream_preflight(
+            _admitted_stream = await _preflight_stream(
                 _stream_anthropic_messages(
                     engine,
                     openai_request,
