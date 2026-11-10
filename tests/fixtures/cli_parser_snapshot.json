@@ -2223,6 +2223,21 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "force_disk_check",
+       "help": "Skip the pre-flight disk-space check that aborts when the model is larger than free disk. Use only if you know the HF cache lives on a different filesystem (e.g. external drive via HF_HOME).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--force-disk-check"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "harness",
        "help": "Use the experimental persistent built-in chat harness",
        "metavar": null,
@@ -2557,6 +2572,7 @@
        "description": null,
        "dests": [
         "help",
+        "force_disk_check",
         "harness",
         "approvals",
         "action_tools",
@@ -3925,6 +3941,21 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "force_disk_check",
+       "help": "Skip the pre-flight disk-space check that aborts when the model is larger than free disk. Use only if you know the HF cache lives on a different filesystem (e.g. external drive via HF_HOME).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--force-disk-check"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "check",
        "help": "Check metadata and memory fit without downloading",
        "metavar": null,
@@ -4044,6 +4075,7 @@
        "description": null,
        "dests": [
         "help",
+        "force_disk_check",
         "check",
         "json",
         "with_ref2va",
@@ -4241,6 +4273,21 @@
        "metavar": null,
        "nargs": "?",
        "option_strings": [],
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "force_disk_check",
+       "help": "Skip the pre-flight disk-space check that aborts when the model is larger than free disk. Use only if you know the HF cache lives on a different filesystem (e.g. external drive via HF_HOME).",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--force-disk-check"
+       ],
+       "required": false,
        "type": null
       },
       {
@@ -4582,6 +4629,7 @@
        "description": null,
        "dests": [
         "help",
+        "force_disk_check",
         "harness",
         "approvals",
         "action_tools",

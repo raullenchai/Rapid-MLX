@@ -3821,7 +3821,7 @@ def _restore_speculative_changes(args, before, after):
 
 def _automatic_mtp_prefetch_options(args):
     """Preserve explicit decoding choices on foreground sibling prefetches."""
-    return (
+    options = (
         {"auto_mtp": False}
         if (
             getattr(args, "no_spec_decode", False)
@@ -3830,6 +3830,9 @@ def _automatic_mtp_prefetch_options(args):
         )
         else {}
     )
+    if getattr(args, "force_disk_check", False):
+        options["force_disk_check"] = True
+    return options
 
 
 def _automatic_mtp_sidecar_plan(args, *, allow_deferred: bool = False):
@@ -13058,7 +13061,9 @@ def pull_command(args):
     if artifact is not None and artifact.draft_subfolder:
         require_pins(artifact)  # Pull never accepts a local qualification override.
         _check_disk_space(
-            artifact.target_repo, revision_override=artifact.target_revision
+            artifact.target_repo,
+            force=getattr(args, "force_disk_check", False),
+            revision_override=artifact.target_revision,
         )
         resolve_product_paths(artifact, allow_local=False)
         return
@@ -13126,6 +13131,7 @@ def pull_command(args):
     if primary_repo == TARGET_REPO:
         _check_disk_space(
             TARGET_REPO,
+            force=getattr(args, "force_disk_check", False),
             revision_override=TARGET_REVISION,
         )
         _pull_repository(primary_args, revision_override=TARGET_REVISION)
@@ -13178,6 +13184,7 @@ def pull_command(args):
         print(f"\n  Runtime assets: {MTP_REPO}")
         _check_disk_space(
             MTP_REPO,
+            force=getattr(args, "force_disk_check", False),
             revision_override=MTP_REVISION,
             allow_patterns=list(MTP_ALLOW_PATTERNS),
         )
@@ -13610,6 +13617,7 @@ def _spawn_chat_server(
     context_length: int | None = None,
     disable_disk_caches: bool = False,
     disable_model_downloads: bool = False,
+    force_disk_check: bool = False,
     log_target: str | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
@@ -13675,6 +13683,8 @@ def _spawn_chat_server(
         cmd.append("--disable-disk-caches")
     if disable_model_downloads:
         cmd.append("--disable-model-downloads")
+    if force_disk_check:
+        cmd.append("--force-disk-check")
     if context_length is not None:
         cmd.extend(["--context-length", str(context_length)])
     log = open(log_path, "w") if log_target is None else None  # noqa: SIM115 — kept open for proc lifetime
@@ -14533,6 +14543,8 @@ def chat_command(args):
     mcp_runtime = None
     server_log_target = _chat_server_log_target(args)
     server_spawn_kwargs: dict[str, Any] = {}
+    if getattr(args, "force_disk_check", False):
+        server_spawn_kwargs["force_disk_check"] = True
     if getattr(args, "disable_disk_caches", False):
         server_spawn_kwargs["disable_disk_caches"] = True
     if getattr(args, "disable_model_downloads", False):

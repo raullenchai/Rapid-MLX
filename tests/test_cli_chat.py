@@ -1918,6 +1918,7 @@ def test_chat_command_sigterm_handler_installed_before_spawn(monkeypatch):
 
 def test_chat_command_forwards_cache_policies_and_log_target(monkeypatch, capsys):
     spawn_kwargs: dict = {}
+    download_kwargs: dict = {}
 
     class _NoopProc:
         _rapid_mlx_log = None
@@ -1941,7 +1942,9 @@ def test_chat_command_forwards_cache_policies_and_log_target(monkeypatch, capsys
 
     monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
     monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda *_a, **kw: download_kwargs.update(kw)
+    )
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
 
     with _fake_server([_delta("ok")]) as (fake_port, _payloads):
@@ -1951,11 +1954,14 @@ def test_chat_command_forwards_cache_policies_and_log_target(monkeypatch, capsys
         ns = _ns_for_chat(fake_port)
         ns.base_url = None
         ns.port = None
+        ns.force_disk_check = True
         ns.disable_disk_caches = True
         ns.disable_model_downloads = True
         ns.log_file = "/dev/null"
         cli.chat_command(ns)
 
+    assert download_kwargs["force_disk_check"] is True
+    assert spawn_kwargs["force_disk_check"] is True
     assert spawn_kwargs["disable_disk_caches"] is True
     assert spawn_kwargs["disable_model_downloads"] is True
     assert spawn_kwargs["log_target"] == "/dev/null"
@@ -3102,7 +3108,8 @@ def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
     )
 
 
-def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
+@pytest.mark.parametrize("force", [False, True])
+def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path, force):
     """``_spawn_chat_server`` must pass ``RAPID_MLX_CHAT_SPAWN=1`` to the
     child so the child main() bypasses the download gate."""
     captured: dict = {}
@@ -3150,7 +3157,10 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
     log_path = tmp_path / "fake.log"
-    proc, base_url = cli._spawn_chat_server("qwen3.5-4b-4bit", str(log_path))
+    proc, base_url = cli._spawn_chat_server(
+        "qwen3.5-4b-4bit", str(log_path), force_disk_check=force
+    )
+    assert ("--force-disk-check" in captured["cmd"]) is force
 
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
