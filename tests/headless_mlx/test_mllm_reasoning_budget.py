@@ -94,11 +94,19 @@ def test_mllm_retains_budget_safety_gates(thinking, stop):
 
 
 @pytest.mark.parametrize("finish", ["stop", "length"])
-@pytest.mark.parametrize("surface", ["chat", "messages"])
+@pytest.mark.parametrize(
+    "surface,response_format",
+    [
+        ("chat", None),
+        ("chat", "json_object"),
+        ("chat", "json_schema"),
+        ("messages", None),
+    ],
+)
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("seeded", [False, True])
 def test_mllm_budget_closes_reasoning_before_answer(
-    monkeypatch, surface, stream, seeded, finish
+    monkeypatch, surface, response_format, stream, seeded, finish
 ):
     """Exercise route setup and MLLM processor history without tensor operations.
 
@@ -110,6 +118,7 @@ def test_mllm_budget_closes_reasoning_before_answer(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from rapid_mlx.api import guided
     from rapid_mlx.config import reset_config
     from rapid_mlx.engine.base import GenerationOutput
     from rapid_mlx.mllm_batch_generator import _apply_request_logits_processors
@@ -120,6 +129,14 @@ def test_mllm_budget_closes_reasoning_before_answer(
 
     rendered = make_engine("assistant\n<think>\n" if seeded else "assistant\n")
     processors = []
+    grammar = object()
+
+    def build_grammar(tokenizer, schema, *, reasoning_end_id):
+        assert reasoning_end_id == 99
+        return grammar
+
+    monkeypatch.setattr(guided, "build_json_schema_logits_processor", build_grammar)
+    answer = '{"answer":4}' if response_format else "Answer: 4."
 
     class Engine(_Engine):
         is_mllm = True
@@ -128,6 +145,8 @@ def test_mllm_budget_closes_reasoning_before_answer(
         build_prompt = rendered.build_prompt
 
         def decode_budget(self, kwargs):
+            if response_format:
+                assert kwargs["grammar_logits_processor"] is grammar
             processor = kwargs.get("reasoning_budget_logits_processor")
             assert isinstance(processor, ReasoningBudgetLogitsProcessor)
             processors.append(processor)
@@ -144,7 +163,7 @@ def test_mllm_budget_closes_reasoning_before_answer(
                 if forced == 99:
                     token, piece = 99, "</think>"
                 elif processor._ended:
-                    token, piece = 20, "Answer: 4."
+                    token, piece = 20, answer
                 elif not processor._started:
                     token, piece = 50, "<think>"
                     pieces = []
@@ -199,6 +218,14 @@ def test_mllm_budget_closes_reasoning_before_answer(
     }
     if surface == "chat":
         body.update(reasoning_max_tokens=2, enable_thinking=True)
+        if response_format:
+            body["response_format"] = {"type": response_format}
+            if response_format == "json_schema":
+                body["response_format"]["json_schema"] = {
+                    "name": "answer",
+                    "strict": True,
+                    "schema": {"type": "object"},
+                }
         url = "/v1/chat/completions"
     else:
         body["thinking"] = {"type": "enabled", "budget_tokens": 2}
@@ -217,7 +244,10 @@ def test_mllm_budget_closes_reasoning_before_answer(
             else [response.json()]
         )
         result = norm(packets, surface, stream)
-        assert result["content"].strip() == "Answer: 4.", packets
+        if response_format:
+            assert json.loads(result["content"]) == json.loads(answer), packets
+        else:
+            assert result["content"].strip() == answer, packets
         assert result["reasoning"].strip() == "Private thought. Private thought."
         assert len(processors) == 1
     finally:
