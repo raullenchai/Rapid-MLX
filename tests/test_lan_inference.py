@@ -5,16 +5,19 @@ import logging
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 
 from rapid_mlx.config import get_config
-from rapid_mlx.middleware.lan_inference import LANInferenceMiddleware
+from rapid_mlx.middleware.lan_inference import (
+    LANInferenceMiddleware,
+    verify_lan_inference_route,
+)
 
 
 @pytest.fixture
 def app(monkeypatch):
     monkeypatch.setattr(get_config(), "api_key", "secret")
-    app = FastAPI()
+    app = FastAPI(dependencies=[Depends(verify_lan_inference_route)])
 
     @app.get("/v1/models/residency")
     async def residency():
@@ -59,7 +62,7 @@ async def request(app, method, path, *, peer="192.168.1.42", key="secret", **kwa
 )
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 async def test_local_only_forbidden_even_with_valid_key(app, path, method):
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     response = await request(app, method, path)
     assert response.status_code == 403
 
@@ -85,23 +88,24 @@ async def test_local_only_forbidden_even_with_valid_key(app, path, method):
     ],
 )
 async def test_inference_requires_key(app, method, path):
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     assert (await request(app, method, path)).status_code == 200
     for key in (None, "wrong"):
         assert (await request(app, method, path, key=key)).status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_missing_configured_key_fails_closed(app, monkeypatch):
+@pytest.mark.parametrize("path", ["/v1/models", "/v1/models/org/model"])
+async def test_missing_configured_key_fails_closed(app, monkeypatch, path):
     monkeypatch.setattr(get_config(), "api_key", None)
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
-    assert (await request(app, "GET", "/v1/models")).status_code == 401
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
+    assert (await request(app, "GET", path)).status_code == 401
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("peer", ["127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1"])
 async def test_loopback_unaffected(app, peer):
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     assert (
         await request(app, "POST", "/v1/cache/clear", peer=peer, key=None)
     ).status_code == 200
@@ -110,14 +114,14 @@ async def test_loopback_unaffected(app, peer):
 @pytest.mark.asyncio
 async def test_flag_off_preserves_existing_behavior(app, monkeypatch):
     monkeypatch.delenv("RAPID_MLX_LAN_INFERENCE_ONLY", raising=False)
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     assert (await request(app, "POST", "/v1/cache/clear", key=None)).status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_environment_opt_in_and_untrusted_forwarded_header(app, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_LAN_INFERENCE_ONLY", "1")
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     assert (
         await request(
             app, "GET", "/v1/cua/apps", extra_headers={"X-Forwarded-For": "127.0.0.1"}
@@ -131,7 +135,7 @@ async def test_boundary_wraps_health_fastpath(app):
     from rapid_mlx.middleware.probe_fastpath import install_probe_fastpath_middleware
 
     install_probe_fastpath_middleware(app)
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     assert (await request(app, "GET", "/livez", key=None)).status_code == 401
     assert (await request(app, "GET", "/livez")).status_code == 200
 
@@ -157,14 +161,14 @@ def test_uvicorn_disables_proxy_trust_only_in_lan_mode(monkeypatch, lan):
 
 @pytest.mark.asyncio
 async def test_model_management_is_not_model_lookup(app):
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     assert (await request(app, "POST", "/v1/models/activate")).status_code == 403
     assert (await request(app, "DELETE", "/v1/models/model")).status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_unknown_peer_fails_closed(app):
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     assert (
         await request(app, "GET", "/v1/cua/apps", peer="unknown")
     ).status_code == 403
@@ -185,7 +189,7 @@ async def test_websocket_cannot_bypass_lan_boundary(app):
 @pytest.mark.asyncio
 async def test_future_specific_model_management_route_stays_local(monkeypatch):
     monkeypatch.setattr(get_config(), "api_key", "secret")
-    app = FastAPI()
+    app = FastAPI(dependencies=[Depends(verify_lan_inference_route)])
 
     @app.get("/v1/models/new-admin")
     async def admin():
@@ -195,7 +199,7 @@ async def test_future_specific_model_management_route_stays_local(monkeypatch):
     async def model(model_id: str):
         return {"id": model_id}
 
-    app.add_middleware(LANInferenceMiddleware, enabled=True, router=app.router)
+    app.add_middleware(LANInferenceMiddleware, enabled=True)
     assert (await request(app, "GET", "/v1/models/new-admin")).status_code == 403
     assert (await request(app, "GET", "/v1/models/org/model")).status_code == 200
 
@@ -255,7 +259,7 @@ def lan_stack(app, monkeypatch):
     monkeypatch.setattr(browser_security, "_configured_hosts", None)
     # Production order: probe, LAN boundary, then browser/CORS policy.
     install_probe_fastpath_middleware(app)
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     browser_security.install_browser_security(app, origins=[])
     return app
 
@@ -321,7 +325,7 @@ async def test_lan_loopback_host_overrides(app, monkeypatch, source):
     monkeypatch.setenv("RAPID_MLX_LAN_INFERENCE_ONLY", "1")
     monkeypatch.setattr(browser_security, "_configured_hosts", None)
     monkeypatch.setenv("RAPID_MLX_TRUSTED_HOSTS", "custom.example")
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     browser_security.install_browser_security(
         app, origins=[], hosts=["custom.example"] if source == "cli" else None
     )
@@ -363,7 +367,7 @@ async def test_non_lan_mode_keeps_remote_host_checks(app, monkeypatch):
     monkeypatch.delenv("RAPID_MLX_LAN_INFERENCE_ONLY", raising=False)
     monkeypatch.setattr(browser_security, "_configured_hosts", None)
     monkeypatch.delenv("RAPID_MLX_TRUSTED_HOSTS", raising=False)
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     browser_security.install_browser_security(app, origins=[])
     assert (
         await request(
@@ -473,3 +477,97 @@ async def test_lan_banner_failure_never_stops_server(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="rapid_mlx._uvicorn"):
         await instance.serve()
     assert "Could not enumerate LAN URLs" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_lan_included_dynamic_routes(monkeypatch, nested):
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+
+    monkeypatch.setenv("RAPID_MLX_LAN_INFERENCE_ONLY", "1")
+    monkeypatch.setattr(get_config(), "api_key", "secret")
+    app = FastAPI(dependencies=[Depends(verify_lan_inference_route)])
+    install_exception_handlers(app)
+    router = APIRouter()
+    calls = []
+
+    @router.get("/v1/models/residency")
+    @router.get("/v1/models/new-admin")
+    @router.get("/v1/videos/new-admin")
+    @router.get("/v1/local-search/status")
+    async def admin():
+        calls.append("admin")
+        return {"local": True}
+
+    @router.get("/v1/models/{model_id:path}")
+    async def model(model_id: str):
+        return {"id": model_id}
+
+    @router.get("/v1/videos/{video_id}")
+    @router.get("/v1/videos/{video_id}/content")
+    async def video(video_id: str):
+        raise HTTPException(404, "Unknown video")
+
+    if nested:
+        parent = APIRouter()
+        parent.include_router(router)
+        router = parent
+    app.include_router(router)
+    app.add_middleware(LANInferenceMiddleware)
+
+    for path, status in [
+        ("/v1/models/model", 200),
+        ("/v1/models/org/model", 200),
+        ("/v1/videos/missing", 404),
+        ("/v1/videos/missing/content", 404),
+    ]:
+        response = await request(app, "GET", path)
+        assert response.status_code == status, response.text
+        for key in (None, "wrong"):
+            assert (await request(app, "GET", path, key=key)).status_code == 401
+
+    for path in [
+        "/v1/models/residency",
+        "/v1/models/new-admin",
+        "/v1/videos/new-admin",
+        "/v1/local-search/status",
+    ]:
+        for key in ("secret", None):
+            response = await request(app, "GET", path, key=key)
+            assert response.status_code == 403
+            assert response.json() == {
+                "detail": "This route is available only on this Mac"
+            }
+        assert calls == []
+    for path in [
+        "/v1/models/residency",
+        "/v1/local-search/status",
+        "/v1/models/org/model",
+    ]:
+        assert (
+            await request(app, "GET", path, peer="127.0.0.1", key=None)
+        ).status_code == 200
+    # Unmatched paths must also fail closed rather than expose router redirects/404s.
+    assert (await request(app, "GET", "/v1/videos/missing/extra")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_real_server_app_lan_dynamic_routes(monkeypatch):
+    """#5761: the production app's included routers must honor the allowlist."""
+    from rapid_mlx.server import app as server_app
+
+    monkeypatch.setenv("RAPID_MLX_LAN_INFERENCE_ONLY", "1")
+    monkeypatch.setattr(get_config(), "api_key", "secret")
+    # The LAN flag is read when the middleware stack is built; force a rebuild
+    # now and again after the test so other tests see their own environment.
+    monkeypatch.setattr(server_app, "middleware_stack", None)
+    for path in (
+        "/v1/models/missing-model",
+        "/v1/models/org/missing-model",
+        "/v1/videos/missing",
+        "/v1/videos/missing/content",
+    ):
+        assert (await request(server_app, "GET", path)).status_code == 404
+        assert (await request(server_app, "GET", path, key=None)).status_code == 401
+    for path in ("/v1/models/residency", "/v1/local-search/status"):
+        assert (await request(server_app, "GET", path)).status_code == 403

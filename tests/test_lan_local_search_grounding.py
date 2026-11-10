@@ -24,7 +24,7 @@ async def test_lan_grounding_denied_before_preparation(monkeypatch, stream, peer
     app = client_with(engine, search).app
     get_config().api_key = "secret"
     install_exception_handlers(app)
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     prepare = AsyncMock(wraps=prepare_grounding)
     monkeypatch.setattr("rapid_mlx.local_search.grounding.prepare_grounding", prepare)
 
@@ -73,7 +73,7 @@ async def test_lan_grounding_preserves_allowed_requests(
     app = client_with(engine, search).app
     get_config().api_key = "secret"
     install_exception_handlers(app)
-    app.add_middleware(LANInferenceMiddleware, router=app.router)
+    app.add_middleware(LANInferenceMiddleware)
     inference = AsyncMock(return_value=JSONResponse({"choices": []}))
     monkeypatch.setattr("rapid_mlx.routes.chat._create_chat_completion_impl", inference)
     payload = body()
