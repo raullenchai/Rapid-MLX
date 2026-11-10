@@ -16,7 +16,9 @@ from pathlib import Path, PurePosixPath
 
 
 class ModelIntegrityError(RuntimeError):
-    pass
+    def __init__(self, message, *, corrupt_files=()):
+        super().__init__(message)
+        self.corrupt_files = tuple(corrupt_files)
 
 
 def _field(value, key, default=None):
@@ -320,6 +322,7 @@ def verify_snapshot(
         )
     )
     verified = {}
+    corrupt_files = []
     for sibling in siblings:
         name = _field(sibling, "rfilename")
         if exact is not None and name not in exact:
@@ -347,7 +350,8 @@ def verify_snapshot(
             before = _identity(file)
             expected_size = _field(sibling, "size")
             if expected_size is not None and before[2] != expected_size:
-                raise ModelIntegrityError(f"Downloaded file size mismatch: {name}")
+                corrupt_files.append(name)
+                continue
             old = previous.get("files", {}).get(name, {})
             if old.get("digest") != digest or old.get("stat") != before:
                 hasher = hashlib.new(algorithm)
@@ -357,12 +361,17 @@ def verify_snapshot(
                     for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
                         hasher.update(chunk)
                 if hasher.hexdigest() != digest or before != _identity(file):
-                    raise ModelIntegrityError(
-                        f"Downloaded content hash mismatch: {name}; repair this cached file and retry pull"
-                    )
+                    corrupt_files.append(name)
+                    continue
             verified[name] = {"digest": digest, "stat": before}
         except OSError as exc:
             raise ModelIntegrityError(f"Cannot verify downloaded file: {name}") from exc
+    if corrupt_files:
+        raise ModelIntegrityError(
+            "Downloaded content hash mismatch or file size mismatch: "
+            + ", ".join(corrupt_files),
+            corrupt_files=corrupt_files,
+        )
     if local_selected - set(verified):
         raise ModelIntegrityError(
             "Downloaded snapshot inventory mismatch: selected local files are absent from the immutable manifest"
