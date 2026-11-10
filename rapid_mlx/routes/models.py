@@ -1037,7 +1037,46 @@ def effective_parsers_for(
     return profile_tool_parser, profile_reasoning_parser
 
 
+def _always_reasoning(model_id: str, reasoning_parser: str | None) -> bool | None:
+    """Detect an active reasoning parser whose template cannot disable thinking."""
+    try:
+        engine = _engine_for(model_id)
+        if engine is None:
+            return None
+        from ..service.helpers import _should_start_in_thinking
+        from ..utils.chat_template import template_thinking_switch
+
+        template = getattr(engine.tokenizer, "chat_template", None)
+        # Match the routing probe's selection for requests without tools.
+        if isinstance(template, dict):
+            if "default" in template:
+                template = template["default"]
+            elif len(template) == 1:
+                template = next(iter(template.values()))
+            else:
+                template = None
+        if not isinstance(template, str) or not template:
+            return None
+        if reasoning_parser is None:
+            return False
+        # The renderer maps thinking-off onto a template's own boolean switch.
+        if template_thinking_switch(template) is not None:
+            return False
+        return "enable_thinking" not in template or _should_start_in_thinking(
+            template, False, unconditional=True
+        )
+    except Exception:  # A metadata probe must never break model discovery.
+        return None
+
+
 def _build_model_info(model_id: str) -> ModelInfo:
+    info = _build_model_info_base(model_id)
+    # ``reasoning_parser`` on the payload is already the effective one.
+    info.always_reasoning = _always_reasoning(model_id, info.reasoning_parser)
+    return info
+
+
+def _build_model_info_base(model_id: str) -> ModelInfo:
     """Construct a ``ModelInfo`` for ``model_id``, filling vendor
     extension fields from the alias registry when the id resolves.
 

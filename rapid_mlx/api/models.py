@@ -2772,6 +2772,9 @@ class ModelInfo(BaseModel):
     # server logs.
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
+    # Active reasoning parser with no effective template thinking-off control.
+    # None when no resident engine/template is available or inspection fails.
+    always_reasoning: bool | None = None
     # Inference modality. Desktop's ``ModelInfoCatalog`` already
     # dispatches on this — populating from the server lets us drop
     # the desktop-side hard-coded modality map in a future release.
