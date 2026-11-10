@@ -1,40 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""What leaves this Mac, as distinct from what the local archive keeps.
+"""Project archived runs onto the public ingestion contract.
 
-A service without language runtime support rejects runs that include it.
-
-A benchmark record and a benchmark *submission* are not the same document, and
-conflating them is what made normal runs unpublishable.
-
-``unresolved_model_identity`` fills every fact the local Hugging Face cache can
-vouch for: the ``subfolder`` a nested variant lives in, the
-``resolved_revision`` the loader actually read, and real ``quantization``
-facts (``{"kind": "weights", "method": "affine", "weight_bits_x2": 8, ...}``).
-That is the right content for an archive on the user's own disk — it is what
-makes a stored result reproducible months later.
-
-The deployed ingestion validator accepts none of it. ``atomicValidateModel``
-allowlists ``model.components[0].source`` to exactly ``{kind, repo_id}`` and
-requires ``quantization`` to be exactly ``{"kind": "unknown", "base_dtype":
-"unknown"}``, rejecting anything else with ``… is not upload-allowlisted``.
-Since :func:`atomic_upload.preview_run` sent the archived record verbatim, a
-model loaded from a warm cache — the ordinary case — could be measured but
-never published.
-
-So the wire document is **projected** from the record rather than copied from
-it. Two rules govern the projection:
-
-1. It only ever *removes* facts. It never invents, rounds, or substitutes one,
-   so a field that survives means exactly what the archive says it means.
-2. Nothing is removed silently. :func:`project_run_for_publication` returns
-   what it withheld, the consent prompt prints it, and ``--preview --json``
-   carries it so a GUI can show the same thing before the user agrees.
-
-Execution settings are sent truthfully, so a service that cannot store them
-rejects the upload.
-
-When the service widens its allowlist this module gets smaller, and the local
-record does not change at all.
+Hugging Face revision, subfolder and quantization facts survive verbatim.
+Local source fields stay on this Mac and are listed in the consent preview.
+The archive is never mutated. Execution settings are sent truthfully; a
+service that cannot store them rejects the upload.
 """
 
 from __future__ import annotations
@@ -44,13 +14,9 @@ from typing import Any
 
 from .workspace import ProvenanceUnreadable, validate_provenance
 
-#: Keys the ingestion validator allows on ``model.components[0].source``.
-#: Mirrors ``atomicExactObject(component.source, ["kind", "repo_id"], …)``.
+#: Optional provenance is public only for Hugging Face sources.
 _PUBLIC_SOURCE_KEYS = ("kind", "repo_id")
-
-#: The only quantization block the validator accepts. Mirrors
-#: ``component.quantization.kind !== "unknown" || … base_dtype !== "unknown"``.
-_PUBLIC_QUANTIZATION: dict[str, str] = {"kind": "unknown", "base_dtype": "unknown"}
+_HF_SOURCE_KEYS = (*_PUBLIC_SOURCE_KEYS, "resolved_revision", "subfolder")
 
 
 class PublicationRefused(Exception):  # noqa: N818 - stable domain error name
@@ -142,12 +108,7 @@ class WithheldFact:
 
 
 _SOURCE_REASON = (
-    "the benchmark service records models by repository id only; it rejects "
-    "submissions carrying this field"
-)
-_QUANTIZATION_REASON = (
-    "the benchmark service accepts only an unknown quantization block in this "
-    "beta, so the measured artifact's quantization is not published"
+    "this source field is local or is not accepted by the benchmark service"
 )
 
 
@@ -173,21 +134,16 @@ def project_run_for_publication(
         prefix = f"model.components[{index}]"
         source = component.get("source")
         if isinstance(source, dict):
-            for key in sorted(set(source) - set(_PUBLIC_SOURCE_KEYS)):
+            allowed = (
+                _HF_SOURCE_KEYS
+                if source.get("kind") == "huggingface"
+                else _PUBLIC_SOURCE_KEYS
+            )
+            for key in sorted(set(source) - set(allowed)):
                 withheld.append(
                     WithheldFact(f"{prefix}.source.{key}", source[key], _SOURCE_REASON)
                 )
                 del source[key]
-        quantization = component.get("quantization")
-        if isinstance(quantization, dict) and quantization != _PUBLIC_QUANTIZATION:
-            withheld.append(
-                WithheldFact(
-                    f"{prefix}.quantization",
-                    copy.deepcopy(quantization),
-                    _QUANTIZATION_REASON,
-                )
-            )
-            component["quantization"] = dict(_PUBLIC_QUANTIZATION)
     return public, withheld
 
 

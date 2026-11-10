@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The submission must be acceptable to the service that receives it.
+"""Publication preserves known identity facts accepted by the service.
 
-A model loaded from a warm Hugging Face cache records a ``resolved_revision``
-and real quantization facts. The deployed ingestion validator allowlists
-neither, and ``preview_run`` used to send the archived record verbatim — so the
-ordinary case measured fine and then failed at upload with
-``model.components[0].source.resolved_revision is not upload-allowlisted``.
-
-These tests drive the real ``preview_run`` and validate its **exact** payload
-against :mod:`tests.ingestion_contract`, a mirror of the worker's own rules.
-The local ``BenchmarkRunValidator`` cannot catch this: it is the archive's
-schema, and the archive is allowed to be richer than the wire.
+These tests validate the real preview bytes with the server contract mirror.
 """
 
 from __future__ import annotations
@@ -25,11 +16,13 @@ import pytest
 
 from rapid_mlx.community_bench import atomic_upload
 from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
+from rapid_mlx.community_bench.hardware import Hardware, Software
 from rapid_mlx.community_bench.publication import (
     describe_withheld,
     project_run_for_publication,
 )
 from rapid_mlx.community_bench.run_builder import (
+    build_run,
     execution_config,
     execution_config_digest,
 )
@@ -38,7 +31,6 @@ from tests.ingestion_contract import (
     cross_check_against_worker,
     validate_model,
     validate_submission,
-    worker_source,
 )
 
 #: A record produced by a REAL packaged benchmark run of
@@ -63,40 +55,28 @@ def test_the_fixture_really_is_a_warm_cache_record() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The archived record is what the service rejects
+# Cached identity facts are now accepted by the service
 # ---------------------------------------------------------------------------
 
 
-def test_the_archived_record_is_rejected_by_the_service() -> None:
-    """The premise, stated as a test: this is the bug being fixed."""
-
-    with pytest.raises(IngestionRejected) as error:
-        validate_submission(_cached_run())
-    assert "resolved_revision is not upload-allowlisted" in str(error.value)
+def test_the_archived_record_is_accepted_by_the_service() -> None:
+    validate_submission(_cached_run())
 
 
-def test_quantization_alone_is_also_rejected() -> None:
+def test_quantization_alone_is_also_accepted() -> None:
     run = _cached_run()
-    source = run["model"]["components"][0]["source"]
-    del source["resolved_revision"]
-    # The allowlist is checked before the value, so a real quantization block
-    # is refused for carrying `group_size` at all — not merely for being
-    # non-unknown. Either way it cannot be published.
-    with pytest.raises(
-        IngestionRejected,
-        match=r"model\.components\[0\]\.quantization\.\w+ is not upload-allowlisted",
-    ):
-        validate_submission(run)
+    del run["model"]["components"][0]["source"]["resolved_revision"]
+    validate_submission(run)
 
 
 def test_a_two_key_non_unknown_quantization_is_also_rejected() -> None:
-    """And one that fits the allowlist but states real facts is refused too."""
+    """A weights block must still carry method and bit width."""
 
     run = _cached_run()
     component = run["model"]["components"][0]
     del component["source"]["resolved_revision"]
     component["quantization"] = {"kind": "weights", "base_dtype": "bfloat16"}
-    with pytest.raises(IngestionRejected, match="model quantization"):
+    with pytest.raises(IngestionRejected, match="requires method and weight_bits_x2"):
         validate_submission(run)
 
 
@@ -126,15 +106,41 @@ def test_the_exact_preview_payload_passes_the_ingestion_contract(
     validate_submission(on_the_wire)
     assert on_the_wire == preview["payload"]
 
-    source = on_the_wire["model"]["components"][0]["source"]
-    assert source == {
-        "kind": "huggingface",
-        "repo_id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+    assert on_the_wire["model"] == _cached_run()["model"]
+    assert preview["withheld"] == []
+
+
+def test_known_facts_survive_the_real_publication_contract(monkeypatch) -> None:
+    monkeypatch.setattr(atomic_upload, "peek_install_id", lambda: "0123456789ab")
+    run = _cached_run()
+    component = run["model"]["components"][0]
+    component["source"].update(resolved_revision="a" * 40, subfolder="variants/4bit")
+    component["quantization"] = {
+        "kind": "weights_and_activations",
+        "method": "affine",
+        "weight_bits_x2": 8,
+        "activation_bits_x2": 16,
+        "group_size": 64,
+        "base_dtype": "bfloat16",
     }
-    assert on_the_wire["model"]["components"][0]["quantization"] == {
-        "kind": "unknown",
-        "base_dtype": "unknown",
-    }
+    run = build_run(
+        repo_id=component["source"]["repo_id"],
+        task_type="text_generation",
+        hardware=Hardware("Apple M4 Pro", 24, 12, 16),
+        software=Software("15.6", "0.13.4", "0.32.2", "3.12.13"),
+        started_at=run["started_at"],
+        model_identity=run["model"],
+        execution=run["execution"],
+        workload=run["workload"],
+        measurements=run["measurements"],
+    )
+    before = copy.deepcopy(run)
+    preview = atomic_upload.preview_run(run)
+    payload = json.loads(preview["payload_json"])
+    validate_submission(payload)
+    assert payload["model"] == before["model"]
+    assert preview["withheld"] == []
+    assert run == before
 
 
 def test_a_bare_record_is_projected_unchanged(
@@ -255,21 +261,46 @@ def test_the_local_record_is_not_mutated() -> None:
 
 
 def test_every_withheld_fact_is_reported() -> None:
-    _, withheld = project_run_for_publication(_cached_run())
-    paths = {fact.path for fact in withheld}
-    assert paths == {
-        "model.components[0].source.resolved_revision",
-        "model.components[0].quantization",
+    run = _cached_run()
+    source = run["model"]["components"][0]["source"]
+    source["local_path"] = "/Users/private/checkpoint"
+    source["future_fact"] = "not accepted"
+    public, withheld = project_run_for_publication(run)
+    assert {fact.path: fact.value for fact in withheld} == {
+        "model.components[0].source.local_path": "/Users/private/checkpoint",
+        "model.components[0].source.future_fact": "not accepted",
     }
-    # The value is carried, not just the key, so the disclosure can show what
-    # is being held back rather than only that something is.
-    by_path = {fact.path: fact for fact in withheld}
-    assert (
-        by_path["model.components[0].source.resolved_revision"].value
-        == "125e006d991147f3b432249d1bdf0821987f12b0"
-    )
-    assert by_path["model.components[0].quantization"].value["weight_bits_x2"] == 8
+    assert public["model"]["components"][0]["source"] == {
+        key: value
+        for key, value in source.items()
+        if key not in {"local_path", "future_fact"}
+    }
     assert all(fact.reason for fact in withheld)
+
+
+@pytest.mark.parametrize("kind", ["local", "unknown"])
+def test_non_huggingface_sources_never_publish_local_provenance(kind) -> None:
+    run = {
+        "model": {
+            "components": [
+                {
+                    "source": {
+                        "kind": kind,
+                        "path": "/Users/private/checkpoint",
+                        "resolved_revision": "/Users/private/revision",
+                        "subfolder": "/Users/private/variant",
+                    }
+                }
+            ]
+        }
+    }
+    public, withheld = project_run_for_publication(run)
+    assert public["model"]["components"][0]["source"] == {"kind": kind}
+    assert {fact.path.rsplit(".", 1)[1] for fact in withheld} == {
+        "path",
+        "resolved_revision",
+        "subfolder",
+    }
 
 
 def test_the_preview_carries_the_withheld_facts(
@@ -279,8 +310,7 @@ def test_the_preview_carries_the_withheld_facts(
     preview = atomic_upload.preview_run(
         _cached_run(), url="https://rapidmlx.com/api/benchmarks/atomic"
     )
-    paths = {item["path"] for item in preview["withheld"]}
-    assert "model.components[0].source.resolved_revision" in paths
+    assert preview["withheld"] == []
     # Serializable, because a GUI reads this out of `--preview --json`.
     json.dumps(preview["withheld"])
 
@@ -301,7 +331,7 @@ def test_consent_prints_what_is_not_being_sent(
         withheld=preview["withheld"],
     )
     printed = out.getvalue()
-    assert "stay on this Mac and are NOT in the payload above" in printed
+    assert "stay on this Mac and are NOT in the payload above" not in printed
     assert "resolved_revision" in printed
     assert "weight_bits_x2" in printed
 
@@ -336,14 +366,8 @@ def test_digests_cover_the_projected_document(
 
 
 def test_mirror_agrees_with_a_local_worker_checkout() -> None:
-    """When a checkout is present, the mirror must match it.
+    """Always check the fixture; also require equality with any site checkout."""
 
-    Skipped on machines without one — which is exactly why the mirror exists
-    rather than the test reading the worker directly.
-    """
-
-    if worker_source() is None:
-        pytest.skip("no rapidmlx.com worker checkout on this machine")
     assert cross_check_against_worker() == []
 
 
@@ -355,3 +379,96 @@ def test_mirror_rejects_a_submission_with_an_extra_model_key() -> None:
         IngestionRejected, match="model.notes is not upload-allowlisted"
     ):
         validate_model(public["model"], "text_generation")
+
+
+@pytest.mark.parametrize(
+    "quantization",
+    [
+        {"kind": "none", "base_dtype": "float16"},
+        {"kind": "mixed", "method": "affine", "weight_bits_x2": 7},
+        {"kind": "unknown"},
+        {"kind": "weights", "method": "affine", "weight_bits_x2": 8, "group_size": 64},
+    ],
+)
+def test_all_accepted_quantization_kinds_survive(quantization):
+    run = _cached_run()
+    run["model"]["components"][0]["quantization"] = quantization
+    public, withheld = project_run_for_publication(run)
+    validate_submission(public)
+    assert public == run
+    assert withheld == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("resolved_revision", "main"),
+        ("resolved_revision", "A" * 40),
+        ("subfolder", "/Users/private/model"),
+        ("subfolder", "../model"),
+        ("subfolder", "variant\\model"),
+        ("subfolder", ""),
+    ],
+)
+def test_mirror_rejects_invalid_source_provenance(field, value):
+    run = _cached_run()
+    run["model"]["components"][0]["source"][field] = value
+    with pytest.raises(IngestionRejected, match=field):
+        validate_submission(run)
+
+
+@pytest.mark.parametrize(
+    "quantization",
+    [
+        {"kind": "weights", "method": "affine"},
+        {"kind": "weights_and_activations", "method": "affine", "weight_bits_x2": 8},
+        {"kind": "none", "weight_bits_x2": 8},
+        {"kind": "unknown", "weight_bits_x2": True},
+        {"kind": "unknown", "weight_bits_x2": 1},
+        {"kind": "unknown", "activation_bits_x2": 65},
+        {"kind": "unknown", "group_size": 4097},
+        {"kind": "unknown", "method": "/Users/private/method"},
+        {"kind": "unknown", "base_dtype": "fp16"},
+        {"kind": "other"},
+        {"kind": "unknown", "local_path": "/Users/private/model"},
+    ],
+)
+def test_mirror_rejects_invalid_quantization(quantization):
+    run = _cached_run()
+    run["model"]["components"][0]["quantization"] = quantization
+    with pytest.raises(IngestionRejected, match="quantization"):
+        validate_submission(run)
+
+
+def test_contract_uses_fixture_without_a_site_checkout(monkeypatch):
+    import tests.ingestion_contract as contract
+
+    monkeypatch.delenv("RAPID_MLX_SITE_CHECKOUT", raising=False)
+    monkeypatch.setattr(contract, "_WORKER_CANDIDATES", ())
+    assert contract.cross_check_against_worker() == []
+
+
+def test_configured_site_checkout_must_be_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("RAPID_MLX_SITE_CHECKOUT", str(tmp_path / "missing"))
+    with pytest.raises(FileNotFoundError, match="configured site checkout"):
+        cross_check_against_worker()
+
+
+def test_consent_lists_only_the_remaining_withheld_fields():
+    run = _cached_run()
+    run["model"]["components"][0]["source"]["path"] = "/Users/private/model"
+    public, withheld = project_run_for_publication(run)
+    out = io.StringIO()
+    atomic_upload._ask_consent(
+        public,
+        target="https://rapidmlx.com/api/benchmarks/atomic",
+        stdin=io.StringIO("n\n"),
+        stdout=out,
+        withheld=[fact.as_dict() for fact in withheld],
+    )
+    disclosure = out.getvalue().split("These details stay on this Mac", 1)[1]
+    assert "model.components[0].source.path" in disclosure
+    assert "/Users/private/model" in disclosure
+    assert "resolved_revision" not in disclosure
+    assert "quantization" not in disclosure
+    assert "/Users/private/model" not in json.dumps(public)

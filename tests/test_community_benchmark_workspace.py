@@ -1443,7 +1443,7 @@ def test_local_archive_receipt_marks_only_an_existing_run_shared(
 def test_local_archive_receipt_uses_the_projected_public_payload(
     tmp_path: Path,
 ) -> None:
-    """A valid upload receipt remains valid for the richer local record."""
+    """Receipt digests include the accepted model identity facts."""
     from rapid_mlx.community_bench.publication import project_run_for_publication
 
     archive = LocalRunArchive(tmp_path)
@@ -1465,7 +1465,8 @@ def test_local_archive_receipt_uses_the_projected_public_payload(
 
     archive.save_receipt(receipt, install_id=install_id)
 
-    assert withheld
+    assert withheld == []
+    assert wire["model"] == run["model"]
     assert archive.receipt(run["run_id"]) == receipt
 
 

@@ -190,11 +190,8 @@ def preview_run(
     base = (validate_board_url(url) if url is not None else board_url()).rstrip("/")
     target = base if url or base.endswith("/atomic") else f"{base}/atomic"
     candidate = install_id or peek_install_id()
-    # The archive keeps every fact; the submission carries only the ones the
-    # ingestion validator allowlists. Sending the record verbatim made an
-    # ordinary warm-cache run unpublishable — see ``publication``. Nothing is
-    # dropped quietly: ``withheld`` is returned, printed before consent, and
-    # carried in ``--preview --json``.
+    # Preserve accepted identity facts; disclose any local source fields that
+    # stay in the archive through consent and --preview --json.
     wire, withheld = project_run_for_publication(run)
     wire["install_id"] = candidate
     # Validated AFTER projection, so the digests the user approves and the
