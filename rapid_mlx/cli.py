@@ -14863,19 +14863,37 @@ def chat_command(args):
         finally:
             _cleanup()
 
-    # Resolve ``--max-tokens``. Default is None at the argparse layer so
-    # we can distinguish "user did not pass it" from "user passed 2048
-    # explicitly". When ``--think`` is set and the user did not supply a
-    # value, raise the default from 2048 to 4096 so the reasoning trace +
-    # final answer both fit (the round-1 finding: ``chat qwen3.5-4b-4bit
-    # --think`` filled the 2048 budget with reasoning and emitted an
-    # empty answer with ``finish_reason='length'``).
+    # An explicit budget always wins. Otherwise always-reasoning templates
+    # need the same room for reasoning + answer as an explicit --think.
     user_passed_max_tokens = args.max_tokens is not None
+    always_reasoning = False
+    if not user_passed_max_tokens and not args.think:
+        import requests
+
+        try:
+            response = requests.get(
+                f"{base_url}/v1/models",
+                headers=rapid_mlx_client_headers(RAPID_CLIENT_CLI_CHAT),
+                timeout=2,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("data", []) if isinstance(payload, dict) else []
+            served_name = getattr(args, "_original_alias", args.model)
+            always_reasoning = any(
+                isinstance(item, dict)
+                and item.get("id") == served_name
+                and item.get("always_reasoning") is True
+                for item in models
+            )
+        except (requests.RequestException, ValueError, TypeError):
+            pass  # Older/unavailable servers keep the ordinary default.
     if args.max_tokens is None:
-        args.max_tokens = 4096 if args.think else 2048
-    if args.think and not user_passed_max_tokens:
+        args.max_tokens = 4096 if args.think or always_reasoning else 2048
+    if (args.think or always_reasoning) and not user_passed_max_tokens:
+        reason = "--think on" if args.think else "this model always reasons"
         print(
-            f"  {DIM}(--think on; raised --max-tokens to {args.max_tokens} — "
+            f"  {DIM}({reason}; raised --max-tokens to {args.max_tokens} — "
             f"pass --max-tokens to override){RESET}"
         )
 
