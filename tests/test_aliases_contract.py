@@ -1694,11 +1694,11 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
         "mlx-community/GLM-4.5-Air-4bit previously pointed at GLM-4.5-Air-0111-4bit which "
         "404s. The current canonical upload is GLM-4.5-Air-4bit."
     )
-    # glm4.7-9b-4bit previously pointed at the full GLM-4.7 (355B MoE,
-    # ~185 GB at 4-bit) — the alias name implies a 9B model. The
-    # correct upload is the Flash variant (~16 GB).
-    assert "Flash" in profiles["glm4.7-9b-4bit"].hf_path, (
-        "glm4.7-9b-4bit must point at the GLM-4.7-Flash upload, not the full "
+    # glm4.7-flash-4bit previously pointed at the full GLM-4.7 (355B MoE,
+    # ~185 GB at 4-bit). The canonical alias describes the Flash
+    # variant (31B MoE, ~16.9 GB), rather than implying a 9B model.
+    assert "Flash" in profiles["glm4.7-flash-4bit"].hf_path, (
+        "glm4.7-flash-4bit must point at the GLM-4.7-Flash upload, not the full "
         "GLM-4.7 (355B MoE) which is ~12x larger and won't fit on most "
         "user disks."
     )
@@ -1783,7 +1783,7 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     # temperature explicitly per-request.)
     "mlx-community/GLM-4.5-Air-4bit": {"temperature": 0.6, "top_p": 0.95},
     # GLM-4.7-Flash ships temperature=1.0 upstream; we add only top_p.
-    "glm4.7-9b-4bit": {"top_p": 0.95},
+    "glm4.7-flash-4bit": {"top_p": 0.95},
     # Native MTP is qualified on greedy decode. These values also neutralize
     # Desktop's generic repetition penalty, which the serial runtime cannot
     # apply without changing the qualified target distribution.

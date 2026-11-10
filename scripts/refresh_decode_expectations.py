@@ -158,8 +158,11 @@ def rekey_uncurated_models(snapshot: dict) -> dict:
     It does not create discovery entries or read repo execution profiles.
     """
     aliases = json.loads((ROOT / "rapid_mlx/aliases.json").read_text())
+    from rapid_mlx.model_aliases import _DEPRECATED_MODEL_ALIASES
+
     models = {}
     for name, row in snapshot["models"].items():
+        name = _DEPRECATED_MODEL_ALIASES.get(name, name)
         key = name if name in aliases else row["repo_id"]
         if key in models and models[key] != row:
             raise ValueError(f"conflicting decode expectations for {key}")

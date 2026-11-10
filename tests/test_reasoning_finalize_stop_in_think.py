@@ -12,7 +12,7 @@ Cross-cycle evidence:
 
 * qwen3 reasoning — bug_report.md:128, cycle-3 F-3, cycle-7 F-1 (nemotron-30b)
 * hermes — cycle-5 F-1 (qwen3.5-27b-8bit, hermes tool parser layered on qwen3)
-* glm4 — cycle-8 F-801 (glm4.7-9b-4bit)
+* glm4 — cycle-8 F-801 (glm4.7-flash-4bit)
 * deepseek_r1 — cycle-11 F-11-7 (phi-4-mini-reasoning)
 * gemma4 — cycle-6 F-CORR-2 (gemma-4-26b/12b)
 * VibeThinker (DeepSeekR1 subclass) — cycle-2 F-12-1
