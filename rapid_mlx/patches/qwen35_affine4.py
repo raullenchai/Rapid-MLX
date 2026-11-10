@@ -7,7 +7,9 @@ Expert accumulation differs from the composed path; see qualification evidence.
 Enabled by default; set RAPID_MLX_QWEN35_AFFINE4=0 to disable immediately.
 """
 
+import functools
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -29,6 +31,13 @@ _LOCK = threading.RLock()
 
 def _singleton_bank_views_enabled():
     """Request measured policy only within the already-qualified expert path."""
+    return _bank_views_policy(os.environ.get("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS"))
+
+
+@functools.lru_cache(maxsize=4)
+def _bank_views_policy(_override):
+    # Called per MoE layer per token: resolve once per override value so the
+    # hot path does not re-read device info or rescan the measured table.
     return enabled(
         "qwen35_affine4_bank_views",
         mx.device_info(),

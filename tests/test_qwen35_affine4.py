@@ -528,12 +528,15 @@ def test_forward_passes_full_banks_and_token_geometry(monkeypatch, tokens):
 def test_bank_views_device_gate_and_kill_switch(monkeypatch):
     monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", raising=False)
     monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
+    fused._bank_views_policy.cache_clear()
     assert fused._singleton_bank_views_enabled()
     monkeypatch.setenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", "0")
     assert not fused._singleton_bank_views_enabled()
     monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS")
     monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "unknown"})
+    fused._bank_views_policy.cache_clear()
     assert not fused._singleton_bank_views_enabled()
+    fused._bank_views_policy.cache_clear()
 
 
 def test_bank_binding_cache_tracks_weight_replacement():

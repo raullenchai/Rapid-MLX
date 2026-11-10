@@ -214,7 +214,9 @@ def test_both_gates_consult_registry(monkeypatch):
     monkeypatch.delenv("RAPID_MLX_QWEN35_RESIDUAL_NORM", raising=False)
     monkeypatch.setattr(affine, "enabled", decline)
     monkeypatch.setattr(residual, "enabled", decline)
+    affine._bank_views_policy.cache_clear()
     assert not affine._singleton_bank_views_enabled()
+    affine._bank_views_policy.cache_clear()
     assert residual.install_qwen35_residual_norm(object()) == 0
     assert [name for name, _ in calls] == list(PAIR)
     assert all(scope["width"] == 1 for _, scope in calls)
