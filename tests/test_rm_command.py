@@ -354,3 +354,16 @@ def test_rm_root_checkpoint_removes_repo(variant_cache, capsys):
     cli.rm_command(SimpleNamespace(model="org/single", yes=True))
     assert not (root.parent / "models--org--single").exists()
     assert "Freed" in capsys.readouterr().out
+
+
+def test_rm_only_variant_keeps_root_checkpoint(variant_cache, capsys):
+    import shutil
+
+    root, link = variant_cache
+    shutil.rmtree(root / "snapshots" / ("a" * 40) / "8bit")
+    root_weights = link("b" * 40, "model.safetensors", "root", b"weights")
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
+    assert root_weights.read_bytes() == b"weights"
+    assert (root / "blobs/config").exists()
+    assert not (root / "blobs/four").exists()
+    assert "(repository root)" in capsys.readouterr().out

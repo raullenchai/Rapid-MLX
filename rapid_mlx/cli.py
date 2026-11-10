@@ -13202,6 +13202,9 @@ def pull_command(args):
         print(f"\n  Download complete. {guidance}")
 
 
+_ROOT_CHECKPOINT_SUFFIXES = frozenset({".safetensors", ".gguf", ".npz", ".bin"})
+
+
 def _cached_variant_removal(repo, subfolder):
     """Plan a subfolder removal, preserving references across all snapshots.
 
@@ -13226,6 +13229,10 @@ def _cached_variant_removal(repo, subfolder):
             retained.append(path)
             if len(relative.parts) > 2:
                 remaining.add(relative.parts[1])
+            elif path.suffix in _ROOT_CHECKPOINT_SUFFIXES:
+                # Root-level weights are a separate cached model, unlike the
+                # shared config/tokenizer files that sit beside subfolders.
+                remaining.add("(repository root)")
     references = {path.resolve() for path in retained}
     blobs = {
         path.resolve()
