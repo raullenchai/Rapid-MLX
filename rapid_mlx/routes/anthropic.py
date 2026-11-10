@@ -3080,12 +3080,6 @@ async def _stream_anthropic_messages(
         try:
             _validate_tool_call_params(tool_calls, openai_request.tools)
         except HTTPException as exc:
-            # Forced choices are buffered by the pre-header preflight, so
-            # the failure can still be an HTTP error instead of an SSE one.
-            if _named_tool_choice_target(
-                openai_request.tool_choice
-            ) or _is_required_tool_choice(openai_request.tool_choice):
-                raise
             tool_validation_error = (
                 exc.detail if isinstance(exc.detail, str) else str(exc.detail)
             )

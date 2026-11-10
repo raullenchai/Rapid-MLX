@@ -185,31 +185,3 @@ def test_forced_stream_preflight_client_disconnect_aborts(monkeypatch):
         )
     assert exc.value.status_code == 499
     aborted.assert_called_once_with("engine", ["rid"])
-
-
-@pytest.mark.parametrize(
-    "choice", [{"type": "tool", "name": "get_weather"}, {"type": "any"}]
-)
-def test_forced_stream_schema_invalid_call_is_http_error(monkeypatch, choice):
-    from rapid_mlx.routes import chat
-
-    monkeypatch.setattr(
-        chat, "_offload_tool_grammar_build", AsyncMock(return_value=None)
-    )
-    monkeypatch.setattr(chat, "_enforce_tool_grammar_bounds_or_400_async", AsyncMock())
-    monkeypatch.setattr(chat, "_compute_forced_tool_prefix", Mock(return_value=None))
-    client = _make_client(_MultiCallEngine([_call("get_weather", {"location": 941})]))
-    get_config().tool_call_parser = "hermes"
-    response = client.post(
-        "/v1/messages",
-        json={
-            "model": "test-model",
-            "max_tokens": 150,
-            "stream": True,
-            "messages": [{"role": "user", "content": "Weather?"}],
-            "tools": [_GET_WEATHER],
-            "tool_choice": choice,
-        },
-    )
-    assert response.status_code == 400, response.text
-    assert "event: error" not in response.text
