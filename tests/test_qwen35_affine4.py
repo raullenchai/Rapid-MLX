@@ -526,6 +526,11 @@ def test_forward_passes_full_banks_and_token_geometry(monkeypatch, tokens):
 
 
 def test_bank_views_device_gate_and_kill_switch(monkeypatch):
+    from rapid_mlx.tuning import profiles
+
+    # The measured table entry is pinned to the MLX version it was measured on;
+    # pin it here so the device gate is tested independently of the install.
+    monkeypatch.setattr(profiles, "mlx_version", lambda: "0.32.4")
     monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", raising=False)
     monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
     fused._bank_views_policy.cache_clear()
