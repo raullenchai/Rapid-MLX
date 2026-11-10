@@ -91,7 +91,7 @@ def client():
         (RAW.replace("write_file", "run_shell_command"), False),
     ],
 )
-def test_http_diagnostics_never_become_executable(
+def test_http_unknown_calls_are_forwarded_without_rejection_diagnostics(
     client, stream, raw, rejected, caplog
 ):
     caplog.set_level("WARNING", logger="rapid_mlx.tool_call_diagnostics")
@@ -122,41 +122,29 @@ def test_http_diagnostics_never_become_executable(
         assert response.text.count("[DONE]") == 1
     else:
         body = response.json()
+    assert "rejected_tool_calls" not in body
+    assert diagnostics.rejected_tool_calls_total() == before
     if rejected:
-        assert body["rejected_tool_calls"] == [
-            {
-                "name": "write_file",
-                "raw_arguments": RAW_ARGS,
-                "reason": "undeclared_tool",
-            }
-        ]
-        assert diagnostics.rejected_tool_calls_total() == before + 1
-        assert 'print("OK")' not in caplog.text
-        assert "undeclared_tool" in caplog.text
-        assert not any(
-            c.get("message", {}).get("tool_calls")
-            or c.get("delta", {}).get("tool_calls")
+        calls = [
+            tc
             for p in (payloads if stream else [body])
             for c in p["choices"]
-        )
-        assert body["choices"][0]["finish_reason"] == "stop"
-    else:
-        assert "rejected_tool_calls" not in body
-        assert diagnostics.rejected_tool_calls_total() == before
+            for tc in (c.get("delta", c.get("message", {})).get("tool_calls") or [])
+        ]
+        assert any(tc["function"].get("name") == "write_file" for tc in calls)
+        assert body["choices"][0]["finish_reason"] == "tool_calls"
 
 
-def test_scanner_rejection_and_literal_safety(caplog):
+def test_scanner_unknown_calls_and_literal_safety(caplog):
     caplog.set_level("WARNING", logger="rapid_mlx.tool_call_diagnostics")
     before = diagnostics.rejected_tool_calls_total()
     text = "<function=unknown><parameter=x>raw</parameter></function>"
-    assert (
-        split_marked_calls(
-            text, r"<function=(\w+)>", "</function>", valid_names={"known"}
-        )
-        == []
+    calls = split_marked_calls(
+        text, r"<function=(\w+)>", "</function>", valid_names={"known"}
     )
-    assert diagnostics.rejected_tool_calls_total() == before + 1
-    assert "name='unknown'" in caplog.text
+    assert [call[0] for call in calls] == ["unknown"]
+    assert diagnostics.rejected_tool_calls_total() == before
+    assert "name='unknown'" not in caplog.text
     assert (
         split_marked_calls(
             "<function=unknown>partial",
@@ -171,7 +159,7 @@ def test_scanner_rejection_and_literal_safety(caplog):
         literal, r"<function=(\w+)>", "</function>", valid_names={"known"}
     )
     assert len(parsed) == 1 and "<function=unknown>" in parsed[0][1]
-    assert diagnostics.rejected_tool_calls_total() == before + 1
+    assert diagnostics.rejected_tool_calls_total() == before
 
 
 @pytest.mark.asyncio
@@ -454,15 +442,14 @@ async def test_async_iterator_without_aclose_preserves_completion_and_errors():
     assert diagnostics._rejections.get() is None
 
 
-def test_rejected_scanner_bounds_each_observation_and_requires_outer_wrapper():
+def test_unknown_scanner_calls_are_bounded_and_require_outer_wrapper():
     before = diagnostics.rejected_tool_calls_total()
     opener = r"<function=(\w+)>"
     # Adjacent undeclared names have separate, bounded raw arguments.
     text = "<function=first>a</function></tool_call><function=second>b</function></tool_call>"
-    assert (
-        split_marked_calls(text, opener, "</function>", "</tool_call>", {"known"}) == []
-    )
-    assert diagnostics.rejected_tool_calls_total() == before + 2
+    calls = split_marked_calls(text, opener, "</function>", "</tool_call>", {"known"})
+    assert [call[0] for call in calls] == ["first", "second"]
+    assert diagnostics.rejected_tool_calls_total() == before
     assert (
         split_marked_calls(
             "<function=bad>x</function>",
@@ -473,9 +460,11 @@ def test_rejected_scanner_bounds_each_observation_and_requires_outer_wrapper():
         )
         == []
     )
-    assert diagnostics.rejected_tool_calls_total() == before + 2
+    assert diagnostics.rejected_tool_calls_total() == before
     # The last close does not turn every earlier unclosed marker into a huge
     # overlapping rejected argument span. Only the last candidate is complete.
     text = "<function=bad>" * 4000 + "last</function>"
-    assert split_marked_calls(text, opener, "</function>", valid_names={"known"}) == []
-    assert diagnostics.rejected_tool_calls_total() == before + 3
+    assert (
+        len(split_marked_calls(text, opener, "</function>", valid_names={"known"})) == 1
+    )
+    assert diagnostics.rejected_tool_calls_total() == before

@@ -292,7 +292,7 @@ def test_json_string_may_contain_ifm_closing_delimiters():
     [
         "<ifm|tool_calls><ifm|tool_call>ping",
         _group("junk"),
-        _group(_xml_call("unknown")),
+        _group(_xml_call("invalid name")),
         _group(_xml_call("lookup", (("limit", "2"),), typed=True)),
     ],
 )
@@ -303,22 +303,22 @@ def test_malformed_or_mismatched_calls_fail_closed_as_content(output):
 
 
 def test_malformed_call_never_exposes_prompt_primed_reasoning():
-    output = "private plan</ifm|think>" + _group(_xml_call("unknown"))
+    output = "private plan</ifm|think>" + _group(_xml_call("invalid name"))
     result = K2HorizonToolParser().extract_tool_calls(output, _request())
     assert not result.tools_called
-    assert result.content == _group(_xml_call("unknown"))
+    assert result.content == _group(_xml_call("invalid name"))
 
 
 def test_streaming_malformed_call_never_exposes_prompt_primed_reasoning():
     parser = K2HorizonToolParser()
-    output = "private plan</ifm|think>" + _group(_xml_call("unknown"))
+    output = "private plan</ifm|think>" + _group(_xml_call("invalid name"))
     delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
-    assert delta == {"content": _group(_xml_call("unknown"))}
+    assert delta == {"content": _group(_xml_call("invalid name"))}
 
 
 def test_streaming_malformed_group_does_not_strand_later_visible_text():
     parser = K2HorizonToolParser()
-    malformed = _group(_xml_call("unknown"))
+    malformed = _group(_xml_call("invalid name"))
     first = parser.extract_tool_calls_streaming(
         "", malformed, malformed, request=_request()
     )

@@ -4483,6 +4483,450 @@
   {
     "key": [
       null,
+      "pythonic",
+      "native_registry",
+      false,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      false,
+      "enabled",
+      "chat",
+      true,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      false,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      false,
+      "enabled",
+      "responses",
+      true,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      false,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      false,
+      "enabled",
+      "messages",
+      true,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      true,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      true,
+      "enabled",
+      "chat",
+      true,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      true,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      true,
+      "enabled",
+      "responses",
+      true,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      true,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
+      "pythonic",
+      "native_registry",
+      true,
+      "enabled",
+      "messages",
+      true,
+      "chars"
+    ],
+    "wire_label": "pythonic_bracket",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "[read_file(path='/etc/hostname')]",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 33
+    }
+  },
+  {
+    "key": [
+      null,
       "llama",
       "native_registry",
       false,

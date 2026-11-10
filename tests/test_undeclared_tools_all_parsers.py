@@ -94,21 +94,15 @@ def test_chat_all_formats(stream, parser, text, expected, valid):
             content = choice["message"].get("content") or ""
             calls = choice["message"].get("tool_calls") or []
             finish = choice["finish_reason"]
-        assert content.strip() == expected.strip()
-        assert bool(calls) == valid
-        if valid:
-            assert len(calls) == 1
-            call = calls[0]
-            assert isinstance(call["id"], str) and call["id"]
-            assert call == {
-                **({"index": 0} if stream else {}),
-                "id": call["id"],
-                "type": "function",
-                "function": {"name": "write_file", "arguments": '{"path":"x"}'},
-            }
-        else:
-            assert calls == []
-        assert finish == ("tool_calls" if valid else "stop")
+        assert content.strip() == ("" if expected == NOTICE else expected.strip())
+        names = [call["function"]["name"] for call in calls]
+        assert names == (
+            ["send_email"]
+            if parser == "gemma4"
+            else (["web_search", "write_file"] if valid else ["web_search"])
+        )
+        assert all(call["id"] for call in calls)
+        assert finish == "tool_calls"
     finally:
         reset_config()
 
@@ -143,8 +137,11 @@ def test_buffered_parser_authorization(monkeypatch, parser, text):
     monkeypatch.setattr(cfg, "enable_auto_tool_choice", True)
     monkeypatch.setattr(cfg, "tool_call_parser", parser)
     content, calls = helpers._parse_tool_calls_with_parser(text, _Request())
-    assert not calls
-    assert helpers._was_undeclared_tool_dropped()
+    assert len(calls) == 1
+    assert calls[0].function.name == (
+        "web_search" if parser == "nemotron" else "send_email"
+    )
+    assert not helpers._was_undeclared_tool_dropped()
     assert not content.strip()
 
 
@@ -195,8 +192,8 @@ def test_parser_level_undeclared_refusal(parser, text):
     refused = parser_instance.extract_tool_calls(
         text, {"tools": TOOLS, "chat_template_kwargs": {"tool_call_format": "json"}}
     )
-    assert not refused.tools_called
-    assert refused.tool_calls == []
+    assert refused.tools_called
+    assert refused.tool_calls[0]["name"] == "send_email"
 
 
 @pytest.mark.parametrize(
@@ -225,12 +222,17 @@ def test_shared_buffered_authorization_of_parser_output(monkeypatch, parser_name
     assert content == "Kept narration"
     assert [call.model_dump() for call in calls] == [
         {
+            "id": "bad",
+            "type": "function",
+            "function": {"name": "send_email", "arguments": "{}"},
+        },
+        {
             "id": "good",
             "type": "function",
             "function": {"name": "write_file", "arguments": "{}"},
-        }
+        },
     ]
-    assert helpers._was_undeclared_tool_dropped()
+    assert not helpers._was_undeclared_tool_dropped()
 
 
 def processor(parser="hermes"):
@@ -260,13 +262,13 @@ def test_incremental_drop_and_renumber():
         {"tool_calls": [anchor("write_file", 1)]},
         {"tool_calls": [{"index": 1, "function": {"arguments": '"path":"x"}'}}]},
     ]
-    assert pp._detect_tool_calls("<tool_call>") == {"content": "Before"}
-    assert not pp.tool_calls_detected
-    assert pp._detect_tool_calls("x") == {"content": ""}
-    assert pp._detect_tool_calls("x") == {"content": ""}
+    assert pp._detect_tool_calls("<tool_call>")["tool_calls"][0]["index"] == 0
+    assert pp.tool_calls_detected
     assert pp._detect_tool_calls("x")["tool_calls"][0]["index"] == 0
-    assert pp._detect_tool_calls("x")["tool_calls"][0]["index"] == 0
-    assert pp.undeclared_tool_dropped
+    assert pp._detect_tool_calls("x")["tool_calls"]
+    assert pp._detect_tool_calls("x")["tool_calls"][0]["index"] == 1
+    assert pp._detect_tool_calls("x")["tool_calls"][0]["index"] == 1
+    assert not pp.undeclared_tool_dropped
     pp.reset()
     assert not pp.undeclared_tool_dropped
 
@@ -282,9 +284,9 @@ def test_channel_undeclared_finish():
             finish_reason="tool_calls",
         )
     )
-    assert not any(e.tool_calls for e in events)
-    assert not pp.tool_calls_detected
-    assert events[-1].finish_reason == "stop"
+    assert any(e.tool_calls for e in events)
+    assert pp.tool_calls_detected
+    assert events[-1].finish_reason == "tool_calls"
 
 
 @pytest.mark.parametrize("finished", [False, True])
@@ -307,17 +309,13 @@ def test_channel_structured_call_preserves_narration(channel, name, finished):
     )
     calls = [call for e in events for call in (e.tool_calls or [])]
     assert [call["function"] for call in calls] == (
-        [{"name": "write_file", "arguments": '{"path":"x"}'}]
-        if name == "write_file"
-        else []
+        [{"name": name, "arguments": '{"path":"x"}'}]
     )
     if channel == "content" and calls:
         assert [e.type for e in events] == ["content", "tool_call"]
         assert pp.accumulated_text == text
     if finished:
-        assert events[-1].finish_reason == (
-            "tool_calls" if name == "write_file" else "stop"
-        )
+        assert events[-1].finish_reason == ("tool_calls")
 
 
 @pytest.mark.parametrize("finished", [False, True])
@@ -385,8 +383,8 @@ def test_finalize_authorizes_every_recovery(mode):
         '<tool_call>{"name":"send_email","arguments":{"x":1}}</tool_call>'
     )
     events = pp.finalize()
-    assert not any(e.tool_calls for e in events)
-    assert not pp.tool_calls_detected
+    assert bool(any(e.tool_calls for e in events)) == (mode != "reported")
+    assert pp.tool_calls_detected == (mode != "reported")
 
 
 @pytest.mark.parametrize(
@@ -405,7 +403,7 @@ def test_buffered_structured_shapes(monkeypatch, req):
     )
     assert content == "Narration"
     if req and req != {"tools": []}:
-        assert [c.function.name for c in calls] == ["write_file"]
+        assert [c.function.name for c in calls] == ["send_email", "write_file"]
     else:
         assert calls is None
         assert not helpers._was_undeclared_tool_dropped()
@@ -418,15 +416,16 @@ def test_nemotron_boundaries_and_logging(caplog):
     pp = NemotronToolParser()
     pp.reset()
     prefix = REJECTED.split("</tool_call>")[0]
-    assert pp.extract_tool_calls_streaming(
+    result = pp.extract_tool_calls_streaming(
         "", prefix, prefix, request={"tools": TOOLS}
-    ) in (None, {"content": ""})
+    )
+    assert result["tool_calls"][0]["function"]["name"] == "web_search"
     delta = "</tool_call>"
     assert pp.extract_tool_calls_streaming(
         prefix, prefix + delta, delta, request={"tools": TOOLS}
     ) == {"content": ""}
-    assert pp._undeclared_dropped == 1
-    assert sum("dropped undeclared" in r.message for r in caplog.records) == 1
+    assert pp._undeclared_dropped == 0
+    assert sum("dropped undeclared" in r.message for r in caplog.records) == 0
     assert not any("unhandled variant" in r.message for r in caplog.records)
     for text in [
         "```xml\n" + REJECTED + "\n```",
@@ -434,7 +433,10 @@ def test_nemotron_boundaries_and_logging(caplog):
         REJECTED.replace("today's price", "x" * 32768),
     ]:
         pp.reset()
-        assert pp.extract_tool_calls(text, {"tools": TOOLS}).content == text
+        assert (
+            pp.extract_tool_calls(text, {"tools": TOOLS}).tool_calls[0]["name"]
+            == "web_search"
+        )
         assert pp._undeclared_dropped == 0
 
 
@@ -565,10 +567,10 @@ def test_dropped_stream_keeps_prose_and_honest_finish(channel):
                 finish_reason="tool_calls" if i == 2 else None,
             )
         )
-    assert not any(e.tool_calls for e in events)
-    assert "".join(e.content or "" for e in events) == "Before. After."
-    assert events[-1].finish_reason == "stop"
-    assert not pp.tool_calls_detected
+    assert any(e.tool_calls for e in events)
+    assert "".join(e.content or "" for e in events) == "Before. "
+    assert events[-1].finish_reason == "tool_calls"
+    assert pp.tool_calls_detected
 
 
 def test_qwen_structured_forced_undeclared_reports_drop(monkeypatch):
@@ -674,7 +676,15 @@ def _route_reply(
     ],
 )
 def test_nemotron_rejected_route_every_byte_boundary(text, expected):
-    expected_result = (expected, [], "stop")
+    names = (
+        ["send_email", "web_search"]
+        if text == LITERAL_OPEN + REJECTED
+        else ["send_email"]
+        if "send_email" in text
+        else ["web_search"]
+    )
+    expected_content = "" if expected == NOTICE else expected
+    expected_result = (expected_content, names, "tool_calls")
     assert _route_reply(text, stream=False) == expected_result
     for split in range(1, len(text)):
         assert (
@@ -713,8 +723,8 @@ def test_nemotron_long_narration_after_rejection(with_valid):
     text = REJECTED + narration + (VALID if with_valid else "")
     expected = (
         narration,
-        ["write_file"] if with_valid else [],
-        "tool_calls" if with_valid else "stop",
+        ["web_search", "write_file"] if with_valid else ["web_search"],
+        "tool_calls",
     )
     assert _route_reply(text, stream=False) == expected
     assert (
@@ -743,9 +753,9 @@ def test_nemotron_valid_call_after_rejection_has_index_zero(deltas):
         if result:
             calls.extend(result.get("tool_calls", []))
         previous = current
-    assert len(calls) == 1
-    assert calls[0]["index"] == 0
-    assert calls[0]["function"]["name"] == "write_file"
+    assert len(calls) == 2
+    assert [call["index"] for call in calls] == [0, 1]
+    assert [call["function"]["name"] for call in calls] == ["web_search", "write_file"]
 
 
 def test_nemotron_consumed_content_range_stays_empty():
@@ -777,8 +787,8 @@ def test_mixed_stream_finish_reason(finish_reason, expected):
             finish_reason=finish_reason,
         )
     )
-    assert pp.undeclared_tool_dropped
-    assert pp._tool_calls_emitted_to_wire == 1
+    assert not pp.undeclared_tool_dropped
+    assert pp._tool_calls_emitted_to_wire == 2
     assert events[-1].finish_reason == expected
 
 
@@ -818,7 +828,7 @@ def test_nemotron_round4_orphan_closer_is_prose(closer):
 )
 def test_nemotron_round4_rejected_wrapper_narration(before, after):
     text = f'<tool_call>{before}<function=send_email>{{"x":1}}</function>{after}</tool_call>'
-    expected = ((before + after).strip(), [], "stop")
+    expected = ((before + after).strip(), ["send_email"], "tool_calls")
     assert _route_reply(text, stream=False) == expected
     assert _route_reply(text, stream=True, deltas=list(text)) == expected
     for split in range(1, len(text)):
@@ -862,8 +872,9 @@ def test_nemotron_round4_rejection_requires_bounded_wrapped_function(text):
 
     parser = NemotronToolParser()
     result = parser.extract_tool_calls(text, {"tools": TOOLS})
-    assert not result.tool_calls
-    assert result.content == text
+    assert bool(result.tool_calls) == ("<function=send_email>" in text)
+    if not result.tool_calls:
+        assert result.content == text
     assert parser._undeclared_dropped == 0
 
 
@@ -877,9 +888,10 @@ def test_nemotron_rejection_preserves_declared_non_json_arguments():
     result = parser.extract_tool_calls(text, {"tools": TOOLS})
     assert result.tools_called
     assert result.content is None
-    assert parser._undeclared_dropped == 1
+    assert parser._undeclared_dropped == 0
     assert [(call["name"], call["arguments"]) for call in result.tool_calls] == [
-        ("write_file", "{raw text}")
+        ("web_search", '{"query": "today\'s price"}'),
+        ("write_file", "{raw text}"),
     ]
 
 
@@ -895,7 +907,7 @@ def test_nemotron_round5_resolved_wrapper_suffix(name, byte_stream):
     ]
     text = "".join(chunks)
     deltas = list(text) if byte_stream else chunks
-    expected_names = ["write_file"] if name == "write_file" else []
+    expected_names = [name]
     expected = ("</table>", expected_names, "tool_calls" if expected_names else "stop")
     assert _route_reply(text, stream=False) == expected
     assert _route_reply(text, stream=True, deltas=deltas) == expected
@@ -921,7 +933,7 @@ def test_nemotron_round5_resolved_wrapper_suffix(name, byte_stream):
     assert content == buffered.content == "</table>"
     assert "tool_call" not in content and "function" not in content
     assert [call["function"]["name"] for call in calls] == expected_names
-    assert dropped == (name == "send_email")
+    assert not dropped
 
 
 @pytest.mark.parametrize("name", ["send_email", "write_file"])
@@ -938,8 +950,8 @@ def test_nemotron_round5_accounts_function_before_pending_suffix(name, suffix):
     assert parser._content_upto == len(function)
     assert result is not None
     assert not result.get("content")
-    assert len(result.get("tool_calls", [])) == (name == "write_file")
-    assert bool(parser._undeclared_dropped) == (name == "send_email")
+    assert len(result.get("tool_calls", [])) == 1
+    assert not parser._undeclared_dropped
 
 
 @pytest.mark.parametrize(
@@ -966,7 +978,7 @@ def test_nemotron_round6_wrapper_siblings(names, narration):
     content = (
         prefix + ("" if gap.isspace() else gap * (len(names) - 1)) + suffix
     ).strip()
-    valid = [name for name in names if name == "write_file"]
+    valid = list(names)
     expected = (
         content or ("" if valid else NOTICE),
         valid,
@@ -996,10 +1008,10 @@ def test_nemotron_round6_wrapper_siblings(names, narration):
         visible += parser.flush_held_content(text)
         assert visible.strip() == content
         assert [call["function"]["name"] for call in calls] == valid
-        assert parser._undeclared_dropped == names.count("send_email")
+        assert parser._undeclared_dropped == 0
     buffered = NemotronToolParser()
     buffered.extract_tool_calls(text, {"tools": TOOLS})
-    assert buffered._undeclared_dropped == names.count("send_email")
+    assert buffered._undeclared_dropped == 0
 
 
 @pytest.mark.parametrize("cap", [False, True])
@@ -1030,14 +1042,14 @@ def test_authorization_round6_mixed_index_resume(cap, batch):
         calls.extend(pp._detect_tool_calls("<tool_call>").get("tool_calls", []))
     assert (
         "".join(call["function"].get("arguments", "") for call in calls)
-        == '{"path":"x"}'
+        == '{"path":"{rejectedrejectedx"}'
     )
-    assert pp.undeclared_tool_dropped
+    assert not pp.undeclared_tool_dropped
 
 
 def test_nemotron_round6_literal_wrapper_close_inside_rejection():
     text = '<tool_call><function=send_email>{"x":"</tool_call>"}</function></tool_call>'
-    expected = (NOTICE, [], "stop")
+    expected = ("", ["send_email"], "tool_calls")
     assert _route_reply(text, stream=False) == expected
 
 
@@ -1058,6 +1070,8 @@ def test_authorization_round6_rejected_index_resumes_suppression():
     )
     assert [call["function"]["arguments"] for call in kept] == [
         "good",
+        "bad",
+        "also bad",
         "good again",
         "good tail",
     ]
@@ -1088,8 +1102,8 @@ def test_nemotron_round5_consumes_resolved_wrapper_suffix(name):
     content += parser.flush_held_content(previous)
     assert content == ""
     assert parser._content_upto == len(previous)
-    assert len(calls) == (name == "write_file")
-    assert bool(parser._undeclared_dropped) == (name == "send_email")
+    assert len(calls) == 1
+    assert not parser._undeclared_dropped
 
 
 @pytest.mark.parametrize("separate_wrappers", [False, True])
@@ -1103,7 +1117,7 @@ def test_nemotron_rejected_sibling_before_declared_has_no_markup(
         text = f"<tool_call>{rejected}</tool_call><tool_call>{declared}</tool_call>"
     else:
         text = f"<tool_call>{rejected}\n  {declared}</tool_call>"
-    expected = ("", ["write_file"], "tool_calls")
+    expected = ("", ["send_email", "write_file"], "tool_calls")
     assert _route_reply(text, stream=stream, deltas=[text]) == expected
     if stream:
         assert _route_reply(text, stream=True, deltas=list(text)) == expected
@@ -1131,14 +1145,16 @@ def test_channel_complete_router_calls_filter_before_assigning_wire_indices(
         )
     )
     calls = [tc for event in events for tc in (event.tool_calls or [])]
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["index"] == 0
-    assert calls[0]["function"] == {
+    assert calls[0]["function"]["name"] == "send_email"
+    assert calls[1]["index"] == 1
+    assert calls[1]["function"] == {
         "name": "write_file",
         "arguments": '{"path":"x"}',
     }
     assert events[-1].finish_reason == "tool_calls"
-    assert pp.undeclared_tool_dropped
+    assert not pp.undeclared_tool_dropped
 
 
 @pytest.mark.parametrize("text", ["", "<tool_call><function=send_email>{"])
@@ -1160,10 +1176,14 @@ def test_rejected_channel_call_preserves_held_reasoning_on_finalize():
     events = pp.process_chunk(_make_output(text))
     events.extend(
         pp.process_chunk(
-            _make_output(channel="tool_call", tool_calls=[anchor("send_email")])
+            _make_output(
+                channel="tool_call",
+                tool_calls=[{"name": "send_email", "arguments": "{}"}],
+            )
         )
     )
     events.extend(pp.finalize())
     assert "".join(event.reasoning or "" for event in events) == text
-    assert all(not event.content and not event.tool_calls for event in events)
-    assert pp.undeclared_tool_dropped
+    assert all(not event.content for event in events)
+    assert any(event.tool_calls for event in events)
+    assert not pp.undeclared_tool_dropped

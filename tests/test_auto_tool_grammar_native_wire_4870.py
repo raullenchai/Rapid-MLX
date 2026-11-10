@@ -208,3 +208,15 @@ def test_probe_preserves_request_inputs(monkeypatch, thinking):
     assert render.call_args.kwargs["tools"] == [
         t.model_dump(exclude_none=True) for t in req.tools
     ]
+
+
+@pytest.mark.parametrize("parallel", [False, True, None])
+@pytest.mark.parametrize(
+    "choice", ["auto", "required", {"type": "function", "function": {"name": "search"}}]
+)
+def test_parallel_flag_only_constrains_forced_modes(build, parallel, choice):
+    run(request(choice=choice, parallel_tool_calls=parallel), engine(JSON_TEMPLATE))
+    build.assert_called_once()
+    assert build.call_args.kwargs["single_call"] is (
+        parallel is False and choice != "auto"
+    )

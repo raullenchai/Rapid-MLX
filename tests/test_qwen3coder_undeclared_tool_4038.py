@@ -1,31 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Issue #4038: a call to an undeclared tool must not stream as visible markup.
+"""Keep #4038's markup handling for explicitly pinned tool choices.
 
-goose declared 17 tools (no ``read``); the model answered with
-``<tool_call>\\n<function=read>…</function></tool_call>``. origin/main kept
-the span as content (an undeclared name is never executable), so the user
-saw raw wire markup, ``finish_reason`` was ``stop`` and nothing was logged.
-
-Contract after the fix:
-
-* A name the request did not declare is still never executed (origin/main's
-  contract, shared by every parser here; OpenAI never emits one).
-* A LONE CANONICAL BLOCK -- ``<tool_call>``, one closed ``<function=NAME>``,
-  ``</tool_call>``, only whitespace between -- with an undeclared NAME is an
-  attempted call: it is removed from the content and a WARNING is logged.
-  This applies only when the request declared tools (not ``tool_choice=none``),
-  the block is not inside Markdown code (an open ``` / ~~~ fence or an inline
-  code span on its line), and every ``<function=`` opener before it belongs
-  to an earlier dropped block, so streaming can decide causally and agree
-  with non-streaming at any chunk size.
-* Everything else keeps origin/main's preserve-as-text behaviour: bare
-  ``<function=…>`` spans (prose about the wire format), shared wrappers,
-  unclosed or truncated blocks, requests without tools.
-
-The golden file pins origin/main's non-streaming and streaming output for
-every case (streaming at delta sizes 1..10000 and as one whole delta); only
-the ``changed_by_4038`` cases and the ``stream_overrides`` pinned below
-differ.
+The historical goldens captured automatic-choice name rejection. Those same
+boundaries now apply only to a pinned name, so requests below select the
+expected declared call (or write_file when the fixture has no admitted call).
+Automatic unknown-call forwarding is covered in test_undeclared_tool_passthrough.
+The golden fixtures remain unchanged as historical evidence.
 """
 
 from __future__ import annotations
@@ -48,7 +28,26 @@ GOLDEN = json.loads(
         / "qwen3coder_undeclared_tool_golden_main.json"
     ).read_text()
 )
+# Historical rejections remain covered with an explicitly pinned tool.
 REQUESTS = GOLDEN["requests"]
+
+
+def _request_for_case(case):
+    request = REQUESTS[case["request"]]
+    if (
+        request is None
+        or request.get("tool_choice") == "none"
+        or isinstance(request.get("tool_choice"), dict)
+    ):
+        return request
+    calls = case.get("expected", case["main_non_stream"])["calls"]
+    selected = calls[0][0] if calls else "write_file"
+    return {
+        **request,
+        "tool_choice": {"type": "function", "function": {"name": selected}},
+    }
+
+
 SIZES = GOLDEN["sizes"]
 CASES = GOLDEN["cases"]
 LOGGER = "rapid_mlx.tool_parsers.qwen3coder_tool_parser"
@@ -79,7 +78,7 @@ def _case(name: str) -> dict:
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_non_streaming(case):
-    got = _shape(non_stream(case["text"], REQUESTS[case["request"]]))
+    got = _shape(non_stream(case["text"], _request_for_case(case)))
     if case["changed_by_4038"]:
         assert got == case["expected"]
         assert got["content"].count("<function=") < case["main_non_stream"][
@@ -92,7 +91,7 @@ def test_non_streaming(case):
 @pytest.mark.parametrize("size", SIZES)
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_streaming(case, size):
-    got = _shape(stream(case["text"], REQUESTS[case["request"]], size))
+    got = _shape(stream(case["text"], _request_for_case(case), size))
     if case["name"] == "shared_wrapper_rejected_sibling":
         # Shared marker holdback makes fine deltas match the established whole
         # delta behavior: admitted call wire must not also appear as content.
@@ -172,7 +171,7 @@ def test_goose_e3_shape_is_the_issue_transcript():
 )
 def test_each_drop_is_logged_once(name, drops, caplog):
     case = _case(name)
-    request = REQUESTS[case["request"]]
+    request = _request_for_case(case)
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         non_stream(case["text"], request)
     assert _drop_logs(caplog) == drops
@@ -193,7 +192,7 @@ def _drop_logs(caplog) -> int:
 def test_log_names_the_tool_not_the_arguments(caplog):
     case = _case("goose_e3_lone_undeclared")
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        non_stream(case["text"], REQUESTS[case["request"]])
+        non_stream(case["text"], _request_for_case(case))
     (record,) = [r for r in caplog.records if "#4038" in r.getMessage()]
     assert "'read'" in record.getMessage()
     assert "README" not in record.getMessage()
@@ -206,7 +205,7 @@ def test_service_non_stream_path(name, monkeypatch):
     """The chat/messages/responses non-stream helper returns the same content
     and never re-promotes the dropped span through the generic parser."""
     case = _case(name)
-    request = REQUESTS[case["request"]]
+    request = _request_for_case(case)
 
     class Request:
         tools = request["tools"]
@@ -255,7 +254,10 @@ def test_blocks_over_the_hold_limit_stay_content_in_both_paths(
     32768 chars are dropped; longer ones stay content in BOTH paths (well
     under the post-processor's 64 KB suppression budget)."""
     text = _write_block(value_chars)
-    request = REQUESTS["tools"]
+    request = {
+        **REQUESTS["tools"],
+        "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+    }
     expected = ([], "Writing.\n" if dropped else text)
     assert non_stream(text, request) == expected
     assert stream(text, request, size) == expected
@@ -265,7 +267,10 @@ def test_many_dropped_blocks_in_one_delta_do_not_recurse(caplog):
     """Batched decoding can deliver many blocks in one delta; the parser
     loops over them instead of recursing."""
     text = "<tool_call>\n<function=bad>\n</function>\n</tool_call>" * 2000 + "ok"
-    request = REQUESTS["tools"]
+    request = {
+        **REQUESTS["tools"],
+        "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+    }
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         assert stream(text, request, 0) == ([], "ok")
     assert _drop_logs(caplog) == 2000
@@ -296,8 +301,27 @@ def test_double_backtick_inline_code_is_preserved(size):
     )
     text = f"Example: ``{block}`` end"
     expected = ([], text)
-    assert non_stream(text, REQUESTS["tools"]) == expected
-    assert stream(text, REQUESTS["tools"], size) == expected
+    assert (
+        non_stream(
+            text,
+            {
+                **REQUESTS["tools"],
+                "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            },
+        )
+        == expected
+    )
+    assert (
+        stream(
+            text,
+            {
+                **REQUESTS["tools"],
+                "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            },
+            size,
+        )
+        == expected
+    )
 
 
 def _undeclared_block(name: str, value: str = "") -> str:
@@ -315,8 +339,27 @@ def test_released_over_limit_block_prevents_later_drop(size):
         + "end"
     )
     expected = ([], text)
-    assert non_stream(text, REQUESTS["tools"]) == expected
-    assert stream(text, REQUESTS["tools"], size) == expected
+    assert (
+        non_stream(
+            text,
+            {
+                **REQUESTS["tools"],
+                "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            },
+        )
+        == expected
+    )
+    assert (
+        stream(
+            text,
+            {
+                **REQUESTS["tools"],
+                "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            },
+            size,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize("size", [1, 7, 10_000])
@@ -327,8 +370,27 @@ def test_released_non_lone_wrapper_prevents_later_drop(size):
     )
     text = first + "middle" + _undeclared_block("second_bad") + "end"
     expected = ([], text)
-    assert non_stream(text, REQUESTS["tools"]) == expected
-    assert stream(text, REQUESTS["tools"], size) == expected
+    assert (
+        non_stream(
+            text,
+            {
+                **REQUESTS["tools"],
+                "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            },
+        )
+        == expected
+    )
+    assert (
+        stream(
+            text,
+            {
+                **REQUESTS["tools"],
+                "tool_choice": {"type": "function", "function": {"name": "write_file"}},
+            },
+            size,
+        )
+        == expected
+    )
 
 
 def test_reused_parser_logs_every_response(caplog):
@@ -336,7 +398,7 @@ def test_reused_parser_logs_every_response(caplog):
     non-streaming responses logs each one's drops."""
     parser = Qwen3CoderToolParser(None)
     case = _case("goose_e3_lone_undeclared")
-    request = REQUESTS[case["request"]]
+    request = _request_for_case(case)
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         for _ in range(3):
             parser.extract_tool_calls(case["text"], request)
@@ -349,7 +411,7 @@ def test_reused_parser_logs_after_a_stream(caplog):
     with or without reset()."""
     parser = Qwen3CoderToolParser(None)
     case = _case("goose_e3_lone_undeclared")
-    request = REQUESTS[case["request"]]
+    request = _request_for_case(case)
     text = case["text"]
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         previous = ""

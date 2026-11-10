@@ -1985,22 +1985,17 @@ def _maybe_build_tool_grammar_processor(
                 return None
             flat_tools = narrowed
 
-        # OpenAI ``parallel_tool_calls=False`` -> the model may call AT MOST ONE
-        # tool. We honour it in EVERY mode, including ``auto`` (codex #558-PR5):
-        #   * required/named + False -> EXACTLY ONE call (the builder drops the
-        #     ``+`` quantifier); a NAMED choice is already single-tool but could
-        #     still emit ≥2 calls to the same tool without this, and ``required``
-        #     could emit calls to several tools.
-        #   * auto + False -> ZERO-OR-ONE call (the builder uses ``?`` instead of
-        #     ``*``). Auto's own semantics are "may call zero"; ``parallel_tool_
-        #     calls=False`` adds "if calling, at most one" — the combination is
-        #     zero-or-one, NOT the zero-or-more ``*`` auto would otherwise use.
-        #     Ignoring ``False`` for auto (the old ``and choice["mode"] != "auto"``
-        #     guard) let a no-parallel auto request still emit multiple calls,
-        #     contradicting the client's explicit cap.
-        # ``True`` / unset keep the mode's default quantifier (auto ``*`` /
-        # required ``+``), per OpenAI semantics.
-        single_call = getattr(request, "parallel_tool_calls", None) is False
+        # Constrain required/named requests to exactly one call when parallel
+        # calls are disabled. Auto keeps its normal zero-or-more grammar:
+        # forbidding a second opener mid-generation can make the model
+        # degenerate into garbage text until the token limit. The reference
+        # behavior caps auto calls after parsing instead; both buffered and
+        # streaming responses already keep only the first parsed call.
+        # True/unset preserve the mode's default quantifier.
+        single_call = (
+            getattr(request, "parallel_tool_calls", None) is False
+            and choice["mode"] != "auto"
+        )
 
         # Reasoning-tolerant grammar (design §5 path A, #558 PR-4). Bake the
         # model's reasoning-boundary special tokens (``<think>``/``</think>``)

@@ -50,7 +50,7 @@ from ..errors import (
     MemoryContextExceededError,
     MetalMemoryBackpressureError,
 )
-from ..tool_call_authorization import call_name, declared_names, log_drop
+from ..tool_call_authorization import declared_names, log_drop
 from ..tool_parsers import ToolParserManager
 from ..utils.chat_template import (
     detect_native_reasoning_effort_levels,
@@ -3410,17 +3410,6 @@ def _parse_tool_calls_with_parser(
             )
     if tool_choice_is_none(request):
         return content, None
-    declared = declared_names(request)
-    if declared and tool_calls:
-        kept = []
-        for call in tool_calls:
-            name = call_name(call)
-            if name in declared:
-                kept.append(call)
-            else:
-                log_drop(name)
-                _undeclared_tool_dropped_this_parse.set(True)
-        tool_calls = kept or None
     return content, tool_calls
 
 

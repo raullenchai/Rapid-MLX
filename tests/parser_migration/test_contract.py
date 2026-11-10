@@ -146,6 +146,12 @@ def native_cases():
             [["read_file", {"path": "sample.txt"}]],
         ],
         [
+            "pythonic",
+            "pythonic",
+            "[read_file(path='sample.txt')]",
+            [["read_file", {"path": "sample.txt"}]],
+        ],
+        [
             "xlam",
             "json",
             '[{"name":"read_file","arguments":{"path":"sample.txt"}}]',
@@ -239,7 +245,11 @@ def test_tool_choice_contract(surface, stream, choice):
 @pytest.mark.parametrize(
     "surface,stream", list(itertools.product(SURFACES, [False, True]))
 )
-def test_undeclared_tool_is_not_executable(surface, stream):
+def test_undeclared_tool_is_forwarded_without_markup(surface, stream):
+    # The server never executes tools. An undeclared call reaches the client
+    # as a structured call so it can answer "no such tool" and the model can
+    # recover; the raw markup must not leak into content.
     raw = CALL.replace("run_shell_command", "unauthorized")
     result = route(None, "hermes", raw, surface, stream)
-    assert result["calls"] == []
+    assert result["calls"] == [["unauthorized", {"command": "pwd"}]]
+    assert "<tool_call>" not in result["content"]

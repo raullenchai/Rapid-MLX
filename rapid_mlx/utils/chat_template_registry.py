@@ -20,6 +20,7 @@ ChatTemplateValue = str | dict[str, str]
 ChatTemplateInput = ChatTemplateValue | list[dict[str, str]]
 
 _TEMPLATE_ASSETS: dict[str, str] = {
+    "gemma3_pythonic": "gemma3_pythonic.jinja",
     "gemma4_compact": "gemma4_compact.jinja",
     "gemma4_full": "gemma4_full.jinja",
 }

@@ -75,6 +75,7 @@ Use `--tool-call-parser` to select a parser for your model family:
 | `mistral` | | Mistral, Devstral | `[TOOL_CALLS]` JSON array |
 | `muse` | | Muse Glimmer | `<atem:function_calls>` blocks in channel messages |
 | `nemotron` | `nemotron3` | NVIDIA Nemotron | `<tool_call><function=...><parameter=...>` |
+| `pythonic` | | Gemma 3 12B/27B | Python-list call syntax: `[get_weather(city='Paris')]` |
 | `qwen` | `qwen3`, `qwen3_xml` | Qwen, Qwen3 | `<tool_call>` XML or `[Calling tool:]` |
 | `qwen3_coder_xml` | | Qwen3-Coder (XML function blocks) | `<function=name><parameter=key>` XML |
 | `seed_oss` | `seed`, `gpt_oss` | Seed-OSS, GPT-OSS | `<seed:tool_call><function=name><parameter=key>` |
@@ -180,21 +181,16 @@ This works even when `<think>` was injected in the prompt (implicit think tags w
 
 ## Calls to Tools the Request Did Not Declare
 
-rapid-mlx only returns `tool_calls` for tools the request declared (and, with a
-named `tool_choice`, only that tool). A model can still write a call to a tool
-that does not exist, for example `read` when the client offered `shell` and
-`write`. Such a call is never executed.
+When tools are enabled, rapid-mlx forwards parsed tool calls even if the model
+uses a name absent from the request's tools, such as a misspelled MCP tool name.
+The client can return an error tool result and let the model correct its call.
+OpenAI responses use `finish_reason: "tool_calls"`; Anthropic responses carry a
+`tool_use` block and `stop_reason: "tool_use"`. Streaming and buffered responses
+follow the same policy. Tool-call markup is removed from ordinary content.
 
-With `qwen3_coder_xml`, a complete call block to an undeclared tool
-(`<tool_call>`, one `<function=NAME>…</function>`, `</tool_call>`) is removed
-from the response text, and the server logs a warning naming the tool. The
-block is removed only when the request declared tools, it is not inside
-Markdown code (a ```` ``` ```` or `~~~` fence, or inline code on its line), and
-no other tool-call markup came earlier in the same response. The response then has `finish_reason: "stop"`
-and whatever text the model wrote around the block. Other text that only looks
-like tool-call markup, such as a bare `<function=…>` example, a block inside a
-code example, or an unfinished block, is returned unchanged, so prose about the
-format keeps working.
+Explicit `tool_choice` constraints still apply: `none` suppresses calls, and a
+named choice permits only the selected tool (or reports a conflicting call).
+With `qwen3_coder_xml`, Markdown code examples remain text rather than calls.
 
 ## CLI reference
 
@@ -376,21 +372,16 @@ This works even when `<think>` was injected in the prompt (implicit think tags w
 
 ## Calls to Tools the Request Did Not Declare
 
-rapid-mlx only returns `tool_calls` for tools the request declared (and, with a
-named `tool_choice`, only that tool). A model can still write a call to a tool
-that does not exist, for example `read` when the client offered `shell` and
-`write`. Such a call is never executed.
+When tools are enabled, rapid-mlx forwards parsed tool calls even if the model
+uses a name absent from the request's tools, such as a misspelled MCP tool name.
+The client can return an error tool result and let the model correct its call.
+OpenAI responses use `finish_reason: "tool_calls"`; Anthropic responses carry a
+`tool_use` block and `stop_reason: "tool_use"`. Streaming and buffered responses
+follow the same policy. Tool-call markup is removed from ordinary content.
 
-With `qwen3_coder_xml`, a complete call block to an undeclared tool
-(`<tool_call>`, one `<function=NAME>…</function>`, `</tool_call>`) is removed
-from the response text, and the server logs a warning naming the tool. The
-block is removed only when the request declared tools, it is not inside
-Markdown code (a ```` ``` ```` or `~~~` fence, or inline code on its line), and
-no other tool-call markup came earlier in the same response. The response then has `finish_reason: "stop"`
-and whatever text the model wrote around the block. Other text that only looks
-like tool-call markup, such as a bare `<function=…>` example, a block inside a
-code example, or an unfinished block, is returned unchanged, so prose about the
-format keeps working.
+Explicit `tool_choice` constraints still apply: `none` suppresses calls, and a
+named choice permits only the selected tool (or reports a conflicting call).
+With `qwen3_coder_xml`, Markdown code examples remain text rather than calls.
 
 ## CLI Reference
 

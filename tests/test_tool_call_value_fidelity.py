@@ -96,6 +96,10 @@ def _render_raw_json_array(name: str, key: str, value: str) -> str:
     return json.dumps([{"name": name, "arguments": {key: value}}])
 
 
+def _render_pythonic(name: str, key: str, value: object) -> str:
+    return f"[{name}({key}={value!r})]"
+
+
 def _render_xml_body(name: str, key: str, value: str) -> str:
     # Nemotron / Qwen3.6 wire format. No escaping layer exists in this
     # format — that is precisely why literal closing markers are dangerous.
@@ -123,6 +127,7 @@ RENDERERS = {
     "json_body": _render_json_body,
     "raw_json": _render_raw_json,
     "raw_json_array": _render_raw_json_array,
+    "pythonic_bracket": _render_pythonic,
     "xml_body": _render_xml_body,
     "minicpm_native": _render_minicpm,
     "muse_atem": _render_muse_atem,
@@ -149,6 +154,7 @@ COVERED: list[tuple[str, str]] = [
     ("minicpm", "minicpm_native"),
     ("xlam", "raw_json_array"),
     ("muse", "muse_atem"),
+    ("pythonic", "pythonic_bracket"),
 ]
 
 # Formats whose escaping rules this file does not model yet. Each entry is a
@@ -246,6 +252,11 @@ def _known_broken(parser_name: str, wire_format: str, case: str) -> str | None:
 # tool calls from these models, since the scanner is the fallback. Pre-dates
 # this change and is out of its scope, but it should be visible.
 _SCANNER_BLIND: dict[tuple[str, str], str] = {
+    (
+        "pythonic",
+        "pythonic_bracket",
+    ): "parse_tool_calls does not recognise Python-list call syntax; "
+    "Gemma 3 12B/27B tool calling requires the dedicated pythonic parser",
     (
         "minicpm",
         "minicpm_native",
@@ -347,6 +358,31 @@ def test_renderer_is_valid_for_parser(parser_name, wire_format):
         f"the renderer, or move the pair to _FIDELITY_EXEMPT. Do not leave it "
         f"here, where the scanner fallback would mask it."
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "quoted 'text' with \\ and \n",
+        42,
+        -7,
+        1.25,
+        -0.5,
+        True,
+        False,
+        None,
+        [],
+        {},
+        ["text", 2, False, None, {"nested": [True, -3.5]}],
+        {"items": [1, "two"], "enabled": True, "missing": None},
+    ],
+)
+def test_pythonic_literal_values_survive_round_trip(value):
+    text = RENDERERS["pythonic_bracket"](_NAME, _KEY, value)
+    calls = _extract_parser_only("pythonic", text)
+    assert len(calls) == 1
+    assert calls[0][0] == _NAME
+    assert json.loads(calls[0][1]) == {_KEY: value}
 
 
 @pytest.mark.parametrize("parser_name,wire_format", COVERED)
@@ -832,36 +868,22 @@ def test_no_declared_tools_keeps_the_position_only_rules():
 # --- review round 2: the gate must cover the EMITTED opener --------------
 
 
-def test_a_standalone_undeclared_call_is_not_emitted():
-    """Gating only sibling search left index 0 wide open.
-
-    The first round filtered which openers could be treated as SIBLINGS but
-    emitted ``openers[i]`` unconditionally, so the check was skipped
-    entirely by putting the undeclared opener first — no marker games
-    needed, just ``<function=delete_everything>`` on its own.
-    """
+def test_a_standalone_undeclared_call_is_forwarded():
+    """Unknown calls reach clients while call markup stays out of content."""
     from rapid_mlx.api.tool_calling import parse_tool_calls
 
     text = _render_xml_body("delete_everything", _KEY, "x")
     _, calls = parse_tool_calls(text, _REQUEST)
-    assert not calls, (
-        f"undeclared tool was emitted: {[c.function.name for c in calls or []]}"
-    )
+    assert [c.function.name for c in calls] == ["delete_everything"]
 
 
-def test_the_nemotron_parser_gates_calls_too():
-    """The second implementation of this wire format needs the same gate.
-
-    ``api/tool_calling`` and ``tool_parsers/nemotron_tool_parser`` both
-    parse ``<function=…>``. A gate added to one leaves the other door open,
-    which is exactly how the truncation bug this PR fixes survived its
-    first fix.
-    """
+def test_nemotron_parser_forwards_unknown_names():
+    """Unknown calls reach clients while call markup stays out of content."""
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
 
     hostile = _render_xml_body("delete_everything", _KEY, "x")
     result = parser.extract_tool_calls(hostile, _REQUEST)
-    assert [c["name"] for c in result.tool_calls] == [], (
+    assert [c["name"] for c in result.tool_calls] == ["delete_everything"], (
         f"nemotron emitted an undeclared call: {result.tool_calls!r}"
     )
 
@@ -870,21 +892,8 @@ def test_the_nemotron_parser_gates_calls_too():
     assert [c["name"] for c in result.tool_calls] == [_NAME]
 
 
-def test_the_nemotron_gate_survives_streaming():
-    """The gate has to hold on the path agents actually use.
-
-    ``extract_tool_calls_streaming`` re-parses the accumulated text once the
-    close tag arrives, and that re-parse called ``extract_tool_calls`` with
-    no ``request`` — so the declared-name check above ran against ``None``
-    and admitted everything. The same bytes were correctly refused when the
-    caller buffered them, which is why the non-streaming test passed while
-    the hole stayed open.
-
-    ``request`` was already a parameter of the enclosing method and
-    ``service/postprocessor.py`` already passes it; only the forwarding was
-    missing. Mutation: drop the argument at that call and this fails with
-    ``['delete_everything']``.
-    """
+def test_nemotron_stream_forwards_unknown_names():
+    """Unknown calls reach clients while call markup stays out of content."""
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
     hostile = _render_xml_body("delete_everything", _KEY, "x")
 
@@ -898,7 +907,7 @@ def test_the_nemotron_gate_survives_streaming():
         previous = current
         emitted.extend((delta or {}).get("tool_calls") or [])
 
-    assert emitted == [], f"streaming admitted an undeclared call: {emitted}"
+    assert [c["function"]["name"] for c in emitted] == ["delete_everything"]
 
 
 def _render_bare_refused_body(name, key, value):
@@ -909,12 +918,8 @@ def _render_bare_refused_body(name, key, value):
     )
 
 
-def test_a_streamed_bare_refusal_still_reaches_the_user_as_text():
-    """Bare undeclared function markup remains prose, released exactly once.
-
-    Wrapped undeclared attempts are consumed and reported by the parser;
-    this preserve-as-text contract applies to the unwrapped form.
-    """
+def test_streamed_bare_unknown_call_has_no_content_markup():
+    """Unknown calls reach clients while call markup stays out of content."""
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
     hostile = _render_bare_refused_body("delete_everything", _KEY, "x")
 
@@ -927,20 +932,11 @@ def test_a_streamed_bare_refusal_still_reaches_the_user_as_text():
         previous = current
         content += (delta or {}).get("content") or ""
 
-    assert "delete_everything" in content, (
-        f"the refused block vanished instead of reaching the user: {content!r}"
-    )
-    # Released once, not once per closing tag.
-    assert content.count("<function=delete_everything>") == 1, content
+    assert not content.strip()
 
 
-def test_every_bare_refused_block_reaches_the_user_and_none_twice():
-    """One release per BLOCK, not one per turn — and no duplication.
-
-    A boolean "already released" flag drops every refused block after the
-    first; a watermark that ignores the prose passed through between them
-    re-sends that prose. Both were live in earlier revisions of this fix.
-    """
+def test_bare_unknown_calls_keep_intervening_prose_once():
+    """Unknown calls reach clients while call markup stays out of content."""
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
     first = _render_bare_refused_body("delete_everything", _KEY, "x")
     second = _render_bare_refused_body("also_undeclared", _KEY, "y")
@@ -955,20 +951,11 @@ def test_every_bare_refused_block_reaches_the_user_and_none_twice():
         previous = current
         content += (delta or {}).get("content") or ""
 
-    assert content == text, (
-        "every byte of every refused block and the prose between them must "
-        f"reach the wire exactly once: {content!r}"
-    )
+    assert content.strip() == "BETWEEN"
 
 
 def test_reset_clears_the_content_watermark():
-    """A reused instance must not carry a turn's watermark into the next.
-
-    ``reset()`` is the caller's contract; relying on the ``not previous_text``
-    branch alone is not enough, because the postprocessor can forward a new
-    turn's opening prose through its own fast path before this parser sees a
-    delta.
-    """
+    """Unknown calls reach clients while call markup stays out of content."""
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
     hostile = _render_bare_refused_body(
         "delete_everything", _KEY, "a much longer first turn"
@@ -997,17 +984,12 @@ def test_reset_clears_the_content_watermark():
         prefix, current, second, request=_REQUEST
     )
     content = (delta or {}).get("content") or ""
-    assert "also_undeclared" in content, "stale state swallowed the second turn"
+    assert [c["function"]["name"] for c in delta["tool_calls"]] == ["also_undeclared"]
     assert "already visible" not in content, "the fast-path prefix was replayed"
 
 
-def test_bare_refused_block_before_valid_call_in_one_delta_is_not_swallowed():
-    """A later valid call must not advance across earlier refused prose.
-
-    Streaming parsers receive tokenizer-sized deltas in production, including
-    a delta large enough to complete more than one block. The valid call still
-    executes, while the undeclared block retains non-streaming parity as text.
-    """
+def test_bare_unknown_and_known_call_in_one_delta_are_both_forwarded():
+    """Unknown calls reach clients while call markup stays out of content."""
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
     refused = _render_bare_refused_body("delete_everything", _KEY, "x")
     valid = _render_xml_body(_NAME, _KEY, "ok")
@@ -1016,9 +998,9 @@ def test_bare_refused_block_before_valid_call_in_one_delta_is_not_swallowed():
     delta = parser.extract_tool_calls_streaming("", text, text, request=_REQUEST)
 
     calls = (delta or {}).get("tool_calls") or []
-    assert [call["function"]["name"] for call in calls] == [_NAME]
+    assert [call["function"]["name"] for call in calls] == ["delete_everything", _NAME]
     content = (delta or {}).get("content") or ""
-    assert "delete_everything" in content, content
+    assert "delete_everything" not in content, content
     assert f"<function={_NAME}>" not in content, content
 
 

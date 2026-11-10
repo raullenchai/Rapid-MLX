@@ -243,10 +243,9 @@ def test_section_wrapper_gate_opts_out_when_multicall_possible():
     # FINDING 1 (soundness). The section-wrapper wire folds the WHOLE tool-calls
     # envelope into each call, so a repeated grammar tag would emit back-to-back
     # sections the single-envelope parser drops after the first. build_tool_grammar
-    # must OPT OUT (None) whenever >1 call is possible (``not single_call`` ->
-    # ``+``/``*``) and build the grammar ONLY on the at-most-one-call path
-    # (``single_call=True``). Hermetic single-token tokenizer -> runs with no
-    # network. Covers required / named / auto.
+    # must OPT OUT (None) in auto or whenever single_call is false, and build
+    # the grammar ONLY on the forced single-call path. A hermetic single-token
+    # tokenizer runs with no network. Covers required / named / auto.
     from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     parser = _make_parser(tokenizer=_single_token_tokenizer())
@@ -255,8 +254,8 @@ def test_section_wrapper_gate_opts_out_when_multicall_possible():
             build_tool_grammar(TOOLS[:1], choice, parser, single_call=False) is None
         ), f"{choice}: multi-call grammar must opt out (section-wrapper soundness)"
         assert (
-            build_tool_grammar(TOOLS[:1], choice, parser, single_call=True) is not None
-        ), f"{choice}: at-most-one-call grammar must build"
+            build_tool_grammar(TOOLS[:1], choice, parser, single_call=True) is None
+        ) == (choice == "auto"), f"{choice}: only forced single-call grammar must build"
 
 
 # --------------------------------------------------------------------------
@@ -430,7 +429,7 @@ def test_valid_deepseek_call_is_accepted_and_terminates(parser, tok, lltok):
 @_requires_llguidance
 def test_section_wrapper_gate_on_real_tokenizer(parser):
     # FINDING 1 on the REAL parser/tokenizer: multi-call opts out, single_call
-    # builds — for required AND auto. Mirrors the hermetic gate test end-to-end.
+    # builds only for required. Mirrors the hermetic gate test end-to-end.
     from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     for choice in ("required", "auto"):
@@ -438,8 +437,10 @@ def test_section_wrapper_gate_on_real_tokenizer(parser):
             build_tool_grammar(TOOLS[:1], choice, parser, single_call=False) is None
         ), f"{choice}: multi-call grammar must opt out on the real tokenizer"
         assert (
-            build_tool_grammar(TOOLS[:1], choice, parser, single_call=True) is not None
-        ), f"{choice}: at-most-one-call grammar must build on the real tokenizer"
+            build_tool_grammar(TOOLS[:1], choice, parser, single_call=True) is None
+        ) == (choice == "auto"), (
+            f"{choice}: only forced single-call grammar must build on the real tokenizer"
+        )
 
 
 @_requires_llguidance

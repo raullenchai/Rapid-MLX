@@ -12,6 +12,10 @@ route when the client passes False. The default (None / True) preserves
 multi-call output.
 """
 
+import json
+
+import pytest
+
 from rapid_mlx.api.models import (
     ChatCompletionRequest,
     FunctionCall,
@@ -208,6 +212,7 @@ class TestRouteIntegration:
         try:
             assert resp.status_code == 200, resp.text
             body = resp.json()
+            assert body["choices"][0]["finish_reason"] == "tool_calls"
             msg = body["choices"][0]["message"]
             assert msg.get("tool_calls") is not None
             assert len(msg["tool_calls"]) == 1, (
@@ -219,3 +224,91 @@ class TestRouteIntegration:
             ), "the first parsed tool_call must be preserved"
         finally:
             reset_config()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("parallel", [False, True, None])
+@pytest.mark.parametrize("chunk_size", [1, 17, None])
+def test_auto_response_caps_parsed_calls(stream, parallel, chunk_size):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router
+    from tests.test_empty_rejected_tool_reply import _Engine
+
+    wires = [
+        '<tool_call>{"name":"get_weather","arguments":{"city":"'
+        + city
+        + '"}}</tool_call>'
+        for city in ("Paris", "Tokyo")
+    ]
+    text = "\n".join(wires)
+    deltas = (
+        [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+        if chunk_size
+        else [text]
+    )
+    cfg = reset_config()
+    cfg.engine = _Engine(text, deltas=deltas)
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        response = TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": stream,
+                "messages": [{"role": "user", "content": "Weather in two cities?"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
+                "parallel_tool_calls": parallel,
+            },
+        )
+        assert response.status_code == 200, response.text
+        if stream:
+            choices = [
+                choice
+                for line in response.text.splitlines()
+                if line.startswith("data: {")
+                for choice in json.loads(line[6:])["choices"]
+            ]
+            calls = {}
+            for choice in choices:
+                for delta in choice["delta"].get("tool_calls", []):
+                    call = calls.setdefault(
+                        delta["index"], {"name": "", "arguments": ""}
+                    )
+                    for key, value in delta.get("function", {}).items():
+                        call[key] += value
+            assert set(calls) == ({0} if parallel is False else {0, 1})
+            functions = list(calls.values())
+            finish = choices[-1]["finish_reason"]
+        else:
+            choice = response.json()["choices"][0]
+            functions = [call["function"] for call in choice["message"]["tool_calls"]]
+            finish = choice["finish_reason"]
+        assert [call["name"] for call in functions] == ["get_weather"] * (
+            1 if parallel is False else 2
+        )
+        assert [json.loads(call["arguments"]) for call in functions] == (
+            [{"city": "Paris"}]
+            if parallel is False
+            else [{"city": "Paris"}, {"city": "Tokyo"}]
+        )
+        assert finish == "tool_calls"
+    finally:
+        reset_config()

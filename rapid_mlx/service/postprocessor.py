@@ -30,7 +30,7 @@ from ..parsing.prompt_owner import (
 )
 from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
-from ..tool_call_authorization import call_name, declared_names, log_drop
+from ..tool_call_authorization import call_name
 from ..tool_parsers.streaming import tool_openers
 
 if TYPE_CHECKING:
@@ -2041,42 +2041,10 @@ class StreamingPostProcessor:
         )
 
     def _filter_declared_calls(self, calls, *, incremental=False):
-        """Authorize anchors and retain the decision for argument continuations."""
-        declared = self._tool_authorization_names
-        if declared is None:
-            declared = declared_names(self.request)
-        if not declared:
-            return calls
-        kept = []
-        for call in calls:
-            name = call_name(call)
-            index = call.get("index")
-            if name:
-                dropped = name not in declared
-                self._last_anchor_dropped = dropped
-                if dropped:
-                    self._undeclared_count += 1
-                    log_drop(name)
-                    if index is not None:
-                        self._undeclared_indices.add(index)
-                    continue
-            elif incremental and (
-                index in self._undeclared_indices
-                if index is not None
-                else self._last_anchor_dropped
-            ):
-                self._last_anchor_dropped = True
-                continue
-            if incremental and index is not None:
-                # Like the parallel cap, an admitted indexed continuation
-                # resumes routing subsequent no-index fragments to that call.
-                # Rejected indices were suppressed above and cannot reset it.
-                self._last_anchor_dropped = False
-                if index not in self._declared_indices:
-                    self._declared_indices[index] = len(self._declared_indices)
-                call = {**call, "index": self._declared_indices[index]}
-            kept.append(call)
-        return kept
+        """Keep parsed names, including unknown tools, for client error recovery."""
+        from .helpers import tool_choice_is_none
+
+        return [] if tool_choice_is_none(self.request) else calls
 
     def _apply_forced_tool_choice_filter(self, tool_calls: list[dict]) -> list[dict]:
         """Suppress streaming tool_calls deltas that violate the
