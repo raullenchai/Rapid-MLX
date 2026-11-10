@@ -255,3 +255,12 @@ def test_runtime_facts_are_read_once(monkeypatch):
         assert all(c is contexts[0] for c in contexts)
     finally:
         profiles.macos_version.cache_clear()
+
+
+def test_enabled_rejects_incomplete_geometry(monkeypatch):
+    monkeypatch.setattr(
+        tuning, "runtime_context", lambda *a, **k: pytest.fail("invalid geometry")
+    )
+    assert not tuning.enabled(
+        PAIR[0], {}, family="qwen35_moe", geometry=(2048,), mode="plain", width=1
+    )

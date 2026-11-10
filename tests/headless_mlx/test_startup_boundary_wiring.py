@@ -1,10 +1,70 @@
 """Exercise startup ownership seams using inert MLX imports, never Metal."""
 
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from rapid_mlx.telemetry.model_events import serve_failure_subtype
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_decode,mode", [("none", "plain"), ("mtp", "mtp")])
+async def test_multimodal_startup_logs_resolved_tuning(
+    monkeypatch, caplog, spec_decode, mode
+):
+    import logging
+    import sys
+
+    import mlx
+
+    from rapid_mlx import engine_core, mllm_scheduler, tuning
+    from rapid_mlx.engine import batched
+    from rapid_mlx.models import mllm
+    from rapid_mlx.scheduler import SchedulerConfig
+
+    class FakeMLLM:
+        model = SimpleNamespace()
+        processor = SimpleNamespace(chat_template="test")
+        config = {"model_type": "other", "_name_or_path": "/private/model"}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load(self):
+            pass
+
+    scheduler = SimpleNamespace(start=AsyncMock())
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(mllm, "MLXMultimodalLM", FakeMLLM)
+    monkeypatch.setattr(batched, "_probe_mllm_cache_type", lambda model: None)
+    monkeypatch.setattr(
+        batched, "_clone_mllm_worker_processor", lambda processor: processor
+    )
+    monkeypatch.setattr(mllm_scheduler, "MLLMScheduler", lambda **kwargs: scheduler)
+    mx = ModuleType("mlx.core")
+    mx.device_info = lambda: {"device_name": "unknown"}
+    mx.eval = lambda *args: None
+    mx.random = SimpleNamespace(state=[])
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setattr(mlx, "core", mx)
+    engine = batched.BatchedEngine(
+        "private",
+        force_mllm=True,
+        scheduler_config=SchedulerConfig(spec_decode=spec_decode),
+    )
+    try:
+        with caplog.at_level(logging.DEBUG, logger=batched.__name__):
+            await engine._start_mllm()
+        scheduler.start.assert_awaited_once()
+        assert engine._tuning_context.mode == mode
+        records = [r for r in caplog.records if r.msg == "Resolved tuning: %s"]
+        assert len(records) == 1
+        assert records[0].args == tuning.dump(engine._tuning_context)
+        assert "/private/model" not in records[0].getMessage()
+    finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)
 
 
 def test_text_scheduler_setup_boundary(monkeypatch):
