@@ -3898,7 +3898,8 @@ class MLLMBatchGenerator:
                 except (OSError, ValueError) as e:
                     raise ClientRequestError(
                         "Failed to process image: could not load the image; "
-                        "check that its URL or encoded data is valid"
+                        "check that its URL or encoded data is valid. Local "
+                        "file paths are read only under RAPID_MLX_MEDIA_ROOT"
                     ) from e
 
         if request.videos:
@@ -3939,7 +3940,8 @@ class MLLMBatchGenerator:
                     # clean up the request without exposing decoder internals.
                     raise ClientRequestError(
                         "Failed to process video: could not load or decode the video; "
-                        "check that its URL or encoded data is valid"
+                        "check that its URL or encoded data is valid. Local "
+                        "file paths are read only under RAPID_MLX_MEDIA_ROOT"
                     ) from e
 
         # Key this request's images into the vision-feature cache by content

@@ -808,18 +808,19 @@ voice, background = separate_voice("mixed.mp3")
 
 ## Audio in Chat
 
-Include audio in chat messages (transcribed automatically):
+Chat completions do not accept `audio_url` content; a request that includes
+one returns HTTP 400. Transcribe the audio first, then send the text:
 
 ```python
+with open("meeting.mp3", "rb") as f:
+    transcript = client.audio.transcriptions.create(model="whisper-large-v3", file=f)
+
 response = client.chat.completions.create(
     model="default",
     messages=[{
         "role": "user",
-        "content": [
-            {"type": "text", "text": "Summarize this audio"},
-            {"type": "audio_url", "audio_url": {"url": "file://meeting.mp3"}}
-        ]
-    }]
+        "content": f"Summarize this meeting:\n\n{transcript.text}",
+    }],
 )
 ```
 

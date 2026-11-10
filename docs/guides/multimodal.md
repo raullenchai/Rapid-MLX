@@ -161,7 +161,7 @@ curl http://localhost:8000/v1/chat/completions \
 | Format | Example |
 |--------|---------|
 | URL | `{"type": "image_url", "image_url": {"url": "https://..."}}` |
-| Local file | `{"type": "image_url", "image_url": {"url": "/path/to/image.jpg"}}` |
+| Local file (needs `RAPID_MLX_MEDIA_ROOT`) | `{"type": "image_url", "image_url": {"url": "/path/to/image.jpg"}}` |
 | Base64 | `{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}` |
 
 ### Videos
@@ -169,8 +169,19 @@ curl http://localhost:8000/v1/chat/completions \
 | Format | Example |
 |--------|---------|
 | URL | `{"type": "video_url", "video_url": {"url": "https://..."}}` |
-| Local file | `{"type": "video", "video": "/path/to/video.mp4"}` |
+| Local file (needs `RAPID_MLX_MEDIA_ROOT`) | `{"type": "video", "video": "/path/to/video.mp4"}` |
 | Base64 | `{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,..."}}` |
+
+Local file paths are disabled by default so a server cannot be asked to read
+arbitrary files from disk. To allow them, start the server with
+`RAPID_MLX_MEDIA_ROOT` set to the directory that holds your media; only
+regular image/video files under that directory (no symlinks) are read:
+
+```bash
+RAPID_MLX_MEDIA_ROOT="$HOME/Pictures" rapid-mlx serve qwen3-vl-4b-4bit --mllm
+```
+
+Without it, send the file as a base64 data URL or an HTTPS URL.
 
 ## Python API
 
