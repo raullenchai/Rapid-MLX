@@ -1,11 +1,12 @@
 import Darwin
 import Foundation
 
-/// Atomic replacement whose temporary and published bytes are owner-only.
+/// Atomic publication whose temporary and published bytes are owner-only.
 enum OwnerOnlyFile {
     static func writeAtomically(
         _ data: Data,
         to url: URL,
+        replaceExisting: Bool = true,
         beforeWrite: (_ temporaryPath: String, _ descriptor: Int32) throws -> Void = { _, _ in }
     ) throws {
         let directory = url.deletingLastPathComponent()
@@ -44,8 +45,14 @@ enum OwnerOnlyFile {
         // Darwin releases the descriptor even when close reports an error.
         descriptorIsOpen = false
         guard closeResult == 0 else { throw posixError() }
-        guard rename(temporaryPath, url.path) == 0 else { throw posixError() }
-        shouldRemoveTemporary = false
+        if replaceExisting {
+            guard rename(temporaryPath, url.path) == 0 else { throw posixError() }
+            shouldRemoveTemporary = false
+        } else {
+            // Publish complete bytes only if absent; EEXIST leaves the winner
+            // intact. The defer removes our private temporary link either way.
+            guard link(temporaryPath, url.path) == 0 else { throw posixError() }
+        }
     }
 
     private static func posixError() -> POSIXError {

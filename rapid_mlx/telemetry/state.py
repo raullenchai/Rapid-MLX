@@ -386,14 +386,29 @@ def get_or_create_client_id() -> str:
             return existing
     new_id = str(uuid.uuid4())
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(new_id + "\n")
+    # Publish only complete, owner-only bytes. A hard link elects one writer
+    # across both engine processes and Desktop without exposing an empty file.
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp = Path(tmp_name)
     try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
-    return new_id
+        with os.fdopen(fd, "w") as stream:
+            stream.write(new_id + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            existing = path.read_text().strip()
+            if existing:
+                return existing
+            # Intentional replacement repairs an existing empty identity.
+            os.replace(tmp, path)
+        except OSError:
+            # Filesystems without hard links keep the previous atomic replace.
+            os.replace(tmp, path)
+        return new_id
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def read_client_id() -> str | None:

@@ -14,6 +14,8 @@ import errno
 import importlib
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -243,6 +245,35 @@ def test_client_id_idempotent(fake_home):
     assert first
     assert len(first) == 36  # uuid4 string form
     assert get_or_create_client_id() == first
+
+
+def test_concurrent_client_id_creation_adopts_winner(fake_home, monkeypatch):
+    path = state.client_id_path()
+    barrier = threading.Barrier(16)
+    uuid4 = state.uuid.uuid4
+
+    def candidate():
+        barrier.wait(timeout=10)
+        return uuid4()
+
+    monkeypatch.setattr(state.uuid, "uuid4", candidate)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        ids = list(pool.map(lambda _: state.get_or_create_client_id(), range(16)))
+    assert len(set(ids)) == 1
+    assert path.read_text().strip() == ids[0]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(path.parent.iterdir()) == [path]
+
+
+def test_client_id_repairs_empty_file(fake_home):
+    path = state.client_id_path()
+    path.parent.mkdir(parents=True)
+    path.write_text("\n")
+    created = state.get_or_create_client_id()
+    assert path.read_text().strip() == created
+    assert len(created) == 36
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(path.parent.iterdir()) == [path]
 
 
 def test_client_id_creation_ignores_chmod_failure(fake_home, monkeypatch):
@@ -842,3 +873,16 @@ def test_kill_switch_reason_precedence(fake_home, monkeypatch):
     assert state.consent_source().startswith("env-var (DO_NOT_TRACK")
     monkeypatch.delenv("DO_NOT_TRACK")
     assert state.consent_source() == "ci (GITHUB_ACTIONS is set)"
+
+
+def test_client_id_falls_back_to_replace_without_hard_links(fake_home, monkeypatch):
+    """#5685: a filesystem that rejects link(2) still persists the new id."""
+    from rapid_mlx.telemetry import state as state_mod
+
+    def no_links(*args, **kwargs):
+        raise PermissionError("hard links unsupported")
+
+    monkeypatch.setattr(state_mod.os, "link", no_links)
+    client_id = state_mod.get_or_create_client_id()
+    assert state_mod.get_or_create_client_id() == client_id
+    assert state_mod.read_client_id() == client_id
