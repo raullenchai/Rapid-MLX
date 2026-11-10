@@ -37,7 +37,6 @@ from tests.ingestion_contract import (
     cross_check_against_worker,
     validate_execution,
     validate_submission,
-    worker_source,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -633,6 +632,4 @@ def test_the_complete_projected_submission_passes_the_contract(
 
 
 def test_the_mirror_still_agrees_with_a_local_worker_checkout() -> None:
-    if worker_source() is None:
-        pytest.skip("no rapidmlx.com worker checkout on this machine")
     assert cross_check_against_worker() == []

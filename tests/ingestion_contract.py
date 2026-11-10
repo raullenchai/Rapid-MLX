@@ -7,28 +7,28 @@ cannot be imported from here. This module restates the parts that decide
 whether a submission is accepted, so a test can validate the **exact** bytes
 ``preview_run`` would send rather than the more permissive local schema.
 
-Mirrored from ``atomicValidateModel`` / ``atomicValidateRun`` at commit
-``519fd61`` ("site: redesign community leaderboard and contributor profiles").
-The load-bearing detail is ``atomicExactObject(value, allowed, required)``:
-``allowed`` and ``required`` are the same list at every call site, so a key
-that is not listed is rejected outright — which is how a perfectly good local
-record became unpublishable.
-
-:func:`cross_check_against_worker` re-derives the allowlists from the worker
-source when a checkout happens to be present, so this mirror cannot drift
-unnoticed on a machine that has one.
+Identity rules mirror the vendored server validator in
+``fixtures/community_bench_server_identity.js`` (site origin/main
+7df4213c30fb295bfe10953399fcc95883a1aaea). The fixture is checked against
+origin/main whenever a site checkout is present; CI without that checkout
+still exercises the mirror and the vendored accepted shapes. Set
+``RAPID_MLX_SITE_CHECKOUT`` in CI when the site is provided; an unavailable
+configured checkout fails instead of silently falling back.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
 #: Checkouts a developer may have. Absent on CI, which is why the mirror
 #: below is the primary authority for the test suite.
 _WORKER_CANDIDATES = (
+    Path.home() / "orca/workspaces/rapid-mlx/website-poshog/site/landing/src/index.js",
     Path.home()
     / "Documents/Github/rapidmlx.com/.claude/worktrees/codex+leaderboard-redesign"
     / "landing/src/index.js",
@@ -48,9 +48,8 @@ def _exact_object(
 ) -> None:
     """Mirror of ``atomicExactObject(value, allowed, required, label)``.
 
-    ``required`` defaults to ``allowed``, which is how every model-block call
-    site uses it; ``execution.runtime`` is the one that passes a shorter
-    required list.
+    ``required`` defaults to ``allowed``. Source provenance, quantization
+    details and runtime versions have shorter required lists.
     """
 
     if not isinstance(value, dict):
@@ -58,19 +57,36 @@ def _exact_object(
     unknown = next((key for key in value if key not in allowed), None)
     if unknown is not None:
         raise IngestionRejected(f"{label}.{unknown} is not upload-allowlisted")
-    missing = next((key for key in (required or allowed) if key not in value), None)
+    missing = next(
+        (
+            key
+            for key in (allowed if required is None else required)
+            if key not in value
+        ),
+        None,
+    )
     if missing is not None:
         raise IngestionRejected(f"{label}.{missing} is required")
 
 
 #: ``atomicValidateModel``: the model document.
 MODEL_KEYS = ("schema_version", "identity_strength", "pipeline_kind", "components")
-#: …its single primary component.
+#: …each component (with exactly one primary role).
 COMPONENT_KEYS = ("component_id", "role", "source", "artifact", "quantization")
-#: …the component's Hugging Face source. **No subfolder, no revision.**
-SOURCE_KEYS = ("kind", "repo_id")
+#: Hugging Face source, with optional cache provenance.
+SOURCE_KEYS = ("kind", "repo_id", "subfolder", "resolved_revision")
 ARTIFACT_KEYS = ("format",)
-QUANTIZATION_KEYS = ("kind", "base_dtype")
+QUANTIZATION_KEYS = (
+    "kind",
+    "method",
+    "weight_bits_x2",
+    "activation_bits_x2",
+    "group_size",
+    "base_dtype",
+)
+_IDENTITY_FIXTURE = (
+    Path(__file__).parent / "fixtures/community_bench_server_identity.js"
+)
 
 #: ``atomicValidateExecution``. Unlike the model block these two lists differ:
 #: the optional package versions may be absent, but nothing outside `allowed`
@@ -122,34 +138,128 @@ def validate_model(model: Any, task_type: str) -> None:
     if model["pipeline_kind"] != task_type or task_type not in ATOMIC_BENCH_TASKS:
         raise IngestionRejected("model.pipeline_kind does not match the workload")
     components = model["components"]
-    if not isinstance(components, list) or len(components) != 1:
+    if not isinstance(components, list) or not 1 <= len(components) <= 32:
         raise IngestionRejected(
-            "model.components must contain exactly the primary component"
+            "model.components must contain between 1 and 32 components"
         )
-    component = components[0]
-    _exact_object(component, COMPONENT_KEYS, "model.components[0]")
-    if component["component_id"] != "primary" or component["role"] != "primary":
-        raise IngestionRejected("model primary component is invalid")
-    _exact_object(component["source"], SOURCE_KEYS, "model.components[0].source")
-    if component["source"]["kind"] != "huggingface" or not _REPO_ID.match(
-        str(component["source"]["repo_id"])
+    previous = None
+    primary_count = 0
+    for index, component in enumerate(components):
+        label = f"model.components[{index}]"
+        _exact_object(component, COMPONENT_KEYS, label)
+        cid = component["component_id"]
+        if not isinstance(cid, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._-]{0,63}", cid
+        ):
+            raise IngestionRejected(f"{label}.component_id")
+        if previous is not None and previous >= cid:
+            raise IngestionRejected(
+                "model.components must be sorted by unique component_id"
+            )
+        previous = cid
+        roles = {
+            "primary",
+            "language_model",
+            "vision_encoder",
+            "audio_encoder",
+            "audio_decoder",
+            "vocoder",
+            "projector",
+            "denoiser",
+            "vae",
+            "text_encoder",
+            "tokenizer",
+            "processor",
+            "adapter",
+            "controlnet",
+            "safety_checker",
+            "other",
+        }
+        if component["role"] not in roles:
+            raise IngestionRejected(f"{label}.role")
+        primary_count += component["role"] == "primary"
+        source = component["source"]
+        _exact_object(source, SOURCE_KEYS, f"{label}.source", ("kind", "repo_id"))
+        if (
+            source["kind"] != "huggingface"
+            or not isinstance(source["repo_id"], str)
+            or not _REPO_ID.fullmatch(source["repo_id"])
+        ):
+            raise IngestionRejected(
+                "model source must be a public Hugging Face repository id"
+            )
+        if "resolved_revision" in source and (
+            not isinstance(source["resolved_revision"], str)
+            or not _SHA1.fullmatch(source["resolved_revision"])
+        ):
+            raise IngestionRejected(f"{label}.source.resolved_revision")
+        if "subfolder" in source:
+            folder = source["subfolder"]
+            if (
+                not isinstance(folder, str)
+                or not 1 <= len(folder) <= 512
+                or folder.startswith("/")
+                or any(c in folder for c in "\\\r\n")
+                or ".." in folder.split("/")
+            ):
+                raise IngestionRejected(f"{label}.source.subfolder")
+        _exact_object(component["artifact"], ARTIFACT_KEYS, f"{label}.artifact")
+        if component["artifact"]["format"] != "mlx-safetensors":
+            raise IngestionRejected("model artifact format")
+        validate_quantization(component["quantization"], f"{label}.quantization")
+    if primary_count != 1:
+        raise IngestionRejected(
+            "model.components must contain exactly one primary role"
+        )
+
+
+def validate_quantization(q: Any, label: str) -> None:
+    """Mirror atomicValidateQuantization, including required facts and bounds."""
+    _exact_object(q, QUANTIZATION_KEYS, label, ("kind",))
+    if q["kind"] not in (
+        "none",
+        "weights",
+        "weights_and_activations",
+        "mixed",
+        "unknown",
     ):
-        raise IngestionRejected(
-            "model source must be a public Hugging Face repository id"
-        )
-    _exact_object(component["artifact"], ARTIFACT_KEYS, "model.components[0].artifact")
-    if component["artifact"]["format"] != "mlx-safetensors":
-        raise IngestionRejected("model artifact format")
-    _exact_object(
-        component["quantization"],
-        QUANTIZATION_KEYS,
-        "model.components[0].quantization",
-    )
+        raise IngestionRejected(f"{label}.kind")
+    if "base_dtype" in q and q["base_dtype"] not in (
+        "float32",
+        "float16",
+        "bfloat16",
+        "other",
+        "unknown",
+    ):
+        raise IngestionRejected(f"{label}.base_dtype")
+    if "method" in q and (
+        not isinstance(q["method"], str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", q["method"])
+    ):
+        raise IngestionRejected(f"{label}.method")
+    for field, low, high in (
+        ("weight_bits_x2", 2, 64),
+        ("activation_bits_x2", 2, 64),
+        ("group_size", 1, 4096),
+    ):
+        if field in q and (type(q[field]) is not int or not low <= q[field] <= high):
+            raise IngestionRejected(f"{label}.{field}")
+    if q["kind"] == "none" and any(
+        field in q
+        for field in ("method", "weight_bits_x2", "activation_bits_x2", "group_size")
+    ):
+        raise IngestionRejected(f"{label}: kind none carries no quantization fields")
     if (
-        component["quantization"]["kind"] != "unknown"
-        or component["quantization"]["base_dtype"] != "unknown"
+        q["kind"] in ("weights", "weights_and_activations")
+        and not {"method", "weight_bits_x2"} <= q.keys()
     ):
-        raise IngestionRejected("model quantization")
+        raise IngestionRejected(
+            f"{label}: {q['kind']} requires method and weight_bits_x2"
+        )
+    if q["kind"] == "weights_and_activations" and "activation_bits_x2" not in q:
+        raise IngestionRejected(
+            f"{label}: weights_and_activations requires activation_bits_x2"
+        )
 
 
 def validate_execution(execution: Any, task_type: str) -> None:
@@ -232,6 +342,14 @@ def validate_submission(payload: Any) -> None:
 def worker_source() -> Path | None:
     """A local worker checkout, when one exists."""
 
+    configured = os.environ.get("RAPID_MLX_SITE_CHECKOUT")
+    if configured:
+        source = Path(configured) / "landing/src/index.js"
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"configured site checkout is unavailable: {source}"
+            )
+        return source
     return next((path for path in _WORKER_CANDIDATES if path.is_file()), None)
 
 
@@ -271,27 +389,64 @@ def _atomic_exact_object_calls(text: str) -> dict[str, tuple[str, ...]]:
 def cross_check_against_worker() -> list[str]:
     """Re-derive the allowlists from the worker and report any disagreement.
 
-    Returns an empty list when the mirror matches, or when no checkout is
-    present to compare against.
+    Always checks the vendored contract. A present checkout must be readable
+    and match; git failures are errors, including in CI.
     """
 
     source = worker_source()
-    if source is None:
-        return []
-    calls = _atomic_exact_object_calls(
-        source.read_text(encoding="utf-8", errors="replace")
-    )
+    fixture = _IDENTITY_FIXTURE.read_text()
+    problems: list[str] = []
+    text = fixture
+    if source is not None:
+        # Read the tracked server contract, not uncommitted sibling work.
+        text = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(source.parents[2]),
+                "show",
+                "origin/main:landing/src/index.js",
+            ],
+            text=True,
+        )
+        identity = text[
+            text.index("function atomicValidateModel(") : text.index(
+                "function atomicPrimaryComponent("
+            )
+        ]
+        if identity != fixture.split("\n", 1)[1]:
+            problems.append("vendored identity validator differs from site origin/main")
+    # Check both allowed and required keys, including dynamic component labels.
+    for value, allowed, required in (
+        ("component", COMPONENT_KEYS, COMPONENT_KEYS),
+        ("component.source", SOURCE_KEYS, ("kind", "repo_id")),
+        ("component.artifact", ARTIFACT_KEYS, ARTIFACT_KEYS),
+        ("quantization", QUANTIZATION_KEYS, ("kind",)),
+    ):
+        match = re.search(
+            r"atomicExactObject\(\s*"
+            + re.escape(value)
+            + r",\s*\[([^\]]*)\],\s*\[([^\]]*)\]",
+            text,
+        )
+        shapes = (
+            tuple(tuple(re.findall(r'"([^"\n]+)"', group)) for group in match.groups())
+            if match
+            else None
+        )
+        if shapes != (allowed, required):
+            problems.append(
+                f"{value}: server shape {shapes} != mirror {(allowed, required)}"
+            )
+    calls = _atomic_exact_object_calls(text)
     expectations = {
         "model": MODEL_KEYS,
-        "model.components[0]": COMPONENT_KEYS,
-        "model.components[0].source": SOURCE_KEYS,
-        "model.components[0].artifact": ARTIFACT_KEYS,
-        "model.components[0].quantization": QUANTIZATION_KEYS,
         "execution": EXECUTION_KEYS,
         "execution.runtime": RUNTIME_ALLOWED,
         "execution.resources": RESOURCES_KEYS,
     }
-    problems: list[str] = []
+    if source is None:
+        expectations = {"model": MODEL_KEYS}
     for label, expected in expectations.items():
         allowed = calls.get(label)
         if allowed is None:
