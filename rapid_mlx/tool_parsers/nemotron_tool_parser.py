@@ -265,18 +265,11 @@ class NemotronToolParser(ToolParser):
         closer = text.rfind("</tool_call>", previous_end, start)
         return opener > closer if max(opener, closer) >= 0 else wrapped
 
-    @staticmethod
-    def mask_markdown_fenced_regions(text: str) -> str:
-        from .qwen3coder_tool_parser import Qwen3CoderToolParser
-
-        return Qwen3CoderToolParser.mask_markdown_fenced_regions(text)
-
     @classmethod
     def _function_spans(cls, text: str, valid_names=None):
         """Bound shared literal-safe spans before post-call narration."""
-        scan_text = cls.mask_markdown_fenced_regions(text)
         calls = split_marked_calls(
-            scan_text, r"<function=([^>]+)>", "</function>", valid_names=valid_names
+            text, r"<function=([^>]+)>", "</function>", valid_names=valid_names
         )
         bounded = []
         # A single forward scan bounds every tail, including literal openers
@@ -287,9 +280,6 @@ class NemotronToolParser(ToolParser):
         for name, body, start, end in calls:
             wrapped = cls._is_wrapped(text, start, previous_end, wrapped)
             body_start = text.index(">", start) + 1
-            # Masking preserves offsets; arguments must retain their original
-            # bytes even when they contain Markdown fences themselves.
-            body = text[body_start : end - len("</function>")]
             close = None
             if wrapped:
                 next_opener = bisect_left(openers, body_start)
@@ -567,8 +557,7 @@ class NemotronToolParser(ToolParser):
         """
         Extract tool calls from Nemotron model output.
         """
-        scan_text = self.mask_markdown_fenced_regions(model_output)
-        if "<tool_call>" not in scan_text and "<function=" not in scan_text:
+        if "<tool_call>" not in model_output and "<function=" not in model_output:
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )
@@ -772,11 +761,10 @@ class NemotronToolParser(ToolParser):
             self._post_call_wrapped = False
             self._wrapped_whitespace = None
             self._stream_started = True
-        scan_text = self.mask_markdown_fenced_regions(current_text)
-        if "<tool_call>" not in scan_text and "<function=" not in scan_text:
+        if "<tool_call>" not in current_text and "<function=" not in current_text:
             # Ordinary prose, forwarded verbatim — already on the wire, so a
             # later refusal must not send it again.
-            pending = self._pending_markup_index(scan_text)
+            pending = self._pending_markup_index(current_text)
             safe_end = len(current_text) if pending is None else pending
             content = current_text[self._content_upto : safe_end]
             self._content_upto = safe_end
