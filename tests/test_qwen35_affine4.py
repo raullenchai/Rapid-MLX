@@ -467,10 +467,11 @@ def test_kernel_initialization_selects_chip_tiles(monkeypatch, chip, tiles):
     assert fused.kernels() == first
 
 
-def test_forward_passes_full_banks_and_token_geometry(monkeypatch):
+@pytest.mark.parametrize("tokens", [1, 2, 9])
+def test_forward_passes_full_banks_and_token_geometry(monkeypatch, tokens):
     block = block_type()()
     calls = []
-    x = mx.zeros((1, 9, 2048), mx.bfloat16)
+    x = mx.zeros((1, tokens, 2048), mx.bfloat16)
     logits, inds, scores, glog, shared, act, out, sig = [object() for _ in range(8)]
     block.gate = lambda value: logits if value is x else pytest.fail("wrong input")
     block.shared_expert = lambda value: (
@@ -493,6 +494,8 @@ def test_forward_passes_full_banks_and_token_geometry(monkeypatch):
     monkeypatch.setattr(fused, "fused_route", route)
     monkeypatch.setattr(fused, "_GATE_ROWS", 2)
     monkeypatch.setattr(fused, "_DOWN_ROWS", 4)
+    # Unsupported array objects must still take the full-bank fallback.
+    monkeypatch.setattr(fused, "_singleton_bank_views_enabled", lambda: True)
     assert fused.forward(block, x) is out
     gu, dp = block.switch_mlp.gate_up_proj, block.switch_mlp.down_proj
     assert calls[0]["inputs"] == [
@@ -516,10 +519,118 @@ def test_forward_passes_full_banks_and_token_geometry(monkeypatch):
         shared,
         glog,
     ]
-    assert calls[0]["grid"] == (32, 256, 72)
-    assert calls[1]["grid"] == (32, 512, 9)
-    assert calls[0]["output_shapes"] == [(9, 8, 512)]
-    assert calls[1]["output_shapes"] == [(1, 9, 2048)]
+    assert calls[0]["grid"] == (32, 256, tokens * 8)
+    assert calls[1]["grid"] == (32, 512, tokens)
+    assert calls[0]["output_shapes"] == [(tokens, 8, 512)]
+    assert calls[1]["output_shapes"] == [(1, tokens, 2048)]
+
+
+def test_bank_views_device_gate_and_kill_switch(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", raising=False)
+    monkeypatch.setattr(fused, "_BANK_VIEWS_SUPPORTED", None)
+    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M3 Ultra"})
+    assert fused._singleton_bank_views_enabled()
+    monkeypatch.setenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS", "0")
+    assert not fused._singleton_bank_views_enabled()
+    monkeypatch.delenv("RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS")
+    monkeypatch.setattr(fused, "_BANK_VIEWS_SUPPORTED", None)
+    monkeypatch.setattr(mx, "device_info", lambda: {"device_name": "Apple M4 Pro"})
+    assert not fused._singleton_bank_views_enabled()
+
+
+def test_bank_binding_cache_tracks_weight_replacement():
+    arrays = mx.quantize(mx.ones((4, 64, 64)), group_size=64, bits=4)
+    projection = SimpleNamespace(weight=arrays[0], scales=arrays[1], biases=arrays[2])
+    first = fused._bank_bindings(projection)
+    assert all(a.shape[0] == 1 for a in first)
+    assert fused._bank_bindings(projection) is first
+    projection.weight = mx.zeros_like(projection.weight)
+    replacement = fused._bank_bindings(projection)
+    assert replacement is not first
+    mx.eval(replacement)
+    assert mx.array_equal(replacement[0], projection.weight[:1]).item()
+
+
+@pytest.mark.parametrize("strided", [False, True])
+def test_prefix_bindings_are_exact_and_retain_last_expert_after_unload(strided):
+    """An evaluated prefix must keep storage beyond its logical last element."""
+    k, n, h, experts, topk = 128, 64, 128, 4, 2
+    key = mx.random.key(137)
+    gu = mx.quantize(
+        mx.random.normal((experts, 2 * n, k), key=key).astype(mx.bfloat16),
+        group_size=64,
+        bits=4,
+    )
+    dp = mx.quantize(
+        mx.random.normal((experts, h, n), key=key).astype(mx.bfloat16),
+        group_size=64,
+        bits=4,
+    )
+    if strided:
+        gu = tuple(mx.stack([a, a], axis=1)[:, 0] for a in gu)
+        dp = tuple(mx.stack([a, a], axis=1)[:, 0] for a in dp)
+    mx.eval(gu, dp)
+    x = mx.cos(mx.arange(k)).astype(mx.bfloat16)[None, None]
+    ids = mx.array([experts - 1, 0], mx.uint32)
+    scores = mx.array([0.75, 0.25], mx.bfloat16)
+    gate, down, sig = fused.kernels()
+
+    def run(g, d):
+        act = gate(
+            inputs=[x, *g, *g, ids, sig],
+            template=[
+                ("T", x.dtype),
+                ("ROWS", 1),
+                ("K", k),
+                ("N", n),
+                ("GS", 64),
+                ("TOPK", topk),
+            ],
+            grid=(32, n, topk),
+            threadgroup=(32, 2, 1),
+            output_shapes=[(topk, n)],
+            output_dtypes=[x.dtype],
+        )[0]
+        out = down(
+            inputs=[
+                act,
+                *d,
+                ids,
+                scores,
+                mx.zeros((h,), x.dtype),
+                mx.zeros((1,), x.dtype),
+            ],
+            template=[
+                ("T", x.dtype),
+                ("ROWS", 1),
+                ("I", n),
+                ("H", h),
+                ("GS", 64),
+                ("TOPK", topk),
+                ("SHARED", 0),
+            ],
+            grid=(32, h, 1),
+            threadgroup=(32, 2, 1),
+            output_shapes=[(h,)],
+            output_dtypes=[x.dtype],
+        )[0]
+        return act, out
+
+    expected = run(gu, dp)
+    mx.eval(expected)
+    pg = SimpleNamespace(weight=gu[0], scales=gu[1], biases=gu[2])
+    pd = SimpleNamespace(weight=dp[0], scales=dp[1], biases=dp[2])
+    gv, dv = fused._bank_bindings(pg), fused._bank_bindings(pd)
+    # Detach the view graph, so it cannot retain the bank merely as a lazy op.
+    mx.eval(gv, dv)
+    actual = run(gv, dv)
+    del gu, dp, pg, pd, gv, dv
+    gc.collect()
+    mx.eval(actual)
+    assert all(
+        mx.array_equal(a.view(mx.uint8), b.view(mx.uint8)).item()
+        for a, b in zip(actual, expected)
+    )
 
 
 def test_missing_bank_arrays_fail_closed(monkeypatch):
@@ -646,6 +757,7 @@ def test_vlm_loader_enrolls_loaded_model(monkeypatch, tmp_path):
         moe_fusion,
         qwen35_fused_gdn_decode,
         qwen35_moe_router,
+        qwen35_residual_norm,
     )
     from rapid_mlx.models import mllm
     from rapid_mlx.utils import tokenizer
@@ -669,5 +781,12 @@ def test_vlm_loader_enrolls_loaded_model(monkeypatch, tmp_path):
     ):
         monkeypatch.setattr(module, name, lambda *a, **k: None)
     monkeypatch.setattr(fused, "install_qwen35_affine4", calls.append)
+    residual_calls = []
+    monkeypatch.setattr(
+        qwen35_residual_norm,
+        "install_qwen35_residual_norm",
+        lambda model, **kw: residual_calls.append((model, kw)),
+    )
     mllm.MLXMultimodalLM("local/qwen-moe", spec_decode="none").load()
     assert calls == [model]
+    assert residual_calls == [(model, {"spec_decode": "none"})]
