@@ -1387,20 +1387,13 @@ def build_tool_lark(
     quantifier:
 
       * ``auto``                        -> ``(...)*``  (may emit zero calls)
-      * ``auto`` + ``single_call``      -> ``(...)?``  (ZERO-OR-ONE call)
       * ``required`` / a function name  -> ``(...)+``  (design R1: ≥1 forced)
       * ``required`` + ``single_call``  -> ``(...)``   (EXACTLY ONE call)
 
-    ``single_call=True`` (OpenAI ``parallel_tool_calls=False``) means "if the
-    model calls a tool, at most ONE call". For ``required``/named that is
-    EXACTLY ONE (no repetition quantifier). For ``auto`` — which may always emit
-    ZERO calls — it is ZERO-OR-ONE (``?``): auto's "may call zero" combined with
-    no-parallel's "at most one" (codex #558-PR5). Auto with ``single_call``
-    therefore drops the ``*`` down to ``?`` rather than staying zero-or-more —
-    honouring the client's explicit parallel cap on the auto path too. Without
-    this cap the ``required`` grammar could emit multiple calls, and the ``auto``
-    grammar could emit ≥2 calls, even when the client disabled parallel calls
-    (codex #558-PR3 / PR-5).
+    ``single_call=True`` (OpenAI ``parallel_tool_calls=False``) constrains
+    required/named modes to EXACTLY ONE call. Auto always keeps zero-or-more:
+    blocking a second opener mid-generation can cause degeneration. The
+    reference behavior caps auto calls after parsing, as the response paths do.
 
     ``"none"`` must NOT reach this function — ``none`` produces no grammar at
     all (the model sees no tools, design §4); passing it here is a caller
@@ -1513,16 +1506,9 @@ def build_tool_lark(
                 f"sentinel (trigger={si.trigger!r}, sentinels={si.sentinels!r})"
             )
 
-    # Quantifier = (auto/required) × (parallel_tool_calls):
-    #   * auto,     parallel OK   -> ``*``  zero-or-more (may emit no call / many)
-    #   * auto,     single_call   -> ``?``  ZERO-OR-ONE (auto's "may call zero" ∧
-    #                               no-parallel's "at most one" — codex #558-PR5;
-    #                               NOT ``*``, which would let auto emit ≥2 calls
-    #                               despite the client's parallel_tool_calls=False)
-    #   * required, single_call   -> ``""`` EXACTLY ONE (parallel_tool_calls=False)
-    #   * required, parallel OK   -> ``+``  one-or-more (design R1: ≥1 forced)
+    # Auto is capped after parsing; only forced modes constrain the call count.
     if tool_choice == "auto":
-        quant = "?" if single_call else "*"
+        quant = "*"
     elif single_call:
         quant = ""  # exactly one tag: parallel_tool_calls=False
     else:
@@ -2061,12 +2047,14 @@ def build_tool_grammar(
     # SECTION-WRAPPER soundness gate (#558 E1). A family whose structure_info folds
     # the whole native tool-calls SECTION envelope into each call's begin/end
     # (DeepSeek/Kimi) is sound only when the grammar emits AT MOST ONE call:
-    # repeating the tag (not single_call -> `+`/`*`) yields back-to-back sections,
+    # repeating the tag (`+`/`*`) yields back-to-back sections,
     # which these parsers' single-envelope scanner drops after the first section.
     # Opt OUT to free-form when >1 call is possible (non-regressive: the model then
     # emits its canonical one-section-N-calls wire, which the parser handles). True
     # multi-call section-wrapper grammar support is a tracked follow-up.
-    if getattr(parser, "TOOL_GRAMMAR_SECTION_WRAPPER", False) and not single_call:
+    if getattr(parser, "TOOL_GRAMMAR_SECTION_WRAPPER", False) and (
+        tool_choice == "auto" or not single_call
+    ):
         return None
     # FORCED (required / named) + a REASONING model: opt OUT of the #558 grammar
     # and return ``None`` (the route then FORCES the call via the pre-#558
