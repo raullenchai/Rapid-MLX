@@ -8,6 +8,7 @@ import pytest
 
 from rapid_mlx.engine import batched
 from rapid_mlx.engine.base import GenerationOutput
+from tests.test_schema_reasoning_handoff_5702 import setup_processor as setup_processor
 
 
 @pytest.mark.parametrize("available", [False, True])
@@ -311,3 +312,155 @@ async def test_direct_mllm_implicit_thinking_resolves_configured_gate(
         )
         engine.chat.assert_awaited_once()
     reset_config()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("text", ["", "not JSON", '{"value":200}'])
+def test_responses_guided_schema_violation_uses_validation_envelope(
+    monkeypatch, stream, text
+):
+    from rapid_mlx.api.strict_json_schema import (
+        build_violation_envelope,
+        validate_and_envelope,
+    )
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from tests.test_response_format_json_schema_strict import (
+        _Engine,
+        _make_responses_client,
+        _responses_payload,
+    )
+
+    monkeypatch.setattr(rate_limiter, "enabled", False)
+    raw = f"<think>Reasoning.</think>{text}"
+    engine = _Engine(guided_text=raw)
+    engine.is_mllm = True
+    engine.tokenizer = SimpleNamespace(
+        encode=lambda *a, **kw: [7], decode=lambda ids: "</think>"
+    )
+    client = _make_responses_client(engine, rate_limiter)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    cfg.reasoning_parser_name = "qwen3"
+    payload = _responses_payload(strict=True, stream=stream)
+    payload["enable_thinking"] = True
+    response = client.post("/v1/responses", json=payload)
+    assert response.status_code == 422, response.text
+    _, details = validate_and_envelope(text, payload["text"]["format"]["schema"])
+    assert response.json() == build_violation_envelope(
+        details, param="text.format", attempts=1
+    )
+    assert engine.guided_calls[0]["kwargs"]["reasoning_end_id"] == 7
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("explicit_thinking", [False, True])
+def test_mllm_strict_thinking_decodes_through_shared_gate(
+    monkeypatch, setup_processor, stream, explicit_thinking
+):
+    """Run real grammar masks with MLLM history through chat postprocessing."""
+    import json
+
+    import numpy as np
+
+    from rapid_mlx.api import guided
+    from rapid_mlx.config import get_config
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from tests.test_response_format_json_schema_strict import (
+        _Engine,
+        _make_client,
+        _payload,
+    )
+
+    env = setup_processor
+    processor = env.build()
+    reasoning = "Let me reason."
+    raw = f'{reasoning}</think>\n\n{{"answer":"4"}}'
+
+    class Engine(_Engine):
+        is_mllm = True
+        tokenizer = SimpleNamespace(
+            encode=lambda text, **kw: env.encode(text), decode=env.decode
+        )
+
+        def decode_outputs(self, kwargs):
+            assert kwargs["grammar_logits_processor"] is processor
+            history = []
+            for token in env.encode(raw):
+                masked = processor(history, env.logits())
+                # The model's intended reasoning and answer must both remain
+                # sampleable; constraining token zero forbids the first letter.
+                assert np.isfinite(masked[0, token])
+                history.append(token)
+                yield GenerationOutput(
+                    text=env.decode(history),
+                    new_text=env.decode([token]),
+                    prompt_tokens=4,
+                    completion_tokens=len(history),
+                    finished=False,
+                )
+            processor(history, env.logits())
+            assert processor._reasoning_ended
+            assert processor._matcher.is_accepting()
+            assert not processor._aborted
+            yield GenerationOutput(
+                text=raw,
+                new_text="",
+                prompt_tokens=4,
+                completion_tokens=len(history),
+                finished=True,
+                finish_reason="stop",
+            )
+
+        async def stream_chat(self, messages, **kwargs):
+            for output in self.decode_outputs(kwargs):
+                yield output
+
+        async def chat(self, *, messages, **kwargs):
+            return list(self.decode_outputs(kwargs))[-1]
+
+    engine = Engine()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    build = Mock(return_value=processor)
+    monkeypatch.setattr(guided, "build_json_schema_logits_processor", build)
+    payload = _payload(strict=True, stream=stream)
+    payload["response_format"]["json_schema"]["schema"] = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    if explicit_thinking:
+        payload["enable_thinking"] = True
+    response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 200, response.text
+    build.assert_called_once_with(
+        engine.tokenizer,
+        payload["response_format"]["json_schema"]["schema"],
+        reasoning_end_id=env.end_id,
+    )
+    if stream:
+        chunks = [
+            json.loads(line[6:])["choices"][0]
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        ]
+        content = "".join(chunk["delta"].get("content") or "" for chunk in chunks)
+        thinking = "".join(
+            chunk["delta"].get("reasoning_content") or "" for chunk in chunks
+        )
+        assert chunks[-1]["finish_reason"] == "stop"
+    else:
+        choice = response.json()["choices"][0]
+        content = choice["message"]["content"]
+        thinking = choice["message"]["reasoning_content"]
+        assert choice["finish_reason"] == "stop"
+    assert json.loads(content) == {"answer": "4"}
+    assert thinking.strip() == reasoning
+    assert not engine.guided_calls

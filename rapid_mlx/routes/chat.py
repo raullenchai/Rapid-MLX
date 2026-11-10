@@ -4185,7 +4185,7 @@ def _template_generation_prefix(engine, messages, tools, enable_thinking) -> str
     substituted, so content-dependent templates render with their real inputs.
 
     Returns ``None`` (caller retains the post-hoc cap) when the last message's
-    content is not a plain string (``build_prompt`` is text-only), ``messages``
+    content is not a plain string on a text engine, ``messages``
     is empty (nothing rendered), ``full`` does not start with ``base`` (a
     template that restructures when the generation prompt toggles — the prefix
     can't be isolated cleanly, so be safe), or the delta is empty.
@@ -4197,7 +4197,7 @@ def _template_generation_prefix(engine, messages, tools, enable_thinking) -> str
         return None
     last = messages[-1]
     content = last.get("content") if isinstance(last, dict) else None
-    if not isinstance(content, str):
+    if not isinstance(content, str) and not getattr(engine, "is_mllm", False):
         return None
     full = engine.build_prompt(
         messages,
@@ -4420,7 +4420,7 @@ def _build_reasoning_budget_processor(
                 engine, messages, request.tools, resolved_thinking
             )
         except Exception as exc:
-            # Rendering can fail (e.g. MLLM engines reject build_prompt). Signal
+            # Rendering can fail (e.g. an unsupported chat template). Signal
             # that with None so build_budget_from_render installs NO processor and
             # the post-hoc cap is retained — never a non-seeded processor that
             # would silently suppress the cap yet never fire (codex). The budget

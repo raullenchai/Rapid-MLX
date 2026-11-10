@@ -66,7 +66,6 @@ from ..api.tool_calling import (
     extract_json_schema_for_guided,
     is_strict_json_schema,
     nonstrict_json_schema_boundary_error,
-    validate_output_against_schema,
 )
 from ..api.utils import (
     StreamingReasoningSanitizer,
@@ -2336,33 +2335,17 @@ async def _non_stream(
         f"({tokens_per_sec:.1f} tok/s)"
     )
 
-    # H-06 (codex r2): post-decode validation under strict mode is a
-    # HARD contract — a knowingly schema-invalid 200 violates
-    # OpenAI's ``strict=true`` semantics. Counter ticks for ops
-    # visibility, then 502 so the client sees the contract breach
-    # instead of silently consuming garbage.
-    #
-    # R12-T1F-267-a (PR #878 codex follow-up): this gate must mirror
-    # chat.py's ``if strict_mode and use_guided and json_schema and
-    # output is not None:`` — i.e. it ONLY fires on the
-    # CONSTRAINED-DECODING (guided) path. When the engine does NOT
-    # support guided generation, the unconstrained path has its own
-    # post-decode validator + repair retry block ABOVE (gated by
-    # ``strict_enforcement_enabled()`` at line ~937), and the
-    # ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` escape hatch correctly
-    # short-circuits that block. Without the ``supports_guided_generation``
-    # gate here, the disable flag was effectively ignored — the
-    # non-guided branch logged "falling through to prompt-injection
-    # only" and then the unconditional 502 at this site fired
-    # regardless, breaking parity with /v1/chat/completions. Match
-    # chat's gate exactly: only the guided path runs this validator.
+    # Guided output still needs validation if its matcher degraded. Use the
+    # shared 422 envelope for invalid content; decode failures remain operational
+    # errors. The unconstrained path has its own validator and repair retry above,
+    # gated by strict_enforcement_enabled().
     if (
         _strict_schema
         and _schema_can_guide
         and not openai_request.tools
         and output is not None
     ):
-        ok, err = validate_output_against_schema(
+        ok, failure_details = validate_and_envelope(
             _schema_validation_text(output), _strict_schema
         )
         if not ok:
@@ -2370,25 +2353,16 @@ async def _non_stream(
             logger.warning(
                 "Strict json_schema response failed post-decode validation "
                 "on /v1/responses: %s",
-                err,
+                failure_details,
             )
             _record_nonstream_failure(engine, request, "strict_schema_violation")
             raise HTTPException(
-                status_code=502,
-                detail={
-                    "error": {
-                        "message": (
-                            "strict response_format violated: model output "
-                            f"did not validate against the supplied schema ({err}). "
-                            "This indicates the constrained-decoding path silently "
-                            "degraded; investigate the server logs and the "
-                            "rapid_mlx_response_format_strict_violations_total metric."
-                        ),
-                        "type": "api_error",
-                        "code": "strict_schema_violation",
-                        "param": "text.format",
-                    }
-                },
+                status_code=422,
+                detail=build_violation_envelope(
+                    failure_details or {"reason": "schema_violation"},
+                    param="text.format",
+                    attempts=1,
+                ),
             )
 
     output, channels_owned = split_buffered(

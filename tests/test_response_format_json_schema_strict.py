@@ -1839,20 +1839,16 @@ def test_responses_strict_true_guided_available_routes_to_constrained(
     assert snap["strict_violations_total"] == 0
 
 
-def test_responses_strict_true_post_decode_violation_returns_502(_rate_limiter_state):
-    """Codex r2 BLOCKING #3 parity: /v1/responses non-stream must
-    surface a 502 (not 200) when the post-decode validation fails.
-
-    Pre-fix the route returned 200 with the schema-invalid body in
-    the response — that violates the OpenAI strict contract on the
-    Responses surface just as it did on /v1/chat/completions.
-    """
+def test_responses_strict_true_post_decode_violation_returns_422(_rate_limiter_state):
+    """Schema-invalid guided output uses the shared validation envelope."""
     engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE)
     client = _make_responses_client(engine, _rate_limiter_state)
     resp = client.post("/v1/responses", json=_responses_payload(strict=True))
-    assert resp.status_code == 502, resp.text
+    assert resp.status_code == 422, resp.text
     body = resp.json()
-    assert body["error"]["code"] == "strict_schema_violation"
+    assert body["error"]["code"] == "json_schema_violation"
+    assert body["error"]["param"] == "text.format"
+    assert body["error"]["details"]["attempts"] == 1
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     assert snap["strict_violations_total"] == 1
@@ -3445,7 +3441,7 @@ def test_strict_true_responses_sync_setup_failure_returns_502(_rate_limiter_stat
 
 
 # ---------------------------------------------------------------------------
-# Telemetry: every non-stream strict 502 is a counted strict_schema_violation
+# Telemetry: every non-stream strict failure is a counted strict_schema_violation
 # ---------------------------------------------------------------------------
 
 
@@ -3495,7 +3491,7 @@ def _capture_failed_emits(monkeypatch) -> list[dict]:
         ),
     ],
 )
-def test_nonstream_strict_502_counts_one_strict_schema_violation(
+def test_nonstream_strict_failure_counts_one_strict_schema_violation(
     monkeypatch, _rate_limiter_state, endpoint, engine_factory
 ):
     calls = _capture_failed_emits(monkeypatch)
@@ -3507,8 +3503,13 @@ def test_nonstream_strict_502_counts_one_strict_schema_violation(
         client = _make_client(engine)
         body = _payload(strict=True)
     resp = client.post(endpoint, json=body, headers={"User-Agent": "OpenAI/JS 5.23.0"})
-    assert resp.status_code == 502, resp.text
-    assert resp.json()["error"]["code"] == "strict_schema_violation"
+    validation_failure = (
+        endpoint == "/v1/responses" and engine._guided_text == _INVALID_PAYLOAD_PROSE
+    )
+    assert resp.status_code == (422 if validation_failure else 502), resp.text
+    assert resp.json()["error"]["code"] == (
+        "json_schema_violation" if validation_failure else "strict_schema_violation"
+    )
     assert [call["result"] for call in calls] == ["failed"]
     assert calls[0]["error_class"] == "strict_schema_violation"
     assert calls[0]["endpoint"] == endpoint
