@@ -1829,59 +1829,58 @@ def _missing_download_bytes(
         return 0
 
 
-def _check_download_disk_space(model_size_bytes: int, force: bool = False) -> None:
-    """Apply the download headroom and existing disk-space error policy."""
+def _download_disk_space_status(
+    model_size_bytes: int,
+) -> tuple[bool | None, int | None, str | None]:
+    """Return download admission, free cache bytes, and the refusal diagnostic."""
+    if model_size_bytes == 0:
+        return None, None, None  # Nothing left to download (or size unavailable).
     try:
-        if model_size_bytes == 0:
-            return  # Nothing left to download (or size unavailable).
-
         from rapid_mlx._mirror import _cache_disk_space
 
         probe, available_bytes = _cache_disk_space()
-
         # ~10% headroom for temp files during xet_get / move-into-place.
         required_bytes = int(model_size_bytes * (1 + _DOWNLOAD_DISK_HEADROOM))
         if available_bytes >= required_bytes:
-            return
-
-        model_size_gb = model_size_bytes / 1e9
-        available_gb = available_bytes / 1e9
-        need_to_free_gb = (required_bytes - available_bytes) / 1e9
-
-        print(file=sys.stderr)
-        print("  Error: Insufficient disk space for download.", file=sys.stderr)
-        print(f"    Download size: {model_size_gb:>7.1f} GB", file=sys.stderr)
-        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})", file=sys.stderr)
-        print(
-            f"    Need to free:  {need_to_free_gb:>7.1f} GB  "
-            f"(includes {_DOWNLOAD_DISK_HEADROOM:.0%} working space for the download)",
-            file=sys.stderr,
+            return True, available_bytes, None
+        message = (
+            "  Error: Insufficient disk space for download.\n"
+            f"    Download size: {model_size_bytes / 1e9:>7.1f} GB\n"
+            f"    Free space:    {available_bytes / 1e9:>7.1f} GB  ({probe})\n"
+            f"    Need to free:  {(required_bytes - available_bytes) / 1e9:>7.1f} GB  "
+            f"(includes {_DOWNLOAD_DISK_HEADROOM:.0%} working space for the download)"
         )
-        print(file=sys.stderr)
-        print("  Suggestions:", file=sys.stderr)
-        print(
-            "    - Free disk space, or set HF_HOME to a drive with more room",
-            file=sys.stderr,
-        )
-        print("    - Pick a smaller variant: rapid-mlx models", file=sys.stderr)
-        if not force:
-            print(
-                "    - Bypass this check (download will likely fail mid-way): "
-                "--force-disk-check",
-                file=sys.stderr,
-            )
-            print(file=sys.stderr)
-            sys.exit(1)
-        # ``force=True``: warn loudly, let the user proceed at their own risk.
-        print("  --force-disk-check set — proceeding anyway.", file=sys.stderr)
-        print(file=sys.stderr)
-    except SystemExit:
-        raise
+        return False, available_bytes, message
     except Exception:
-        # Network / auth / etc. failures are non-critical — fall through to
-        # the loader's own error handling rather than blocking startup on a
-        # flaky HF metadata query.
-        pass
+        # An unavailable size or disk probe must not block the real download.
+        return None, None, None
+
+
+def _check_download_disk_space(model_size_bytes: int, force: bool = False) -> None:
+    """Apply the download headroom and existing disk-space error policy."""
+    fits, _, message = _download_disk_space_status(model_size_bytes)
+    if fits is not False:
+        return
+    print(file=sys.stderr)
+    print(message, file=sys.stderr)
+    print(file=sys.stderr)
+    print("  Suggestions:", file=sys.stderr)
+    print(
+        "    - Free disk space, or set HF_HOME to a drive with more room",
+        file=sys.stderr,
+    )
+    print("    - Pick a smaller variant: rapid-mlx models", file=sys.stderr)
+    if not force:
+        print(
+            "    - Bypass this check (download will likely fail mid-way): "
+            "--force-disk-check",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        sys.exit(1)
+    # ``force=True``: warn loudly, let the user proceed at their own risk.
+    print("  --force-disk-check set — proceeding anyway.", file=sys.stderr)
+    print(file=sys.stderr)
 
 
 def _resolve_cached_hf_config(
