@@ -35,7 +35,7 @@
     },
     "model_ref_form": {"values": ["alias", "repo_id", "hf_url"]},
     "model_ref_verdict": {"values": ["ok", "unsupported", "too_big", "unknown", "invalid_reference"]},
-    "model_ref_reason": {"values": ["unsupported_format", "unsupported_architecture", "insufficient_memory", "not_found", "gated", "disk_full", "offline", "dataset_link", "space_link", "collection_link", "model_listing_link", "invalid_model_ref", "other"]},
+    "model_ref_reason": {"values": ["unsupported_format", "unsupported_architecture", "insufficient_memory", "insufficient_disk", "not_found", "gated", "disk_full", "offline", "dataset_link", "space_link", "collection_link", "model_listing_link", "invalid_model_ref", "other"]},
     "model_ref_surface": {"values": ["cli", "desktop"]},
 
     "surface": {

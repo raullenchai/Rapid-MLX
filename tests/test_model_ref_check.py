@@ -32,17 +32,23 @@ KEYS = {
     "required_memory_bytes",
     "fits",
     "cached",
+    "disk_fits",
+    "free_disk_bytes",
 }
 
 
 @pytest.fixture
 def metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._cache_disk_space", lambda: ("cache", 1000 * GIB)
+    )
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_cache_runnability", lambda repo: False)
     monkeypatch.setattr(
         "rapid_mlx.model_metadata.hub_offline_mode_active", lambda: False
     )
     monkeypatch.setattr(pf, "physical_ram_bytes", lambda: 16 * GIB)
+    monkeypatch.setattr(pf, "mlx_recommended_working_set_bytes", lambda: None)
     monkeypatch.setattr(pf, "supported_model_types", lambda: frozenset({"llama"}))
     inspection = pf.Inspection(
         ref=REPO,
@@ -76,6 +82,111 @@ def invoke(monkeypatch, capsys, ref, *flags):
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "pull", ref, "--check", *flags])
     cli.main()
     return capsys.readouterr()
+
+
+@pytest.mark.parametrize("ref", [REPO, "qwen3.5-4b-4bit", "kokoro"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_check_refuses_insufficient_disk(
+    metadata, monkeypatch, capsys, ref, json_output
+):
+    monkeypatch.setattr("rapid_mlx._mirror._cache_disk_space", lambda: ("cache", 0))
+    with pytest.raises(SystemExit) as exc:
+        invoke(monkeypatch, capsys, ref, *(["--json"] if json_output else []))
+    assert exc.value.code == 1
+    output = capsys.readouterr()
+    if json_output:
+        result = json.loads(output.out)
+        assert result["verdict"] == "too_big"
+        assert result["reason"] == "insufficient_disk"
+        assert result["disk_fits"] is False
+        assert result["free_disk_bytes"] == 0
+        assert result["fits"] is not False
+        message = result["message"]
+    else:
+        message = output.out
+    assert "Insufficient disk space for download" in message
+    assert "Download size:" in message
+    assert "Free space:" in message
+    assert "Need to free:" in message
+    assert "10% working space" in message
+    assert output.err == ""
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("ref", [REPO, "qwen3.5-4b-4bit", "kokoro"])
+def test_check_disk_fields(metadata, monkeypatch, capsys, cached, ref):
+    inspection, _ = metadata
+    monkeypatch.setattr(cli, "_cache_runnability", lambda repo: cached)
+    monkeypatch.setattr(check, "_cached_inspection", lambda repo: inspection)
+    probe = Mock(return_value=("cache", 1000 * GIB))
+    if cached:
+        probe.side_effect = AssertionError("cached models must not probe disk")
+    monkeypatch.setattr("rapid_mlx._mirror._cache_disk_space", probe)
+    result = json.loads(invoke(monkeypatch, capsys, ref, "--json").out)
+    assert result["verdict"] == "ok"
+    assert result["disk_fits"] is True
+    assert result["free_disk_bytes"] == (None if cached else 1000 * GIB)
+    assert probe.call_count == (0 if cached else 1)
+
+
+@pytest.mark.parametrize("free_bytes", [2_199_999_999, 2_200_000_000])
+def test_disk_headroom_matches_pull(metadata, monkeypatch, capsys, free_bytes):
+    inspection, _ = metadata
+    monkeypatch.setattr(
+        pf,
+        "inspect_hub",
+        lambda *a, **kw: replace(inspection, download_bytes=2_000_000_000),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._cache_disk_space", lambda: ("cache", free_bytes)
+    )
+    result = check.check_reference(REPO)
+    if result["disk_fits"]:
+        cli._check_download_disk_space(result["download_bytes"])
+        assert result["verdict"] == "ok"
+        assert capsys.readouterr().err == ""
+    else:
+        with pytest.raises(SystemExit) as exc:
+            cli._check_download_disk_space(result["download_bytes"])
+        assert exc.value.code == 1
+        assert result["message"] in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("unknown", ["size", "disk"])
+def test_unknown_disk_fit(metadata, monkeypatch, capsys, unknown):
+    inspection, _ = metadata
+    if unknown == "size":
+        monkeypatch.setattr(
+            pf,
+            "inspect_hub",
+            lambda *a, **kw: replace(inspection, download_bytes=0, weight_bytes=0),
+        )
+    else:
+        monkeypatch.setattr(
+            "rapid_mlx._mirror._cache_disk_space",
+            Mock(side_effect=OSError("unavailable")),
+        )
+    result = json.loads(invoke(monkeypatch, capsys, REPO, "--json").out)
+    assert result["disk_fits"] is None
+    assert result["free_disk_bytes"] is None
+    assert result["reason"] is None
+
+
+def test_disk_refusal_event_is_valid(metadata, monkeypatch, capsys):
+    from rapid_mlx.telemetry import track
+
+    monkeypatch.setattr("rapid_mlx._mirror._cache_disk_space", lambda: ("cache", 0))
+    events = []
+    monkeypatch.setattr(
+        track, "track", lambda name, props: events.append((name, props))
+    )
+    with pytest.raises(SystemExit):
+        invoke(monkeypatch, capsys, REPO, "--json")
+    assert len(events) == 1
+    name, props = events[0]
+    assert props["reason"] == "insufficient_disk"
+    assert props["preflight"] == "refused"
+    assert registry.validate(name, props) is not None
 
 
 @pytest.mark.parametrize(

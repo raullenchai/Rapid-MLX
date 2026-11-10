@@ -48,6 +48,21 @@ def _format(inspection: pf.Inspection, verdict: pf.Verdict) -> str | None:
     return inspection.dtype or "safetensors"
 
 
+def _check_disk(result: dict[str, Any]) -> dict[str, Any]:
+    from rapid_mlx.cli import _download_disk_space_status
+
+    if result["cached"]:
+        result["disk_fits"] = True
+        return result
+    fits, free_bytes, message = _download_disk_space_status(
+        result["download_bytes"] or 0
+    )
+    result.update(disk_fits=fits, free_disk_bytes=free_bytes)
+    if fits is False and result["verdict"] == "ok":
+        result.update(verdict="too_big", reason="insufficient_disk", message=message)
+    return result
+
+
 def check_reference(reference: str) -> dict[str, Any]:
     """Return schema v1; metadata failures are completed, conservative checks."""
     from huggingface_hub.utils import HFValidationError, validate_repo_id
@@ -76,6 +91,8 @@ def check_reference(reference: str) -> dict[str, Any]:
         "required_memory_bytes": None,
         "fits": None,
         "cached": False,
+        "disk_fits": None,
+        "free_disk_bytes": None,
     }
     try:
         normalized = normalize_model_reference(reference)
@@ -131,7 +148,7 @@ def check_reference(reference: str) -> dict[str, Any]:
             if fit.fits is False
             else "This catalog model is supported.",
         )
-        return result
+        return _check_disk(result)
     if audio is not None:
         result.update(
             download_bytes=size_bytes(repo),
@@ -139,7 +156,7 @@ def check_reference(reference: str) -> dict[str, Any]:
             verdict="ok",
             message="This catalog model is supported.",
         )
-        return result
+        return _check_disk(result)
     if cached:
         inspection = _cached_inspection(repo)
     elif hub_offline_mode_active():
@@ -208,7 +225,7 @@ def check_reference(reference: str) -> dict[str, Any]:
         )
     elif verdict.architecture_supported is True and result["format"] is not None:
         result.update(verdict="ok", message="This model is supported.")
-    return result
+    return _check_disk(result)
 
 
 def check_command(args: Any) -> None:
@@ -223,3 +240,5 @@ def check_command(args: Any) -> None:
         result = check_reference(args.model)
         emit_model_ref_checked(result, ref_form=reference_form(args.model))
     print(json.dumps(result) if getattr(args, "json", False) else result["message"])
+    if result["reason"] == "insufficient_disk":
+        sys.exit(1)

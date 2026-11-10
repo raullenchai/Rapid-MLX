@@ -31,8 +31,8 @@ Check an alias, repository ID, or pasted Hugging Face model URL before downloadi
 rapid-mlx pull https://huggingface.co/org/name --check --json
 ```
 
-`--check` reads metadata and estimates memory fit without downloading weights or
-preparing runtimes. Without `--json`, it prints a short sentence. With `--json`,
+`--check` reads metadata and checks memory and download disk fit without
+downloading weights or preparing runtimes. Without `--json`, it prints a diagnostic. With `--json`,
 stdout contains exactly one object (`schema: 1`):
 
 | Field | Value |
@@ -42,18 +42,25 @@ stdout contains exactly one object (`schema: 1`):
 | `in_catalog`, `cached` | Booleans; cached means a complete runnable snapshot |
 | `verdict` | `ok`, `unsupported`, `too_big`, `unknown`, or `invalid_reference` |
 | `reason` | Closed reason code, or `null` |
-| `message` | The same user-facing sentence as the human check |
+| `message` | The same user-facing diagnostic as the human check |
 | `download_bytes`, `required_memory_bytes` | Estimated bytes, or `null` when unknown |
 | `format` | Weight format such as `mlx-4bit` or `gguf`, or `null` |
 | `capabilities` | Metadata-backed capabilities, such as `chat`, `tools`, or `vision` |
-| `fits` | `true`, `false`, or `null` when unknown |
+| `fits` | Memory fit only: `true`, `false`, or `null` when unknown |
+| `disk_fits` | Download disk fit including 10% working headroom; `null` if size or free space is unknown; `true` for cached models |
+| `free_disk_bytes` | Free bytes on the cache filesystem, or `null` if not probed or unavailable |
 
 The check uses the existing metadata deadline and Hub endpoint configuration.
 Catalog metadata and complete cached models can be checked offline. An unreadable
 or unverified model returns `unknown`; `ok` is a metadata verdict, not a test load.
-Memory estimates use the existing serving rules for this Mac. Every completed
-check exits 0, including refusals and invalid references. Usage errors exit
-nonzero. `--json` requires `--check`; checks cannot be combined with download
+Memory estimates use the existing serving rules for this Mac. Uncached models
+use the same disk admission check as downloads. Insufficient disk produces
+`verdict: too_big`, `reason: insufficient_disk`, and exit 1, with download size,
+free space, and space to free in the message. `fits` remains memory-only for
+schema v1 compatibility; use `verdict` to check overall admission. Cached models
+do not require download space. Other completed checks exit 0, including memory
+refusals and invalid references. Usage errors exit nonzero.
+`--json` requires `--check`; checks cannot be combined with download
 selectors, `--request`, or `--no-preflight`. JSON contains no replacement suggestions.
 
 When telemetry is enabled, one `model_ref_checked` event records the closed
