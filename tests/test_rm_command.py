@@ -403,3 +403,19 @@ def test_rm_replans_mode_after_confirmation(variant_cache, monkeypatch, capsys):
     cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=False))
     assert (root / "blobs/eight").exists()
     assert not (root / "blobs/four").exists()
+
+
+def test_rm_cleans_snapshot_created_during_confirmation(
+    variant_cache, monkeypatch, capsys
+):
+    root, link = variant_cache
+
+    def confirm(prompt):
+        link("c" * 40, "4bit/model.safetensors", "four-new", b"n" * 10)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", confirm)
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=False))
+    assert not (root / "snapshots" / ("c" * 40)).exists()
+    assert not (root / "blobs/four-new").exists()
+    assert (root / "blobs/eight").exists()

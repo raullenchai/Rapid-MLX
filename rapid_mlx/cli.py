@@ -13335,9 +13335,13 @@ def rm_command(args):
         for path in files:
             if path.exists():
                 path.unlink()
-        for revision in repo.revisions:
-            shutil.rmtree(revision.snapshot_path / subfolder, ignore_errors=True)
-            _remove_emptied_snapshot(repo.repo_path, revision.snapshot_path)
+        snapshots = repo.repo_path / "snapshots"
+        # Derive touched snapshots from the refreshed plan, which can include
+        # revisions created while the prompt was open.
+        touched = {snapshots / p.relative_to(snapshots).parts[0] for p in selected}
+        for snapshot in sorted(touched):
+            shutil.rmtree(snapshot / subfolder, ignore_errors=True)
+            _remove_emptied_snapshot(repo.repo_path, snapshot)
         print(f"  Removed variant {subfolder}; remaining: {', '.join(remaining)}")
     else:
         revisions = [rev.commit_hash for rev in repo.revisions]
