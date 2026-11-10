@@ -518,6 +518,8 @@ def installed_capture(request, monkeypatch):
         requests={"req-7": req},
         uid_to_request_id={7: "req-7"},
         disable_auto_k=True,
+        # Fix the harness depth without probing MLX hardware for tuning.
+        explicit_depth=True,
     )
     try:
         yield SimpleNamespace(

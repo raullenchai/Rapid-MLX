@@ -599,7 +599,6 @@ class SchedulerConfig:
     # per-position rollback on hybrid SSM targets.
     # ``mtp_disable_auto_k`` fixes depth at ``mtp_max_k`` for A/B benching.
     mtp_max_k: int = 3
-    mtp_depth_explicit: bool = False
     mtp_disable_auto_k: bool = False
 
     # Opt-in prompt-deterministic RESPONSE CACHE (exact-match short-circuit).
@@ -740,6 +739,9 @@ class SchedulerConfig:
     # Smallest chunk the cost estimate may select (per prefilling row). The
     # last chunk before a grid position can still be shorter.
     decode_stall_min_chunk_size: int = 64
+
+    # Appended to preserve positional callers; explicit depths bypass tuning.
+    mtp_depth_explicit: bool = False
 
     def __post_init__(self) -> None:
         if (
