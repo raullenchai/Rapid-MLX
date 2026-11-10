@@ -129,8 +129,12 @@ def test_check_disk_fields(metadata, monkeypatch, capsys, cached, ref):
     assert probe.call_count == (0 if cached else 1)
 
 
-@pytest.mark.parametrize("free_bytes", [2_199_999_999, 2_200_000_000])
-def test_disk_headroom_matches_pull(metadata, monkeypatch, capsys, free_bytes):
+@pytest.mark.parametrize(
+    ("free_bytes", "admitted"), [(2_199_999_999, False), (2_200_000_000, True)]
+)
+def test_disk_headroom_matches_pull(
+    metadata, monkeypatch, capsys, free_bytes, admitted
+):
     inspection, _ = metadata
     monkeypatch.setattr(
         pf,
@@ -141,7 +145,8 @@ def test_disk_headroom_matches_pull(metadata, monkeypatch, capsys, free_bytes):
         "rapid_mlx._mirror._cache_disk_space", lambda: ("cache", free_bytes)
     )
     result = check.check_reference(REPO)
-    if result["disk_fits"]:
+    assert result["disk_fits"] is admitted
+    if admitted:
         cli._check_download_disk_space(result["download_bytes"])
         assert result["verdict"] == "ok"
         assert capsys.readouterr().err == ""
@@ -469,3 +474,27 @@ def test_cached_catalog_still_checks_fit(metadata, monkeypatch, capsys):
     assert result["fits"] is False
     assert result["required_memory_bytes"] == 32 * GIB
     assert result["cached"] is True
+
+
+def test_memory_and_disk_refusal_exits_with_both(metadata, monkeypatch, capsys):
+    monkeypatch.setattr("rapid_mlx._mirror._cache_disk_space", lambda: ("cache", 0))
+    monkeypatch.setattr(
+        pf,
+        "catalog_memory_fit",
+        lambda *a, **kw: pf.CatalogMemoryFit(
+            estimate_bytes=32 * GIB,
+            estimate_source="weights_estimate",
+            budget_bytes=8 * GIB,
+            ram_bytes=16 * GIB,
+            fits=False,
+            fit_basis="gpu_budget",
+            floor_gib=None,
+        ),
+    )
+    with pytest.raises(SystemExit) as exc:
+        invoke(monkeypatch, capsys, "qwen3.5-4b-4bit", "--json")
+    assert exc.value.code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason"] == "insufficient_memory"
+    assert result["disk_fits"] is False
+    assert "Insufficient disk space for download" in result["message"]

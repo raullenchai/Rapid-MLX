@@ -58,8 +58,12 @@ def _check_disk(result: dict[str, Any]) -> dict[str, Any]:
         result["download_bytes"] or 0
     )
     result.update(disk_fits=fits, free_disk_bytes=free_bytes)
-    if fits is False and result["verdict"] == "ok":
-        result.update(verdict="too_big", reason="insufficient_disk", message=message)
+    if fits is False:
+        if result["verdict"] == "ok":
+            result.update(verdict="too_big", reason="insufficient_disk")
+            result["message"] = message
+        else:
+            result["message"] = f"{result['message']}\n{message}"
     return result
 
 
@@ -240,5 +244,5 @@ def check_command(args: Any) -> None:
         result = check_reference(args.model)
         emit_model_ref_checked(result, ref_form=reference_form(args.model))
     print(json.dumps(result) if getattr(args, "json", False) else result["message"])
-    if result["reason"] == "insufficient_disk":
+    if result["disk_fits"] is False:
         sys.exit(1)
