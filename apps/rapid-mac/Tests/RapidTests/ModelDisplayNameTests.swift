@@ -29,10 +29,15 @@ struct ModelDisplayNameTests {
     }
 
     @Test func collidingFriendlyNamesIncludeTheAlias() {
-        let display = ModelDisplayName.name(for: "qwen3.5-4b-4bit")
-        let twin = "Custom title"
-        #expect(ModelDisplayName.name(for: "qwen3.5-4b-4bit", among: ["qwen3.5-4b-4bit"]) == display)
-        #expect(ModelDisplayName.name(for: twin, among: [twin, "qwen3.5-4b-4bit"]) == ModelDisplayName.name(for: twin))
+        let pair = ["qwen3.5-4b", "qwen3.5-4b-4bit"]
+        // Precondition: two distinct aliases share one friendly name.
+        #expect(ModelDisplayName.name(for: pair[0]) == ModelDisplayName.name(for: pair[1]))
+        let titles = pair.map { ModelDisplayName.name(for: $0, among: pair) }
+        #expect(titles[0] != titles[1])
+        for (alias, title) in zip(pair, titles) {
+            #expect(title == ModelDisplayName.name(for: alias) + " · " + alias)
+        }
+        #expect(ModelDisplayName.name(for: pair[1], among: [pair[1]]) == ModelDisplayName.name(for: pair[1]))
     }
 
     @Test func compactCatalogNamesAreUnchanged() {
