@@ -792,7 +792,9 @@ def test_chat_command_system_prompt_prepended(monkeypatch):
     assert payloads[0]["messages"][1] == {"role": "user", "content": "q1"}
 
 
-def test_chat_command_default_thinking_off_sends_enable_thinking_false(monkeypatch):
+def test_chat_command_default_thinking_off_sends_enable_thinking_false(
+    monkeypatch, capsys
+):
     """Chat REPL defaults to thinking OFF.
 
     Reasoning models like Qwen3.5 otherwise leak raw chain-of-thought into
@@ -801,7 +803,10 @@ def test_chat_command_default_thinking_off_sends_enable_thinking_false(monkeypat
     usable output for a brand-new user. Pinning the default here so a
     refactor doesn't silently restore the broken behavior shipped in 0.6.26.
     """
-    canned = [_delta("ok")]
+    canned = [
+        {"choices": [{"delta": {"reasoning_content": "private reasoning"}}]},
+        _delta("ok"),
+    ]
     with _fake_server(canned) as (port, payloads):
         inputs = iter(["q", "exit"])
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
@@ -819,6 +824,10 @@ def test_chat_command_default_thinking_off_sends_enable_thinking_false(monkeypat
     assert payloads[0].get("enable_thinking") is False
     # The unsupported nested form must NOT be present.
     assert "chat_template_kwargs" not in payloads[0]
+    output = capsys.readouterr().out
+    assert "private reasoning" not in output
+    assert "[thinking]" not in output
+    assert "ok" in output
 
 
 def test_chat_command_explicit_think_omits_enable_thinking_field(monkeypatch):
@@ -1319,6 +1328,45 @@ def test_stream_chat_response_reasoning_is_plain_on_noninteractive_tty(environme
     assert full == "answer"
     assert out_buf.getvalue() == "[thinking] working\nanswer"
     assert "\x1b" not in out_buf.getvalue()
+
+
+@pytest.mark.parametrize("enable_thinking", [False, True, None])
+@pytest.mark.parametrize("is_tty", [False, True])
+def test_stream_chat_response_respects_thinking_display_preference(
+    monkeypatch, enable_thinking, is_tty
+):
+    """Always-reasoning responses respect the request's display preference."""
+    monkeypatch.setattr("rapid_mlx.chat_render.supports_rich_output", lambda _: is_tty)
+    canned = [
+        {"choices": [{"delta": {"reasoning_content": "private "}}]},
+        # A coalesced reasoning/answer chunk must retain the answer too.
+        {"choices": [{"delta": {"reasoning_content": "reasoning", "content": "ok"}}]},
+        _delta("!"),
+    ]
+    payload = {"model": "lfm2.5-2.6b-4bit", "messages": [], "stream": True}
+    if enable_thinking is not None:
+        payload["enable_thinking"] = enable_thinking
+    metrics = {}
+    output = io.StringIO()
+    with (
+        _fake_server(canned) as (port, payloads),
+        patch.object(sys, "stdout", output),
+    ):
+        answer = cli._stream_chat_response(
+            f"http://127.0.0.1:{port}", payload, timeout_s=10, metrics=metrics
+        )
+    assert answer == "ok!"
+    assert metrics["reasoning_content"] == "private reasoning"
+    assert payloads == [payload]
+    if enable_thinking is False:
+        assert "private reasoning" not in output.getvalue()
+        assert "[thinking]" not in output.getvalue()
+        assert "ok!" in output.getvalue()
+        if not is_tty:
+            assert output.getvalue() == "ok!"
+    else:
+        assert "[thinking]" in output.getvalue()
+        assert "private reasoning" in output.getvalue()
 
 
 def test_chat_command_heredoc_does_not_trigger_slash_dispatch(monkeypatch):
