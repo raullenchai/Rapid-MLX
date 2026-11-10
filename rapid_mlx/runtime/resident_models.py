@@ -751,6 +751,30 @@ class _SnapshotModelDict(TypedDict):
     cleanup_failed: str | None
 
 
+def _default_memory_limit_bytes() -> int:
+    """Leave OS/runtime headroom within both unified RAM and Metal's budget."""
+    from ..byom.preflight import (
+        mlx_recommended_working_set_bytes,
+        physical_ram_bytes,
+    )
+
+    ram = physical_ram_bytes()
+    recommended = mlx_recommended_working_set_bytes()
+    budgets = []
+    if ram is not None:
+        budgets.append(int(ram * 0.8))
+    if recommended is not None:
+        budgets.append(int(recommended * 0.9))
+    if not budgets:
+        logger.warning(
+            "Cannot determine a safe resident model memory ceiling; "
+            "falling back to unlimited residency. Configure "
+            "--resident-memory-limit-gb to enforce a ceiling."
+        )
+        return 0
+    return max(1, min(budgets))
+
+
 class ResidentModelManager:
     """Own dynamic engines and enforce a process-wide residency ceiling.
 
@@ -775,6 +799,9 @@ class ResidentModelManager:
         self.registry = registry
         self.loader = loader
         self.memory_limit_bytes = max(0, int(memory_limit_bytes))
+        self._memory_limit_explicit = self.memory_limit_bytes > 0
+        if not self._memory_limit_explicit:
+            self.memory_limit_bytes = _default_memory_limit_bytes()
         self.idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
         self._clock = clock
         self._memory_reader = memory_reader
@@ -1316,7 +1343,7 @@ class ResidentModelManager:
                     else 0
                 )
                 used = self._accounted_usage()
-                if self.memory_limit_bytes > 0 and requested_bytes is None:
+                if self._memory_limit_explicit and requested_bytes is None:
                     raise ResidentModelCapacityError(
                         (
                             f"insufficient capacity for role {role!r}: the requested "
@@ -2644,6 +2671,9 @@ class ResidentModelManager:
         usage = self._accounted_usage()
         return {
             "memory_limit_bytes": self.memory_limit_bytes,
+            "memory_limit_source": (
+                "configured" if self._memory_limit_explicit else "default"
+            ),
             "primary_switching": self.primary_switching,
             "memory_used_bytes": usage,
             "memory_available_bytes": (

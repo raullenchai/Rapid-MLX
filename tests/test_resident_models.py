@@ -23,6 +23,109 @@ from rapid_mlx.runtime.resident_models import (
 GIB = 1024**3
 
 
+@pytest.fixture(autouse=True)
+def residency_device_memory(monkeypatch):
+    """Residency tests must never query the host's Metal device or RAM."""
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.physical_ram_bytes", lambda: 1024 * GIB
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.mlx_recommended_working_set_bytes",
+        lambda: 1024 * GIB,
+    )
+
+
+@pytest.mark.parametrize(
+    ("ram", "recommended", "expected"),
+    [(100, 60, 54), (100, 100, 80), (100, None, 80), (None, 60, 54)],
+)
+def test_default_resident_budget(monkeypatch, ram, recommended, expected):
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.physical_ram_bytes",
+        lambda: ram * GIB if ram else None,
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.mlx_recommended_working_set_bytes",
+        lambda: recommended * GIB if recommended else None,
+    )
+    manager, _, _, _ = manager_fixture(limit_gib=0)
+    assert manager.memory_limit_bytes == expected * GIB
+    assert manager.snapshot()["memory_limit_source"] == "default"
+    assert manager.snapshot()["memory_available_bytes"] == (expected - 4) * GIB
+
+
+def test_default_resident_budget_probe_failure_is_unlimited(monkeypatch, caplog):
+    monkeypatch.setattr("rapid_mlx.byom.preflight.physical_ram_bytes", lambda: None)
+    monkeypatch.setattr(
+        "rapid_mlx.byom.preflight.mlx_recommended_working_set_bytes", lambda: None
+    )
+    manager, _, _, _ = manager_fixture(limit_gib=0)
+    assert manager.memory_limit_bytes == 0
+    assert manager.snapshot()["memory_available_bytes"] is None
+    assert manager.snapshot()["memory_limit_source"] == "default"
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "unlimited" in warnings[0].message
+    caplog.clear()
+    # A configured limit remains authoritative without device metadata.
+    manager, _, _, _ = manager_fixture(limit_gib=6)
+    assert manager.memory_limit_bytes == 6 * GIB
+    assert manager.snapshot()["memory_limit_source"] == "configured"
+    assert not caplog.records
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protected", ["pinned", "active", "idle"])
+async def test_default_budget_evicts_only_eligible_residents(monkeypatch, protected):
+    monkeypatch.setattr("rapid_mlx.byom.preflight.physical_ram_bytes", lambda: 10 * GIB)
+    manager, registry, loaded, _ = manager_fixture(limit_gib=0)
+    await manager.load("secondary", estimated_bytes=2 * GIB, pin=protected == "pinned")
+    secondary = registry.get_engine("secondary")
+    if protected == "active":
+        secondary.running = 1
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models.estimate_model_bytes", lambda name: 4 * GIB
+    )
+    if protected == "idle":
+        await manager.load("incoming")
+        assert secondary.stopped
+        assert "incoming" in loaded
+    else:
+        with pytest.raises(ResidentModelCapacityError, match="memory ceiling exceeded"):
+            await manager.load("incoming")
+        assert not secondary.stopped
+        assert "incoming" not in loaded
+    assert not registry.get_engine("chat").stopped
+
+
+def test_default_budget_load_route_rejects_before_loading(monkeypatch):
+    from rapid_mlx.routes.residency import router
+
+    monkeypatch.setattr("rapid_mlx.byom.preflight.physical_ram_bytes", lambda: 10 * GIB)
+    manager, _, loaded, _ = manager_fixture(limit_gib=0)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models.estimate_model_bytes", lambda name: 5 * GIB
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.routes.residency.get_config",
+        lambda: SimpleNamespace(residency_manager=manager),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post("/v1/models/load", json={"model": "too-large"})
+        status = client.get("/v1/models/residency")
+    assert response.status_code == 507
+    assert "memory ceiling exceeded" in response.json()["detail"]
+    assert "limit=8.00 GiB" in response.json()["detail"]
+    assert loaded == {}
+    assert status.status_code == 200
+    assert status.json()["loads_total"] == 0
+
+
 def test_resident_performance_maps_to_the_scheduler_contract():
     assert resident_scheduler_kwargs(
         ResidentPerformanceConfig(
@@ -3732,7 +3835,7 @@ def test_residency_control_plane_forwards_abort_replacement_policy(monkeypatch):
         "current_bytes": 4 * GIB,
         "requested_bytes": response.json()["estimated_bytes"],
         "projected_bytes": response.json()["estimated_bytes"],
-        "limit_bytes": 0,
+        "limit_bytes": manager.memory_limit_bytes,
     }
 
 
@@ -4258,15 +4361,14 @@ async def test_alignment_role_unknown_capacity_fails_closed_under_ceiling():
 
 
 @pytest.mark.asyncio
-async def test_alignment_role_no_ceiling_admits_without_typed_rejection():
-    # With no configured ceiling (limit 0) admission bypasses capacity checks
-    # entirely, preserving pre-existing behavior for unmanaged servers.
+async def test_alignment_role_default_ceiling_admits_unknown_capacity():
     manager, _ = role_manager_fixture(limit_gib=0.0)
+    assert manager.memory_limit_bytes > 0
 
     async with manager.admit_role(
         role="alignment",
         model_id="qwen3-aligner",
-        requested_bytes=None,  # unknown, but no ceiling -> admitted
+        requested_bytes=None,
         capacity_source="unknown",
     ):
         pass
@@ -4274,6 +4376,33 @@ async def test_alignment_role_no_ceiling_admits_without_typed_rejection():
     roles = manager.snapshot()["roles"]
     assert len(roles) == 1
     assert roles[0]["state"] == "resident"
+    assert roles[0]["reserved_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_default_budget_unknown_size_model_loads(monkeypatch):
+    manager, registry, loaded, _ = manager_fixture(limit_gib=0)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models.estimate_model_bytes", lambda name: 0
+    )
+    await manager.load("opaque-model")
+    assert registry.get_engine("opaque-model") is loaded["opaque-model"]
+
+
+@pytest.mark.asyncio
+async def test_default_budget_rejects_known_oversized_role(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.byom.preflight.physical_ram_bytes", lambda: 10 * GIB)
+    manager, _ = role_manager_fixture(limit_gib=0.0)
+    with pytest.raises(ResidentModelCapacityError) as caught:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="large-aligner",
+            requested_bytes=9 * GIB,
+            capacity_source="catalog",
+        ):
+            pytest.fail("oversized role must not load")
+    assert caught.value.reason == "role_capacity_alignment"
+    assert manager.snapshot()["roles"] == []
 
 
 @pytest.mark.asyncio
