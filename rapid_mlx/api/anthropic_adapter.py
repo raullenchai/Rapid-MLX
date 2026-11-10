@@ -775,6 +775,9 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
     tool_results = []
 
     for block in msg.content:
+        # Prior-turn reasoning is omitted; opaque redacted data cannot be rendered.
+        if block.type in ("thinking", "redacted_thinking"):
+            continue
         if block.type == "text":
             text_parts.append(block.text or "")
             content_parts.append({"type": "text", "text": block.text or ""})

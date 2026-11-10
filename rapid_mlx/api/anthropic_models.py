@@ -41,7 +41,15 @@ from .models import (
 # echoes of prior assistant turns parse (cross-role compat is enforced
 # separately on ``AnthropicMessage``).
 _ANTHROPIC_CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
-    {"text", "image", "tool_use", "tool_result", "thinking", "document"}
+    {
+        "text",
+        "image",
+        "tool_use",
+        "tool_result",
+        "thinking",
+        "redacted_thinking",
+        "document",
+    }
 )
 
 
@@ -63,6 +71,7 @@ _ANTHROPIC_BLOCK_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "tool_use": ("id", "name", "input"),
     "tool_result": ("tool_use_id", "content"),
     "thinking": ("thinking",),
+    "redacted_thinking": ("data",),
     "image": ("source",),
     "document": ("source",),
 }
@@ -76,6 +85,8 @@ class AnthropicContentBlock(BaseModel):
     text: str | None = None
     # thinking block (echoed assistant block; assistant-only on inputs)
     thinking: str | None = None
+    # redacted_thinking block (opaque echoed assistant history)
+    data: str | None = None
     # tool_use block
     id: str | None = None
     name: str | None = None
@@ -246,7 +257,7 @@ class AnthropicContentBlock(BaseModel):
 # and any future Anthropic-shaped surface — inherit the contract).
 _ANTHROPIC_ROLE_ALLOWED_BLOCK_TYPES: dict[str, frozenset[str]] = {
     "user": frozenset({"text", "image", "tool_result", "document"}),
-    "assistant": frozenset({"text", "tool_use", "thinking"}),
+    "assistant": frozenset({"text", "tool_use", "thinking", "redacted_thinking"}),
     # System-role messages are conventionally a string on the request
     # surface (the ``AnthropicRequest.system`` field), but a few client
     # libraries pass them as a message with role="system" and
