@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import math
 import platform
 import re
@@ -38,6 +39,29 @@ _BASE_DTYPES = {
     "bfloat16": "bfloat16",
 }
 
+logger = logging.getLogger(__name__)
+
+# Private parent/serve-child receipt; never part of the benchmark wire schema.
+_IDENTITY_RECEIPT_ENV = "RAPID_MLX_BENCH_IDENTITY_RECEIPT"
+
+
+def record_loaded_identity(repo_id: str, task_type: str, checkpoint_path: str) -> None:
+    """Capture facts at the media loader's selected directory, if requested."""
+    import os
+
+    destination = os.environ.get(_IDENTITY_RECEIPT_ENV)
+    if not destination or not Path(checkpoint_path).is_dir():
+        return
+    try:
+        from rapid_mlx.model_aliases import resolve_hub_model
+
+        identity = unresolved_model_identity(
+            resolve_hub_model(repo_id), task_type, snapshot_path=checkpoint_path
+        )
+        Path(destination).write_text(json.dumps(identity), encoding="utf-8")
+    except Exception:
+        logger.debug("Could not capture benchmark checkpoint identity", exc_info=True)
+
 
 def _cached_config(
     repo_id: str, subfolder: str | None = None, snapshot_path: str | None = None
@@ -61,15 +85,27 @@ def _cached_config(
         else:
             from huggingface_hub import try_to_load_from_cache
 
+            from rapid_mlx.model_aliases import (
+                resolve_hub_model,
+                resolve_revision,
+                resolve_subfolder,
+            )
+
+            revision = resolve_revision(repo_id)
+            subfolder = subfolder or resolve_subfolder(repo_id)
+            repo_id = resolve_hub_model(repo_id)
             filename = "config.json"
             if subfolder:
                 filename = f"{subfolder.strip('/')}/config.json"
-            path = try_to_load_from_cache(repo_id, filename)
+            # Commit-pinned mirror pulls intentionally do not write refs/main.
+            # Never let a different main snapshot stand in for the catalog pin.
+            path = try_to_load_from_cache(repo_id, filename, revision=revision)
             if not isinstance(path, str):
                 return None
         with open(path, encoding="utf-8") as handle:
             config = json.load(handle)
     except Exception:  # noqa: BLE001 — provenance must never fail a run
+        logger.debug("Could not read benchmark config for %s", repo_id, exc_info=True)
         return None
     if not isinstance(config, dict):
         return None
@@ -233,7 +269,13 @@ def unresolved_model_identity(
     revision are filled from the cached ``config.json`` so a
     ``...-4bit`` model no longer reports ``quantization.kind: unknown``.
     """
-    source: dict[str, Any] = {"kind": "huggingface", "repo_id": repo_id}
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_subfolder
+
+    subfolder = subfolder or resolve_subfolder(repo_id)
+    source: dict[str, Any] = {
+        "kind": "huggingface",
+        "repo_id": resolve_hub_model(repo_id),
+    }
     if subfolder:
         source["subfolder"] = subfolder
     quantization: dict[str, Any] = {"kind": "unknown", "base_dtype": "unknown"}

@@ -148,6 +148,11 @@ class WanVideoEngine:
         self.loras_high = _parse_loras(os.environ.get("RAPID_MLX_WAN_LORA_HIGH"))
         self.loras_low = _parse_loras(os.environ.get("RAPID_MLX_WAN_LORA_LOW"))
         self.config = self._read_config()
+        from ..community_bench.run_builder import record_loaded_identity
+
+        record_loaded_identity(
+            self.model_name, "video_generation", str(self.model_path)
+        )
         if self.model_type not in _WAN_MODEL_TYPES:
             raise WanBackendError(
                 "the Wan checkpoint config.json has unsupported model_type "

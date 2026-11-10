@@ -157,3 +157,89 @@ def test_same_repo_sidecar_without_root_config(tmp_path):
     assert not lr._sidecar_in_target_repo(
         target, "org/model", str(snapshot.parent / ("b" * 40))
     )
+
+
+@pytest.mark.parametrize("main", [None, "b" * 40])
+@pytest.mark.parametrize("model_name", ["org/model", "test-alias"])
+def test_pinned_mirror_identity_reaches_payload(
+    monkeypatch, tmp_path, main, model_name
+):
+    import huggingface_hub.constants as constants
+
+    from rapid_mlx import model_aliases
+    from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
+    from rapid_mlx.community_bench.run_builder import unresolved_model_identity
+
+    revision = "a" * 40
+    root = tmp_path / "hub" / "models--org--model"
+    checkpoint = root / "snapshots" / revision / "4bit"
+    checkpoint.mkdir(parents=True)
+    # Mirror layout: snapshot -> repo blob -> shared store, with no main ref.
+    shared = tmp_path / "shared" / "config-blob"
+    shared.parent.mkdir()
+    shared.write_text(json.dumps({"dtype": "bfloat16", "quantization": {"bits": 4}}))
+    blob = root / "blobs" / "config-blob"
+    blob.parent.mkdir()
+    blob.symlink_to(shared)
+    (checkpoint / "config.json").symlink_to(blob)
+    if main:
+        (root / "refs").mkdir()
+        (root / "refs" / "main").write_text(main)
+        other = root / "snapshots" / main / "4bit"
+        other.mkdir(parents=True)
+        (other / "config.json").write_text('{"quantization":{"bits":8}}')
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setattr(model_aliases, "resolve_hub_model", lambda _: "org/model")
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda _: revision)
+    identity = unresolved_model_identity(model_name, "text_generation", "4bit")
+    run = json.loads(
+        (Path(__file__).parent / "fixtures/community_bench_cached_run.json").read_text()
+    )
+    run["model"] = identity
+    BenchmarkRunValidator().validate(run)
+    primary = run["model"]["components"][0]
+    assert primary["source"]["resolved_revision"] == revision
+    assert primary["quantization"]["weight_bits_x2"] == 8
+    assert primary["quantization"]["base_dtype"] == "bfloat16"
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_sidecar_identity_reads_loaded_subfolder(tmp_path, symlink):
+    checkpoint = tmp_path / "models--org--model" / "snapshots" / ("c" * 40) / "mtp"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"quantization":{"bits":8}}')
+    if symlink:
+        storage = tmp_path / "physical-checkpoint"
+        checkpoint.rename(storage)
+        checkpoint.symlink_to(storage, target_is_directory=True)
+    repo, selected, subfolder, digest = lr._sidecar_identity(str(checkpoint))
+    assert Path(selected) == checkpoint
+    primary = {"components": []}
+    identity = lr._with_sidecar_identity(primary, repo, selected, subfolder)
+    assert identity["components"][0]["quantization"]["weight_bits_x2"] == 16
+
+
+@pytest.mark.parametrize("task", ["image_generation", "video_generation"])
+def test_media_receipt_uses_loader_path_not_main(monkeypatch, tmp_path, task):
+    from rapid_mlx.community_bench import run_builder
+
+    checkpoint = (
+        tmp_path / "custom-cache" / "models--org--model" / "snapshots" / ("d" * 40)
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"quantization":{"bits":4}}')
+    capture = {}
+    token = lr._LOADED_IDENTITY.set(capture)
+    try:
+        with lr._server_identity_receipt() as env:
+            with monkeypatch.context() as child:
+                for key, value in env.items():
+                    child.setenv(key, value)
+                run_builder.record_loaded_identity("org/model", task, str(checkpoint))
+            # Moving main cannot change facts already captured in the child.
+            (checkpoint / "config.json").write_text('{"quantization":{"bits":8}}')
+        primary = capture["identity"]["components"][0]
+        assert primary["source"]["resolved_revision"] == "d" * 40
+        assert primary["quantization"]["weight_bits_x2"] == 8
+    finally:
+        lr._LOADED_IDENTITY.reset(token)
