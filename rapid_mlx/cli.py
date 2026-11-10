@@ -13202,6 +13202,41 @@ def pull_command(args):
         print(f"\n  Download complete. {guidance}")
 
 
+def _cached_variant_removal(repo, subfolder):
+    """Plan a subfolder removal, preserving references across all snapshots.
+
+    Treat every sibling directory containing cached files as retained data,
+    including partial downloads. Only unreferenced blobs inside this repo are
+    eligible for removal; root config/tokenizer files stay with the siblings.
+    """
+    from pathlib import Path
+
+    snapshots = repo.repo_path / "snapshots"
+    selected = []
+    retained = []
+    remaining = set()
+    for path in snapshots.rglob("*"):
+        if not path.is_symlink() and not path.is_file():
+            continue
+        relative = path.relative_to(snapshots)
+        checkpoint_path = Path(*relative.parts[1:])
+        if checkpoint_path.is_relative_to(subfolder):
+            selected.append(path)
+        else:
+            retained.append(path)
+            if len(relative.parts) > 2:
+                remaining.add(relative.parts[1])
+    references = {path.resolve() for path in retained}
+    blobs = {
+        path.resolve()
+        for path in selected
+        if path.is_symlink()
+        and path.resolve().is_relative_to((repo.repo_path / "blobs").resolve())
+    } - references
+    files = {path for path in selected if not path.is_symlink()} | blobs
+    return selected, files, sorted(remaining)
+
+
 def rm_command(args):
     """Remove a model from the HuggingFace cache.
 
@@ -13218,7 +13253,11 @@ def rm_command(args):
 
     from huggingface_hub import scan_cache_dir
 
-    repo_id = args.model
+    from rapid_mlx.model_aliases import resolve_hub_model, resolve_subfolder
+
+    identity = getattr(args, "_original_alias", args.model)
+    repo_id = resolve_hub_model(args.model)
+    subfolder = resolve_subfolder(identity)
     cache = scan_cache_dir()
     # Filter by repo_type=="model" — same repo_id can refer to a dataset or
     # space, and we don't want ``rapid-mlx rm foo`` deleting a dataset.
@@ -13231,11 +13270,24 @@ def rm_command(args):
         sys.exit(1)
 
     repo = matching[0]
-    size_str = _format_bytes(repo.size_on_disk)
+    selected, files, remaining = [], set(), []
+    if subfolder:
+        selected, files, remaining = _cached_variant_removal(repo, subfolder)
+        if not selected:
+            print(
+                f"\n  Variant {repo_id}/{subfolder} is not cached. Nothing to remove."
+            )
+            sys.exit(1)
+    partial = bool(subfolder and remaining)
+    size = sum(path.stat().st_size for path in files) if partial else repo.size_on_disk
+    size_str = _format_bytes(size)
+    target = f"{repo_id}/{subfolder}" if subfolder else repo_id
+    if partial:
+        print(f"  Removing variant {subfolder}; keeping: {', '.join(remaining)}")
 
     if not getattr(args, "yes", False):
         try:
-            response = input(f"Remove {repo_id} ({size_str})? [y/N] ").strip().lower()
+            response = input(f"Remove {target} ({size_str})? [y/N] ").strip().lower()
         except EOFError:
             # Non-TTY (piped stdin, ctrl-D) — treat as cancel, never as
             # silent-yes. Matches ``apt`` / ``brew`` muscle memory.
@@ -13245,9 +13297,21 @@ def rm_command(args):
             print("Aborted.")
             sys.exit(0)
 
-    revisions = [rev.commit_hash for rev in repo.revisions]
-    strategy = cache.delete_revisions(*revisions)
-    strategy.execute()
+    if partial:
+        import shutil
+
+        for path in selected:
+            path.unlink()
+        for path in files:
+            if path.exists():
+                path.unlink()
+        for revision in repo.revisions:
+            shutil.rmtree(revision.snapshot_path / subfolder, ignore_errors=True)
+        print(f"  Removed variant {subfolder}; remaining: {', '.join(remaining)}")
+    else:
+        revisions = [rev.commit_hash for rev in repo.revisions]
+        strategy = cache.delete_revisions(*revisions)
+        strategy.execute()
     print(f"Freed {size_str}")
 
 

@@ -10,8 +10,9 @@ confirmation, no freed-space summary. This file pins the new contract:
 * ``-y / --yes`` → no prompt, runs the delete;
 * on success a ``Freed X.Y GB`` line is printed.
 
-The actual HF cache strategy is mocked — these tests must never delete
-real files. Size suffix matches ``rapid_mlx.cli._format_bytes`` (GB).
+The prompt tests mock the HF deletion strategy. Variant regressions use
+only the temporary HF cache isolated by conftest, with real snapshot symlinks.
+Size suffix matches ``rapid_mlx.cli._format_bytes`` (GB).
 """
 
 from __future__ import annotations
@@ -214,3 +215,142 @@ def test_size_uses_format_bytes_suffix() -> None:
     out = buf.getvalue()
     # ``_format_bytes`` renders 6.5 GiB as ``7.0 GB`` (one decimal place).
     assert "7.0 GB" in out, f"expected '7.0 GB' in Freed line, got:\n{out}"
+
+
+@pytest.fixture
+def variant_cache(monkeypatch):
+    from pathlib import Path
+
+    from huggingface_hub import scan_cache_dir
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    monkeypatch.setattr(
+        "huggingface_hub.scan_cache_dir", lambda: scan_cache_dir(HF_HUB_CACHE)
+    )
+
+    root = Path(HF_HUB_CACHE) / "models--LiquidAI--LFM2.5-2.6B-MLX"
+    blobs = root / "blobs"
+    blobs.mkdir(parents=True)
+
+    def link(revision, name, blob, content):
+        import os
+
+        target = blobs / blob
+        target.write_bytes(content)
+        path = root / "snapshots" / revision / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(os.path.relpath(target, path.parent))
+        return path
+
+    link("a" * 40, "config.json", "config", b"{}")
+    link("a" * 40, "4bit/model.safetensors", "four", b"4" * 1000)
+    link("a" * 40, "8bit/model.safetensors", "eight", b"8" * 2000)
+    return root, link
+
+
+def test_rm_subfolder_keeps_sibling(variant_cache, capsys):
+    root, _ = variant_cache
+    cli.rm_command(
+        SimpleNamespace(
+            model="LiquidAI/LFM2.5-2.6B-MLX",
+            _original_alias="lfm2.5-2.6b-4bit",
+            yes=True,
+        )
+    )
+    assert not (root / "blobs/four").exists()
+    assert (root / "blobs/eight").read_bytes() == b"8" * 2000
+    assert (root / "blobs/config").exists()
+    assert not (root / "snapshots" / ("a" * 40) / "4bit").exists()
+    out = capsys.readouterr().out
+    assert "4bit" in out and "8bit" in out
+    assert f"Freed {cli._format_bytes(1000)}" in out
+
+
+def test_main_rm_preserves_variant_identity(variant_cache, monkeypatch):
+    root, _ = variant_cache
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "rm", "lfm2.5-2.6b-4bit", "-y"])
+    cli.main()
+    assert not (root / "blobs/four").exists()
+    assert (root / "blobs/eight").exists()
+
+
+def test_rm_last_variant_removes_repo(variant_cache, capsys):
+    root, _ = variant_cache
+    import shutil
+
+    shutil.rmtree(root / "snapshots" / ("a" * 40) / "8bit")
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
+    assert not root.exists()
+    assert "Freed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("retained_path", ["8bit/shared.json", "tokenizer.json"])
+def test_rm_preserves_blobs_referenced_in_other_snapshots(
+    variant_cache, retained_path, capsys
+):
+    root, link = variant_cache
+    link("a" * 40, "4bit/shared.json", "shared", b"shared")
+    retained = link("b" * 40, retained_path, "shared", b"shared")
+    link("b" * 40, "4bit/model.safetensors", "four", b"4" * 1000)
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
+    assert retained.read_bytes() == b"shared"
+    assert (root / "blobs/shared").exists()
+    assert not (root / "blobs/four").exists()
+    assert not (root / "snapshots" / ("b" * 40) / "4bit").exists()
+    assert f"Freed {cli._format_bytes(1000)}" in capsys.readouterr().out
+
+
+def test_rm_uncached_variant_does_not_remove_repo(variant_cache, capsys):
+    import shutil
+
+    root, _ = variant_cache
+    shutil.rmtree(root / "snapshots" / ("a" * 40) / "4bit")
+    with pytest.raises(SystemExit) as exc:
+        cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
+    assert exc.value.code == 1
+    assert (root / "blobs/eight").exists()
+    assert "4bit is not cached" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("response", ["n", "y"])
+def test_rm_variant_confirmation(variant_cache, monkeypatch, capsys, response):
+    root, _ = variant_cache
+
+    def confirm(prompt):
+        assert "LiquidAI/LFM2.5-2.6B-MLX/4bit" in prompt
+        assert "keeping: 8bit" in capsys.readouterr().out
+        return response
+
+    monkeypatch.setattr("builtins.input", confirm)
+    args = SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=False)
+    if response == "n":
+        with pytest.raises(SystemExit):
+            cli.rm_command(args)
+        assert (root / "blobs/four").exists()
+    else:
+        cli.rm_command(args)
+        assert not (root / "blobs/four").exists()
+    assert (root / "blobs/eight").exists()
+
+
+def test_rm_variant_includes_regular_files(variant_cache, capsys):
+    root, _ = variant_cache
+    regular = root / "snapshots" / ("a" * 40) / "4bit/local.json"
+    regular.write_bytes(b"local")
+    cli.rm_command(SimpleNamespace(model="lfm2.5-2.6b-4bit", yes=True))
+    assert not regular.exists()
+    assert f"Freed {cli._format_bytes(1005)}" in capsys.readouterr().out
+
+
+def test_rm_root_checkpoint_removes_repo(variant_cache, capsys):
+    import shutil
+
+    root, link = variant_cache
+    shutil.rmtree(root / "snapshots")
+    link("a" * 40, "config.json", "config", b"{}")
+    link("a" * 40, "model.safetensors", "root", b"weights")
+    # A repo without a catalog subfolder still uses the existing HF strategy.
+    root.rename(root.parent / "models--org--single")
+    cli.rm_command(SimpleNamespace(model="org/single", yes=True))
+    assert not (root.parent / "models--org--single").exists()
+    assert "Freed" in capsys.readouterr().out
