@@ -5121,8 +5121,8 @@ async def _create_chat_completion_impl(
         )
 
     # R12-T2F-276 (0.8.16 brand-new-user simulation) — auto-disable
-    # thinking on a casual chat completion (no tools, no strict json
-    # schema, no explicit reasoning intent) so a first-time SDK user
+    # thinking on a casual chat completion (no tools, no explicit
+    # reasoning intent) so a first-time SDK user
     # gets a useful first request without having to learn
     # ``chat_template_kwargs``. Third member of the auto-disable
     # family (after R12-T1F TOOLS-AUTO above and R12-M2 strict-json
@@ -5136,9 +5136,10 @@ async def _create_chat_completion_impl(
     # kwarg below from one source. Mirrors the ``rapid-mlx chat``
     # REPL's ``--no-think`` default for thinking-capable models on
     # the OpenAI-SDK surface.
-    if not _is_structured_output_requested(
-        response_format
-    ) and maybe_auto_disable_thinking_for_casual_chat(request):
+    # response_format controls the answer grammar, not reasoning intent. Apply
+    # the same decision to plain and structured answers; explicit thinking
+    # preferences still take precedence inside the helper.
+    if maybe_auto_disable_thinking_for_casual_chat(request):
         logger.info(
             "R12-T2F auto-disable: /v1/chat/completions casual chat "
             "request to a thinking-capable model (model=%s) with no "

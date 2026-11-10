@@ -11,6 +11,48 @@ from rapid_mlx.engine.base import GenerationOutput
 from tests.test_schema_reasoning_handoff_5702 import setup_processor as setup_processor
 
 
+@pytest.mark.parametrize("prompt", [[], [17, 18, 19]])
+def test_guided_budget_forces_boundary_then_allows_json(
+    setup_processor, monkeypatch, prompt
+):
+    import numpy as np
+
+    from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+
+    env = setup_processor
+    grammar = env.build()
+    budget = ReasoningBudgetLogitsProcessor(env.end_id, 2, seeded_thinking=True)
+
+    def force_distribution(logits):
+        forced = np.full_like(logits, -np.inf)
+        forced[..., env.end_id] = 0
+        return forced
+
+    monkeypatch.setattr(budget, "_force_distribution", force_distribution)
+    monkeypatch.setattr(budget, "_reopen_suppressor", None)
+    history = prompt.copy()
+
+    def step():
+        return budget(history, grammar(history, env.logits()))
+
+    assert np.isfinite(step()).all()
+    for token in env.encode("aa"):
+        history.append(token)
+        logits = step()
+    assert np.isfinite(logits).sum() == 1
+    assert int(np.argmax(logits)) == env.end_id
+    assert not grammar._reasoning_ended
+    history.append(env.end_id)
+    for token in env.encode('{"answer":"4"}'):
+        assert np.isfinite(step()[0, token])
+        history.append(token)
+    step()
+    assert budget._ended
+    assert grammar._reasoning_ended
+    assert grammar._matcher.is_accepting()
+    assert not grammar._aborted
+
+
 @pytest.mark.parametrize("available", [False, True])
 def test_mllm_advertises_guided_text_support(monkeypatch, available):
     monkeypatch.setattr(batched, "HAS_GUIDED", available)
@@ -438,6 +480,8 @@ def test_mllm_strict_thinking_decodes_through_shared_gate(
     }
     if explicit_thinking:
         payload["enable_thinking"] = True
+    else:
+        payload["reasoning_max_tokens"] = 32
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200, response.text
     build.assert_called_once_with(

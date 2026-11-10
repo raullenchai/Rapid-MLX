@@ -16,6 +16,38 @@ from tests.test_response_format_json_schema_strict import (
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("format_type", [None, "json_object", "json_schema"])
+@pytest.mark.parametrize("thinking", [None, False, True])
+@pytest.mark.parametrize("supports_guided", [False, True])
+def test_response_format_preserves_thinking_decision(
+    stream, format_type, thinking, supports_guided
+):
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    engine = _Engine(supports_guided=supports_guided)
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    payload = _payload(strict=False, stream=stream)
+    if format_type is None:
+        payload.pop("response_format")
+    elif format_type == "json_object":
+        payload["response_format"] = {"type": "json_object"}
+    if thinking is not None:
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking}
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200, response.text
+    calls = engine.guided_calls or (
+        engine.stream_calls if stream else engine.chat_calls
+    )
+    assert calls[0]["kwargs"]["enable_thinking"] is (thinking is True)
+
+
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("format_type", ["json_schema", "json_object"])
 def test_guided_keeps_messages_unchanged(stream, format_type):
     engine = _Engine()
@@ -246,6 +278,8 @@ def test_reasoning_preserved_with_schema(
     payload = _payload(strict=True, stream=stream)
     if explicit_thinking:
         payload["enable_thinking"] = True
+    else:
+        payload["reasoning_max_tokens"] = 32
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200, response.text
     assert "Let me reason carefully." in response.text
@@ -307,6 +341,7 @@ def test_gemma_channel_reasoning_uses_logged_fallback(stream, caplog):
     cfg.reasoning_parser_name = "gemma4"
     cfg.reasoning_parser = Gemma4ReasoningParser()
     payload = _payload(strict=True, stream=stream)
+    payload["enable_thinking"] = True
     payload["messages"].insert(0, {"role": "system", "content": "<|think|>My rules"})
     with caplog.at_level(logging.INFO):
         response = client.post("/v1/chat/completions", json=payload)
