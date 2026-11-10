@@ -324,17 +324,26 @@ async def _attach_tool_choice_processor(engine, openai_request, chat_kwargs) -> 
 async def _preflight_forced_tool_stream(stream, request, *, engine, request_id_holder):
     """Validate buffered forced calls before committing HTTP streaming headers."""
 
+    idle_timeout = get_config().default_timeout
+
     async def collect():
-        # No generation deadline: forced content is buffered until the call
-        # completes, and streaming requests have never had a total deadline.
-        # A client disconnect still aborts the request below.
+        # The deadline bounds silence between packets, not the whole forced
+        # generation: a healthy long call keeps producing chunks.
         packets = []
         try:
-            async for packet in stream:
+            while True:
+                try:
+                    packet = await asyncio.wait_for(anext(stream), idle_timeout)
+                except StopAsyncIteration:
+                    return packets
+                except TimeoutError:
+                    raise HTTPException(
+                        status_code=504,
+                        detail=f"No output for {idle_timeout:.1f} seconds",
+                    ) from None
                 packets.append(packet)
         finally:
             await stream.aclose()
-        return packets
 
     try:
         packets = await _wait_with_disconnect(collect(), request, timeout=None)
