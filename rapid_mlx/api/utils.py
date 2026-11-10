@@ -2643,7 +2643,8 @@ def validate_content_blocks_for_capabilities(
                 detail = (
                     "audio inputs in this shape; only input_audio is supported"
                     if allow_audio
-                    else "audio inputs"
+                    else "audio inputs in chat; transcribe it with "
+                    "/v1/audio/transcriptions and send the text instead"
                 )
             elif item_type in IMAGE_CONTENT_TYPES:
                 detail = "image inputs"

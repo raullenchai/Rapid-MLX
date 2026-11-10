@@ -412,6 +412,7 @@ def test_chat_route_rejects_audio_content_on_mllm_engine(audio_part):
 
     assert resp.status_code == 400, resp.text
     assert "audio inputs" in resp.json()["detail"]
+    assert "/v1/audio/transcriptions" in resp.json()["detail"]
     assert engine.chat_calls == []
 
 
