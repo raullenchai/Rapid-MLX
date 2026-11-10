@@ -64,6 +64,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
+def _public_fixture_repos(monkeypatch):
+    # Consent/receipt tests use fictional checkpoints with an existing public
+    # proof. Privacy and anonymous lookup failures have their own test module.
+    from rapid_mlx.telemetry import model_id
+
+    monkeypatch.setattr(model_id, "hf_auth_in_use", lambda: False)
+    monkeypatch.setattr(
+        model_id,
+        "is_proven_public",
+        lambda repo: (
+            repo
+            in {
+                "mlx-community/example-text-model",
+                "mlx-community/example-image-model",
+            }
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _offline_metal_probe(monkeypatch):
     monkeypatch.setattr(
         community_cli, "mlx_recommended_working_set_bytes", lambda: None

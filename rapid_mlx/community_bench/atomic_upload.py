@@ -16,6 +16,7 @@ from .publication import (
     PublicationRefused,
     WithheldFact,
     describe_withheld,
+    ensure_public_model_sources,
     ensure_publishable,
     project_run_for_publication,
 )
@@ -178,7 +179,9 @@ def preview_run(
     url: str | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the exact wire payload without writing or sending anything.
+    """Build the exact wire payload without sending a benchmark submission.
+
+    Non-catalog model ids may require an anonymous Hub metadata request.
 
     ``provenance`` is the build record stored beside this run. A result
     measured by a modified build is refused here — before a payload, a digest
@@ -187,6 +190,7 @@ def preview_run(
 
     ensure_publishable(provenance)
     BenchmarkRunValidator().validate(run)
+    ensure_public_model_sources(run)
     base = (validate_board_url(url) if url is not None else board_url()).rstrip("/")
     target = base if url or base.endswith("/atomic") else f"{base}/atomic"
     candidate = install_id or peek_install_id()

@@ -28,6 +28,67 @@ class PublicationRefused(Exception):  # noqa: N818 - stable domain error name
     """
 
 
+def ensure_public_model_sources(run: dict[str, Any]) -> None:
+    """Require public identity for every component, including draft models.
+
+    Cached proof has the telemetry classifier's lease and revocation rules.
+    Otherwise query metadata anonymously: readable metadata alone is not
+    proof for gated models, whose metadata can also be public.
+    """
+    from rapid_mlx.model_aliases import catalog_alias_for
+    from rapid_mlx.telemetry import model_id
+
+    checked: set[str] = set()
+    for index, component in enumerate(run["model"]["components"]):
+        source = component["source"]
+        repo = source.get("repo_id")
+        prefix = f"Cannot publish model.components[{index}]: "
+        if (
+            source.get("kind") != "huggingface"
+            or not isinstance(repo, str)
+            or model_id._looks_local(repo)
+        ):
+            raise PublicationRefused(prefix + "local-path models cannot be published.")
+        if repo in checked:
+            continue
+        if catalog_alias_for(repo) is not None:
+            checked.add(repo)
+            continue
+        if not model_id._HF_REPO_RE.fullmatch(repo):
+            raise PublicationRefused(
+                prefix + "the model has no public Hugging Face repository id."
+            )
+        if not model_id.hf_auth_in_use() and model_id.is_proven_public(repo):
+            checked.add(repo)
+            continue
+        try:
+            if not model_id._hub_connection_can_prove_public():
+                raise ValueError("untrusted Hub network configuration")
+            from huggingface_hub import model_info
+
+            info = model_info(repo, token=False, timeout=5)
+        except Exception as exc:
+            model_id._revoke_proof(repo)
+            # Do not echo library errors: they may carry URLs or credentials.
+            raise PublicationRefused(
+                prefix + "anonymous public access could not be verified. "
+                "The repository may be private, gated, or unreachable. "
+                "Nothing was uploaded; check your connection and try again."
+            ) from exc
+        if (
+            getattr(info, "private", None) is not False
+            or getattr(info, "gated", None) is not False
+        ):
+            model_id._revoke_proof(repo)
+            raise PublicationRefused(
+                prefix
+                + "private, gated, or unproven repositories cannot be published. "
+                "Nothing was uploaded; the result remains available locally."
+            )
+        model_id.note_hub_fetch(repo)
+        checked.add(repo)
+
+
 def ensure_publishable(provenance: dict[str, Any] | None) -> None:
     """Refuse to publish a result measured by a modified build.
 
@@ -164,6 +225,7 @@ __all__ = [
     "PublicationRefused",
     "WithheldFact",
     "describe_withheld",
+    "ensure_public_model_sources",
     "ensure_publishable",
     "project_run_for_publication",
 ]
