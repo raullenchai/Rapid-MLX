@@ -68,7 +68,7 @@ def stream(chunks, request=None, parser=None):
 
 
 @pytest.mark.parametrize("body", CASES + [", ".join(CASES)])
-@pytest.mark.parametrize("step", [1, 2, 7, 10000])
+@pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
 def test_reference_calls(body, step):
     text = f"[{body}]"
     result = PythonicToolParser().extract_tool_calls(text)
@@ -208,16 +208,20 @@ def test_literal_extensions_and_callable_boundaries():
         _ast_callable_dotted_name(ast.parse("f().x", mode="eval").body)
 
 
-def test_calls_emit_incremental_arguments_before_list_is_complete():
+def test_calls_wait_for_complete_list():
     parser = PythonicToolParser()
-    prefix = "[a(x='hel"
-    first = parser.extract_tool_calls_streaming("", prefix, prefix)
-    call = first["tool_calls"][0]
-    assert call["id"].startswith("call_")
-    assert call["function"] == {"name": "a", "arguments": '{"x": "hel'}
-    suffix = "lo')]"
+    prefix = "[a(x='hello'), b(y=1"
+    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
+    suffix = "e-2)]"
     last = parser.extract_tool_calls_streaming(prefix, prefix + suffix, suffix)
-    assert last["tool_calls"] == [{"index": 0, "function": {"arguments": 'lo"}'}}]
+    calls = last["tool_calls"]
+    assert [c["index"] for c in calls] == [0, 1]
+    assert len({c["id"] for c in calls}) == 2
+    assert all(c["type"] == "function" for c in calls)
+    assert [c["function"] for c in calls] == [
+        {"name": "a", "arguments": '{"x": "hello"}'},
+        {"name": "b", "arguments": '{"y": 0.01}'},
+    ]
     assert parser.flush_held_content(prefix + suffix) == ""
 
 
@@ -245,7 +249,7 @@ def test_undeclared_streaming_calls_are_dropped():
     assert parser._undeclared_dropped == 1
 
 
-@pytest.mark.parametrize("step", [1, 3, 7, 10000])
+@pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
 @pytest.mark.parametrize(
     "text",
     [
@@ -271,6 +275,11 @@ def test_undeclared_streaming_calls_are_dropped():
         "[f(a={)]",
         "[f(a=execute())]",
         "[f(a=1.5)]",
+        "[f(x=1e-2)]",
+        '[f(text="""a" ] b""")]',
+        "[1] footnote",
+        "[link](url)",
+        "[f(a=1)",
         '[a(x=1), b(y="z")]',
     ],
 )
@@ -284,22 +293,78 @@ def test_streaming_nonstreaming_parity(text, step):
     ]
 
 
-def test_completion_boundaries():
-    from rapid_mlx.tool_parsers.pythonic_tool_parser import (
-        UnexpectedAstError,
-        make_valid_python,
-    )
+@pytest.mark.parametrize(
+    "chunks, expected_calls, expected_content",
+    [
+        (["[f(x=1", "e-2)]"], [("f", {"x": 0.01})], ""),
+        (['[f(text="""a" ] b""")]'], [("f", {"text": 'a" ] b'})], ""),
+        (["[f()]", " after"], [("f", {})], " after"),
+        (["[f()] after"], [("f", {})], " after"),
+    ],
+)
+def test_review_regressions(chunks, expected_calls, expected_content):
+    content, calls = stream(chunks)
+    assert content == expected_content
+    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == expected_calls
 
-    assert make_valid_python(" ") is None
-    with pytest.raises(UnexpectedAstError, match="Mismatched curly braces"):
-        make_valid_python("[f(a=})]")
-    # Tuple completion has a Python suffix that cannot yet be withheld from
-    # JSON's array representation. Wait for more input, as the reference does.
+
+def test_closing_brackets_are_tried_once(monkeypatch):
+    import ast
+
+    parse = Mock(wraps=ast.parse)
+    monkeypatch.setattr(ast, "parse", parse)
     parser = PythonicToolParser()
-    prefix = "[f(a=(1,"
+    prefix = "[f(x=[1]"
     assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
-    assert parser.flush_held_content(prefix) == prefix
-    assert stream([prefix, "2))]"], parser=PythonicToolParser()) == (
-        "",
-        [{"name": "f", "arguments": '{"a": [1, 2]}'}],
+    assert parse.call_count == 1
+    middle = ", y="
+    assert parser.extract_tool_calls_streaming(prefix, prefix + middle, middle) is None
+    assert parse.call_count == 1
+    final = "2)]"
+    delta = parser.extract_tool_calls_streaming(
+        prefix + middle, prefix + middle + final, final
     )
+    assert parse.call_count == 2
+    assert json.loads(delta["tool_calls"][0]["function"]["arguments"]) == {
+        "x": [1],
+        "y": 2,
+    }
+
+
+@pytest.mark.parametrize("character", ["x", "🧪"])
+def test_buffer_byte_limit_releases_once_and_stays_content(character):
+    parser = PythonicToolParser()
+    prefix = "[f(text='" + character * (
+        (64 * 1024 - 9) // len(character.encode("utf-8"))
+    )
+    assert len(prefix.encode("utf-8")) <= 64 * 1024
+    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
+    extra = "xxxx"
+    assert len((prefix + extra).encode("utf-8")) > 64 * 1024
+    assert parser.extract_tool_calls_streaming(prefix, prefix + extra, extra) == {
+        "content": prefix + extra
+    }
+    assert parser.flush_held_content(prefix + extra) == ""
+    suffix = "')] [f()]"
+    assert parser.extract_tool_calls_streaming(
+        prefix + extra, prefix + extra + suffix, suffix
+    ) == {"content": suffix}
+    parser.reset()
+    assert stream(["[f()]"], parser=parser)[1] == [{"name": "f", "arguments": "{}"}]
+
+
+@pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
+def test_trailing_tool_like_text_stays_content(step):
+    text = "[f()] after [g()]"
+    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
+    assert content == " after [g()]"
+    assert calls == [{"name": "f", "arguments": "{}"}]
+
+
+def test_conversion_failure_releases_entire_buffer_and_stays_content():
+    text = "[f(x=variable)] [f()]"
+    assert stream(list(text)) == (text, [])
+
+
+def test_empty_initial_delta_does_not_establish_prose_context():
+    assert stream(["", "[f()]", ""]) == ("", [{"name": "f", "arguments": "{}"}])

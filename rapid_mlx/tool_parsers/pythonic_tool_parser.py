@@ -174,84 +174,6 @@ def handle_single_tool(call: ast.Call) -> dict[str, Any]:
     }
 
 
-def _is_escaped(text: str, index: int) -> bool:
-    """Check for an odd run of preceding backslashes."""
-    backslashes = 0
-    j = index - 1
-    while j >= 0 and text[j] == "\\":
-        backslashes += 1
-        j -= 1
-    return backslashes % 2 == 1
-
-
-def make_valid_python(text: str) -> tuple[str, str] | None:
-    """Complete partial Python while respecting quoted literals."""
-    bracket_stack: list[str] = []
-    for index, char in enumerate(text):
-        if bracket_stack and bracket_stack[-1] in {"'", '"'}:
-            if char == bracket_stack[-1] and not _is_escaped(text, index):
-                bracket_stack.pop()
-            continue
-        if char in {"[", "(", "{"}:
-            bracket_stack.append(char)
-        elif char == "]":
-            if not bracket_stack or bracket_stack.pop() != "[":
-                raise UnexpectedAstError("Mismatched square brackets")
-        elif char == ")":
-            if not bracket_stack or bracket_stack.pop() != "(":
-                raise UnexpectedAstError("Mismatched parentheses")
-        elif char == "}":
-            if not bracket_stack or bracket_stack.pop() != "{":
-                raise UnexpectedAstError("Mismatched curly braces")
-        elif char in {"'", '"'}:
-            bracket_stack.append(char)
-
-    text = text.rstrip()
-    if text.endswith("=") or text.endswith(":"):
-        return None
-    if bracket_stack and bracket_stack[-1] == "{":
-        trailing_dict_text = text[: text.rfind("{")]
-        num_keys = trailing_dict_text.count(":")
-        num_values = trailing_dict_text.count(",")
-        if num_keys <= num_values:
-            return None
-    if bracket_stack and bracket_stack[-1] == "(":
-        trailing_params_text = text[: text.rfind("(")]
-        num_full_param_names = trailing_params_text.count("=")
-        num_full_param_values = trailing_params_text.count(",")
-        if num_full_param_names <= num_full_param_values:
-            return None
-    if text.endswith(","):
-        text = text[:-1]
-    if (
-        bracket_stack
-        and bracket_stack[-1] == "["
-        and not text.endswith("[")
-        and not text.endswith(")")
-    ):
-        return None
-
-    _CLOSING = {"[": "]", "(": ")", "{": "}", "'": "'", '"': '"'}
-    added_text = ""
-    for char in reversed(bracket_stack):
-        added_text += _CLOSING[char]
-
-    candidate = text + added_text
-
-    try:
-        module = ast.parse(candidate)
-    except SyntaxError:
-        return None
-    if not module.body:
-        return None
-    if "}" in added_text:
-        for node in ast.walk(module):
-            if isinstance(node, ast.Set):
-                return None
-
-    return candidate, added_text
-
-
 class PythonicToolParser(ToolParser):
     """Tool call parser for models that produce tool calls in a pythonic style,
     such as Llama 3.2 and Llama 4 models.
@@ -279,12 +201,18 @@ class PythonicToolParser(ToolParser):
         self.current_tool_id = 0
         self.streamed_args_for_tool: list[str] = []
         self._buffer: str = ""
+        self._scan_offset = 0
+        self._buffer_bytes = 0
+        self._content_mode = False
 
     def reset(self) -> None:
         super().reset()
         self.current_tool_id = 0
         self.streamed_args_for_tool = []
         self._buffer = ""
+        self._scan_offset = 0
+        self._buffer_bytes = 0
+        self._content_mode = False
 
     def _declared_calls(self, calls, request):
         # Match the existing parsers' request allowlist and drop accounting.
@@ -350,9 +278,11 @@ class PythonicToolParser(ToolParser):
             )
 
     def flush_held_content(self, full_text: str) -> str:
-        """Release unparsed text when no tool deltas have been emitted."""
+        """Release an incomplete or invalid list as ordinary content."""
         held = self._buffer
         self._buffer = ""
+        self._buffer_bytes = 0
+        self._scan_offset = 0
         return held
 
     def extract_tool_calls_streaming(
@@ -365,72 +295,72 @@ class PythonicToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        if not current_text.startswith("["):
+        if self._content_mode or not current_text.startswith("["):
+            self._content_mode = bool(current_text)
             return {"content": delta_text}
 
-        self._buffer = current_text if not self.prev_tool_call_arr else ""
-        try:
-            completed = make_valid_python(current_text)
-            if completed is None:
-                return None
-            valid_text, added_text = completed
-            module = ast.parse(valid_text)
-            parsed = getattr(module.body[0], "value", None)
-            if not isinstance(parsed, ast.List) or not all(
-                isinstance(e, ast.Call) for e in parsed.elts
-            ):
-                raise UnexpectedAstError("Tool output must be a list of function calls")
-            calls = self._declared_calls(
-                [handle_single_tool(cast(ast.Call, e)) for e in parsed.elts], request
+        self._buffer += delta_text
+        self._buffer_bytes += len(delta_text.encode("utf-8"))
+        while True:
+            pos = self._buffer.find("]", self._scan_offset)
+            if pos < 0:
+                self._scan_offset = len(self._buffer)
+                break
+            self._scan_offset = pos + 1
+            try:
+                module = ast.parse(self._buffer[: pos + 1])
+            except (SyntaxError, ValueError, RecursionError):
+                # A bracket inside a string or nested value is not a boundary.
+                continue
+            parsed = (
+                module.body[0].value
+                if len(module.body) == 1 and isinstance(module.body[0], ast.Expr)
+                else None
             )
-            tool_deltas = []
-            for index, call in enumerate(calls):
-                if index < self.current_tool_index:
-                    continue
-                self.current_tool_index = index
-                if len(self.streamed_args_for_tool) == index:
-                    self.streamed_args_for_tool.append("")
-                complete = index < len(calls) - 1 or ")]" not in added_text
-                if complete:
-                    self.current_tool_index += 1
-                withheld = added_text[:-2] if not complete else ""
-                if not complete and added_text[-2] == ")":
-                    withheld += "}"
-                withheld = withheld.replace("'", '"')
-                arguments = call["arguments"]
-                if withheld:
-                    if not arguments.endswith(withheld):
-                        raise ValueError("Arguments do not end with completion suffix")
-                    arguments = arguments[: -len(withheld)]
-                previous = self.streamed_args_for_tool[index]
-                if not previous:
-                    delta = {
+            try:
+                if not (
+                    isinstance(parsed, ast.List)
+                    and parsed.elts
+                    and all(isinstance(e, ast.Call) for e in parsed.elts)
+                ):
+                    # Empty and non-call lists remain prose, as in non-streaming.
+                    raise UnexpectedAstError("Tool output must be a list of calls")
+                calls = self._declared_calls(
+                    [handle_single_tool(cast(ast.Call, e)) for e in parsed.elts],
+                    request,
+                )
+            except Exception:
+                self._content_mode = True
+                return {"content": self.flush_held_content(current_text)}
+
+            trailing = self._buffer[pos + 1 :]
+            self.flush_held_content(current_text)
+            self._content_mode = True
+            self.prev_tool_call_arr = calls
+            self.current_tool_index = len(calls)
+            self.streamed_args_for_tool = [call["arguments"] for call in calls]
+            result: dict[str, Any] = {"preserve_post_tool_content": True}
+            if calls:
+                result["tool_calls"] = [
+                    {
                         "id": call["id"],
                         "type": "function",
                         "index": index,
-                        "function": {"name": call["name"], "arguments": arguments},
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
                     }
-                    self.prev_tool_call_arr.append(call)
-                elif arguments[len(previous) :]:
-                    delta = {
-                        "index": index,
-                        "function": {"arguments": arguments[len(previous) :]},
-                    }
-                else:
-                    continue
-                tool_deltas.append(delta)
-                self.streamed_args_for_tool[index] = arguments
-            if tool_deltas or (parsed.elts and not added_text):
-                # Emitted calls and complete undeclared wire stay out of prose.
-                self._buffer = ""
-            if tool_deltas:
-                return {"tool_calls": tool_deltas}
-            if not added_text and self.current_tool_index > 0:
-                return {"content": ""}
-            return None
-        except Exception:
-            logger.debug("Skipping incomplete pythonic tool chunk", exc_info=True)
-            return None
+                    for index, call in enumerate(calls)
+                ]
+            if trailing:
+                result["content"] = trailing
+            return result
+
+        if self._buffer_bytes > 64 * 1024:
+            self._content_mode = True
+            return {"content": self.flush_held_content(current_text)}
+        return None
 
 
 ToolParserManager.register_module("pythonic", PythonicToolParser)
