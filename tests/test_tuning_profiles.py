@@ -406,6 +406,54 @@ def test_rapid_version_metadata(monkeypatch):
     profiles.rapid_version.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "entry_id,key,version",
+    [
+        ("singleton-15-ultra", "mlx", "0.32.4"),
+        ("singleton-16-pro", "mlx", "0.32.4"),
+        ("singleton-17-max", "mlx", "0.32.4"),
+        ("affine8-m3-ultra", "mlx", "0.32.3"),
+        ("affine8-m3-ultra", "macos", "26.5.2"),
+        ("mtp-depth-17-max-36g-qwen35-moe", "mlx", "0.32.3"),
+        ("mtp-depth-17-max-36g-qwen35-moe", "macos", "27.0.1"),
+        ("mtp-depth-15-ultra-256g-qwen35-moe", "mlx", "0.32.4"),
+        ("mtp-depth-15-ultra-256g-qwen35-moe", "macos", "26.5.2"),
+    ],
+)
+@pytest.mark.parametrize("suffix", ["", "+custom", ".0", ".1", "rc1", ".post1"])
+def test_migrated_software_pins_match_exactly(entry_id, key, version, suffix):
+    e = next(e for e in defaults.builtin_profile().entries if e["id"] == entry_id)
+    hw = e["hardware"][0]
+    ctx = context(
+        hardware=tuning.HardwareProfile(
+            gpu_generation=hw["gpu_generation"],
+            tier=hw["tier"],
+            memory_size=hw.get("memory_size", [256 * 2**30])[0],
+        ),
+        model=tuning.ModelProfile(
+            "qwen3_5_moe_text", *tuning.QWEN35_AFFINE4, quant_mode="affine"
+        ),
+        mode="plain" if entry_id.startswith("singleton") else "mtp",
+        **{k: v.lstrip("=") for k, v in e["software"].items()},
+    )
+    ctx = replace(ctx, **{key: version + suffix})
+    assert defaults.matches(e, ctx) == (suffix == "")
+    for name, value in e["knobs"].items():
+        decision = tuning.resolve(name, ctx, environ={})
+        assert decision.value == (value if suffix == "" else tuning.KNOBS[name].default)
+        assert decision.source == (
+            "builtin:" + entry_id
+            if suffix == ""
+            else "capability"
+            if name == "affine8_attention"
+            else "default"
+        )
+        if name == "affine8_attention" and suffix:
+            override = tuning.resolve(name, ctx, environ={tuning.KNOBS[name].env: "1"})
+            assert override.value is False
+            assert override.source == "capability"
+
+
 def test_base_tier_uses_existing_fact_vocabulary(tmp_path):
     e = entry()
     e["hardware"] = [dict(gpu_generation=15, tier="base")]

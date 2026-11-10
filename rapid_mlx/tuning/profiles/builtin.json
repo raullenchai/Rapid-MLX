@@ -36,7 +36,7 @@
         "hardware_scope": "Explicit historical generation/tier generalization: all core/memory variants, including missing features. Measured features are provenance only."
       },
       "software": {
-        "mlx": "==0.32.4"
+        "mlx": "===0.32.4"
       }
     },
     {
@@ -79,7 +79,7 @@
         "hardware_scope": "Explicit historical generation/tier generalization: all core/memory variants, including missing features. Measured features are provenance only."
       },
       "software": {
-        "mlx": "==0.32.4"
+        "mlx": "===0.32.4"
       }
     },
     {
@@ -132,7 +132,7 @@
         "hardware_scope": "Explicit historical generation/tier generalization: all core/memory variants, including missing features. Measured features are provenance only."
       },
       "software": {
-        "mlx": "==0.32.4"
+        "mlx": "===0.32.4"
       }
     },
     {
@@ -171,8 +171,8 @@
         "hardware_scope": "Explicit historical generation/tier generalization: all core/memory variants, including missing features. Measured features are provenance only."
       },
       "software": {
-        "mlx": "==0.32.3",
-        "macos": "==26.5.2"
+        "mlx": "===0.32.3",
+        "macos": "===26.5.2"
       },
       "capabilities": [
         "affine8_attention"
@@ -248,8 +248,8 @@
         "hardware_scope": "Exact memory qualification; all core variants as in the original entry."
       },
       "software": {
-        "mlx": "==0.32.3",
-        "macos": "==27.0.1"
+        "mlx": "===0.32.3",
+        "macos": "===27.0.1"
       },
       "model": {
         "family": "qwen3_5_moe_text",
@@ -335,8 +335,8 @@
         "hardware_scope": "Exact memory qualification; all core variants as in the original entry."
       },
       "software": {
-        "mlx": "==0.32.4",
-        "macos": "==26.5.2"
+        "mlx": "===0.32.4",
+        "macos": "===26.5.2"
       },
       "model": {
         "family": "qwen3_5_moe_text",
