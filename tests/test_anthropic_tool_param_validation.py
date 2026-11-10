@@ -173,14 +173,12 @@ def test_messages_tool_enum_ok_returns_200_with_tool_use():
     assert body["stop_reason"] == "tool_use"
 
 
-def test_messages_stream_tool_enum_violation_emits_error_event():
-    """Streaming: headers are already sent so we cannot return 400 inline.
+def test_messages_stream_tool_enum_violation_is_http_400():
+    """Streaming forced choice: the pinned call is validated before headers.
 
-    The fix surfaces the validation failure as an Anthropic
-    ``event: error`` SSE event with ``invalid_request_error`` and
-    suppresses the would-be ``tool_use`` blocks. The final
-    ``message_delta`` still fires with ``stop_reason="end_turn"`` so
-    well-behaved clients see a clean termination.
+    A pinned ``tool_choice`` stream is buffered by the pre-header preflight,
+    so a schema-violating call returns the same 400 as the non-stream path
+    instead of an SSE error under HTTP 200.
     """
     engine = _ToolCallEngine(_enum_violation_payload())
     client = _make_client(engine)
@@ -197,24 +195,10 @@ def test_messages_stream_tool_enum_violation_emits_error_event():
         },
     )
 
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-
-    raw = response.text
-    assert "event: error" in raw, raw
-    # The error event must carry the canonical schema-violation message
-    # so streaming clients see the SAME diagnostic the non-stream path
-    # would have returned as a 400 body.
-    assert "violates declared schema" in raw
-    assert "purple" in raw
-    assert "invalid_request_error" in raw
-
-    # No tool_use content_block_start should have been emitted — the
-    # violating call is dropped, not silently shipped as garbage.
-    assert '"type": "tool_use"' not in raw
-    # message_delta still fires with end_turn so the SSE protocol closes
-    # cleanly (no half-open stream).
-    assert '"stop_reason": "end_turn"' in raw
+    assert response.status_code == 400
+    assert "violates declared schema" in response.text
+    assert "purple" in response.text
+    assert "event: error" not in response.text
 
 
 def test_messages_invalid_tool_name_uses_anthropic_field():
