@@ -63,6 +63,7 @@ def stream(chunks, request=None, parser=None):
                 assert "name" not in fn
                 assert "id" not in call
             calls[index]["arguments"] += fn["arguments"]
+    content += parser.flush_held_content(text)
     return content, list(calls.values())
 
 
@@ -111,15 +112,20 @@ def test_large_steps():
         "Here: [get_weather()]",
     ],
 )
-def test_content_unchanged(text):
+def test_nonstream_content_unchanged(text):
     result = PythonicToolParser().extract_tool_calls(text)
     assert not result.tools_called and result.content == text
-    assert stream(list(text)) == (text, [])
 
 
 @pytest.mark.parametrize(
     "text",
     [
+        "]",
+        ")",
+        "}",
+        "[f(]",
+        "[f(a={)]",
+        "[f(a=1)] + [1]",
         "[1, 2]",
         "[]",
         "[f(a=variable)]",
@@ -202,42 +208,80 @@ def test_literal_extensions_and_callable_boundaries():
         _ast_callable_dotted_name(ast.parse("f().x", mode="eval").body)
 
 
-@pytest.mark.parametrize("text", ["]", ")", "}", "[f(]", "[f(a={)]", "[f(a=1)] + [1]"])
-def test_malformed_stream_and_noncall_expression(text):
+@pytest.mark.parametrize("step", [1, 2, 7, 10000])
+@pytest.mark.parametrize(
+    "text, expected_content, expected_calls",
+    [
+        ("[f(a=1.5)]", "", [("f", {"a": 1.5})]),
+        ("Hello", "Hello", []),
+        ("]", "]", []),
+        ("get_weather(city='Paris')", "get_weather(city='Paris')", []),
+        (" [get_weather()]", " ", [("get_weather", {})]),
+        ("Here: [get_weather()]", "Here: ", [("get_weather", {})]),
+        (
+            "```python\n[get_weather(city='Paris')]\n```",
+            "```python\n\n```",
+            [("get_weather", {"city": "Paris"})],
+        ),
+        ("[1, 2]", "[1, 2]", []),
+        ("[]", "[]", []),
+        (
+            "Sure: [get_weather(city='Paris')]",
+            "Sure: ",
+            [("get_weather", {"city": "Paris"})],
+        ),
+        ("[get_weather(city='Par", "[get_weather(city='Par", []),
+        ("[a(x=1), b(y='z')]", "", [("a", {"x": 1}), ("b", {"y": "z"})]),
+        ("Before [f(a=[1, 2])] after", "Before  after", [("f", {"a": [1, 2]})]),
+        ("[f(a=execute())]", "[f(a=execute())]", []),
+        ("[f(]", "[f(]", []),
+        ("[f(a={)]", "[f(a={)]", []),
+        ("[f()] trailing", " trailing", [("f", {})]),
+        ("[1, 2] then [f()] end", "[1, 2] then  end", [("f", {})]),
+        (
+            "<|python_start|>[f()]<|python_end|>",
+            "<|python_start|><|python_end|>",
+            [("f", {})],
+        ),
+    ],
+)
+def test_buffered_streaming(text, expected_content, expected_calls, step):
+    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
+    assert content == expected_content
+    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == expected_calls
+
+
+def test_calls_emitted_only_when_list_is_complete():
     parser = PythonicToolParser()
-    result = parser.extract_tool_calls(text)
-    assert not result.tools_called and result.content == text
-    if text.startswith("["):
-        assert parser.extract_tool_calls_streaming("", text, text) is None
+    prefix = "[a(x=1), b(y='z')"
+    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
+    result = parser.extract_tool_calls_streaming(prefix, prefix + "]", "]")
+    assert [c["index"] for c in result["tool_calls"]] == [0, 1]
+    assert [c["function"] for c in result["tool_calls"]] == [
+        {"name": "a", "arguments": '{"x": 1}'},
+        {"name": "b", "arguments": '{"y": "z"}'},
+    ]
 
 
-def test_partial_python_boundaries():
-    from rapid_mlx.tool_parsers.pythonic_tool_parser import (
-        UnexpectedAstError,
-        make_valid_python,
-    )
-
-    for text in ["]", ")", "}"]:
-        with pytest.raises(UnexpectedAstError):
-            make_valid_python(text)
-    for text in ["", "[f(a={'k'", "[f(a={'k': 1, 'next'", "[f(a=", "[f(a={'k':"]:
-        assert make_valid_python(text) is None
-    assert make_valid_python("[f(a='[]{}()')]") == ("[f(a='[]{}()')]", "")
-    assert make_valid_python("[f(a='x") == ("[f(a='x')]", "')]")
-
-
-def test_argument_delta_validation():
-    from rapid_mlx.tool_parsers.pythonic_tool_parser import compute_tool_delta
-
-    with pytest.raises(ValueError, match="expected withheld suffix"):
-        compute_tool_delta("", {"arguments": "{}"}, 0, '"}')
+def test_flush_and_reset_clear_buffer():
     parser = PythonicToolParser()
-    assert parser.extract_tool_calls_streaming("", "[f()]", "[f()]")["tool_calls"]
-    assert parser.extract_tool_calls_streaming("[f()]", "[f()] ", " ") == {
-        "content": ""
-    }
-    # An invalid literal is held instead of dispatching executable expressions.
-    assert (
-        parser.extract_tool_calls_streaming("", "[f(a=execute())]", "[f(a=execute())]")
-        is None
-    )
+    text = "[get_weather(city='Par"
+    assert parser.extract_tool_calls_streaming("", text, text) is None
+    assert parser.flush_held_content(text) == text
+    assert parser.flush_held_content(text) == ""
+    parser.extract_tool_calls_streaming("", text, text)
+    parser.reset()
+    assert parser.flush_held_content(text) == ""
+    assert stream(["hello"], parser=parser) == ("hello", [])
+
+
+def test_undeclared_streaming_calls_are_dropped():
+    request = {"tools": [{"type": "function", "function": {"name": "f"}}]}
+    parser = PythonicToolParser()
+    assert stream(list("[unknown()]"), request, parser) == ("", [])
+    assert parser._undeclared_dropped == 1
+    parser.reset()
+    assert stream(list("[unknown(), f()]"), request, parser)[1] == [
+        {"name": "f", "arguments": "{}"}
+    ]
+    assert parser._undeclared_dropped == 1

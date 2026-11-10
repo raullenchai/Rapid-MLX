@@ -154,3 +154,17 @@ def test_invalid_roles(tokenizer):
         tokenizer.apply_chat_template(
             [{"role": "assistant", "content": "Hello"}], tokenize=False
         )
+
+
+@pytest.mark.parametrize("tool_calls", [[], None])
+def test_empty_tool_calls_are_regular_assistant_turns(tokenizer, tool_calls):
+    text = tokenizer.apply_chat_template(
+        [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi", "tool_calls": tool_calls},
+            {"role": "user", "content": "Continue"},
+        ],
+        tokenize=False,
+    )
+    assert "<start_of_turn>model\nHi<end_of_turn>" in text
+    assert "[]" not in text

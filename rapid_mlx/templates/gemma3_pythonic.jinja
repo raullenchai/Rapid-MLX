@@ -1,7 +1,8 @@
 {# SPDX-License-Identifier: Apache-2.0
    Ported from vLLM upstream (examples/tool_chat_template_gemma3_pythonic.jinja).
    Adaptations: loop.first preserves commas across Jinja loop scopes;
-   null/omitted assistant content is valid on tool-call-only turns.
+   null/omitted assistant content is valid on tool-call-only turns;
+   only non-empty assistant tool_calls count as tool-call turns.
 #}
 {#- Begin-of-sequence token to start the model prompt -#}
 {{ bos_token }}
@@ -22,7 +23,7 @@
     {%- set tools = none %}
 {%- endif %}
 {#- Validate alternating user/assistant messages (excluding 'tool' messages and ones with tool_calls) -#}
-{%- for message in loop_messages | rejectattr("role", "equalto", "tool") | selectattr("tool_calls", "undefined") -%}
+{%- for message in loop_messages if message.role != 'tool' and not (message.role == 'assistant' and message.tool_calls is defined and message.tool_calls) -%}
     {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}
         {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
     {%- endif -%}
@@ -56,7 +57,7 @@
     {%- endif -%}
 
     {#- Format model tool calls (turns where model indicates they want to call a tool) -#}
-    {%- if 'tool_calls' in message -%}
+    {%- if message.role == 'assistant' and message.tool_calls is defined and message.tool_calls -%}
         {#- Opening bracket for tool call list. -#}
         {{- '[' -}}
         {#- For each tool call -#}
@@ -97,7 +98,7 @@
     {%- endif -%}
 
     {#- Render the message content: handle plain string or multimodal content like image/text -#}
-    {%- if message.get('content') is none and 'tool_calls' in message -%}
+    {%- if message.get('content') is none and message.role == 'assistant' and message.tool_calls is defined and message.tool_calls -%}
         {#- Tool-call-only assistant messages may have null or omitted content. -#}
     {%- elif message['content'] is string -%}
         {{ message['content'] | trim }}

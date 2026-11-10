@@ -3,12 +3,13 @@
 """Python list-of-calls tool parser.
 
 Ported from vLLM upstream (vllm/tool_parsers/pythonic_tool_parser.py
-and its literal, partial-Python and delta helpers in tool_parsers/utils.py).
+and its literal helpers in tool_parsers/utils.py).
 Interfaces use Rapid-MLX dictionaries and optional request/token arguments.
 Registration, native-template support, reset state and request allowlisting
 (with drop accounting and contiguous client indices) follow local contracts.
 The upstream regex timeout defaults to one second; use that value directly
 because this runtime has no corresponding timeout environment setting.
+Positional arguments are not supported, preserving upstream parity.
 """
 
 import ast
@@ -173,156 +174,6 @@ def handle_single_tool(call: ast.Call) -> dict[str, Any]:
     }
 
 
-def _is_escaped(text: str, index: int) -> bool:
-    """Whether the character at `index` is backslash-escaped.
-
-    A character is escaped iff it is preceded by an *odd* number of consecutive
-    backslashes. Checking only the single preceding character is wrong for even
-    runs: in `'ab\\'` the closing quote follows an escaped backslash (`\\\\`)
-    and is therefore NOT escaped — it closes the string. Common in regex/code
-    arguments such as `r'\\\\b'`.
-    """
-    backslashes = 0
-    j = index - 1
-    while j >= 0 and text[j] == "\\":
-        backslashes += 1
-        j -= 1
-    return backslashes % 2 == 1
-
-
-def make_valid_python(text: str) -> tuple[str, str] | None:
-    """Attempt to close all open brackets/quotes to make partial Python valid.
-
-    Used during streaming to parse incomplete tool call expressions by
-    appending the necessary closing characters.
-
-    Returns:
-        A tuple of (completed_text, added_suffix) if the text can be
-        made valid, or None if the text is too incomplete to complete
-        meaningfully (e.g. mid-parameter-name or mid-dict-key).
-
-    Raises:
-        UnexpectedAstError: If mismatched brackets or parentheses
-            are detected.
-
-    """
-    bracket_stack: list[str] = []
-    for index, char in enumerate(text):
-        # Inside a string literal only an unescaped matching quote is
-        # significant; brackets are literal text. Without this guard a bracket
-        # in a string argument (e.g. `cmd='grep -F "]"'`) corrupts the bracket
-        # stack and the whole tool call is rejected as mismatched.
-        if bracket_stack and bracket_stack[-1] in {"'", '"'}:
-            if char == bracket_stack[-1] and not _is_escaped(text, index):
-                bracket_stack.pop()
-            continue
-        if char in {"[", "(", "{"}:
-            bracket_stack.append(char)
-        elif char == "]":
-            if not bracket_stack or bracket_stack.pop() != "[":
-                raise UnexpectedAstError("Mismatched square brackets")
-        elif char == ")":
-            if not bracket_stack or bracket_stack.pop() != "(":
-                raise UnexpectedAstError("Mismatched parentheses")
-        elif char == "}":
-            if not bracket_stack or bracket_stack.pop() != "{":
-                raise UnexpectedAstError("Mismatched curly braces")
-        elif char in {"'", '"'}:
-            bracket_stack.append(char)
-
-    text = text.rstrip()
-    if text.endswith("=") or text.endswith(":"):
-        return None
-    if bracket_stack and bracket_stack[-1] == "{":
-        trailing_dict_text = text[: text.rfind("{")]
-        num_keys = trailing_dict_text.count(":")
-        num_values = trailing_dict_text.count(",")
-        if num_keys <= num_values:
-            return None
-    if bracket_stack and bracket_stack[-1] == "(":
-        trailing_params_text = text[: text.rfind("(")]
-        num_full_param_names = trailing_params_text.count("=")
-        num_full_param_values = trailing_params_text.count(",")
-        if num_full_param_names <= num_full_param_values:
-            return None
-    if text.endswith(","):
-        text = text[:-1]
-    if (
-        bracket_stack
-        and bracket_stack[-1] == "["
-        and not text.endswith("[")
-        and not text.endswith(")")
-    ):
-        return None
-
-    _CLOSING = {"[": "]", "(": ")", "{": "}", "'": "'", '"': '"'}
-    added_text = ""
-    for char in reversed(bracket_stack):
-        added_text += _CLOSING[char]
-
-    candidate = text + added_text
-
-    # Streaming partial text can land in shapes the bracket-counting
-    # heuristics above don't catch. Two failure modes:
-    #   1. Mid-key inside a dict (`..., "k`) closes to `..., "k"}` — a
-    #      syntactically invalid mixed dict/set.
-    #   2. A bare string inside a dict (`{"k`) closes to `{"k"}` — valid
-    #      Python but a *set* literal that is really a truncated dict.
-    # Validate the candidate parses and has a body, and treat Set nodes as
-    # incomplete — but only when this completion added a `}` itself; a set
-    # already closed in the model text is a genuine set argument, not an
-    # artifact. Callers whose models emit raw control chars inside string
-    # arguments must escape them (see escape_ctrl_chars_in_strings) before
-    # calling.
-    try:
-        module = ast.parse(candidate)
-    except SyntaxError:
-        return None
-    if not module.body:
-        return None
-    if "}" in added_text:
-        for node in ast.walk(module):
-            if isinstance(node, ast.Set):
-                return None
-
-    return candidate, added_text
-
-
-def compute_tool_delta(
-    previously_sent_args: str,
-    new_call: dict[str, Any],
-    index: int,
-    withheld_suffix: str,
-) -> dict[str, Any] | None:
-    """Compute the incremental delta between previously streamed arguments
-    and the current tool call state.
-
-    Returns:
-        A DeltaToolCall with only the new argument characters, or None
-        if there is no difference from what was previously sent.
-
-    """
-    new_call_args = new_call["arguments"]
-    if withheld_suffix:
-        if not new_call_args.endswith(withheld_suffix):
-            msg = (
-                f"Tool call arguments '{new_call_args}' do not end with "
-                f"expected withheld suffix '{withheld_suffix}'"
-            )
-            logger.error(msg)
-            raise ValueError(msg)
-        new_call_args = new_call_args[: -len(withheld_suffix)]
-    if not previously_sent_args:
-        return {
-            "id": new_call["id"],
-            "type": "function",
-            "index": index,
-            "function": {"name": new_call["name"], "arguments": new_call_args},
-        }
-    arg_diff = new_call_args[len(previously_sent_args) :]
-    return {"index": index, "function": {"arguments": arg_diff}} if arg_diff else None
-
-
 class PythonicToolParser(ToolParser):
     """Tool call parser for models that produce tool calls in a pythonic style,
     such as Llama 3.2 and Llama 4 models.
@@ -349,11 +200,13 @@ class PythonicToolParser(ToolParser):
         super().__init__(tokenizer)
         self.current_tool_id = 0
         self.streamed_args_for_tool: list[str] = []
+        self._buffer = ""
 
     def reset(self) -> None:
         super().reset()
         self.current_tool_id = 0
         self.streamed_args_for_tool = []
+        self._buffer = ""
 
     def _declared_calls(self, calls, request):
         # Match the existing parsers' request allowlist and drop accounting.
@@ -418,6 +271,24 @@ class PythonicToolParser(ToolParser):
                 tools_called=False, tool_calls=[], content=model_output
             )
 
+    @staticmethod
+    def _find_matching_bracket(buffer: str, start: int) -> int:
+        """Find the closing square bracket using nested bracket depth."""
+        bracket_count = 0
+        for i in range(start, len(buffer)):
+            if buffer[i] == "[":
+                bracket_count += 1
+            elif buffer[i] == "]":
+                bracket_count -= 1
+                if bracket_count == 0:
+                    return i
+        return -1
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release an unterminated bracket segment at generation end."""
+        held, self._buffer = self._buffer, ""
+        return held
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -428,77 +299,52 @@ class PythonicToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        if not current_text.startswith("["):
-            return {"content": delta_text}
+        self._buffer += delta_text
+        content = ""
+        tool_deltas = []
+        while self._buffer:
+            start = self._buffer.find("[")
+            if start == -1:
+                content += self._buffer
+                self._buffer = ""
+                break
 
-        try:
-            valid_and_added_text = make_valid_python(current_text)
-            if valid_and_added_text is None:
-                return None
-            valid_text, added_text = valid_and_added_text
+            content += self._buffer[:start]
+            self._buffer = self._buffer[start:]
+            end = self._find_matching_bracket(self._buffer, 0)
+            if end == -1:
+                break
 
-            module = ast.parse(valid_text)
-            parsed = getattr(module.body[0], "value", None)
-            if not isinstance(parsed, ast.List) or not all(
-                isinstance(e, ast.Call) for e in parsed.elts
-            ):
-                raise UnexpectedAstError("Tool output must be a list of function calls")
-            tool_calls = self._declared_calls(
-                [handle_single_tool(cast(ast.Call, e)) for e in parsed.elts], request
-            )
-
-            tool_deltas = []
-            for index, new_call in enumerate(tool_calls):
-                if index < self.current_tool_index:
-                    continue
-
-                self.current_tool_index = index
-                if len(self.streamed_args_for_tool) == index:
-                    self.streamed_args_for_tool.append("")
-
-                new_call_complete = (
-                    index < len(tool_calls) - 1 or ")]" not in added_text
+            segment = self._buffer[: end + 1]
+            self._buffer = self._buffer[end + 1 :]
+            result = self.extract_tool_calls(segment, request)
+            # A valid list containing only undeclared calls has no content.
+            # Preserve that distinction so rejected tool wire stays dropped.
+            if result.content is not None:
+                content += result.content
+            for call in result.tool_calls:
+                tool_deltas.append(
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "index": self.current_tool_index,
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    }
                 )
-                if new_call_complete:
-                    self.current_tool_index += 1
+                self.current_tool_index += 1
+                self.streamed_args_for_tool.append(call["arguments"])
+                self.prev_tool_call_arr.append(call)
 
-                withheld_suffix = added_text[:-2] if not new_call_complete else ""
-                if not new_call_complete and added_text[-2] == ")":
-                    # Function call is incomplete. Withhold the closing bracket.
-                    withheld_suffix = withheld_suffix + "}"
-                # Strings get single quotes in the model-produced string.
-                # JSON requires double quotes.
-                withheld_suffix = withheld_suffix.replace("'", '"')
-                delta = compute_tool_delta(
-                    self.streamed_args_for_tool[index], new_call, index, withheld_suffix
-                )
-
-                if delta is not None:
-                    tool_deltas.append(delta)
-                    self.streamed_args_for_tool[index] += delta["function"]["arguments"]
-
-            # HACK: serving_chat.py inspects the internal state of tool parsers
-            # when determining its final streaming delta, automatically
-            # adding autocompleted JSON.
-            # These two lines avoid that nonsense while ensuring finish_reason
-            # is set to tool_calls when at least one tool is called.
-            if tool_deltas and not self.prev_tool_call_arr:
-                self.prev_tool_call_arr = [{"arguments": {}}]
-
-            if tool_deltas:
-                return {"tool_calls": tool_deltas}
-            elif not added_text and self.current_tool_id > 0:
-                # Return an empty DeltaMessage once the tool calls are all done
-                # so that finish_reason gets set.
-                return {"content": ""}
-            else:
-                return None
-        except Exception:
-            logger.exception("Error trying to handle streaming tool call.")
-            logger.debug(
-                "Skipping chunk as a result of tool streaming extraction error"
-            )
-            return None
+        delta: dict[str, Any] = {}
+        if content:
+            delta["content"] = content
+        if tool_deltas:
+            delta["tool_calls"] = tool_deltas
+            delta["preserve_post_tool_content"] = True
+        return delta or None
 
 
 ToolParserManager.register_module("pythonic", PythonicToolParser)
