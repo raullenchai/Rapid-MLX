@@ -75,6 +75,7 @@ Use `--tool-call-parser` to select a parser for your model family:
 | `mistral` | | Mistral, Devstral | `[TOOL_CALLS]` JSON array |
 | `muse` | | Muse Glimmer | `<atem:function_calls>` blocks in channel messages |
 | `nemotron` | `nemotron3` | NVIDIA Nemotron | `<tool_call><function=...><parameter=...>` |
+| `pythonic` | | Gemma 3 12B/27B | Python-list call syntax: `[get_weather(city='Paris')]` |
 | `qwen` | `qwen3`, `qwen3_xml` | Qwen, Qwen3 | `<tool_call>` XML or `[Calling tool:]` |
 | `qwen3_coder_xml` | | Qwen3-Coder (XML function blocks) | `<function=name><parameter=key>` XML |
 | `seed_oss` | `seed`, `gpt_oss` | Seed-OSS, GPT-OSS | `<seed:tool_call><function=name><parameter=key>` |

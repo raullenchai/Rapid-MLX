@@ -200,7 +200,7 @@ class PythonicToolParser(ToolParser):
         super().__init__(tokenizer)
         self.current_tool_id = 0
         self.streamed_args_for_tool: list[str] = []
-        self._buffer = ""
+        self._buffer: str = ""
 
     def reset(self) -> None:
         super().reset()
@@ -286,7 +286,8 @@ class PythonicToolParser(ToolParser):
 
     def flush_held_content(self, full_text: str) -> str:
         """Release an unterminated bracket segment at generation end."""
-        held, self._buffer = self._buffer, ""
+        held: str = self._buffer
+        self._buffer = ""
         return held
 
     def extract_tool_calls_streaming(
