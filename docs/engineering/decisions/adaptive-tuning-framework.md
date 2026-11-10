@@ -43,3 +43,26 @@ Follow-ups: unify `chip_tier.py`, `telemetry/chip.py` and `optimizations.py`
 parsers; community benchmark tuning block/schema and reviewed data ingestion;
 acceleration-flag mapping; persistent local calibration; runtime adaptation.
 None is implemented here. Further kernel migrations need their own evidence.
+
+MTP's single-request installed-head boundary resolves `mtp_max_depth` before
+building the greedy calibration profile. `RAPID_MLX_MTP_MAX_DEPTH` accepts integer
+caps 1 through 4; invalid values defer to policy. Explicit speculative JSON
+`num_speculative_tokens` (including normalized legacy depth flags) takes priority.
+The knob requires an installed head and MTP mode; it selects no model or lane.
+Checkpoint depth limits still clamp the result. A measured cap-4 entry is scoped
+to the 36 GiB M5 Max, pinned software and qualified 35B affine expert geometry
+(see [evidence](../performance/2026-11-10-m5-mtp-depth.md)). The 256 GiB M3 Ultra
+selects cap 3 on its pinned software and the same qualified MoE geometry
+(see [evidence](../performance/2026-11-10-m3-mtp-depth.md)). An unmeasured decision
+preserves the configured cap, ordinarily K=1, including existing catalog and
+force-opt-in depths. The existing acceptance
+controller may choose shallower rounds, while calibration measures every verify
+width through the resolved cap plus the primary row.
+
+Model-scoped rows match their model facts before hardware scoring. Rows marked
+`exact_hardware` require every pinned core/memory feature, including its presence;
+other historical rows retain their nearest-feature behavior. MTP depth
+qualification permits width-dependent greedy differences: the measured cap uses
+a paired quality gate (at least 100 fixed questions, absolute accuracy difference
+<=3 points and exact paired p>=0.05 against plain and main MTP) plus the existing
+>=2% non-overlapping speed gate. This does not relax kernel arithmetic probes.

@@ -129,11 +129,22 @@ class TuningContext:
     mode: str = "plain"
     width: int = 1
     batch: int = 1
+    has_mtp_head: bool = False
 
 
 @lru_cache(maxsize=128)
 def _context(
-    name, architecture, cores, memory, library_version, macos, model, mode, width, batch
+    name,
+    architecture,
+    cores,
+    memory,
+    library_version,
+    macos,
+    model,
+    mode,
+    width,
+    batch,
+    has_mtp_head,
 ) -> TuningContext:
     tier = classify_chip_tier(name)
     arch = re.fullmatch(r"applegpu_g(\d+)[a-z]*", architecture)
@@ -156,6 +167,7 @@ def _context(
         mode,
         width,
         batch,
+        has_mtp_head,
     )
 
 
@@ -169,6 +181,7 @@ def runtime_context(
     mode="plain",
     width=1,
     batch=1,
+    has_mtp_head=False,
 ) -> TuningContext:
     return _context(
         device_key(info),
@@ -181,4 +194,5 @@ def runtime_context(
         mode,
         width,
         batch,
+        has_mtp_head,
     )

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+from typing import cast
 
 from .._env import is_falsey, is_truthy
 from .capabilities import requirement_reason
@@ -52,6 +53,12 @@ def _knob(name, scope, env=None, default=False):
 
 
 KNOBS = {
+    "mtp_max_depth": _knob(
+        "mtp_max_depth",
+        lambda c: c.mode == "mtp" and c.batch == 1,
+        "RAPID_MLX_MTP_MAX_DEPTH",
+        default=1,
+    ),
     "qwen35_affine4_bank_views": _knob(
         "qwen35_affine4_bank_views",
         lambda c: _expert(c) and c.width == 1,
@@ -104,6 +111,8 @@ def local_calibration(ctx: TuningContext) -> Mapping[str, object]:
 
 
 def _valid(knob, value):
+    if type(knob.default) is int:
+        return type(value) is int and 1 <= value <= 4
     return (
         type(value) is bool if type(knob.default) is bool else value in ((1, 1), (2, 4))
     )
@@ -111,10 +120,21 @@ def _valid(knob, value):
 
 def _score(entry, ctx):
     hw = ctx.hardware
+    if any(
+        getattr(ctx.model, key) != value
+        for key, value in entry.get("model", {}).items()
+    ):
+        return None
     # Never borrow across generations, tiers, or pinned software versions.
     if any(getattr(hw, k) != entry[k] for k in ("gpu_generation", "tier")):
         return None
     if any(getattr(ctx, k) != entry[k] for k in ("mlx", "macos") if k in entry):
+        return None
+    if entry.get("exact_hardware") and any(
+        getattr(hw, key) != entry[key]
+        for key in ("gpu_cores", "memory_size")
+        if key in entry
+    ):
         return None
     # Exact feature matches win; otherwise choose nearest known cores/memory
     # within the qualified generation+tier. Missing features add no evidence.
@@ -140,9 +160,16 @@ def resolve(
     override = (
         (os.environ if environ is None else environ).get(knob.env) if knob.env else None
     )
-    if is_falsey(override):
+    if type(knob.default) is int:
+        try:
+            depth = int(cast(str, override))
+        except (ValueError, TypeError):
+            depth = None
+        if _valid(knob, depth):
+            return Decision(depth, "env")
+    elif is_falsey(override):
         return Decision(False, "env")
-    if is_truthy(override):
+    elif is_truthy(override):
         return Decision(True, "env")
     local = local_calibration(ctx).get(name)
     if local is not None and _valid(knob, local):
