@@ -278,9 +278,6 @@ class NemotronToolParser(ToolParser):
         calls = split_marked_calls(
             scan_text, r"<function=([^>]+)>", "</function>", valid_names=valid_names
         )
-        from .qwen3coder_tool_parser import _MarkdownCodeTracker
-
-        code = _MarkdownCodeTracker()
         bounded = []
         # A single forward scan bounds every tail, including literal openers
         # inside payloads. Never copy the whole remainder for each call.
@@ -288,9 +285,6 @@ class NemotronToolParser(ToolParser):
         previous_end = 0
         wrapped = False
         for name, body, start, end in calls:
-            if code.inside_fence(text, start):
-                continue
-            code.skip_fence_span(text, start, end)
             wrapped = cls._is_wrapped(text, start, previous_end, wrapped)
             body_start = text.index(">", start) + 1
             # Masking preserves offsets; arguments must retain their original
