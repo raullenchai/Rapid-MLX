@@ -625,6 +625,7 @@ rapid_mlx = [
     "chat_runtime/store/migrations/*.sql",
     "aliases.json",
     "repo_profiles.json",
+    "tuning/profiles/*.json",
     "model_digests.json",
     "model_catalog_lock.json",
     "utils/kimi_tokenizer/LICENSE",

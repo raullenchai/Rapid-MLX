@@ -11,7 +11,9 @@ from rapid_mlx import tuning
 from rapid_mlx.tuning.mtp import resolve_max_depth
 
 ENTRY = next(
-    e for e in tuning.MEASURED_DEFAULTS if e["id"] == "mtp-depth-17-max-36g-qwen35-moe"
+    e
+    for e in tuning.builtin_profile().entries
+    if e["id"] == "mtp-depth-17-max-36g-qwen35-moe"
 )
 INFO = dict(
     device_name="Apple M5 Max", architecture="applegpu_g17s", memory_size=36 * 2**30
@@ -55,7 +57,7 @@ def loaded_model(modules):
 def test_qualified_context_and_overrides():
     ctx = context()
     assert tuning.resolve("mtp_max_depth", ctx, environ={}) == tuning.Decision(
-        4, "table:" + ENTRY["id"]
+        4, "builtin:" + ENTRY["id"], profile_version=tuning.builtin_profile().version
     )
     assert tuning.resolve(
         "mtp_max_depth", ctx, environ={"RAPID_MLX_MTP_MAX_DEPTH": "1"}
@@ -133,7 +135,14 @@ def test_other_workloads_and_software_remain_conservative(changes):
 
 
 def test_exact_features_include_pinned_cores_if_provided(monkeypatch):
-    monkeypatch.setattr(tuning, "MEASURED_DEFAULTS", [dict(ENTRY, gpu_cores=40)])
+    from rapid_mlx.tuning.defaults import Profile
+
+    hardware = [dict(ENTRY["hardware"][0], gpu_cores=[40, 40])]
+    monkeypatch.setattr(
+        tuning,
+        "builtin_profile",
+        lambda: Profile("test", (dict(ENTRY, hardware=hardware),)),
+    )
     ctx = context()
     assert tuning.resolve("mtp_max_depth", ctx, environ={}).value == 1
     assert (
@@ -224,15 +233,19 @@ def test_missing_module_metadata_is_conservative(monkeypatch, broken):
 
 
 @pytest.mark.parametrize(
-    "entry", [e for e in tuning.MEASURED_DEFAULTS if e["id"].startswith("mtp-depth-")]
+    "entry",
+    [e for e in tuning.builtin_profile().entries if e["id"].startswith("mtp-depth-")],
 )
 def test_entry_has_speed_and_paired_quality_evidence(entry):
-    assert Path(entry["evidence"]).is_file()
-    before, after = entry["mtp_tps"]
+    assert Path(entry["provenance"]["evidence"]).is_file()
+    before, after = entry["provenance"]["mtp_tps"]
     assert after / before >= 1.02
-    assert entry["mtp_ranges_tps"][0][1] < entry["mtp_ranges_tps"][1][0]
-    assert entry["repetitions"]["mtp"] >= 3
-    q = entry["quality"]
+    assert (
+        entry["provenance"]["mtp_ranges_tps"][0][1]
+        < entry["provenance"]["mtp_ranges_tps"][1][0]
+    )
+    assert entry["provenance"]["repetitions"]["mtp"] >= 3
+    q = entry["provenance"]["quality"]
     n = q["n"]
     assert n >= 100 and len(q["questions_sha256"]) == 64
     for reference, pair in q["paired"].items():
@@ -275,11 +288,13 @@ def test_m3_measured_context_and_override():
     ctx = m3_context()
     entry = next(
         e
-        for e in tuning.MEASURED_DEFAULTS
+        for e in tuning.builtin_profile().entries
         if e["id"] == "mtp-depth-15-ultra-256g-qwen35-moe"
     )
     assert tuning.resolve("mtp_max_depth", ctx, environ={}) == tuning.Decision(
-        entry["knobs"]["mtp_max_depth"], "table:" + entry["id"]
+        entry["knobs"]["mtp_max_depth"],
+        "builtin:" + entry["id"],
+        profile_version=tuning.builtin_profile().version,
     )
     assert tuning.resolve(
         "mtp_max_depth", ctx, environ={"RAPID_MLX_MTP_MAX_DEPTH": "1"}

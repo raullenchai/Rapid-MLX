@@ -19,14 +19,6 @@ def requirement_reason(name: str, ctx: TuningContext) -> str | None:
             return f"unqualified MLX version {ctx.mlx}"
         if hw.architecture not in QSA_ARCHITECTURES[name]:
             return f"unqualified Metal architecture {hw.architecture}"
-    elif name == "affine8_attention":
-        if not (
-            hw.gpu_generation == 15
-            and hw.tier == "Ultra"
-            and ctx.mlx == "0.32.3"
-            and ctx.macos == "26.5.2"
-        ):
-            return "unqualified affine8 runtime"
     elif name == "lane_tensor_units":
         if hw.gpu_generation is None or hw.gpu_generation < 17:
             return "tensor units unavailable"

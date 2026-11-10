@@ -10,7 +10,7 @@ from typing import cast
 
 from .._env import is_falsey, is_truthy
 from .capabilities import requirement_reason
-from .defaults import MEASURED_DEFAULTS
+from .defaults import builtin_profile, matches, overlay_profile
 from .profiles import (  # noqa: F401 -- public construction surface
     HardwareProfile,
     ModelProfile,
@@ -46,10 +46,25 @@ class Knob:
     requirement: Callable[[TuningContext], str | None]
     env: str | None = None
     default: object = False
+    profile_requirement: bool = False
+
+    def valid(self, value):
+        if type(self.default) is int:
+            return type(value) is int and 1 <= value <= 4
+        if type(self.default) is bool:
+            return type(value) is bool
+        return (
+            isinstance(value, (tuple, list))
+            and len(value) == 2
+            and all(type(v) is int for v in value)
+            and tuple(value) in ((1, 1), (2, 4))
+        )
 
 
-def _knob(name, scope, env=None, default=False):
-    return Knob(scope, lambda c: requirement_reason(name, c), env, default)
+def _knob(name, scope, env=None, default=False, profile_requirement=False):
+    return Knob(
+        scope, lambda c: requirement_reason(name, c), env, default, profile_requirement
+    )
 
 
 KNOBS = {
@@ -75,7 +90,10 @@ KNOBS = {
         default=(1, 1),
     ),
     "affine8_attention": _knob(
-        "affine8_attention", lambda c: c.batch == 1, "RAPID_MLX_AFFINE8_ATTENTION"
+        "affine8_attention",
+        lambda c: c.batch == 1,
+        "RAPID_MLX_AFFINE8_ATTENTION",
+        profile_requirement=True,
     ),
     "qsa_stage1": _knob(
         "qsa_stage1", lambda c: c.batch == 1 and c.width >= 64, "RAPID_MLX_QSA_STAGE1"
@@ -103,6 +121,7 @@ class Decision:
     value: object
     source: str
     reason: str | None = None
+    profile_version: str | None = None
 
 
 def local_calibration(ctx: TuningContext) -> Mapping[str, object]:
@@ -110,51 +129,20 @@ def local_calibration(ctx: TuningContext) -> Mapping[str, object]:
     return {}
 
 
-def _valid(knob, value):
-    if type(knob.default) is int:
-        return type(value) is int and 1 <= value <= 4
-    return (
-        type(value) is bool if type(knob.default) is bool else value in ((1, 1), (2, 4))
-    )
-
-
-def _score(entry, ctx):
-    hw = ctx.hardware
-    if any(
-        getattr(ctx.model, key) != value
-        for key, value in entry.get("model", {}).items()
-    ):
-        return None
-    # Never borrow across generations, tiers, or pinned software versions.
-    if any(getattr(hw, k) != entry[k] for k in ("gpu_generation", "tier")):
-        return None
-    if any(getattr(ctx, k) != entry[k] for k in ("mlx", "macos") if k in entry):
-        return None
-    if entry.get("exact_hardware") and any(
-        getattr(hw, key) != entry[key]
-        for key in ("gpu_cores", "memory_size")
-        if key in entry
-    ):
-        return None
-    # Exact feature matches win; otherwise choose nearest known cores/memory
-    # within the qualified generation+tier. Missing features add no evidence.
-    distances = [
-        abs(getattr(hw, k) - entry[k]) / max(entry[k], 1)
-        for k in ("gpu_cores", "memory_size")
-        if getattr(hw, k) is not None and k in entry
-    ]
-    return (len(distances), -sum(distances))
-
-
 def resolve(
     name: str, ctx: TuningContext, *, environ: Mapping[str, str] | None = None
 ) -> Decision:
     knob = KNOBS[name]
     reason = knob.requirement(ctx)
+    if knob.profile_requirement and not any(
+        name in entry.get("capabilities", ()) and matches(entry, ctx)
+        for entry in builtin_profile().entries
+    ):
+        reason = "unqualified runtime"
     if reason or not knob.scope(ctx):
         return Decision(
             False if type(knob.default) is bool else knob.default,
-            "blocked",
+            "capability",
             reason or "outside knob scope",
         )
     override = (
@@ -165,33 +153,43 @@ def resolve(
             depth = int(cast(str, override))
         except (ValueError, TypeError):
             depth = None
-        if _valid(knob, depth):
+        if knob.valid(depth):
             return Decision(depth, "env")
     elif is_falsey(override):
         return Decision(False, "env")
     elif is_truthy(override):
         return Decision(True, "env")
     local = local_calibration(ctx).get(name)
-    if local is not None and _valid(knob, local):
-        return Decision(local, "local-calibration")
-    candidates = [
-        (score, e)
-        for e in MEASURED_DEFAULTS
-        if name in e["knobs"] and (score := _score(e, ctx)) is not None
-    ]
-    if candidates:
-        best = max(score for score, _ in candidates)
-        entries = [e for score, e in candidates if score == best]
-        values = [e["knobs"][name] for e in entries]
-        if all(v == values[0] for v in values) and _valid(knob, values[0]):
-            return Decision(values[0], "table:" + min(e["id"] for e in entries))
+    if local is not None and knob.valid(local):
+        return Decision(local, "local")
+    for source, profile in (
+        ("overlay", overlay_profile()),
+        ("builtin", builtin_profile()),
+    ):
+        entries = [e for e in profile.entries if name in e["knobs"] and matches(e, ctx)]
+        if entries:
+            values = [e["knobs"][name] for e in entries]
+            if all(v == values[0] for v in values):
+                return Decision(
+                    values[0],
+                    source + ":" + min(e["id"] for e in entries),
+                    profile_version=profile.version,
+                )
+            # Ambiguous cells never silently choose one conflicting result.
+            return Decision(
+                knob.default, "default", "conflicting profile entries", profile.version
+            )
     return Decision(knob.default, "default")
 
 
 def dump(ctx: TuningContext) -> dict:
-    """Pure identifier-free diagnostic data; no raw device names/config/env."""
+    """Identifier-free diagnostics; profile versions accompany selected entries."""
     return {
         **asdict(ctx),
+        "profiles": {
+            "builtin": builtin_profile().version,
+            "overlay": overlay_profile().version,
+        },
         "knobs": {name: asdict(resolve(name, ctx)) for name in KNOBS},
     }
 
