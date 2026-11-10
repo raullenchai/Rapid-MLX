@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A rejected lone tool call must produce a visible, safe chat response."""
+"""Unknown tool calls remain visible to clients for error recovery."""
 
 import json
 
@@ -43,14 +43,14 @@ class _Request:
     "rejected",
     [REJECTED, "<tool_call>\n<function=delete_everything>\n</function>\n</tool_call>"],
 )
-def test_nonstream_rejected_only_call_has_safe_content(monkeypatch, rejected):
+def test_nonstream_unknown_call_is_forwarded_without_markup(monkeypatch, rejected):
     cfg = get_config()
     monkeypatch.setattr(cfg, "enable_auto_tool_choice", True)
     monkeypatch.setattr(cfg, "tool_call_parser", "qwen3_coder_xml")
     content, calls = helpers._parse_tool_calls_with_parser(rejected, _Request())
-    assert calls is None
+    assert len(calls) == 1
     assert content == ""
-    assert helpers._was_undeclared_tool_dropped()
+    assert not helpers._was_undeclared_tool_dropped()
     helpers._parse_tool_calls_with_parser("Hello", _Request())
     assert not helpers._was_undeclared_tool_dropped()
 
@@ -99,7 +99,7 @@ class _Engine:
     [REJECTED, "<tool_call>\n<function=delete_everything>\n</function>\n</tool_call>"],
 )
 @pytest.mark.parametrize("reasoning_parser", [None, "qwen3"])
-def test_chat_reply_after_rejected_only_call(stream, rejected, reasoning_parser):
+def test_chat_reply_after_unknown_call(stream, rejected, reasoning_parser):
     cfg = reset_config()
     cfg.engine = _Engine(rejected)
     cfg.reasoning_parser_name = reasoning_parser
@@ -133,20 +133,20 @@ def test_chat_reply_after_rejected_only_call(stream, rejected, reasoning_parser)
             choices = [choice for event in events for choice in event["choices"]]
             content = "".join((c["delta"].get("content") or "") for c in choices)
             calls = [c["delta"].get("tool_calls") for c in choices]
-            assert choices[-1]["finish_reason"] == "stop"
+            assert choices[-1]["finish_reason"] == "tool_calls"
         else:
             choice = response.json()["choices"][0]
             content = choice["message"]["content"]
             calls = choice["message"].get("tool_calls")
-            assert choice["finish_reason"] == "stop"
-        assert content == NOTICE
-        assert not any(calls) if stream else calls is None
+            assert choice["finish_reason"] == "tool_calls"
+        assert NOTICE not in (content or "")
+        assert any(calls) if stream else len(calls) == 1
     finally:
         reset_config()
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_rejected_call_after_reasoning_has_visible_notice(stream):
+def test_unknown_call_after_reasoning_is_forwarded(stream):
     cfg = reset_config()
     cfg.engine = _Engine("<think>Need to search.</think>" + REJECTED)
     cfg.model_name = "test-model"
@@ -177,17 +177,17 @@ def test_rejected_call_after_reasoning_has_visible_notice(stream):
                 for choice in json.loads(line[6:])["choices"]
             ]
             content = "".join((c["delta"].get("content") or "") for c in choices)
-            assert choices[-1]["finish_reason"] == "stop"
+            assert choices[-1]["finish_reason"] == "tool_calls"
         else:
             choice = response.json()["choices"][0]
             content = choice["message"]["content"]
-            assert choice["finish_reason"] == "stop"
-        assert content == NOTICE
+            assert choice["finish_reason"] == "tool_calls"
+        assert NOTICE not in (content or "")
     finally:
         reset_config()
 
 
-def test_streamed_whitespace_before_rejected_call_still_gets_notice():
+def test_streamed_whitespace_before_unknown_call_has_no_notice():
     cfg = reset_config()
     cfg.engine = _Engine(deltas=[" \n", REJECTED])
     cfg.model_name = "test-model"
@@ -215,7 +215,7 @@ def test_streamed_whitespace_before_rejected_call_still_gets_notice():
             for choice in json.loads(line[6:])["choices"]
         ]
         content = "".join((c["delta"].get("content") or "") for c in choices)
-        assert content.strip() == NOTICE
+        assert NOTICE not in (content or "")
     finally:
         reset_config()
 
@@ -256,7 +256,7 @@ def test_required_tool_recovery_does_not_include_failure_notice(stream):
             choice = response.json()["choices"][0]
             content = choice["message"].get("content") or ""
             assert choice["message"].get("tool_calls")
-        assert NOTICE not in content
+        assert NOTICE not in (content or "")
     finally:
         reset_config()
 

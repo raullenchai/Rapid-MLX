@@ -1370,13 +1370,10 @@ class Qwen3CoderToolParser(ToolParser):
                 tc = self._parse_xml_function_call(fc_str, tools)
                 if not tc:
                     continue
-                if tc.get("name") not in declared:
-                    # Framing alone cannot distinguish executable wire from
-                    # prose documenting that wire. A name the caller did not
-                    # offer (including every name under tool_choice=none) is
-                    # never executable. Preserve that span as text while still
-                    # admitting independent, later candidates -- except a
-                    # lone canonical block, which is an attempted call (#4038).
+                if tc.get("name") not in declared and (not declared or selected):
+                    # Preserve the no-tools and explicit tool-choice gates.
+                    # With auto/required, unknown names reach the client so it
+                    # can return a tool error, while admitted wire is removed.
                     if (
                         declared
                         and not tool_calls
@@ -1897,6 +1894,7 @@ class Qwen3CoderToolParser(ToolParser):
         elif request is not None and self._streaming_request is None:
             self._streaming_request = request
         self._stream_text = current_text
+        request = request if request is not None else self._streaming_request
 
         if not delta_text:
             return None
@@ -1963,7 +1961,10 @@ class Qwen3CoderToolParser(ToolParser):
             if (
                 len(complete.tool_calls) > 1
                 and min(len(complete.tool_calls), closed_count) > already
-                and all(call["name"] in declared for call in complete.tool_calls)
+                and (
+                    not self._named_tool_choice(request)
+                    or all(call["name"] in declared for call in complete.tool_calls)
+                )
             ):
                 fresh = complete.tool_calls[already:closed_count]
                 self.prev_tool_call_arr.extend(fresh)
@@ -2105,8 +2106,10 @@ class Qwen3CoderToolParser(ToolParser):
                     header_end = current_text.find(">", name_start)
                     if header_end >= 0:
                         candidate_name = current_text[name_start:header_end]
-                        if candidate_name not in declared and (
-                            self._lone_block_opener(current_text, header_start)
+                        if (
+                            candidate_name not in declared
+                            and self._named_tool_choice(request)
+                            and self._lone_block_opener(current_text, header_start)
                         ):
                             return self._begin_undeclared_block(
                                 current_text,
@@ -2116,7 +2119,9 @@ class Qwen3CoderToolParser(ToolParser):
                                 request,
                                 declared,
                             )
-                        if candidate_name not in declared:
+                        if candidate_name not in declared and self._named_tool_choice(
+                            request
+                        ):
                             self._reject_candidate()
                             return {"content": delta_text}
                         candidate_text = current_text[header_start:]
@@ -2189,6 +2194,7 @@ class Qwen3CoderToolParser(ToolParser):
                     self.current_function_name = tool_text[func_start:func_end]
                     if (
                         self.current_function_name not in declared
+                        and self._named_tool_choice(request)
                         and self._lone_block_opener(current_text, tool_start_idx)
                     ):
                         return self._begin_undeclared_block(
@@ -2199,7 +2205,10 @@ class Qwen3CoderToolParser(ToolParser):
                             request,
                             declared,
                         )
-                    if self.current_function_name not in declared:
+                    if (
+                        self.current_function_name not in declared
+                        and self._named_tool_choice(request)
+                    ):
                         start = self._pending_tool_start
                         rejected = (
                             current_text[start:] if start is not None else delta_text

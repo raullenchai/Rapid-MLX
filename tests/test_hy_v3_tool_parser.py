@@ -485,9 +485,8 @@ def test_completed_call_then_truncated_opener_keeps_only_completed():
     assert res.tool_calls[0]["name"] == "a"
 
 
-def test_tool_name_filter_via_request_tools():
-    """When the request supplies a ``tools`` list, unknown tool names MUST be
-    filtered out (defence against name hallucination)."""
+def test_unknown_tool_name_is_forwarded_with_request_tools():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     out = (
         "<tool_call:opensource>bogus_tool<tool_sep:opensource>"
@@ -495,15 +494,12 @@ def test_tool_name_filter_via_request_tools():
     )
     request = {"tools": [{"function": {"name": "allowed_tool"}}]}
     res = parser.extract_tool_calls(out, request=request)
-    assert res.tools_called is False
-    assert res.tool_calls == []
+    assert res.tools_called is True
+    assert len(res.tool_calls) == 1
 
 
-def test_valid_names_filter_preserves_rejected_span_in_content():
-    """When ``valid_names`` is set and every parsed call is filtered out, the
-    raw span of the rejected call MUST be preserved in ``content`` — silently
-    dropping it makes the output look like a refusal when the model actually
-    tried to invoke an off-list tool."""
+def test_unknown_tool_markup_is_removed_from_content():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     out = (
         "<tool_call:opensource>bogus_tool<tool_sep:opensource>"
@@ -511,17 +507,14 @@ def test_valid_names_filter_preserves_rejected_span_in_content():
     )
     request = {"tools": [{"function": {"name": "allowed_tool"}}]}
     res = parser.extract_tool_calls(out, request=request)
-    assert res.tools_called is False
-    assert res.tool_calls == []
-    assert res.content is not None
-    assert "bogus_tool" in res.content
+    assert res.tools_called is True
+    assert len(res.tool_calls) == 1
+    assert res.content is None
+    assert res.tool_calls[0]["name"] == "bogus_tool"
 
 
-def test_valid_names_filter_preserves_mixed_valid_and_rejected():
-    """When SOME calls are valid, ``tools_called=True`` and ``content=None``
-    (exclusive-turn policy). The rejected span is lost in that case by design
-    — the OpenAI-compatible contract forbids mixed ``tool_calls`` +
-    ``content`` in a single assistant turn."""
+def test_mixed_known_and_unknown_tools_are_forwarded():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     out = (
         '<tool_call:opensource>allowed_tool<tool_sep:opensource>{"y": 2}'
@@ -533,8 +526,9 @@ def test_valid_names_filter_preserves_mixed_valid_and_rejected():
     request = {"tools": [{"function": {"name": "allowed_tool"}}]}
     res = parser.extract_tool_calls(out, request=request)
     assert res.tools_called is True
-    assert len(res.tool_calls) == 1
+    assert len(res.tool_calls) == 2
     assert res.tool_calls[0]["name"] == "allowed_tool"
+    assert res.tool_calls[1]["name"] == "bogus_tool"
     assert res.content is None
 
 
@@ -552,19 +546,16 @@ def test_text_format_fallback_reachable_without_native_opener():
     assert json.loads(res.tool_calls[0]["arguments"]) == {"city": "Paris"}
 
 
-def test_text_format_fallback_respects_request_allowlist():
-    """codex R7 BLOCKING: the text-format degradation fallback MUST apply the
-    request ``tools`` allowlist too — otherwise a degraded
-    ``[Calling tool="bogus"]`` bypasses the filtering that native Hy3 calls
-    enforce. An off-list name is dropped (no tool_calls) and preserved as
-    content."""
+def test_text_format_fallback_forwards_unknown_names():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     request = {"tools": [{"function": {"name": "get_weather"}}]}
     out = '[Calling tool="bogus" x="1"]'
     res = parser.extract_tool_calls(out, request=request)
-    assert res.tools_called is False
-    assert res.tool_calls == []
-    assert res.content == out
+    assert res.tools_called is True
+    assert len(res.tool_calls) == 1
+    assert res.content is None
+    assert res.tool_calls[0]["name"] == "bogus"
 
 
 def test_text_format_fallback_admits_on_list_name_with_allowlist():
@@ -888,10 +879,8 @@ def _stream_raw(parser, chunks, request=None):
     return results
 
 
-def test_streaming_respects_request_tool_allowlist():
-    """The streaming path MUST honour the request ``tools`` allowlist so a
-    hallucinated off-list name emits NEITHER a header NOR argument deltas
-    (codex R4 NIT: a name-only assertion would pass even if args leaked)."""
+def test_streaming_forwards_unknown_names_and_arguments():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     request = {"tools": [{"function": {"name": "allowed_tool"}}]}
     chunks = [
@@ -902,30 +891,23 @@ def test_streaming_respects_request_tool_allowlist():
         "<end_of_tool_call:opensource>",
     ]
     tool_acc, content = _collect_stream(parser, chunks, request=request)
-    # No tool-call surfaces AT ALL for an off-list name — no header, no args.
-    assert tool_acc == {}
+    assert tool_acc[0]["name"] == "hallucinated_tool"
+    assert json.loads(tool_acc[0]["args"]) == {"leak": "me"}
     assert content == ""
-    # And no result ever carried a tool_calls delta for the suppressed index.
-    results = _stream_raw(parser, chunks, request=request)
-    assert all("tool_calls" not in msg for msg in results)
 
 
-def test_streaming_off_list_call_in_one_delta_emits_no_args():
-    """The suppressed off-list call arriving WHOLE in one delta (name + args +
-    close together) must still emit NO argument delta — the same-delta path is
-    the exact scenario codex R4 BLOCKING #3 raised for the args leak."""
+def test_streaming_unknown_call_in_one_delta_emits_arguments():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     request = {"tools": [{"function": {"name": "allowed_tool"}}]}
     one_delta = (
         "<tool_call:opensource>hallucinated<tool_sep:opensource>"
         '{"leak": "me"}<end_of_tool_call:opensource>'
     )
-    results = _stream_raw(parser, [one_delta], request=request)
-    for msg in results:
-        for tc in msg.get("tool_calls", []):
-            fn = tc.get("function", {})
-            assert not fn.get("arguments"), f"args leaked: {tc!r}"
-            assert fn.get("name") != "hallucinated"
+    tool_acc, content = _collect_stream(parser, [one_delta], request=request)
+    assert tool_acc[0]["name"] == "hallucinated"
+    assert json.loads(tool_acc[0]["args"]) == {"leak": "me"}
+    assert content == ""
 
 
 def test_streaming_flush_held_content_releases_dangling_prefix():
@@ -1171,10 +1153,8 @@ def test_streaming_bare_name_sepless_call_emits_empty_args():
     assert content == ""
 
 
-def test_streaming_sepless_call_respects_request_allowlist():
-    """A sep-less closed call whose name is OFF the request allowlist MUST NOT
-    emit a tool_call (the drain path applies the same suppression as the JSON
-    path)."""
+def test_streaming_sepless_call_forwards_unknown_names():
+    """Unknown names are forwarded with arguments for client error recovery."""
     parser = HyV3ToolParser()
     request = {"tools": [{"type": "function", "function": {"name": "allowed"}}]}
     tool_acc, _content = _collect_stream(
@@ -1187,7 +1167,8 @@ def test_streaming_sepless_call_respects_request_allowlist():
         ],
         request=request,
     )
-    assert tool_acc == {}, "off-list sep-less call must be suppressed"
+    assert tool_acc[0]["name"] == "forbidden"
+    assert json.loads(tool_acc[0]["args"]) == {"k": "v"}
 
 
 def test_has_pending_tool_call_text_format_is_not_pending():

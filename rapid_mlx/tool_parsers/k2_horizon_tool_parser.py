@@ -104,9 +104,8 @@ class K2HorizonToolParser(ToolParser):
     def _validate_name(cls, name: Any, request: dict[str, Any] | None) -> str:
         if not isinstance(name, str) or not name or any(ch.isspace() for ch in name):
             raise ValueError("invalid IFM tool name")
-        declared = cls._declared_tools(request)
-        if name not in declared:
-            raise ValueError("unknown IFM tool name")
+        if not cls._declared_tools(request):
+            raise ValueError("no tools available")
         named = cls._named_choice(request)
         if named is not None and name != named:
             raise ValueError("unexpected IFM tool name")

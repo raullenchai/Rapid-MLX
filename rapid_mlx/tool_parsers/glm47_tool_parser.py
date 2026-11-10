@@ -187,9 +187,6 @@ class Glm47ToolParser(ToolParser):
             model_output = self._INTERRUPTED_NAME.sub(r"</think>\1", model_output)
             cleaned_text = self.strip_think_tags(model_output)
 
-        # Get valid tool names for validation
-        valid_names = self._get_tool_names(request)
-
         # Find all tool call blocks
         matches = self.FUNC_DETAIL_PATTERN.findall(cleaned_text)
 
@@ -198,13 +195,6 @@ class Glm47ToolParser(ToolParser):
             args_section = match[1] if len(match) > 1 and match[1] else ""
 
             if not func_name:
-                continue
-
-            # Validate tool name against available tools if provided
-            if valid_names and func_name not in valid_names:
-                from ..tool_call_diagnostics import record_rejected_tool_call
-
-                record_rejected_tool_call(func_name, args_section)
                 continue
 
             # Parse arguments

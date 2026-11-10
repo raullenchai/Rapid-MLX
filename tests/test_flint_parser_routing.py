@@ -277,10 +277,16 @@ def test_qwen3_thinking_off_plain_answer_unchanged():
         "<tool_call>unknown</tool_call>",
     ],
 )
-def test_glm_malformed_markup_is_not_content(raw):
+def test_glm_tool_markup_is_not_content(raw):
     parser = Glm47ToolParser()
     result = parser.extract_tool_calls(raw, {"tools": TOOLS})
-    assert not result.tools_called
+    # #5693: a framed unknown name is a call, even with no arguments.
+    unknown = raw == "<tool_call>unknown</tool_call>"
+    assert result.tools_called == unknown
+    if unknown:
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "unknown"
+        assert json.loads(result.tool_calls[0]["arguments"]) == {}
     assert not result.content
     for split in range(1, len(raw)):
         parser.reset()
@@ -295,6 +301,16 @@ def test_glm_malformed_markup_is_not_content(raw):
         visible = "".join(m.get("content", "") for m in messages if m)
         visible += parser.flush_held_content(raw)
         assert not visible
+        calls = [call for m in messages if m for call in m.get("tool_calls", [])]
+        assert bool(calls) == unknown
+        if unknown:
+            assert [
+                c["function"]["name"] for c in calls if c["function"].get("name")
+            ] == ["unknown"]
+            assert (
+                json.loads("".join(c["function"].get("arguments", "") for c in calls))
+                == {}
+            )
 
 
 def test_responses_finalize_preserves_plain_text():
@@ -342,7 +358,10 @@ def test_glm_repair_preserves_implicit_reasoning_boundary(name):
     raw = f"Private thought.<tool_call>{name}</think><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>"
     result = Glm47ToolParser().extract_tool_calls(raw, {"tools": TOOLS})
     assert not result.content
-    assert result.tools_called == (name == "run_shell_command")
+    assert result.tools_called
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["name"] == name
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"command": "pwd"}
 
 
 @pytest.mark.parametrize(

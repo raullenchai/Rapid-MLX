@@ -479,7 +479,6 @@ class HyV3ToolParser(ToolParser):
             # the early return otherwise made this branch unreachable).
             return self._text_format_or_content(model_output, request)
 
-        valid_names = self._get_tool_names(request)
         tool_calls: list[dict[str, Any]] = []
         residual_parts: list[str] = []
         cursor = 0
@@ -492,14 +491,6 @@ class HyV3ToolParser(ToolParser):
             residual_parts.append(model_output[cursor:block_start])
             name, args = self._parse_body(body)
             if not name:
-                cursor = block_end
-                continue
-            if valid_names and name not in valid_names:
-                # Preserve the rejected span in residual text so a request
-                # with a ``tools`` allowlist + a hallucinated off-list name
-                # surfaces the attempted call rather than a silent empty
-                # ``tool_calls`` array that looks like a refusal.
-                residual_parts.append(model_output[block_start:block_end])
                 cursor = block_end
                 continue
             tool_calls.append(
@@ -534,15 +525,11 @@ class HyV3ToolParser(ToolParser):
         ``extract_tool_calls`` so the low-quant text-degradation path is
         reachable in both (codex BLOCKING #2).
 
-        Applies the request ``tools`` allowlist to the text-format calls too
-        (codex R7 BLOCKING #1): otherwise a degraded ``[Calling tool="bogus"]``
-        would bypass the ``request["tools"]`` filtering that native Hy3 calls
-        enforce. Off-list names are dropped and their raw span preserved as
-        content, mirroring the native path."""
+        Unknown names are forwarded just like native calls so the client
+        can return a tool error."""
         if self.has_text_format_tool_call(text):
             text_calls = self.extract_text_format_tool_calls(text)
             if text_calls:
-                valid_names = self._get_tool_names(request)
                 normalised = [
                     {
                         "id": tc.get("id", generate_tool_id()),
@@ -550,7 +537,6 @@ class HyV3ToolParser(ToolParser):
                         "arguments": tc["arguments"],
                     }
                     for tc in text_calls
-                    if not valid_names or tc["name"] in valid_names
                 ]
                 if normalised:
                     return ExtractedToolCallInformation(
@@ -974,27 +960,18 @@ class HyV3ToolParser(ToolParser):
             name = buffer[:sep_idx].strip()
             if not name:
                 return None
-            valid_names = self._get_tool_names(request)
-            suppressed = bool(valid_names) and name not in valid_names
             self.current_tool_id = idx
             self._name_sent = True
             if idx >= len(self.streamed_args_for_tool):
                 self.streamed_args_for_tool.append("")
                 self.prev_tool_call_arr.append({"name": name, "arguments": "{}"})
-            if suppressed:
-                # Hallucinated off-list name — emit no header, but the FSM
-                # still advances on close (below); the non-streaming path
-                # preserves the raw span for diagnostics.
-                self._current_tool_ref = None
-                self._suppressed_tools.add(idx)
-            else:
-                self._current_tool_ref = generate_tool_id()
-                header = {
-                    "index": self._assign_client_index(idx),
-                    "id": self._current_tool_ref,
-                    "type": "function",
-                    "function": {"name": name, "arguments": ""},
-                }
+            self._current_tool_ref = generate_tool_id()
+            header = {
+                "index": self._assign_client_index(idx),
+                "id": self._current_tool_ref,
+                "type": "function",
+                "function": {"name": name, "arguments": ""},
+            }
 
         # ---------- Phase 2: STREAMING_ARGS (emit complete args on close) ---
         return self._emit_args_and_advance(buffer, sep_idx, header)
@@ -1092,28 +1069,21 @@ class HyV3ToolParser(ToolParser):
 
         deltas: list[dict[str, Any]] = []
         if name:
-            valid_names = self._get_tool_names(request)
-            suppressed = bool(valid_names) and name not in valid_names
-            if not suppressed:
-                final_args = json.dumps(args, ensure_ascii=False)
-                if idx < len(self.streamed_args_for_tool):
-                    self.streamed_args_for_tool[idx] = final_args
-                if idx < len(self.prev_tool_call_arr):
-                    self.prev_tool_call_arr[idx]["arguments"] = final_args
-                client_idx = self._assign_client_index(idx)
-                deltas.append(
-                    {
-                        "index": client_idx,
-                        "id": generate_tool_id(),
-                        "type": "function",
-                        "function": {"name": name, "arguments": ""},
-                    }
-                )
-                deltas.append(
-                    {"index": client_idx, "function": {"arguments": final_args}}
-                )
-            else:
-                self._suppressed_tools.add(idx)
+            final_args = json.dumps(args, ensure_ascii=False)
+            if idx < len(self.streamed_args_for_tool):
+                self.streamed_args_for_tool[idx] = final_args
+            if idx < len(self.prev_tool_call_arr):
+                self.prev_tool_call_arr[idx]["arguments"] = final_args
+            client_idx = self._assign_client_index(idx)
+            deltas.append(
+                {
+                    "index": client_idx,
+                    "id": generate_tool_id(),
+                    "type": "function",
+                    "function": {"name": name, "arguments": ""},
+                }
+            )
+            deltas.append({"index": client_idx, "function": {"arguments": final_args}})
 
         # Close: advance to the next index; the drain loop picks up any
         # subsequent opener in this same delta.

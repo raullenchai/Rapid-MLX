@@ -142,10 +142,13 @@ def _next_sibling(
 
     Returns ``len(openers)`` when no sibling follows.
     """
+    first_close = text.find(closer, openers[index].end())
+    if first_close < 0:
+        return len(openers)
     for j in range(index + 1, len(openers)):
         if valid_names is not None and openers[j].group(1).strip() not in valid_names:
             continue  # not a declared name — literal text inside the value
-        if closer in text[openers[index].end() : openers[j].start()]:
+        if first_close + len(closer) <= openers[j].start():
             return j
     return len(openers)
 
@@ -209,31 +212,15 @@ def split_marked_calls(
         # turn is ordinary agent behaviour — read_file /a then read_file /b —
         # and suppressing the second opener merges both into one body and
         # silently drops a call the model asked for.
-        # The gate applies to the opener being EMITTED, not only to the
-        # search for the next one. Filtering siblings alone left the hole
-        # wide open at index 0: a standalone ``<function=delete_everything>``
-        # was still returned as a call, so the authorisation check could be
-        # skipped entirely by putting the undeclared opener first.
-        if valid_names is not None and openers[i].group(1).strip() not in valid_names:
-            from .tool_call_diagnostics import record_rejected_tool_call
-
-            # Diagnostics must not rescan the remaining buffer for every
-            # rejected opener. Bound each observation by the next textual
-            # opener (not the next declared sibling), keeping adversarial runs
-            # of undeclared/unclosed markers linear. Accepted-call segmentation
-            # and its literal-value disambiguation remain unchanged.
-            start = openers[i].end()
-            end = openers[i + 1].start() if i + 1 < len(openers) else len(text)
-            cut = text.rfind(closer, start, end)
-            if cut != -1 and (
-                not outer
-                or re.match(r"\s*" + re.escape(outer), text[cut + len(closer) : end])
-            ):
-                record_rejected_tool_call(openers[i].group(1).strip(), text[start:cut])
-            i += 1
-            continue
-        segmented = segment_by_next_opener(text, openers, i, closer, valid_names)
-        sibling = _next_sibling(text, openers, i, closer, valid_names)
+        # Unknown names are still calls. Keep the declared-name boundary for
+        # siblings so literal markers inside argument values stay payload.
+        boundary_names = (
+            valid_names
+            if valid_names and openers[i].group(1).strip() in valid_names
+            else None
+        )
+        segmented = segment_by_next_opener(text, openers, i, closer, boundary_names)
+        sibling = _next_sibling(text, openers, i, closer, boundary_names)
         if segmented is not None:
             body, span_end = segmented
             emit = True
