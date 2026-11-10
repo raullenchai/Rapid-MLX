@@ -65,22 +65,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(autouse=True)
 def _public_fixture_repos(monkeypatch):
-    # Consent/receipt tests use fictional checkpoints with an existing public
-    # proof. Privacy and anonymous lookup failures have their own test module.
+    # Consent/receipt tests use fictional checkpoints that the anonymous Hub
+    # check reports as public. Privacy and anonymous lookup failures have
+    # their own test module.
+    from types import SimpleNamespace
+
     from rapid_mlx.telemetry import model_id
 
-    monkeypatch.setattr(model_id, "hf_auth_in_use", lambda: False)
-    monkeypatch.setattr(
-        model_id,
-        "is_proven_public",
-        lambda repo: (
-            repo
-            in {
-                "mlx-community/example-text-model",
-                "mlx-community/example-image-model",
-            }
-        ),
-    )
+    public = {
+        "mlx-community/example-text-model",
+        "mlx-community/example-image-model",
+    }
+
+    def fake_model_info(repo, **_kwargs):
+        if repo not in public:
+            raise OSError("not a public fixture repo")
+        return SimpleNamespace(private=False, gated=False)
+
+    monkeypatch.setattr(model_id, "_hub_connection_can_prove_public", lambda: True)
+    monkeypatch.setattr("huggingface_hub.model_info", fake_model_info)
 
 
 @pytest.fixture(autouse=True)

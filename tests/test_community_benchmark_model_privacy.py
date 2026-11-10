@@ -64,14 +64,14 @@ def test_private_gated_and_unknown_metadata_refused(fields, metadata, monkeypatc
     assert not model_id.is_proven_public("privacy-test/model")
 
 
-def test_public_anonymous_proof_allows_preview_offline(metadata):
+def test_public_repo_is_rechecked_even_with_a_telemetry_proof(metadata):
     model_id.note_hub_fetch("privacy-test/model")
     preview = atomic_upload.preview_run(_run(), install_id="0123456789ab")
     assert (
         preview["payload"]["model"]["components"][0]["source"]["repo_id"]
         == "privacy-test/model"
     )
-    metadata.assert_not_called()
+    metadata.assert_called_once_with("privacy-test/model", token=False, timeout=5)
 
 
 def test_catalog_repo_allowed_offline(metadata):
@@ -103,11 +103,38 @@ def test_network_failure_refused(metadata):
     assert "credential" not in str(error.value)
 
 
-def test_successful_probe_reuses_existing_proof_store(metadata):
-    atomic_upload.preview_run(_run(), install_id="0123456789ab")
+def test_successful_probe_records_proof(metadata):
     atomic_upload.preview_run(_run(), install_id="0123456789ab")
     assert metadata.call_count == 1
     assert model_id.is_proven_public("privacy-test/model")
+
+
+def test_telemetry_proof_does_not_bypass_gated_check(metadata, monkeypatch):
+    # The telemetry store proves "anonymously readable", which a gated repo
+    # satisfies; publication must still read private/gated afresh.
+    import time
+
+    monkeypatch.setitem(model_id._proven_public, "privacy-test/model", time.time())
+    metadata.return_value = SimpleNamespace(private=False, gated="auto")
+    with pytest.raises(PublicationRefused, match="gated"):
+        atomic_upload.preview_run(_run())
+    metadata.assert_called_once()
+    assert not model_id.is_proven_public("privacy-test/model")
+
+
+def test_slow_metadata_response_hits_wall_clock_deadline(metadata, monkeypatch):
+    import threading
+
+    from rapid_mlx.community_bench import publication
+
+    release = threading.Event()
+    metadata.side_effect = lambda *a, **k: release.wait(5)
+    monkeypatch.setattr(publication, "_PUBLIC_PROOF_DEADLINE_S", 0.05)
+    try:
+        with pytest.raises(PublicationRefused, match="could not be verified"):
+            atomic_upload.preview_run(_run())
+    finally:
+        release.set()
 
 
 def test_expired_proof_cannot_authorize_publication(metadata, monkeypatch):

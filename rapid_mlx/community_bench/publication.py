@@ -19,6 +19,10 @@ _PUBLIC_SOURCE_KEYS = ("kind", "repo_id")
 _HF_SOURCE_KEYS = (*_PUBLIC_SOURCE_KEYS, "resolved_revision", "subfolder")
 
 
+#: Wall-clock bound for the anonymous public-repository check.
+_PUBLIC_PROOF_DEADLINE_S = 5.0
+
+
 class PublicationRefused(Exception):  # noqa: N818 - stable domain error name
     """This result must not be published, and why.
 
@@ -58,15 +62,22 @@ def ensure_public_model_sources(run: dict[str, Any]) -> None:
             raise PublicationRefused(
                 prefix + "the model has no public Hugging Face repository id."
             )
-        if not model_id.hf_auth_in_use() and model_id.is_proven_public(repo):
-            checked.add(repo)
-            continue
+        # The telemetry proof store is not enough here: it records any
+        # successful anonymous metadata read, and gated repositories expose
+        # metadata anonymously. Publication needs ``private is False`` and
+        # ``gated is False`` from a fresh anonymous read.
         try:
             if not model_id._hub_connection_can_prove_public():
                 raise ValueError("untrusted Hub network configuration")
             from huggingface_hub import model_info
 
-            info = model_info(repo, token=False, timeout=5)
+            from rapid_mlx._download_gate import call_with_deadline
+
+            # httpx's timeout bounds each read, not the whole call; only a
+            # wall-clock deadline keeps a trickling response from hanging.
+            info = call_with_deadline(
+                model_info, _PUBLIC_PROOF_DEADLINE_S, repo, token=False, timeout=5
+            )
         except Exception as exc:
             model_id._revoke_proof(repo)
             # Do not echo library errors: they may carry URLs or credentials.
