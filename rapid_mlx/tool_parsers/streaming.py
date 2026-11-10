@@ -112,6 +112,15 @@ class StreamingToolContentFilter:
         if self._flushed == self.text:
             return "" if self._tools_seen else tail
         self._flushed = self.text
+        if getattr(
+            self.parser, "STREAMING_REQUIRES_FINAL_EXTRACTION", False
+        ) and self.parser.has_pending_tool_call(self.text):
+            # Responses and Messages extract structured calls from the full
+            # generation separately. Make the same final decision for content.
+            result = self.parser.extract_tool_calls(self.text, request=self.request)
+            if result.tools_called or self.parser._undeclared_dropped:
+                self._tools_seen = True
+                return result.content or ""
         if self._tools_seen:
             # Match Chat's parser-owned post-call content contract: a suffix
             # may still be tool wire, even after an earlier call was emitted.

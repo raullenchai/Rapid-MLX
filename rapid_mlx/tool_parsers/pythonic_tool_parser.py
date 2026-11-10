@@ -193,6 +193,9 @@ class PythonicToolParser(ToolParser):
         re.DOTALL,
     )
 
+    # The complete response is authoritative; do not recover other wire formats
+    # or release held input at a streaming size threshold.
+    STREAMING_REQUIRES_FINAL_EXTRACTION = True
     SUPPORTS_NATIVE_TOOL_FORMAT = True
     EXPECTED_WIRE_FORMATS = ("pythonic_bracket",)
 
@@ -271,24 +274,15 @@ class PythonicToolParser(ToolParser):
                 tools_called=False, tool_calls=[], content=model_output
             )
 
-    @staticmethod
-    def _find_matching_bracket(buffer: str, start: int) -> int:
-        """Find the closing square bracket using nested bracket depth."""
-        bracket_count = 0
-        for i in range(start, len(buffer)):
-            if buffer[i] == "[":
-                bracket_count += 1
-            elif buffer[i] == "]":
-                bracket_count -= 1
-                if bracket_count == 0:
-                    return i
-        return -1
+    def has_pending_tool_call(self, text: str) -> bool:
+        # Include every bracket-led shape, including incomplete or invalid lists.
+        return text.startswith("[")
 
     def flush_held_content(self, full_text: str) -> str:
-        """Release an unterminated bracket segment at generation end."""
-        held: str = self._buffer
+        """Release rejected/incomplete input once; allowlisted drops stay hidden."""
+        held = self._buffer
         self._buffer = ""
-        return held
+        return "" if self._undeclared_dropped else held
 
     def extract_tool_calls_streaming(
         self,
@@ -300,52 +294,13 @@ class PythonicToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        self._buffer += delta_text
-        content = ""
-        tool_deltas = []
-        while self._buffer:
-            start = self._buffer.find("[")
-            if start == -1:
-                content += self._buffer
-                self._buffer = ""
-                break
+        if not current_text.startswith("["):
+            return {"content": delta_text}
 
-            content += self._buffer[:start]
-            self._buffer = self._buffer[start:]
-            end = self._find_matching_bracket(self._buffer, 0)
-            if end == -1:
-                break
-
-            segment = self._buffer[: end + 1]
-            self._buffer = self._buffer[end + 1 :]
-            result = self.extract_tool_calls(segment, request)
-            # A valid list containing only undeclared calls has no content.
-            # Preserve that distinction so rejected tool wire stays dropped.
-            if result.content is not None:
-                content += result.content
-            for call in result.tool_calls:
-                tool_deltas.append(
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "index": self.current_tool_index,
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call["arguments"],
-                        },
-                    }
-                )
-                self.current_tool_index += 1
-                self.streamed_args_for_tool.append(call["arguments"])
-                self.prev_tool_call_arr.append(call)
-
-        delta: dict[str, Any] = {}
-        if content:
-            delta["content"] = content
-        if tool_deltas:
-            delta["tool_calls"] = tool_deltas
-            delta["preserve_post_tool_content"] = True
-        return delta or None
+        # Keep a reference to the caller's accumulated text. No concatenation,
+        # scanning, or parsing per delta: finalize extracts the full response.
+        self._buffer = current_text
+        return None
 
 
 ToolParserManager.register_module("pythonic", PythonicToolParser)

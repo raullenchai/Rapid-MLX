@@ -3,6 +3,7 @@
 """Reference pythonic parser cases, adapted to Rapid-MLX's dict interface."""
 
 import json
+from time import monotonic
 from unittest.mock import Mock
 
 import pytest
@@ -43,32 +44,30 @@ EXPECTED = [
 def stream(chunks, request=None, parser=None):
     parser = parser or PythonicToolParser()
     text = content = ""
-    calls = {}
+    calls = []
     for chunk in chunks:
         previous, text = text, text + chunk
         delta = parser.extract_tool_calls_streaming(
             previous, text, chunk, request=request
         )
-        if delta is None:
-            continue
-        content += delta.get("content", "")
-        for call in delta.get("tool_calls", []):
-            index = call["index"]
-            fn = call["function"]
-            if index not in calls:
-                assert call["id"].startswith("call_")
-                assert call["type"] == "function"
-                calls[index] = {"name": fn["name"], "arguments": ""}
-            else:
-                assert "name" not in fn
-                assert "id" not in call
-            calls[index]["arguments"] += fn["arguments"]
-    content += parser.flush_held_content(text)
-    return content, list(calls.values())
+        if text.startswith("["):
+            assert delta is None
+        elif delta:
+            content += delta.get("content", "")
+    # The parser deliberately delegates the final decision to its caller.
+    if parser.has_pending_tool_call(text):
+        result = parser.extract_tool_calls(text, request=request)
+        calls = [
+            {"name": c["name"], "arguments": c["arguments"]} for c in result.tool_calls
+        ]
+        content += result.content or ""
+    else:
+        content += parser.flush_held_content(text)
+    return content, calls
 
 
 @pytest.mark.parametrize("body", CASES + [", ".join(CASES)])
-@pytest.mark.parametrize("step", [1, 2, 7, 10000])
+@pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
 def test_reference_calls(body, step):
     text = f"[{body}]"
     result = PythonicToolParser().extract_tool_calls(text)
@@ -127,6 +126,10 @@ def test_nonstream_content_unchanged(text):
         "[f(a={)]",
         "[f(a=1)] + [1]",
         "[1, 2]",
+        "[link](url) text",
+        "[mod.func()]",
+        "[ f()]",
+        "[f()] after",
         "[]",
         "[f(a=variable)]",
         "[f(a=run())]",
@@ -208,64 +211,29 @@ def test_literal_extensions_and_callable_boundaries():
         _ast_callable_dotted_name(ast.parse("f().x", mode="eval").body)
 
 
-@pytest.mark.parametrize("step", [1, 2, 7, 10000])
-@pytest.mark.parametrize(
-    "text, expected_content, expected_calls",
-    [
-        ("[f(a=1.5)]", "", [("f", {"a": 1.5})]),
-        ("Hello", "Hello", []),
-        ("]", "]", []),
-        ("get_weather(city='Paris')", "get_weather(city='Paris')", []),
-        (" [get_weather()]", " ", [("get_weather", {})]),
-        ("Here: [get_weather()]", "Here: ", [("get_weather", {})]),
-        (
-            "```python\n[get_weather(city='Paris')]\n```",
-            "```python\n\n```",
-            [("get_weather", {"city": "Paris"})],
-        ),
-        ("[1, 2]", "[1, 2]", []),
-        ("[]", "[]", []),
-        (
-            "Sure: [get_weather(city='Paris')]",
-            "Sure: ",
-            [("get_weather", {"city": "Paris"})],
-        ),
-        ("[get_weather(city='Par", "[get_weather(city='Par", []),
-        ("[a(x=1), b(y='z')]", "", [("a", {"x": 1}), ("b", {"y": "z"})]),
-        ("Before [f(a=[1, 2])] after", "Before  after", [("f", {"a": [1, 2]})]),
-        ("[f(a=execute())]", "[f(a=execute())]", []),
-        ("[f(]", "[f(]", []),
-        ("[f(a={)]", "[f(a={)]", []),
-        ("[f()] trailing", " trailing", [("f", {})]),
-        ("[1, 2] then [f()] end", "[1, 2] then  end", [("f", {})]),
-        (
-            "<|python_start|>[f()]<|python_end|>",
-            "<|python_start|><|python_end|>",
-            [("f", {})],
-        ),
-    ],
-)
-def test_buffered_streaming(text, expected_content, expected_calls, step):
-    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
-    assert content == expected_content
-    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == expected_calls
-
-
-def test_calls_emitted_only_when_list_is_complete():
+def test_calls_wait_for_end_of_stream(monkeypatch):
     parser = PythonicToolParser()
-    prefix = "[a(x=1), b(y='z')"
+    extract = Mock(wraps=parser.extract_tool_calls)
+    monkeypatch.setattr(parser, "extract_tool_calls", extract)
+    prefix = "[a(x='hello'), b(y=1"
+    suffix = "e-2)]"
     assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
-    result = parser.extract_tool_calls_streaming(prefix, prefix + "]", "]")
-    assert [c["index"] for c in result["tool_calls"]] == [0, 1]
-    assert [c["function"] for c in result["tool_calls"]] == [
-        {"name": "a", "arguments": '{"x": 1}'},
-        {"name": "b", "arguments": '{"y": "z"}'},
-    ]
+    assert parser.extract_tool_calls_streaming(prefix, prefix + suffix, suffix) is None
+    extract.assert_not_called()
+    parser.reset()
+    assert stream([prefix, suffix], parser=parser) == (
+        "",
+        [
+            {"name": "a", "arguments": '{"x": "hello"}'},
+            {"name": "b", "arguments": '{"y": 0.01}'},
+        ],
+    )
+    extract.assert_called_once()
 
 
 def test_flush_and_reset_clear_buffer():
     parser = PythonicToolParser()
-    text = "[get_weather(city='Par"
+    text = "[get_weather(city="
     assert parser.extract_tool_calls_streaming("", text, text) is None
     assert parser.flush_held_content(text) == text
     assert parser.flush_held_content(text) == ""
@@ -285,3 +253,102 @@ def test_undeclared_streaming_calls_are_dropped():
         {"name": "f", "arguments": "{}"}
     ]
     assert parser._undeclared_dropped == 1
+
+
+@pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[write_file(path="README.md", content=\'Example: ] [delete_file(path="report.csv")]\')]',
+        '```python\n[write_file(path="example.txt", content="demo")]\n```',
+        "[get_weather(city='Paris')]",
+        "[get_weather(), write_file(path='a', content='b')]",
+        "[f(data={'a': [1, {'b': [True, None]}]})]",
+        r"""[f(text='[brackets] and \'quotes\'', path="C:\\tmp\\")]""",
+        " [get_weather()]",
+        "\n[get_weather()]",
+        "Ordinary prose with [brackets].",
+        "Hello",
+        "]",
+        "get_weather(city='Paris')",
+        "[1, 2] then [f()] end",
+        "Here is an example: [get_weather()]",
+        "<|python_start|>[f()]<|python_end|>",
+        "Before [f(a=[1, 2])] after",
+        "[1, 2]",
+        "[link](url) text",
+        "[mod.func()]",
+        "[ f()]",
+        "[f()] after",
+        "[]",
+        "[f(]",
+        "[f(a={)]",
+        "[f(a=execute())]",
+        "[f(a=1.5)]",
+        "[f(x=1e-2)]",
+        '[f(text="""a" ] b""")]',
+        "[1] footnote",
+        "[link](url)",
+        "[f(a=1)",
+        '[a(x=1), b(y="z")]',
+    ],
+)
+def test_streaming_nonstreaming_parity(text, step):
+    expected = PythonicToolParser().extract_tool_calls(text)
+    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
+    assert content == (expected.content or "")
+    assert calls == [
+        {"name": call["name"], "arguments": call["arguments"]}
+        for call in expected.tool_calls
+    ]
+
+
+@pytest.mark.parametrize(
+    "chunks, expected_calls, expected_content",
+    [
+        (["[f(x=1", "e-2)]"], [("f", {"x": 0.01})], ""),
+        (['[f(text="""a" ] b""")]'], [("f", {"text": 'a" ] b'})], ""),
+        (["[f()]", " after"], [], "[f()] after"),
+        (["[f()] after"], [], "[f()] after"),
+    ],
+)
+def test_review_regressions(chunks, expected_calls, expected_content):
+    content, calls = stream(chunks)
+    assert content == expected_content
+    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == expected_calls
+
+
+@pytest.mark.parametrize("step", [1, 7, 65536, 100000])
+@pytest.mark.parametrize(
+    "value", ["x" * (70 * 1024), "]" * 30000], ids=["70KiB", "brackets"]
+)
+def test_large_calls_match_nonstream_without_repeated_parsing(step, value, monkeypatch):
+    import ast
+
+    text = f"[write_file(content={value!r})]"
+    expected = PythonicToolParser().extract_tool_calls(text)
+    parse = Mock(wraps=ast.parse)
+    monkeypatch.setattr(ast, "parse", parse)
+    start = monotonic()
+    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
+    assert monotonic() - start < 2
+    assert content == ""
+    assert calls == [
+        {"name": c["name"], "arguments": c["arguments"]} for c in expected.tool_calls
+    ]
+    parse.assert_called_once()
+
+
+@pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
+def test_trailing_tool_like_text_stays_content(step):
+    text = "[f()] after [g()]"
+    assert stream([text[i : i + step] for i in range(0, len(text), step)]) == (text, [])
+
+
+def test_conversion_failure_releases_entire_buffer_and_stays_content():
+    text = "[f(x=variable)] [f()]"
+    assert stream(list(text)) == (text, [])
+
+
+def test_empty_initial_delta_does_not_establish_prose_context():
+    assert stream(["", "[f()]", ""]) == ("", [{"name": "f", "arguments": "{}"}])

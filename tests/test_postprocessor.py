@@ -3388,3 +3388,45 @@ def test_finalize_eof_content_precedes_recovered_tool_call():
         ("tool_call", None),
     ]
     assert pp.accumulated_text == "before [ after"
+
+
+@pytest.mark.parametrize("text", ["[mod.func()]", "[ f()]", "[]"])
+def test_pythonic_final_extraction_is_not_limited_by_markup_regex(text, monkeypatch):
+    cfg = _make_cfg(enable_auto_tool_choice=True, tool_call_parser="pythonic")
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    extract = MagicMock(wraps=pp.tool_parser.extract_tool_calls)
+    monkeypatch.setattr(pp.tool_parser, "extract_tool_calls", extract)
+    for char in text:
+        assert not pp.process_chunk(_make_output(char))
+    extract.assert_not_called()
+    events = pp.finalize()
+    extract.assert_called_once_with(text, request=pp.request)
+    assert "".join(e.content or "" for e in events) == text
+    assert not any(e.tool_calls for e in events)
+    assert pp.tool_parser.flush_held_content(text) == ""
+
+
+def test_pythonic_final_extraction_preserves_parser_content_without_releasing_wire(
+    monkeypatch,
+):
+    from rapid_mlx.tool_parsers.abstract_tool_parser import ExtractedToolCallInformation
+
+    pp = StreamingPostProcessor(
+        _make_cfg(enable_auto_tool_choice=True, tool_call_parser="pythonic"),
+        tools_requested=True,
+    )
+    text = "[f()]"
+    result = pp.tool_parser.extract_tool_calls(text)
+    monkeypatch.setattr(
+        pp.tool_parser,
+        "extract_tool_calls",
+        lambda *args, **kwargs: ExtractedToolCallInformation(
+            tools_called=True, tool_calls=result.tool_calls, content="Visible content."
+        ),
+    )
+    assert not pp.process_chunk(_make_output(text))
+    events = pp.finalize()
+    assert "".join(e.content or "" for e in events) == "Visible content."
+    calls = [c for e in events for c in e.tool_calls or []]
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "f"
