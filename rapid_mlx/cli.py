@@ -3119,8 +3119,20 @@ def _ensure_target_model_downloaded(
                 retry_hint="  Run the same command again to continue.",
             )
         except Exception as exc:
+            import errno
+
+            from rapid_mlx._mirror import MirrorOnlyPullError
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
+            if isinstance(exc, MirrorOnlyPullError) or (
+                isinstance(exc, OSError) and exc.errno == errno.ENOSPC
+            ):
+                emit_model_pull_failed(
+                    exc, model_ref=model_name, source=mirror_out.get("source")
+                )
+                spinner.stop()
+                print(f"\n{render_hub_error(exc, model_name)}\n", file=sys.stderr)
+                raise SystemExit(1) from None
             if _is_transient_hub_error(exc):
                 mirror_ok = False
                 print("  Mirror connection interrupted; trying Hugging Face.")
@@ -12651,10 +12663,14 @@ def _pull_repository(
             + (getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)),
         )
     except Exception as exc:
+        import errno
+
         from rapid_mlx._mirror import MirrorOnlyPullError
         from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-        if isinstance(exc, MirrorOnlyPullError):
+        if isinstance(exc, MirrorOnlyPullError) or (
+            isinstance(exc, OSError) and exc.errno == errno.ENOSPC
+        ):
             if emit_lifecycle_event:
                 emit_model_pull_failed(
                     exc, model_ref=repo_id, source=_mirror_out.get("source")
