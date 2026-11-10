@@ -263,14 +263,10 @@ def test_lark_single_call_forces_exactly_one_tag():
     assert "start: (tag_0 | tag_1) tag_end" in lark
     assert "start: (tag_0 | tag_1)+ tag_end" not in lark
     assert "start: (tag_0 | tag_1)* tag_end" not in lark
-    # auto + single_call (parallel_tool_calls=False) -> ZERO-OR-ONE (codex
-    # #558-PR5): auto may still emit NO call, but AT MOST one. Not ``*`` (would
-    # allow ≥2 calls despite the client's parallel cap) and not ``+`` (auto is
-    # never forced to call).
+    # Auto keeps its normal grammar; the response cap runs after parsing.
     auto_single = build_tool_lark(TOOLS, "auto", infos, single_call=True)
-    assert "start: (tag_0 | tag_1)? tag_end" in auto_single
-    assert "start: (tag_0 | tag_1)* tag_end" not in auto_single
-    assert "start: (tag_0 | tag_1)+ tag_end" not in auto_single
+    assert auto_single == build_tool_lark(TOOLS, "auto", infos)
+    assert "start: (tag_0 | tag_1)* tag_end" in auto_single
 
 
 def test_named_choice_narrows_to_single_forced_tag():
@@ -802,12 +798,9 @@ def test_auto_mode_rejects_a_malformed_tool_call(tok, lltok):
 
 
 @_requires_llguidance
-def test_auto_mode_single_call_is_zero_or_one(tok, lltok):
-    # AUTO + parallel_tool_calls=False (single_call=True) -> ZERO-OR-ONE grammar
-    # (``(...)?``): the model may emit NO call, or AT MOST one — never two (codex
-    # #558-PR5). This is the enforcement proof behind the string-level quantifier
-    # test: the ``?`` quantifier must (a) accept zero calls, (b) accept one call,
-    # and (c) REJECT a second call the client's parallel cap forbade.
+def test_auto_mode_single_call_allows_multiple_calls(tok, lltok):
+    # Blocking the second opener can cause generation to degenerate. Auto must
+    # accept the natural multi-call output before the response is capped.
     from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "auto", _HermesStubParser(), single_call=True)
@@ -839,17 +832,10 @@ def test_auto_mode_single_call_is_zero_or_one(tok, lltok):
     )
     assert o_accepting, "auto+single_call: one complete call is not terminal"
 
-    # (c) A SECOND call is REJECTED — the ``?`` quantifier caps at one, and the
-    # trailing ``tag_end`` (a byte-regex ``TAG_TEXT``) cannot match the second
-    # call's ``<tool_call>`` SPECIAL token, so the grammar masks it (this is the
-    # parallel_tool_calls=False cap the old ``*`` auto grammar violated).
     two_calls = one_call + "\n" + one_call
-    t_accepted, t_total, _ = _consume(grammar, lltok, tok, two_calls)
-    assert t_accepted < t_total, (
-        "auto+single_call accepted a SECOND tool call — parallel_tool_calls="
-        "False cap not enforced on the auto path (zero-or-more instead of "
-        "zero-or-one)"
-    )
+    t_accepted, t_total, t_accepting = _consume(grammar, lltok, tok, two_calls)
+    assert t_accepted == t_total
+    assert t_accepting
 
 
 # --------------------------------------------------------------------------

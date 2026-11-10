@@ -178,10 +178,9 @@ class DeepSeekV3ToolParser(ToolParser):
         (``<begin>c1<end><begin>c2<end>``) — a shape this parser's single-envelope
         scanner (``_envelope_bounds`` / ``_iter_block_bodies``) drops after the
         first section. So the grammar is sound ONLY on the at-most-one-call path
-        (``parallel_tool_calls=False`` -> ``single_call=True``:
-        required/named/auto emitting EXACTLY-ONE / ZERO-OR-ONE). When >1 call is
-        possible (``single_call=False``) ``build_tool_grammar`` OPTS OUT via the
-        section-wrapper gate and falls back to free-form-then-parse — where the
+        (required/named with ``single_call=True``). When >1 call is possible
+        (auto or ``single_call=False``), ``build_tool_grammar`` OPTS OUT via
+        the section-wrapper gate and falls back to free-form-then-parse — where the
         unconstrained model emits its canonical one-section-N-calls wire, which
         this parser DOES handle. True multi-call section-wrapper grammar support
         (a builder that repeats only the per-call envelope inside ONE section) is
