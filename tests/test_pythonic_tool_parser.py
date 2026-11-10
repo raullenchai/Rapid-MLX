@@ -3,6 +3,7 @@
 """Reference pythonic parser cases, adapted to Rapid-MLX's dict interface."""
 
 import json
+from time import monotonic
 from unittest.mock import Mock
 
 import pytest
@@ -43,28 +44,26 @@ EXPECTED = [
 def stream(chunks, request=None, parser=None):
     parser = parser or PythonicToolParser()
     text = content = ""
-    calls = {}
+    calls = []
     for chunk in chunks:
         previous, text = text, text + chunk
         delta = parser.extract_tool_calls_streaming(
             previous, text, chunk, request=request
         )
-        if delta is None:
-            continue
-        content += delta.get("content", "")
-        for call in delta.get("tool_calls", []):
-            index = call["index"]
-            fn = call["function"]
-            if index not in calls:
-                assert call["id"].startswith("call_")
-                assert call["type"] == "function"
-                calls[index] = {"name": fn["name"], "arguments": ""}
-            else:
-                assert "name" not in fn
-                assert "id" not in call
-            calls[index]["arguments"] += fn["arguments"]
-    content += parser.flush_held_content(text)
-    return content, list(calls.values())
+        if text.startswith("["):
+            assert delta is None
+        elif delta:
+            content += delta.get("content", "")
+    # The parser deliberately delegates the final decision to its caller.
+    if parser.has_pending_tool_call(text):
+        result = parser.extract_tool_calls(text, request=request)
+        calls = [
+            {"name": c["name"], "arguments": c["arguments"]} for c in result.tool_calls
+        ]
+        content += result.content or ""
+    else:
+        content += parser.flush_held_content(text)
+    return content, calls
 
 
 @pytest.mark.parametrize("body", CASES + [", ".join(CASES)])
@@ -127,6 +126,10 @@ def test_nonstream_content_unchanged(text):
         "[f(a={)]",
         "[f(a=1)] + [1]",
         "[1, 2]",
+        "[link](url) text",
+        "[mod.func()]",
+        "[ f()]",
+        "[f()] after",
         "[]",
         "[f(a=variable)]",
         "[f(a=run())]",
@@ -208,21 +211,24 @@ def test_literal_extensions_and_callable_boundaries():
         _ast_callable_dotted_name(ast.parse("f().x", mode="eval").body)
 
 
-def test_calls_wait_for_complete_list():
+def test_calls_wait_for_end_of_stream(monkeypatch):
     parser = PythonicToolParser()
+    extract = Mock(wraps=parser.extract_tool_calls)
+    monkeypatch.setattr(parser, "extract_tool_calls", extract)
     prefix = "[a(x='hello'), b(y=1"
-    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
     suffix = "e-2)]"
-    last = parser.extract_tool_calls_streaming(prefix, prefix + suffix, suffix)
-    calls = last["tool_calls"]
-    assert [c["index"] for c in calls] == [0, 1]
-    assert len({c["id"] for c in calls}) == 2
-    assert all(c["type"] == "function" for c in calls)
-    assert [c["function"] for c in calls] == [
-        {"name": "a", "arguments": '{"x": "hello"}'},
-        {"name": "b", "arguments": '{"y": 0.01}'},
-    ]
-    assert parser.flush_held_content(prefix + suffix) == ""
+    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
+    assert parser.extract_tool_calls_streaming(prefix, prefix + suffix, suffix) is None
+    extract.assert_not_called()
+    parser.reset()
+    assert stream([prefix, suffix], parser=parser) == (
+        "",
+        [
+            {"name": "a", "arguments": '{"x": "hello"}'},
+            {"name": "b", "arguments": '{"y": 0.01}'},
+        ],
+    )
+    extract.assert_called_once()
 
 
 def test_flush_and_reset_clear_buffer():
@@ -270,6 +276,10 @@ def test_undeclared_streaming_calls_are_dropped():
         "<|python_start|>[f()]<|python_end|>",
         "Before [f(a=[1, 2])] after",
         "[1, 2]",
+        "[link](url) text",
+        "[mod.func()]",
+        "[ f()]",
+        "[f()] after",
         "[]",
         "[f(]",
         "[f(a={)]",
@@ -298,8 +308,8 @@ def test_streaming_nonstreaming_parity(text, step):
     [
         (["[f(x=1", "e-2)]"], [("f", {"x": 0.01})], ""),
         (['[f(text="""a" ] b""")]'], [("f", {"text": 'a" ] b'})], ""),
-        (["[f()]", " after"], [("f", {})], " after"),
-        (["[f()] after"], [("f", {})], " after"),
+        (["[f()]", " after"], [], "[f()] after"),
+        (["[f()] after"], [], "[f()] after"),
     ],
 )
 def test_review_regressions(chunks, expected_calls, expected_content):
@@ -308,57 +318,31 @@ def test_review_regressions(chunks, expected_calls, expected_content):
     assert [(c["name"], json.loads(c["arguments"])) for c in calls] == expected_calls
 
 
-def test_closing_brackets_are_tried_once(monkeypatch):
+@pytest.mark.parametrize("step", [1, 7, 65536, 100000])
+@pytest.mark.parametrize(
+    "value", ["x" * (70 * 1024), "]" * 30000], ids=["70KiB", "brackets"]
+)
+def test_large_calls_match_nonstream_without_repeated_parsing(step, value, monkeypatch):
     import ast
 
+    text = f"[write_file(content={value!r})]"
+    expected = PythonicToolParser().extract_tool_calls(text)
     parse = Mock(wraps=ast.parse)
     monkeypatch.setattr(ast, "parse", parse)
-    parser = PythonicToolParser()
-    prefix = "[f(x=[1]"
-    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
-    assert parse.call_count == 1
-    middle = ", y="
-    assert parser.extract_tool_calls_streaming(prefix, prefix + middle, middle) is None
-    assert parse.call_count == 1
-    final = "2)]"
-    delta = parser.extract_tool_calls_streaming(
-        prefix + middle, prefix + middle + final, final
-    )
-    assert parse.call_count == 2
-    assert json.loads(delta["tool_calls"][0]["function"]["arguments"]) == {
-        "x": [1],
-        "y": 2,
-    }
-
-
-@pytest.mark.parametrize("character", ["x", "🧪"])
-def test_buffer_byte_limit_releases_once_and_stays_content(character):
-    parser = PythonicToolParser()
-    prefix = "[f(text='" + character * (
-        (64 * 1024 - 9) // len(character.encode("utf-8"))
-    )
-    assert len(prefix.encode("utf-8")) <= 64 * 1024
-    assert parser.extract_tool_calls_streaming("", prefix, prefix) is None
-    extra = "xxxx"
-    assert len((prefix + extra).encode("utf-8")) > 64 * 1024
-    assert parser.extract_tool_calls_streaming(prefix, prefix + extra, extra) == {
-        "content": prefix + extra
-    }
-    assert parser.flush_held_content(prefix + extra) == ""
-    suffix = "')] [f()]"
-    assert parser.extract_tool_calls_streaming(
-        prefix + extra, prefix + extra + suffix, suffix
-    ) == {"content": suffix}
-    parser.reset()
-    assert stream(["[f()]"], parser=parser)[1] == [{"name": "f", "arguments": "{}"}]
+    start = monotonic()
+    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
+    assert monotonic() - start < 2
+    assert content == ""
+    assert calls == [
+        {"name": c["name"], "arguments": c["arguments"]} for c in expected.tool_calls
+    ]
+    parse.assert_called_once()
 
 
 @pytest.mark.parametrize("step", [1, 2, 3, 7, 10000])
 def test_trailing_tool_like_text_stays_content(step):
     text = "[f()] after [g()]"
-    content, calls = stream([text[i : i + step] for i in range(0, len(text), step)])
-    assert content == " after [g()]"
-    assert calls == [{"name": "f", "arguments": "{}"}]
+    assert stream([text[i : i + step] for i in range(0, len(text), step)]) == (text, [])
 
 
 def test_conversion_failure_releases_entire_buffer_and_stays_content():

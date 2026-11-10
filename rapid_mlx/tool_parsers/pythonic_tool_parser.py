@@ -193,6 +193,9 @@ class PythonicToolParser(ToolParser):
         re.DOTALL,
     )
 
+    # The complete response is authoritative; do not recover other wire formats
+    # or release held input at a streaming size threshold.
+    STREAMING_REQUIRES_FINAL_EXTRACTION = True
     SUPPORTS_NATIVE_TOOL_FORMAT = True
     EXPECTED_WIRE_FORMATS = ("pythonic_bracket",)
 
@@ -201,18 +204,12 @@ class PythonicToolParser(ToolParser):
         self.current_tool_id = 0
         self.streamed_args_for_tool: list[str] = []
         self._buffer: str = ""
-        self._scan_offset = 0
-        self._buffer_bytes = 0
-        self._content_mode = False
 
     def reset(self) -> None:
         super().reset()
         self.current_tool_id = 0
         self.streamed_args_for_tool = []
         self._buffer = ""
-        self._scan_offset = 0
-        self._buffer_bytes = 0
-        self._content_mode = False
 
     def _declared_calls(self, calls, request):
         # Match the existing parsers' request allowlist and drop accounting.
@@ -277,13 +274,15 @@ class PythonicToolParser(ToolParser):
                 tools_called=False, tool_calls=[], content=model_output
             )
 
+    def has_pending_tool_call(self, text: str) -> bool:
+        # Include every bracket-led shape, including incomplete or invalid lists.
+        return text.startswith("[")
+
     def flush_held_content(self, full_text: str) -> str:
-        """Release an incomplete or invalid list as ordinary content."""
+        """Release rejected/incomplete input once; allowlisted drops stay hidden."""
         held = self._buffer
         self._buffer = ""
-        self._buffer_bytes = 0
-        self._scan_offset = 0
-        return held
+        return "" if self._undeclared_dropped else held
 
     def extract_tool_calls_streaming(
         self,
@@ -295,71 +294,12 @@ class PythonicToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        if self._content_mode or not current_text.startswith("["):
-            self._content_mode = bool(current_text)
+        if not current_text.startswith("["):
             return {"content": delta_text}
 
-        self._buffer += delta_text
-        self._buffer_bytes += len(delta_text.encode("utf-8"))
-        while True:
-            pos = self._buffer.find("]", self._scan_offset)
-            if pos < 0:
-                self._scan_offset = len(self._buffer)
-                break
-            self._scan_offset = pos + 1
-            try:
-                module = ast.parse(self._buffer[: pos + 1])
-            except (SyntaxError, ValueError, RecursionError):
-                # A bracket inside a string or nested value is not a boundary.
-                continue
-            parsed = (
-                module.body[0].value
-                if len(module.body) == 1 and isinstance(module.body[0], ast.Expr)
-                else None
-            )
-            try:
-                if not (
-                    isinstance(parsed, ast.List)
-                    and parsed.elts
-                    and all(isinstance(e, ast.Call) for e in parsed.elts)
-                ):
-                    # Empty and non-call lists remain prose, as in non-streaming.
-                    raise UnexpectedAstError("Tool output must be a list of calls")
-                calls = self._declared_calls(
-                    [handle_single_tool(cast(ast.Call, e)) for e in parsed.elts],
-                    request,
-                )
-            except Exception:
-                self._content_mode = True
-                return {"content": self.flush_held_content(current_text)}
-
-            trailing = self._buffer[pos + 1 :]
-            self.flush_held_content(current_text)
-            self._content_mode = True
-            self.prev_tool_call_arr = calls
-            self.current_tool_index = len(calls)
-            self.streamed_args_for_tool = [call["arguments"] for call in calls]
-            result: dict[str, Any] = {"preserve_post_tool_content": True}
-            if calls:
-                result["tool_calls"] = [
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "index": index,
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call["arguments"],
-                        },
-                    }
-                    for index, call in enumerate(calls)
-                ]
-            if trailing:
-                result["content"] = trailing
-            return result
-
-        if self._buffer_bytes > 64 * 1024:
-            self._content_mode = True
-            return {"content": self.flush_held_content(current_text)}
+        # Keep a reference to the caller's accumulated text. No concatenation,
+        # scanning, or parsing per delta: finalize extracts the full response.
+        self._buffer = current_text
         return None
 
 

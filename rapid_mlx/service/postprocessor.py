@@ -4057,6 +4057,8 @@ class StreamingPostProcessor:
         # the two modes was this gate. See knowledge/guided_generation_gaps_2026-05-20.md
         # "Bug A — Streaming tool-parser coverage gap is family-wide".
         #
+        # Parsers that defer all extraction to EOF also supply their pending
+        # check, so this pre-check cannot exclude their supported input shapes.
         # Cheap pre-check: every known tool-call format carries at least
         # one structural marker — ``<`` (XML wrappers: ``<tool_call>``,
         # ``<function=>``, ``<|tool_call>``), ``{`` (bare JSON, parameter
@@ -4070,9 +4072,17 @@ class StreamingPostProcessor:
         # that didn't actually call a tool).
         from ..tool_parsers.lfm_tool_parser import LFM_CALL_START
 
+        _deferred_tool_extraction = (
+            getattr(self.tool_parser, "STREAMING_REQUIRES_FINAL_EXTRACTION", False)
+            is True
+        )
         _fallback_text = self.tool_accumulated_text or self.accumulated_text
         _has_plausible_markup = bool(_fallback_text) and (
-            "<" in _fallback_text
+            (
+                self.tool_parser
+                and self.tool_parser.has_pending_tool_call(_fallback_text)
+            )
+            or "<" in _fallback_text
             or "{" in _fallback_text
             or "[Calling" in _fallback_text
             or LFM_CALL_START.search(_fallback_text) is not None
@@ -4153,11 +4163,17 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
-            elif not (
+                    if _deferred_tool_extraction and result.content:
+                        events.append(
+                            StreamEvent(type="content", content=result.content)
+                        )
+            elif not _deferred_tool_extraction and not (
                 getattr(self.tool_parser, "_undeclared_dropped", 0)
                 or getattr(self.tool_parser, "_ambiguous_parameter_rejected", False)
                 is True
             ):
+                # Deferred extraction already made the authoritative decision
+                # for the complete response. Other parsers may recover formats.
                 # An explicit rejection is authoritative. A cross-format scan
                 # could otherwise execute example calls inside rejected values.
                 # Cross-format fallback. The configured streaming parser is bound to
@@ -4512,10 +4528,14 @@ class StreamingPostProcessor:
             # withheld more than the budget WITHOUT any tool call reaching the
             # wire, give up on tool detection for this turn and release the
             # buffered text as content so the stream makes visible progress.
+            # A parser that intentionally defers extraction until EOF must keep
+            # its input regardless of size; it already holds the full text.
             # Only the withheld (``None``) deltas are buffered here, so nothing
             # already emitted as content is re-sent; the ``emitted_to_wire``
             # guard leaves genuine (incrementally-streamed) tool calls alone.
-            if self._tool_calls_emitted_to_wire == 0:
+            if self._tool_calls_emitted_to_wire == 0 and not getattr(
+                self.tool_parser, "STREAMING_REQUIRES_FINAL_EXTRACTION", False
+            ):
                 self._tool_suppressed_buffer += content
                 if len(self._tool_suppressed_buffer) > _MAX_TOOL_SUPPRESSION_BYTES:
                     released = self._tool_suppressed_buffer
