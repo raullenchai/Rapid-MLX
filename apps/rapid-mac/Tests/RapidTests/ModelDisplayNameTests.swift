@@ -13,6 +13,33 @@ struct ModelDisplayNameTests {
         #expect(ModelPickerBar.aliasButtonTitle(alias: repo, bucket: .midOrLarger).hasPrefix(repo))
     }
 
+    @MainActor
+    @Test func knownFamilyRepositoryDoesNotCollideWithCatalogAlias() {
+        // #5726: an unquantized upstream repo must not share the catalog
+        // 4-bit alias's friendly title in the composer model menu.
+        let repo = "Qwen/Qwen3.5-4B"
+        let aliases = [repo, "qwen3.5-4b-4bit", "qwen3.5-4b-8bit"]
+        #expect(ModelDisplayName.name(for: repo) == repo)
+        let titles = aliases.map {
+            ModelPickerBar.aliasButtonTitle(alias: $0, bucket: .midOrLarger, among: aliases)
+        }
+        #expect(Set(titles).count == titles.count)
+        #expect(ModelDisplayName.name(for: "qwen3.5-4b-4bit", among: aliases)
+            == ModelDisplayName.name(for: "qwen3.5-4b-4bit"))
+    }
+
+    @Test func collidingFriendlyNamesIncludeTheAlias() {
+        let pair = ["qwen3.5-4b", "qwen3.5-4b-4bit"]
+        // Precondition: two distinct aliases share one friendly name.
+        #expect(ModelDisplayName.name(for: pair[0]) == ModelDisplayName.name(for: pair[1]))
+        let titles = pair.map { ModelDisplayName.name(for: $0, among: pair) }
+        #expect(titles[0] != titles[1])
+        for (alias, title) in zip(pair, titles) {
+            #expect(title == ModelDisplayName.name(for: alias) + " · " + alias)
+        }
+        #expect(ModelDisplayName.name(for: pair[1], among: [pair[1]]) == ModelDisplayName.name(for: pair[1]))
+    }
+
     @Test func compactCatalogNamesAreUnchanged() {
         for alias in ["qwen3.5-4b-4bit", "lfm2.5-1b-4bit", "flux-schnell", "whisper-large-v3-turbo", "Custom title"] {
             #expect(ModelDisplayName.compactName(for: alias) == ModelDisplayName.name(for: alias))

@@ -53,6 +53,14 @@ extension ModelDisplayName {
         "wan2.2-ti2v-5b-q8": "Wan 2.2 · TI2V 5B · 8-bit"
     ]
 
+    /// Friendly names can still collide across variants or custom aliases.
+    /// Include the full identity for every member of a collision in a menu.
+    nonisolated static func name(for alias: String, among aliases: [String]) -> String {
+        let display = name(for: alias)
+        guard aliases.contains(where: { $0 != alias && name(for: $0) == display }) else { return display }
+        return display + " · " + alias
+    }
+
     nonisolated static func name(for alias: String) -> String {
         if let choice = QuickstartCoordinator.onboardingChoices.first(where: { $0.alias == alias }) {
             return choice.displayName
@@ -61,6 +69,10 @@ extension ModelDisplayName {
         if let name = videoNames[alias.lowercased()] { return name }
         let speech = AudioViewModel.transcriptionDetails(alias: alias, family: nil).displayName
         if speech != alias { return speech }
+        // A raw Hugging Face repo outside the catalog keeps its owner/repo
+        // identity: the name alone does not say whether it is quantized, so a
+        // friendly family name could collide with a catalog alias.
+        if repositoryName(for: alias) != nil { return alias }
         let family = ModelInfoCatalog.familyAndContext(for: alias).family
         guard family != "Unknown" else {
             // The brand layer already names these families. Keep their existing

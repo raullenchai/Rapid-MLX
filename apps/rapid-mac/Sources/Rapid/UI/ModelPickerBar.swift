@@ -1209,7 +1209,7 @@ struct ModelPickerBar: View {
         let bucket = ModelPickerVisibility.qualityBucket(for: entry.alias)
         let footprint = ModelSizing.estimate(alias: entry.alias)
         let row = ModelPickerVisibility.rowPresentation(
-            title: ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
+            title: ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket, among: catalog.map(\.alias))
                     + (notFit ? String(localized: " · needs ~\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : ""),
             accessibilityLabel: ModelPickerBar.aliasRowAccessibilityLabel(
                 alias: entry.alias,
@@ -1312,7 +1312,7 @@ struct ModelPickerBar: View {
     @ViewBuilder
     private func entryLabel(_ entry: ModelEntry, bucket: ModelPickerVisibility.QualityBucket) -> some View {
         Label(
-            ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket),
+            ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket, among: catalog.map(\.alias)),
             systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
         )
     }
@@ -1339,8 +1339,8 @@ struct ModelPickerBar: View {
     /// trade-off the quality sticker made in cycle-10). Order is
     /// quality → tools so the size cue stays adjacent to the alias
     /// name; both badges share the leading " · " separator.
-    static func aliasButtonTitle(alias: String, bucket: ModelPickerVisibility.QualityBucket) -> String {
-        var title = ModelDisplayName.name(for: alias)
+    static func aliasButtonTitle(alias: String, bucket: ModelPickerVisibility.QualityBucket, among aliases: [String] = []) -> String {
+        var title = ModelDisplayName.name(for: alias, among: aliases)
         if let suffix = ModelPickerVisibility.qualityStickerSuffix(for: bucket) {
             title += " \(suffix)"
         }
