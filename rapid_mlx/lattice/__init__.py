@@ -120,6 +120,42 @@ def _knob(
 
 
 KNOBS = {
+    "affine8_attention_min_kv": _knob(
+        "affine8_attention_min_kv",
+        lambda c: 1 <= c.width <= 8,
+        default=0,
+        validator=int_range(0),
+    ),
+    "qsa_stage1_min_query": _knob(
+        "qsa_stage1_min_query",
+        lambda c: True,
+        default=0,
+        validator=int_range(0),
+    ),
+    "qsa_stage1_min_kv": _knob(
+        "qsa_stage1_min_kv",
+        lambda c: True,
+        default=0,
+        validator=int_range(0),
+    ),
+    "qsa_indexed_splitk_min_kv": _knob(
+        "qsa_indexed_splitk_min_kv",
+        lambda c: c.width in {1, 3},
+        default=0,
+        validator=int_range(0),
+    ),
+    "qsa_block_sparse_min_query": _knob(
+        "qsa_block_sparse_min_query",
+        lambda c: True,
+        default=0,
+        validator=int_range(0),
+    ),
+    "qsa_block_sparse_min_kv": _knob(
+        "qsa_block_sparse_min_kv",
+        lambda c: True,
+        default=0,
+        validator=int_range(0),
+    ),
     "qwen35_eager_layer_dispatch": _knob(
         "qwen35_eager_layer_dispatch",
         lambda c: c.model.family == "qwen3_5_decoder_layer",

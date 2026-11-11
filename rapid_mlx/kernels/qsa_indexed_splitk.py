@@ -17,6 +17,7 @@ import mlx.core as mx
 
 from .._env import env_truthy
 from ..lattice import resolve, runtime_context
+from ..lattice.attention import AttentionThresholds
 from ..lattice.capabilities import (
     QSA_ARCHITECTURES,
     QSA_MLX_VERSIONS,
@@ -25,13 +26,13 @@ from ..lattice.capabilities import (
 
 logger = logging.getLogger(__name__)
 
+_thresholds = AttentionThresholds(lambda: mx)
+
 ENABLE_ENV = "RAPID_MLX_QSA_INDEXED_SPLITK"
 QUALIFIED_MLX_VERSIONS = QSA_MLX_VERSIONS
 QUALIFIED_METAL_ARCHITECTURES = QSA_ARCHITECTURES["qsa_indexed_splitk"]
 MAX_QUERY_LENGTH = 3
 QUALIFIED_QUERY_LENGTHS = frozenset({1, 3})
-MIN_KV_LENGTH_VERIFY = 16_384
-MIN_KV_LENGTH_DECODE = 65_536
 QUALIFIED_QUERY_HEADS = 24
 QUALIFIED_KV_HEADS = 2
 QUALIFIED_HEAD_DIM = 256
@@ -77,7 +78,7 @@ def indexed_splitk_decline_reason(
         return "batch size is not qualified"
     if query_length not in QUALIFIED_QUERY_LENGTHS:
         return "query length is not qualified"
-    crossover = MIN_KV_LENGTH_DECODE if query_length == 1 else MIN_KV_LENGTH_VERIFY
+    crossover = _thresholds.minimum("qsa_indexed_splitk_min_kv", query_length)
     if physical_kv_length < crossover:
         return "physical KV below crossover"
     installed_version = _mlx_version() if mlx_version is None else mlx_version
