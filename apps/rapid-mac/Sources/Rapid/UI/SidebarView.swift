@@ -133,9 +133,6 @@ struct SidebarView: View {
     /// Computer Use is a deliberately opt-in preview. Enabling discoverability
     /// does not start observation, request permissions, or load a model.
     var computerUseEnabled: Bool = false
-    /// The Benchmark tab is an opt-in experimental surface. Enabling
-    /// discoverability does not start the server or run any measurement.
-    var benchmarkEnabled: Bool = false
     /// Compute sharing is an explicit experimental opt-in. Showing the row is
     /// inert; the pool is joined only from its primary action.
     var shareComputeEnabled: Bool = false
@@ -312,6 +309,13 @@ struct SidebarView: View {
                 action: { selection = .launch }
             )
             .accessibilityIdentifier("Sidebar.Launch")
+            row(
+                title: String(localized: "Benchmark"),
+                systemImage: "gauge.with.dots.needle.50percent",
+                isSelected: selection == .benchmark,
+                action: { selection = .benchmark }
+            )
+            .accessibilityIdentifier("Sidebar.CommunityBenchmark")
 
             if computerUseEnabled {
                 if let cuaViewModel {
@@ -338,7 +342,7 @@ struct SidebarView: View {
             // the everyday tabs (rather than interleaved with them), so the
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
-            if localSearchEnabled || videoGenerationEnabled || benchmarkEnabled || shareComputeEnabled {
+            if localSearchEnabled || videoGenerationEnabled || shareComputeEnabled {
                 SectionHeader(String(localized: "Experimental"))
                     .padding(.horizontal, RapidTheme.Space.sm)
                     .padding(.top, RapidTheme.Space.lg)
@@ -362,15 +366,6 @@ struct SidebarView: View {
                     )
                     .accessibilityIdentifier("Sidebar.Search")
                     .keyboardShortcut("f", modifiers: [.command, .shift])
-                }
-                if benchmarkEnabled {
-                    row(
-                        title: String(localized: "Benchmark"),
-                        systemImage: "gauge.with.dots.needle.50percent",
-                        isSelected: selection == .benchmark,
-                        action: { selection = .benchmark }
-                    )
-                    .accessibilityIdentifier("Sidebar.CommunityBenchmark")
                 }
                 if shareComputeEnabled {
                     row(
@@ -667,6 +662,13 @@ struct SidebarView: View {
                 action: { selection = .launch }
             )
             .accessibilityIdentifier("Sidebar.Launch")
+            compactItem(
+                title: String(localized: "Benchmark"),
+                systemImage: "gauge.with.dots.needle.50percent",
+                isSelected: selection == .benchmark,
+                action: { selection = .benchmark }
+            )
+            .accessibilityIdentifier("Sidebar.CommunityBenchmark")
 
             if videoGenerationEnabled {
                 compactItem(
@@ -695,15 +697,6 @@ struct SidebarView: View {
                     action: { selection = .computerUse }
                 )
                 .accessibilityIdentifier("Sidebar.ComputerUse")
-            }
-            if benchmarkEnabled {
-                compactItem(
-                    title: String(localized: "Benchmark"),
-                    systemImage: "gauge.with.dots.needle.50percent",
-                    isSelected: selection == .benchmark,
-                    action: { selection = .benchmark }
-                )
-                .accessibilityIdentifier("Sidebar.CommunityBenchmark")
             }
             if shareComputeEnabled {
                 compactItem(
