@@ -70,7 +70,15 @@ def memory_policy() -> MemoryPolicy:
             field.name: resolve(field.name, context).value
             for field in fields(MemoryPolicy)
         }
-        return MemoryPolicy(**values)
+        policy = MemoryPolicy(**values)
+        if policy.metal_cache_floor_bytes > policy.metal_cache_cap_bytes:
+            # Each knob validates alone; reject a contradictory pair as a whole
+            # so a lowered cap is never silently overridden by the floor.
+            raise ValueError(
+                "metal_cache_floor_bytes exceeds metal_cache_cap_bytes "
+                f"({policy.metal_cache_floor_bytes} > {policy.metal_cache_cap_bytes})"
+            )
+        return policy
     except Exception as exc:
         logger.debug("Lattice memory policy resolution failed; using defaults: %s", exc)
         return MemoryPolicy()

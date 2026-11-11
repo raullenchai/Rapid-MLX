@@ -206,3 +206,24 @@ def test_schema_domains(name):
             ).value
             == LEGACY[name]
         )
+
+
+def test_cap_below_default_floor_is_rejected(monkeypatch, caplog):
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCHMARK_KNOBS", json.dumps({"metal_cache_cap_bytes": 1024**3})
+    )
+    with caplog.at_level(logging.DEBUG, logger=memory.__name__):
+        policy = memory.memory_policy()
+    assert policy == memory.MemoryPolicy()
+    assert "exceeds metal_cache_cap_bytes" in caplog.text
+
+
+def test_consistent_lowered_cap_and_floor_apply(monkeypatch):
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCHMARK_KNOBS",
+        json.dumps(
+            {"metal_cache_cap_bytes": 1024**3, "metal_cache_floor_bytes": 512 * 1024**2}
+        ),
+    )
+    policy = memory.memory_policy()
+    assert policy.metal_cache_limit(256 * 1024**3) == 1024**3
