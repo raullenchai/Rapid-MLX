@@ -49,8 +49,8 @@ def test_projection_enrollment_retains_split_without_replacing_call(
     monkeypatch.setattr(fusion, "_proj_modules", lambda layer: parts)
     arrays = tuple(np.ones((8, 2)) for _ in range(3))
     monkeypatch.setattr(fusion, "_concat_params", lambda parts: arrays)
-    monkeypatch.setattr(fusion.mx, "eval", lambda *args: None, raising=False)
-    monkeypatch.setattr(fusion.mx, "clear_cache", lambda: None, raising=False)
+    monkeypatch.setitem(vars(fusion.mx), "eval", lambda *args: None)
+    monkeypatch.setitem(vars(fusion.mx), "clear_cache", lambda: None)
     patch = Mock()
     probe = Mock(return_value=True)
     monkeypatch.setattr(fusion, "_ensure_call_patch", patch)
@@ -180,8 +180,10 @@ def test_rollback_body_preserves_two_row_tuple_and_wide_boundaries(
         ("fast", SimpleNamespace(rms_norm=lambda x, *args: x)),
         ("metal", SimpleNamespace(is_available=lambda: True)),
     ):
-        monkeypatch.setattr(mx, name, value, raising=False)
-    monkeypatch.setattr(nn, "silu", lambda x: x, raising=False)
+        # Patch the namespace dict: on the headless MagicMock stub, undoing a
+        # setattr of an auto-created child deletes it for later tests.
+        monkeypatch.setitem(vars(mx), name, value)
+    monkeypatch.setitem(vars(nn), "silu", lambda x: x)
     calls = []
 
     def update(q, k, v, a, b, a_log, dt_bias, state, mask, **kwargs):

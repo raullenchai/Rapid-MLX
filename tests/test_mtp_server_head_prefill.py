@@ -707,3 +707,22 @@ def test_profile_alignment_matches_cold_prefix_snapshot_calls(monkeypatch):
     right(tokens[:, -1:], cache=[])
     assert cached.rows == uncached.rows
     assert np.array_equal(left.hidden, right.hidden)
+
+
+def test_prefill_alignment_requires_a_shared_cache(monkeypatch):
+    from rapid_mlx.tuning import mtp as policy
+
+    monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
+    seen = []
+
+    class RecordingModel(Model):
+        def __call__(self, inputs, cache=None, return_hidden=False):
+            seen.append(inputs.shape[1])
+            return super().__call__(inputs, cache, return_hidden)
+
+    mx = SimpleNamespace(concatenate=np.concatenate, eval=lambda *a: None)
+    capture = module.HeadPrefillCapture(RecordingModel(), mx, lambda c: None)
+    # Without a cache, a trailing chunk would lose the leading chunk's state.
+    logits = capture(np.arange(40)[None])
+    assert seen == [40]
+    assert np.array_equal(logits, np.arange(40)[None])

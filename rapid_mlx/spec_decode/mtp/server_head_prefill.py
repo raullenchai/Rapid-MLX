@@ -24,7 +24,8 @@ class HeadPrefillCapture:
         rows = inputs.shape[1]
         block = self.prefill_block_size
         boundary = rows // block * block if block else rows
-        if 0 < boundary < rows:
+        # Segmenting needs a shared cache to carry state across both forwards.
+        if cache is not None and 0 < boundary < rows:
             # Match the measured prefix-snapshot boundary before capturing head
             # history. Target and head arithmetic both depend on forward width.
             first = self(inputs[:, :boundary], cache=cache)

@@ -135,7 +135,7 @@ def test_no_head_and_zero_cap_avoid_hardware_probe(monkeypatch):
     import mlx.core as mx
 
     probe = Mock(side_effect=AssertionError("unexpected hardware probe"))
-    monkeypatch.setattr(mx, "device_info", probe, raising=False)
+    monkeypatch.setitem(vars(mx), "device_info", probe)
     assert policy.forward_costs(object(), 1) == ()
     assert policy.forward_costs(model(), 0) == ()
     probe.assert_not_called()
@@ -202,11 +202,10 @@ def test_overlay_cost_curve_and_unknown_cell(monkeypatch):
 def test_real_adapter_qualifies_installed_experts(monkeypatch):
     import mlx.core as mx
 
-    monkeypatch.setattr(
-        mx,
+    monkeypatch.setitem(
+        vars(mx),
         "device_info",
         lambda: {"device_name": "Apple M3 Ultra", "memory_size": 256 * 2**30},
-        raising=False,
     )
     fake = model()
     fake.args = SimpleNamespace(
