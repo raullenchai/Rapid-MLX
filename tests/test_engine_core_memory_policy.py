@@ -79,3 +79,53 @@ def test_engine_memory_setup(override):
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_missing_device_info_uses_fallback():
+    # An MLX build without device_info must keep the legacy 200 GiB fallback
+    # instead of aborting engine-loop setup.
+    script = """
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from tests.headless_mlx._headless_mlx import install_headless_mlx_import_stubs
+        with patch("importlib.util.find_spec", return_value=None):
+            install_headless_mlx_import_stubs()
+
+        from rapid_mlx import engine_core, lattice
+        from rapid_mlx.lattice import defaults, memory
+
+        thresholds = []
+        policy = memory.MemoryPolicy()
+
+        class ObservedPolicy:
+            memory_check_interval = policy.memory_check_interval
+
+            def pressure_threshold(self, *args):
+                value = policy.pressure_threshold(*args)
+                thresholds.append(value)
+                return value
+
+        if hasattr(engine_core.mx, "device_info"):
+            delattr(engine_core.mx, "device_info")
+        assert not hasattr(engine_core.mx, "device_info")
+        with patch.object(lattice, "overlay_profile", return_value=defaults.Profile()), \
+             patch.object(engine_core, "memory_policy", return_value=ObservedPolicy()):
+            engine = SimpleNamespace(
+                _mlx_executor=None, _idle_event=None, _running=False,
+                config=SimpleNamespace(step_interval=0.01, stream_interval=1,
+                                       gpu_memory_utilization=0.5))
+            asyncio.run(engine_core.EngineCore._engine_loop(engine))
+        assert thresholds == [200 * 1024**3], thresholds
+    """
+    env = dict(os.environ)
+    env.pop("RAPID_MLX_BENCHMARK_KNOBS", None)
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

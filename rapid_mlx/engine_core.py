@@ -795,7 +795,7 @@ class EngineCore:
         _gpu_mem_util = self.config.gpu_memory_utilization
         _memory_policy = memory_policy()
         _memory_pressure_threshold = _memory_policy.pressure_threshold(
-            _gpu_mem_util, mx.device_info
+            _gpu_mem_util, lambda: mx.device_info()
         )
         # Check every 16 steps (was 64). Sustained-load Metal errors
         # correlate with creeping memory pressure; catching it 4× sooner
