@@ -201,26 +201,6 @@ KNOBS = {
         validator=int_range(1, 4),
         candidates=(1, 2, 3, 4),
     ),
-    "dense_decode_fusion": _knob(
-        "dense_decode_fusion",
-        lambda c: c.model.family == "dense_decode_fusion_install" and c.mode == "plain",
-    ),
-    "qwen35_affine4": _knob(
-        "qwen35_affine4",
-        lambda c: c.model.family == "qwen35_affine4_install",
-    ),
-    "qwen35_moe_router": _knob(
-        "qwen35_moe_router",
-        lambda c: c.model.family == "qwen35_moe_router_install",
-    ),
-    "moe_decode_fusion": _knob(
-        "moe_decode_fusion",
-        lambda c: c.model.family == "moe_decode_fusion_install",
-    ),
-    "moe_gate_up_fusion": _knob(
-        "moe_gate_up_fusion",
-        lambda c: c.model.family == "moe_gate_up_fusion_install",
-    ),
     "qwen35_affine4_bank_views": _knob(
         "qwen35_affine4_bank_views",
         lambda c: _expert(c) and c.width == 1,

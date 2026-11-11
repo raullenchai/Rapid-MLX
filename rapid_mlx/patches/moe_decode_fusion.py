@@ -34,7 +34,6 @@ from __future__ import annotations
 from functools import cache, lru_cache
 
 from .._env import env_falsey
-from ..lattice.fusion import install_enabled
 
 _LOGITS = r"""
     uint lane = thread_index_in_simdgroup;
@@ -287,8 +286,6 @@ def install_moe_decode_fusion(model) -> int:
     except ImportError:
         return 0
 
-    if not install_enabled("moe_decode_fusion", mx, route="moe_decode_fusion_install"):
-        return 0
     if not mx.metal.is_available():
         return 0
     named_modules = getattr(model, "named_modules", None)

@@ -18,7 +18,6 @@ import mlx.core as mx
 
 from .._env import env_falsey
 from ..lattice import QWEN35_AFFINE4, ModelProfile, enabled, resolve, runtime_context
-from ..lattice.fusion import install_enabled
 
 logger = logging.getLogger(__name__)
 _GATE = None
@@ -393,8 +392,6 @@ def install_qwen35_affine4(model):
     weights or request state. Wider verification retains full-bank bindings.
     """
     if env_falsey("RAPID_MLX_QWEN35_AFFINE4") or not mx.metal.is_available():
-        return 0
-    if not install_enabled("qwen35_affine4", mx, route="qwen35_affine4_install"):
         return 0
     named = getattr(model, "named_modules", None)
     if not callable(named):
