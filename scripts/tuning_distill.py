@@ -20,12 +20,15 @@ from rapid_mlx.tuning.profiles import runtime_context
 
 def cell_key(run: dict) -> str:
     ctx = run["tuning"]["context"]
-    primary = [c for c in run["model"]["components"] if c["role"] == "primary"]
-    language = {
-        key: value
-        for key, value in run["execution"]["task"]["language"].items()
-        if key != "speculative_decoding"
-    }
+    language = dict(run["execution"]["task"]["language"])
+    # MTP depth is a tuning knob; method, assistant source and checkpoint
+    # identity are fixed facts that must agree across the paired arms.
+    if ctx["mode"] == "mtp":
+        language["speculative_decoding"] = {
+            key: value
+            for key, value in language["speculative_decoding"].items()
+            if key != "max_draft_tokens"
+        }
     return json.dumps(
         [
             ctx["hardware"],
@@ -34,7 +37,7 @@ def cell_key(run: dict) -> str:
             ctx["macos"],
             ctx["profiles"],
             run["execution"]["runtime"],
-            primary,
+            run["model"]["components"],
             run["workload"],
             ctx["mode"],
             ctx["width"],
@@ -60,7 +63,14 @@ def effective_configuration(run: dict) -> dict:
 def quality_passes(runs: list[dict], defaults: list[dict]) -> bool:
     outputs = [r["tuning"]["outputs"] for r in defaults + runs]
     complete = all(
-        d for output in outputs for hashes in output.values() for d in hashes
+        set(run["tuning"]["outputs"])
+        == {case["case_id"] for case in run["workload"]["cases"]}
+        and all(
+            len(run["tuning"]["outputs"][case["case_id"]]) == case["measured_rounds"]
+            and all(run["tuning"]["outputs"][case["case_id"]])
+            for case in run["workload"]["cases"]
+        )
+        for run in defaults + runs
     )
     canonical = {json.dumps(output, sort_keys=True) for output in outputs}
     # Equality must include repeatability inside each case as well as across loads.

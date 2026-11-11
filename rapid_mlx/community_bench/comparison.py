@@ -291,6 +291,11 @@ def run_comparison(
     candidates = list(islice(candidate_values(context, salt=salt), configs - 1))
     if not candidates:
         return first
+    if kwargs.get("progress") is not None:
+        count = len(candidates) + 1
+        kwargs["progress"](
+            f"Comparing {count} configurations × {repetitions} repetitions: about {count * repetitions}× a single-configuration run."
+        )
     record(first, "default", {})
     arms = [("default", {}), *[(f"nearby-{i}", v) for i, v in enumerate(candidates, 1)]]
     for repetition in range(repetitions):

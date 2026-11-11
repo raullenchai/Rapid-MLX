@@ -95,6 +95,55 @@ def test_distill_exact_cell_and_profile_shape():
 
 
 @pytest.mark.parametrize(
+    "field", ["assistant_source", "draft_model_identity_digest", "assistant_component"]
+)
+def test_distiller_separates_assistant_identities(field):
+    runs = paired()
+    for run in runs:
+        spec = run["execution"]["task"]["language"]["speculative_decoding"]
+        candidate = run["experiment"]["arm_id"] != "default"
+        if field != "assistant_source" or candidate:
+            spec.update(
+                assistant_source="external_model", draft_model_identity_digest=DIGEST
+            )
+        if field == "assistant_component":
+            component = copy.deepcopy(run["model"]["components"][0])
+            component.update(component_id="draft", role="language_model")
+            component["source"]["resolved_revision"] = ("2" if candidate else "1") * 40
+            run["model"]["components"].append(component)
+            run["model"]["components"].sort(key=lambda c: c["component_id"])
+        elif field == "draft_model_identity_digest" and candidate:
+            spec[field] = "sha256:" + "2" * 64
+        run["execution"]["config_digest"] = execution_config_digest(run["execution"])
+    assert tuning_distill.cell_key(runs[0]) != tuning_distill.cell_key(runs[1])
+    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+
+
+@pytest.mark.parametrize("arm", ["default", "mtp-3", "both"])
+@pytest.mark.parametrize("count", [0, 1, 4, 6])
+def test_digest_equivalence_requires_every_measured_round(arm, count):
+    runs = paired()
+    for run in runs:
+        if arm == "both" or run["experiment"]["arm_id"] == arm:
+            run["tuning"]["outputs"] = {
+                case["case_id"]: [DIGEST] * count for case in run["workload"]["cases"]
+            }
+    assert not tuning_distill.quality_passes(runs[1::2], runs[::2])
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_digest_equivalence_requires_each_case(missing):
+    runs = paired()
+    for run in runs:
+        outputs = run["tuning"]["outputs"]
+        if missing:
+            outputs.pop(next(iter(outputs)))
+        else:
+            outputs["extra-case"] = [DIGEST] * 5
+    assert not tuning_distill.quality_passes(runs[1::2], runs[::2])
+
+
+@pytest.mark.parametrize(
     "change",
     [
         "few",
@@ -259,7 +308,10 @@ def test_candidates_come_from_registry():
 
 
 @pytest.mark.parametrize("repetitions", [3, 7])
-def test_run_comparison_interleaves_and_archives(monkeypatch, tmp_path, repetitions):
+@pytest.mark.parametrize("with_progress", [False, True])
+def test_run_comparison_interleaves_and_archives(
+    monkeypatch, tmp_path, repetitions, with_progress
+):
     from rapid_mlx.community_bench.workspace import LocalRunArchive
 
     observed = []
@@ -274,8 +326,21 @@ def test_run_comparison_interleaves_and_archives(monkeypatch, tmp_path, repetiti
     monkeypatch.setattr(local_runner, "run_local", run_local)
     monkeypatch.setattr(comparison, "measure_configuration", run_local)
     archive = LocalRunArchive(tmp_path)
+    progress = []
     result = comparison.run_comparison(
-        "model", configs=4, salt=0, repetitions=repetitions, archive=archive
+        "model",
+        configs=4,
+        salt=0,
+        repetitions=repetitions,
+        archive=archive,
+        progress=progress.append if with_progress else None,
+    )
+    assert progress == (
+        [
+            f"Comparing 4 configurations × {repetitions} repetitions: about {4 * repetitions}× a single-configuration run."
+        ]
+        if with_progress
+        else []
     )
     runs = result["configurations"]
     count = 4 * repetitions
@@ -329,7 +394,12 @@ def test_default_without_neighbors_is_legacy_run(monkeypatch, tmp_path, observat
         lambda *a, **kw: pytest.fail("no neighbor must never start a worker"),
     )
     archive = LocalRunArchive(tmp_path)
-    assert comparison.run_comparison("model", archive=archive) is run
+    progress = []
+    assert (
+        comparison.run_comparison("model", archive=archive, progress=progress.append)
+        is run
+    )
+    assert progress == []
     assert len(calls) == 1
     assert calls[0]["archive"] is archive
     assert "experiment" not in run and "paired_runs" not in run
@@ -953,20 +1023,16 @@ def test_cli_reports_insufficient_neighbors(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         cli.LocalRunArchive, "default", lambda: LocalRunArchive(tmp_path)
     )
+    monkeypatch.setattr(cli, "run_local", lambda *a, **kw: sample())
+    monkeypatch.setattr(comparison, "measure_configuration", lambda *a, **kw: sample())
     monkeypatch.setattr(
-        comparison,
-        "run_comparison",
-        lambda *a, **kw: {
-            "configurations": paired(),
-            "requested_configs": 16,
-            "measured_configs": 2,
-        },
+        comparison, "candidate_values", lambda *a, **kw: iter([{"mtp_max_depth": 2}])
     )
     args = build_parser().parse_args(["benchmark", "run", "model", "--configs", "16"])
     assert cli._benchmark_command(args) == 0
     output = capsys.readouterr()
     assert "Only 2 applicable configurations exist; requested 16" in output.out
-    assert "about 48×" in output.err
+    assert "Comparing 2 configurations × 3 repetitions: about 6×" in output.err
 
 
 @pytest.mark.parametrize(
