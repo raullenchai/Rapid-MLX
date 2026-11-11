@@ -673,6 +673,74 @@
         "evidence": "Existing QSA query and physical KV crossovers",
         "hardware_scope": "Universal thresholds only; existing opt-in and capability checks remain authoritative."
       }
+    },
+    {
+      "id": "dense-decode-fusion-enrollment",
+      "model": {
+        "family": "dense_decode_fusion_install"
+      },
+      "knobs": {
+        "dense_decode_fusion": true
+      },
+      "provenance": {
+        "evidence": "Historical default-on enrollment in rapid_mlx/dense_decode_fusion.py:install_dense_decode_fusion; no new qualification. Local class, route, layout and numerical checks remain mandatory.",
+        "hardware_scope": "Universal, including unknown and future hardware; no software restriction or new measurements."
+      },
+      "workload": {
+        "mode": "plain"
+      }
+    },
+    {
+      "id": "qwen35-affine4-enrollment",
+      "model": {
+        "family": "qwen35_affine4_install"
+      },
+      "knobs": {
+        "qwen35_affine4": true
+      },
+      "provenance": {
+        "evidence": "Historical default-on enrollment in rapid_mlx/patches/qwen35_affine4.py:install_qwen35_affine4; no new qualification. Local class, route, layout and numerical checks remain mandatory.",
+        "hardware_scope": "Universal, including unknown and future hardware; no software restriction or new measurements."
+      }
+    },
+    {
+      "id": "qwen35-moe-router-enrollment",
+      "model": {
+        "family": "qwen35_moe_router_install"
+      },
+      "knobs": {
+        "qwen35_moe_router": true
+      },
+      "provenance": {
+        "evidence": "Historical default-on enrollment in rapid_mlx/qwen35_moe_router.py:install_qwen35_moe_router; no new qualification. Local class, route, layout and numerical checks remain mandatory.",
+        "hardware_scope": "Universal, including unknown and future hardware; no software restriction or new measurements."
+      }
+    },
+    {
+      "id": "moe-decode-fusion-enrollment",
+      "model": {
+        "family": "moe_decode_fusion_install"
+      },
+      "knobs": {
+        "moe_decode_fusion": true
+      },
+      "provenance": {
+        "evidence": "Historical default-on enrollment in rapid_mlx/patches/moe_decode_fusion.py:install_moe_decode_fusion; no new qualification. Local class, route, layout and numerical checks remain mandatory.",
+        "hardware_scope": "Universal, including unknown and future hardware; no software restriction or new measurements."
+      }
+    },
+    {
+      "id": "moe-gate-up-fusion-enrollment",
+      "model": {
+        "family": "moe_gate_up_fusion_install"
+      },
+      "knobs": {
+        "moe_gate_up_fusion": true
+      },
+      "provenance": {
+        "evidence": "Historical default-on enrollment in rapid_mlx/moe_fusion.py:fuse_gate_up; no new qualification. Local class, route, layout and numerical checks remain mandatory.",
+        "hardware_scope": "Universal, including unknown and future hardware; no software restriction or new measurements."
+      }
     }
   ]
 }

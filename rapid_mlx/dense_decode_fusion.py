@@ -20,6 +20,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .kernels.dense_residual_norm import seam
+from .lattice.fusion import install_enabled
 
 logger = logging.getLogger(__name__)
 _SWITCH = "RAPID_MLX_DENSE_DECODE_FUSION"
@@ -475,6 +476,10 @@ def _restore(snapshot):
 def install_dense_decode_fusion(model, *, spec_decode="none"):
     """Enroll compatible instances after real-weight device probes; fail closed."""
     if spec_decode != "none" or os.environ.get(_SWITCH, "1") == "0":
+        return 0
+    if not install_enabled(
+        "dense_decode_fusion", mx, route="dense_decode_fusion_install", mode="plain"
+    ):
         return 0
     if not callable(getattr(model, "named_modules", None)):
         return 0
