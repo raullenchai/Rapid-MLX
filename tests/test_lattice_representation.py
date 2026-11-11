@@ -57,9 +57,18 @@ def test_builtin_resolution_snapshot(monkeypatch):
     digest = hashlib.sha256()
     selected = set()
     count = 0
+    migrated_knobs = {
+        "qsa_stage1_min_query",
+        "qsa_indexed_splitk_min_kv",
+        "qsa_block_sparse_min_kv",
+        "qsa_stage1_min_kv",
+        "affine8_attention_min_kv",
+        "qwen35_eager_layer_dispatch",
+        "qsa_block_sparse_min_query",
+    }
     for ctx in builtin_contexts():
         decisions = {}
-        for name in lattice.KNOBS.keys() - {"qwen35_eager_layer_dispatch"}:
+        for name in lattice.KNOBS.keys() - migrated_knobs:
             decision = lattice.resolve(name, ctx, environ={})
             decisions[name] = asdict(decision)
             if decision.source.startswith("builtin:"):
@@ -69,7 +78,7 @@ def test_builtin_resolution_snapshot(monkeypatch):
     assert selected == {
         cell["id"]
         for cell in defaults.builtin_profile().cells
-        if "qwen35_eager_layer_dispatch" not in cell["knobs"]
+        if not migrated_knobs.intersection(cell["knobs"])
     }
     assert count == 69120
     # Recorded before changing representation on 7b25e1b4c8dcf80cadc7021bff69a48f76db5aca.

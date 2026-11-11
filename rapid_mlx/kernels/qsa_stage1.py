@@ -17,6 +17,7 @@ import mlx.core as mx
 
 from .._env import env_truthy
 from ..lattice import resolve, runtime_context
+from ..lattice.attention import AttentionThresholds
 from ..lattice.capabilities import (
     QSA_ARCHITECTURES,
     QSA_MLX_VERSIONS,
@@ -25,9 +26,9 @@ from ..lattice.capabilities import (
 
 _SUPPORTED_DTYPES = (mx.float16, mx.bfloat16, mx.float32)
 _MAX_TOPK = 512
+_thresholds = AttentionThresholds(lambda: mx)
+
 ENABLE_ENV = "RAPID_MLX_QSA_STAGE1"
-MIN_QUERY_LENGTH = 64
-MIN_PHYSICAL_KV_LENGTH = 65_024
 QUALIFIED_MLX_VERSIONS = QSA_MLX_VERSIONS
 QUALIFIED_METAL_ARCHITECTURES = QSA_ARCHITECTURES["qsa_stage1"]
 
@@ -65,9 +66,9 @@ def qsa_stage1_decline_reason(
         return "training"
     if batch_size != 1:
         return "batch size is not qualified"
-    if query_length < MIN_QUERY_LENGTH:
+    if query_length < _thresholds.minimum("qsa_stage1_min_query", query_length):
         return "query below crossover"
-    if physical_kv_length < MIN_PHYSICAL_KV_LENGTH:
+    if physical_kv_length < _thresholds.minimum("qsa_stage1_min_kv", query_length):
         return "physical KV below crossover"
     installed = _mlx_version() if mlx_version is None else mlx_version
     if not mx.metal.is_available():
