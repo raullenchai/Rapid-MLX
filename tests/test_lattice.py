@@ -8,15 +8,15 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from rapid_mlx import tuning
+from rapid_mlx import lattice
 
 PAIR = ("qwen35_affine4_bank_views", "qwen35_residual_norm")
 
 
 def context(chip="Apple M3 Ultra", **kwargs):
-    return tuning.runtime_context(
+    return lattice.runtime_context(
         {"device_name": chip},
-        model=tuning.ModelProfile("qwen35_moe", *tuning.QWEN35_AFFINE4),
+        model=lattice.ModelProfile("qwen35_moe", *lattice.QWEN35_AFFINE4),
         library_version=kwargs.pop("library_version", "0.32.4"),
         macos="26.5.2",
         **kwargs,
@@ -37,74 +37,73 @@ def context(chip="Apple M3 Ultra", **kwargs):
     ],
 )
 def test_device_key(name, key):
-    assert tuning.device_key({"device_name": name}) == key
+    assert lattice.device_key({"device_name": name}) == key
 
 
 @pytest.mark.parametrize("name", PAIR)
 def test_precedence_and_fallback(monkeypatch, name):
-    switch = tuning.KNOBS[name].env
+    switch = lattice.KNOBS[name].env
     monkeypatch.delenv(switch, raising=False)
-    assert tuning.resolve(name, context()).value
-    assert not tuning.resolve(name, context("Apple M99 Max")).value
-    assert not tuning.resolve(name, context(library_version="unmeasured")).value
-    monkeypatch.setattr(tuning, "local_calibration", lambda c: {name: False})
-    assert tuning.resolve(name, context()).source == "local"
-    assert not tuning.resolve(name, context()).value
+    assert lattice.resolve(name, context()).value
+    assert not lattice.resolve(name, context("Apple M99 Max")).value
+    assert not lattice.resolve(name, context(library_version="unmeasured")).value
+    monkeypatch.setattr(lattice, "local_calibration", lambda c: {name: False})
+    assert lattice.resolve(name, context()).source == "local"
+    assert not lattice.resolve(name, context()).value
     monkeypatch.setenv(switch, "yes")
-    assert tuning.resolve(name, context("unknown")).value
+    assert lattice.resolve(name, context("unknown")).value
     monkeypatch.setenv(switch, "0")
-    assert not tuning.resolve(name, context()).value
+    assert not lattice.resolve(name, context()).value
     monkeypatch.setenv(switch, "garbage")
-    assert not tuning.resolve(name, context()).value
+    assert not lattice.resolve(name, context()).value
 
 
 @pytest.mark.parametrize("name", PAIR)
 @pytest.mark.parametrize(
     "change",
-    [{"model": tuning.ModelProfile()}, {"width": 2}, {"mode": "other"}, {"batch": 2}],
+    [{"model": lattice.ModelProfile()}, {"width": 2}, {"mode": "other"}, {"batch": 2}],
 )
 def test_override_cannot_expand_scope(name, change):
-    assert not tuning.resolve(
-        name, replace(context(), **change), environ={tuning.KNOBS[name].env: "1"}
+    assert not lattice.resolve(
+        name, replace(context(), **change), environ={lattice.KNOBS[name].env: "1"}
     ).value
 
 
 def test_mtp_scope():
     ctx = context(mode="mtp")
-    assert tuning.resolve(PAIR[0], ctx, environ={}).value
-    assert not tuning.resolve(
-        PAIR[1], ctx, environ={tuning.KNOBS[PAIR[1]].env: "1"}
+    assert lattice.resolve(PAIR[0], ctx, environ={}).value
+    assert not lattice.resolve(
+        PAIR[1], ctx, environ={lattice.KNOBS[PAIR[1]].env: "1"}
     ).value
 
 
 def test_combination_gate_and_explicit_generalization(monkeypatch):
-    from rapid_mlx.tuning.defaults import Profile
+    from rapid_mlx.lattice.defaults import Profile
 
     for name in PAIR:
-        assert tuning.resolve(name, context("Apple M5 Max"), environ={}).value
-        assert not tuning.resolve(name, context("Apple M4 Pro"), environ={}).value
-    entry = next(
-        e for e in tuning.builtin_profile().entries if e["id"] == "singleton-17-max"
+        assert lattice.resolve(name, context("Apple M5 Max"), environ={}).value
+        assert not lattice.resolve(name, context("Apple M4 Pro"), environ={}).value
+    cell = next(
+        e for e in lattice.builtin_profile().cells if e["id"] == "singleton-17-max"
     )
-    assert entry["provenance"]["repetitions"]["plain"] >= 3
+    assert cell["provenance"]["repetitions"]["plain"] >= 3
     assert (
-        entry["provenance"]["plain_ranges_tps"][0][1]
-        < entry["provenance"]["plain_ranges_tps"][1][0]
+        cell["provenance"]["plain_ranges_tps"][0][1]
+        < cell["provenance"]["plain_ranges_tps"][1][0]
     )
     assert (
-        entry["provenance"]["plain_tps"][1] / entry["provenance"]["plain_tps"][0]
-        >= 1.02
+        cell["provenance"]["plain_tps"][1] / cell["provenance"]["plain_tps"][0] >= 1.02
     )
     ctx = replace(context(), hardware=replace(context().hardware, gpu_cores=60))
     assert (
-        tuning.resolve(PAIR[0], ctx, environ={}).source == "builtin:singleton-15-ultra"
+        lattice.resolve(PAIR[0], ctx, environ={}).source == "builtin:singleton-15-ultra"
     )
-    original = tuning.builtin_profile().entries[0]
+    original = lattice.builtin_profile().cells[0]
     conflict = dict(original, id="conflict", knobs={PAIR[0]: False})
     monkeypatch.setattr(
-        tuning, "builtin_profile", lambda: Profile("test", (original, conflict))
+        lattice, "builtin_profile", lambda: Profile("test", (original, conflict))
     )
-    assert tuning.resolve(PAIR[0], ctx, environ={}).source == "default"
+    assert lattice.resolve(PAIR[0], ctx, environ={}).source == "default"
 
 
 @pytest.mark.parametrize(
@@ -112,13 +111,13 @@ def test_combination_gate_and_explicit_generalization(monkeypatch):
     [("qsa_stage1", "applegpu_g14s", 64), ("qsa_indexed_splitk", "applegpu_g15d", 3)],
 )
 def test_capabilities_before_environment(name, arch, width):
-    ctx = tuning.runtime_context(
+    ctx = lattice.runtime_context(
         {"architecture": arch}, library_version="0.32.2", width=width
     )
-    env = {tuning.KNOBS[name].env: "1"}
-    assert tuning.resolve(name, ctx, environ=env).value
-    assert not tuning.resolve(name, replace(ctx, mlx="0.32.4"), environ=env).value
-    assert not tuning.resolve(
+    env = {lattice.KNOBS[name].env: "1"}
+    assert lattice.resolve(name, ctx, environ=env).value
+    assert not lattice.resolve(name, replace(ctx, mlx="0.32.4"), environ=env).value
+    assert not lattice.resolve(
         name,
         replace(ctx, hardware=replace(ctx.hardware, architecture="applegpu_g17s")),
         environ=env,
@@ -127,8 +126,8 @@ def test_capabilities_before_environment(name, arch, width):
 
 def test_preserved_qualified_choices():
     ctx = context("Apple M4 Pro", library_version="future", width=9)
-    assert tuning.resolve("qwen35_affine4_rows", ctx).value == (2, 4)
-    assert tuning.resolve("qwen35_affine4_rows", context()).value == (1, 1)
+    assert lattice.resolve("qwen35_affine4_rows", ctx).value == (2, 4)
+    assert lattice.resolve("qwen35_affine4_rows", context()).value == (1, 1)
     for arch, units, probe in [
         ("applegpu_g14s", False, True),
         ("applegpu_g15d", False, False),
@@ -136,12 +135,12 @@ def test_preserved_qualified_choices():
         ("applegpu_g18s", True, False),
         ("unknown", False, True),
     ]:
-        ctx = tuning.runtime_context({"architecture": arch})
-        assert tuning.resolve("lane_tensor_units", ctx).value is units
-        assert tuning.resolve("lane_simd_probe", ctx).value is probe
+        ctx = lattice.runtime_context({"architecture": arch})
+        assert lattice.resolve("lane_tensor_units", ctx).value is units
+        assert lattice.resolve("lane_simd_probe", ctx).value is probe
     ctx = replace(context(library_version="0.32.3"), macos="26.5.2")
-    assert tuning.resolve("affine8_attention", ctx, environ={}).value
-    assert not tuning.resolve(
+    assert lattice.resolve("affine8_attention", ctx, environ={}).value
+    assert not lattice.resolve(
         "affine8_attention",
         replace(ctx, macos="27.0"),
         environ={"RAPID_MLX_AFFINE8_ATTENTION": "1"},
@@ -161,7 +160,7 @@ def test_loaded_profile_immutable_and_dump_private():
         },
         "quantization": {"bits": 4, "group_size": 64},
     }
-    ctx = tuning.runtime_context(
+    ctx = lattice.runtime_context(
         {
             "device_name": "Apple M3 Ultra",
             "architecture": "applegpu_g15d",
@@ -171,15 +170,15 @@ def test_loaded_profile_immutable_and_dump_private():
         },
         config=config,
     )
-    assert ctx.model.geometry == tuning.QWEN35_AFFINE4
-    assert tuning.resolve(PAIR[0], replace(ctx, mlx="0.32.4"), environ={}).value
+    assert ctx.model.geometry == lattice.QWEN35_AFFINE4
+    assert lattice.resolve(PAIR[0], replace(ctx, mlx="0.32.4"), environ={}).value
     assert ctx.model.attention_kinds == ("full_attention", "linear_attention")
     assert ctx.model.quant_mode == "affine"
     config["text_config"]["hidden_size"] = 9
     assert ctx.model.hidden_size == 2048
     with pytest.raises(FrozenInstanceError):
         ctx.width = 2
-    payload = tuning.dump(ctx)
+    payload = lattice.dump(ctx)
     assert isinstance(payload, dict)
     assert all(
         s not in json.dumps(payload)
@@ -192,7 +191,7 @@ def test_import_does_not_load_mlx():
         [
             sys.executable,
             "-c",
-            "import sys; import rapid_mlx.tuning; assert 'mlx.core' not in sys.modules",
+            "import sys; import rapid_mlx.lattice; assert 'mlx.core' not in sys.modules",
         ],
         env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
         check=True,
@@ -222,7 +221,7 @@ def test_both_gates_consult_registry(monkeypatch):
 
 
 def test_missing_mlx_metadata_is_conservative(monkeypatch):
-    from rapid_mlx.tuning import profiles
+    from rapid_mlx.lattice import profiles
 
     def missing(name):
         raise profiles.PackageNotFoundError(name)
@@ -231,7 +230,7 @@ def test_missing_mlx_metadata_is_conservative(monkeypatch):
     monkeypatch.setattr(profiles, "version", missing)
     try:
         assert profiles.mlx_version() == "unknown"
-        assert not tuning.resolve(
+        assert not lattice.resolve(
             PAIR[0], context(library_version="unknown"), environ={}
         ).value
     finally:
@@ -239,7 +238,7 @@ def test_missing_mlx_metadata_is_conservative(monkeypatch):
 
 
 def test_runtime_facts_are_read_once(monkeypatch):
-    from rapid_mlx.tuning import profiles
+    from rapid_mlx.lattice import profiles
 
     calls = []
     profiles.macos_version.cache_clear()
@@ -248,7 +247,8 @@ def test_runtime_facts_are_read_once(monkeypatch):
     )
     try:
         contexts = [
-            tuning.runtime_context({"device_name": "Apple M3 Ultra"}) for _ in range(40)
+            lattice.runtime_context({"device_name": "Apple M3 Ultra"})
+            for _ in range(40)
         ]
         assert calls == [1]
         assert all(c is contexts[0] for c in contexts)
@@ -258,8 +258,8 @@ def test_runtime_facts_are_read_once(monkeypatch):
 
 def test_enabled_rejects_incomplete_geometry(monkeypatch):
     monkeypatch.setattr(
-        tuning, "runtime_context", lambda *a, **k: pytest.fail("invalid geometry")
+        lattice, "runtime_context", lambda *a, **k: pytest.fail("invalid geometry")
     )
-    assert not tuning.enabled(
+    assert not lattice.enabled(
         PAIR[0], {}, family="qwen35_moe", geometry=(2048,), mode="plain", width=1
     )

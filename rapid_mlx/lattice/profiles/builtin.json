@@ -2,7 +2,7 @@
   "schema_version": 1,
   "profile_version": "2026.11.10.3",
   "generated_at": "2026-11-11T01:05:33Z",
-  "entries": [
+  "cells": [
     {
       "id": "singleton-15-ultra",
       "hardware": [
@@ -245,7 +245,7 @@
           "commit": "d4d1a83770cdde3b29bb7446cd5db2b07b64116c"
         },
         "decision": "Cap 4: MTP +4.80% with non-overlapping spreads; 100 paired questions within 3 points of both baselines, exact p >=0.05. Other hardware/model/software configurations retain their existing depth.",
-        "hardware_scope": "Exact memory qualification; all core variants as in the original entry."
+        "hardware_scope": "Exact memory qualification; all core variants as in the original cell."
       },
       "software": {
         "mlx": "===0.32.3",
@@ -332,7 +332,7 @@
           "commit": "e99b6bb1bcdf950932826a3858f383621a243e64"
         },
         "decision": "Cap 3: MTP +8.83% with non-overlapping spreads; 100 paired questions within 3 points of both baselines, exact p >=0.05. Dense model defaults remain unchanged. Committed-default follow-up varied; see evidence.",
-        "hardware_scope": "Exact memory qualification; all core variants as in the original entry."
+        "hardware_scope": "Exact memory qualification; all core variants as in the original cell."
       },
       "software": {
         "mlx": "===0.32.4",

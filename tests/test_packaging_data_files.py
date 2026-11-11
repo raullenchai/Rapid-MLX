@@ -36,7 +36,7 @@ import pytest
 # The third element is what we expect to find in pyproject's package-data
 # entry (either an exact match or a glob that covers it).
 REQUIRED_DATA_FILES: list[tuple[str, str, str]] = [
-    ("rapid_mlx", "tuning/profiles/builtin.json", "tuning/profiles/*.json"),
+    ("rapid_mlx", "lattice/profiles/builtin.json", "lattice/profiles/*.json"),
     # Text-model alias registry — has always shipped.
     ("rapid_mlx", "aliases.json", "aliases.json"),
     # r10-A: audio alias registry. Codex r10-B caught this missing from

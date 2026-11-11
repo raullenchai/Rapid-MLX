@@ -916,9 +916,9 @@ def test_text_lane_falls_back_only_for_exact_architecture_rejection(
         )
 
 
-@pytest.mark.parametrize("tuning_observation", [False, True])
+@pytest.mark.parametrize("lattice_observation", [False, True])
 def test_text_lane_converts_engine_result_and_reaps_executor(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tuning_observation: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, lattice_observation: bool
 ) -> None:
     from rapid_mlx import engine_core
     from rapid_mlx.community_bench import runner
@@ -1010,25 +1010,25 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
         lambda repo_id, **_: (
             SimpleNamespace(args=SimpleNamespace(max_position_embeddings=32768)),
             object(),
-            str(tmp_path) if tuning_observation else "",
+            str(tmp_path) if lattice_observation else "",
         ),
     )
     monkeypatch.setattr(runner, "run_standardized_bench", standardized)
 
-    if tuning_observation:
+    if lattice_observation:
         (tmp_path / "config.json").write_text("{}")
         from rapid_mlx.community_bench import comparison
-        from tests.test_tuning_comparison import sample
+        from tests.test_lattice_comparison import sample
 
         monkeypatch.setattr(
-            comparison, "capture_tuning", lambda *args, **kwargs: sample()["tuning"]
+            comparison, "capture_lattice", lambda *args, **kwargs: sample()["lattice"]
         )
 
     run = local_runner.run_local(
         "example-text",
         archive=archive,
         acceleration=AccelerationRequest(baseline=True),
-        tuning_observation=tuning_observation,
+        lattice_observation=lattice_observation,
     )
 
     assert len(run["measurements"]) == 10

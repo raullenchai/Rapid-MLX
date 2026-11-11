@@ -1758,7 +1758,7 @@
            "const": null,
            "default": 1,
            "dest": "configs",
-           "help": "Configurations to compare: your current config plus nearest neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
+           "help": "Rapid Lattice configurations: your current config plus neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
            "metavar": null,
            "nargs": null,
            "option_strings": [
@@ -4894,7 +4894,7 @@
        "const": null,
        "default": "127.0.0.1",
        "dest": "host",
-       "help": "Host to bind (default: 127.0.0.1, loopback-only). Pass 0.0.0.0 (or \"\") to expose the server on every interface (LAN reachable) — only do this once the bearer-auth posture has been reviewed. The wildcard bind also widens the PortSweep collision window: macOS lets a wildcard listener coexist with a more-specific (127.0.0.1) listener on the same port, so a second server may start and silently shadow the first on the loopback path. The pre-flight bind check below probes 127.0.0.1 explicitly whenever --host is a wildcard alias to keep that bypass closed.",
+       "help": "Host to bind (default: 127.0.0.1, loopback-only). Pass 0.0.0.0 (or \"\") to expose the server on every interface (LAN reachable) — only do this once the bearer-auth posture has been reviewed. The wildcard bind also widens the port-scanning collision window: macOS lets a wildcard listener coexist with a more-specific (127.0.0.1) listener on the same port, so a second server may start and silently shadow the first on the loopback path. The pre-flight bind check below probes 127.0.0.1 explicitly whenever --host is a wildcard alias to keep that bypass closed.",
        "metavar": null,
        "nargs": null,
        "option_strings": [

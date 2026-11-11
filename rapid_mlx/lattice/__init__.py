@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Small, measured policy layer. Execution sites retain correctness probes."""
+"""Rapid Lattice: small, measured policy layer. Execution sites retain correctness probes."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from .capabilities import requirement_reason
 from .defaults import builtin_profile, matches, overlay_profile
 from .profiles import (  # noqa: F401 -- public construction surface
     HardwareProfile,
+    LatticeContext,
     ModelProfile,
-    TuningContext,
     device_key,
     mlx_version,
     model_profile,
@@ -44,8 +44,8 @@ def _expert(c):
 
 @dataclass(frozen=True)
 class Knob:
-    scope: Callable[[TuningContext], bool]
-    requirement: Callable[[TuningContext], str | None]
+    scope: Callable[[LatticeContext], bool]
+    requirement: Callable[[LatticeContext], str | None]
     env: str | None = None
     default: object = False
     profile_requirement: bool = False
@@ -163,19 +163,19 @@ class Decision:
     profile_version: str | None = None
 
 
-def local_calibration(ctx: TuningContext) -> Mapping[str, object]:
+def local_calibration(ctx: LatticeContext) -> Mapping[str, object]:
     """Reserved precedence slot: no files, probes, or calibration in this MVP."""
     return {}
 
 
 def resolve(
-    name: str, ctx: TuningContext, *, environ: Mapping[str, str] | None = None
+    name: str, ctx: LatticeContext, *, environ: Mapping[str, str] | None = None
 ) -> Decision:
     knob = KNOBS[name]
     reason = knob.requirement(ctx)
     if knob.profile_requirement and not any(
-        name in entry.get("capabilities", ()) and matches(entry, ctx)
-        for entry in builtin_profile().entries
+        name in cell.get("capabilities", ()) and matches(cell, ctx)
+        for cell in builtin_profile().cells
     ):
         reason = "unqualified runtime"
     if reason or not knob.scope(ctx):
@@ -213,24 +213,27 @@ def resolve(
         ("overlay", overlay_profile()),
         ("builtin", builtin_profile()),
     ):
-        entries = [e for e in profile.entries if name in e["knobs"] and matches(e, ctx)]
-        if entries:
-            values = [e["knobs"][name] for e in entries]
+        cells = [e for e in profile.cells if name in e["knobs"] and matches(e, ctx)]
+        if cells:
+            values = [e["knobs"][name] for e in cells]
             if all(v == values[0] for v in values):
                 return Decision(
                     values[0],
-                    source + ":" + min(e["id"] for e in entries),
+                    source + ":" + min(e["id"] for e in cells),
                     profile_version=profile.version,
                 )
             # Ambiguous cells never silently choose one conflicting result.
             return Decision(
-                knob.default, "default", "conflicting profile entries", profile.version
+                knob.default,
+                "default",
+                "conflicting lattice profile cells",
+                profile.version,
             )
     return Decision(knob.default, "default")
 
 
-def dump(ctx: TuningContext) -> dict:
-    """Identifier-free diagnostics; profile versions accompany selected entries."""
+def dump(ctx: LatticeContext) -> dict:
+    """Identifier-free diagnostics; profile versions accompany selected cells."""
     return {
         **asdict(ctx),
         "profiles": {

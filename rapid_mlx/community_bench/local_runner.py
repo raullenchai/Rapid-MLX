@@ -2222,19 +2222,19 @@ async def _text_measurements(
                     )
             if (
                 capture is not None
-                and capture.get("tuning_requested")
+                and capture.get("lattice_requested")
                 and language is not None
             ):
                 from pathlib import Path
 
-                from .comparison import capture_tuning
+                from .comparison import capture_lattice
 
                 checkpoint_config = None
                 if loaded_source:
                     checkpoint_config = json.loads(
                         (Path(loaded_source) / "config.json").read_text()
                     )
-                capture["tuning"] = capture_tuning(
+                capture["lattice"] = capture_lattice(
                     getattr(serving_engine, "_model", None)
                     if serving_engine is not None
                     else model,
@@ -2412,7 +2412,7 @@ def refuse_if_memory_does_not_fit(alias: str, repo_id: str) -> None:
 def run_local(
     alias: str,
     *,
-    tuning_observation: bool = False,
+    lattice_observation: bool = False,
     archive: LocalRunArchive | None = None,
     inherit_process_group: bool = False,
     progress: Progress | None = None,
@@ -2470,7 +2470,7 @@ def run_local(
     _announce_plan(progress, plan, events)
     # The text helper deposits the identity of the checkpoint the loader
     # pinned; arm the capture for this run only and disarm on every path.
-    loaded: dict[str, Any] = {"tuning_requested": tuning_observation}
+    loaded: dict[str, Any] = {"lattice_requested": lattice_observation}
     loaded_token = _LOADED_IDENTITY.set(loaded)
     try:
         return _run_local_measured(
@@ -2695,9 +2695,9 @@ def _run_local_measured(
     # reporting what is happening rather than guessing what comes next. The
     # matching completion line is what lets it stop.
     _report(progress, "Saving result to this Mac...")
-    if loaded.get("tuning") is not None:
-        run["tuning"] = loaded["tuning"]
-        run["tuning"]["context"]["hardware"]["gpu_cores"] = hardware.gpu_cores
+    if loaded.get("lattice") is not None:
+        run["lattice"] = loaded["lattice"]
+        run["lattice"]["context"]["hardware"]["gpu_cores"] = hardware.gpu_cores
     try:
         # One operation, provenance first. A provenance failure must NOT be
         # swallowed: a run visible without its build record is indistinguishable

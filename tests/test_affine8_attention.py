@@ -269,7 +269,7 @@ def test_malformed_cache_and_geometry_never_reach_kernel(dispatcher):
 
 
 def test_runtime_qualification_does_not_expand_silently(monkeypatch):
-    from rapid_mlx.tuning import profiles
+    from rapid_mlx.lattice import profiles
 
     check = attn._qualified_runtime.__wrapped__
     monkeypatch.setattr(mx.metal, "is_available", lambda: True)

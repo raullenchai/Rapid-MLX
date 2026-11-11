@@ -91,9 +91,9 @@ def test_real_dispatch_enrolls_only_selected_cell_after_head_attach(
     monkeypatch, enabled
 ):
     from rapid_mlx.engine import batched
+    from rapid_mlx.lattice import mtp as policy
     from rapid_mlx.spec_decode import mtp
     from rapid_mlx.spec_decode.mtp import dispatch
-    from rapid_mlx.tuning import mtp as policy
 
     # Isolate optional Metal implementation imports while exercising the real
     # executor entrypoint and its installed-head ordering.

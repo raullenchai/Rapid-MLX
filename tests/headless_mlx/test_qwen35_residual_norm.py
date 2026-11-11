@@ -148,7 +148,7 @@ def test_install_rejects_unqualified_serving(monkeypatch, fused, mode):
 def test_install_respects_device_policy_without_override(
     monkeypatch, fused, chip, expected
 ):
-    from rapid_mlx.tuning import profiles
+    from rapid_mlx.lattice import profiles
 
     class Backbone:
         def __call__(self, *args, **kwargs):

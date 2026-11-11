@@ -13,12 +13,12 @@ from uuid import uuid4
 
 import pytest
 
-from rapid_mlx import __version__, tuning
+from rapid_mlx import __version__, lattice
 from rapid_mlx.catalog import rcj_digest
 from rapid_mlx.community_bench import comparison
 from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
 from rapid_mlx.community_bench.run_builder import execution_config_digest
-from scripts import tuning_distill
+from scripts import lattice_distill
 
 NOW = datetime(2026, 11, 10, 23, tzinfo=timezone.utc)
 REAL_PLANNING_CONTEXT = comparison.planning_context
@@ -39,24 +39,26 @@ def sample(arm="default", rate=100):
         chip="Apple M3 Ultra", gpu_cores=80, memory_gib=256
     )
     run["machine"]["profile_digest"] = rcj_digest(run["machine"]["profile"])
-    ctx = tuning.TuningContext(
-        tuning.HardwareProfile("applegpu_g15d", 15, "Ultra", 80, 274877906944),
+    ctx = lattice.LatticeContext(
+        lattice.HardwareProfile("applegpu_g15d", 15, "Ultra", 80, 274877906944),
         "0.32.4",
         "26.5.2",
-        tuning.ModelProfile("qwen3_5_moe_text", 2048, 512, 256, 8, 4, 64, (), "affine"),
+        lattice.ModelProfile(
+            "qwen3_5_moe_text", 2048, 512, 256, 8, 4, 64, (), "affine"
+        ),
         mode="mtp",
         has_mtp_head=True,
         rapid_mlx=__version__,
     )
-    run["tuning"] = {
-        "context": json.loads(json.dumps(tuning.dump(ctx))),
+    run["lattice"] = {
+        "context": json.loads(json.dumps(lattice.dump(ctx))),
         "overrides": {"mtp_max_depth": 1 if arm == "default" else 3},
         "outputs": {c["case_id"]: [DIGEST] * 5 for c in run["workload"]["cases"]},
     }
     language = run["execution"]["task"]["language"]
     language["speculative_decoding"] = {
         "method": "mtp",
-        "max_draft_tokens": run["tuning"]["overrides"]["mtp_max_depth"],
+        "max_draft_tokens": run["lattice"]["overrides"]["mtp_max_depth"],
         "assistant_source": "embedded_head",
     }
     run["execution"]["config_digest"] = execution_config_digest(run["execution"])
@@ -80,16 +82,16 @@ def loaded_sample():
     run = sample()
     values = json.loads(os.environ.get("RAPID_MLX_BENCHMARK_KNOBS", "{}"))
     for name, value in values.items():
-        run["tuning"]["context"]["knobs"][name]["value"] = value
-        if name in run["tuning"]["overrides"]:
-            run["tuning"]["overrides"][name] = value
+        run["lattice"]["context"]["knobs"][name]["value"] = value
+        if name in run["lattice"]["overrides"]:
+            run["lattice"]["overrides"][name] = value
     return run
 
 
 @pytest.fixture(autouse=True)
 def offline_comparison_plan(monkeypatch):
     def context(alias, request):
-        ctx = sample()["tuning"]["context"]
+        ctx = sample()["lattice"]["context"]
         spec = json.loads(request.overrides.get("speculative_config", "{}"))
         ctx["knobs"]["mtp_max_depth"]["value"] = spec.get("num_speculative_tokens", 1)
         return ctx
@@ -106,16 +108,16 @@ def paired():
 
 
 def test_distill_exact_cell_and_profile_shape():
-    result = tuning_distill.distill(paired(), as_of=NOW)
+    result = lattice_distill.distill(paired(), as_of=NOW)
     assert not result["rejected"]
-    entry = result["entries"][0]
-    assert entry["knobs"]["mtp_max_depth"] == 3
-    assert entry["hardware"][0]["gpu_cores"] == [80, 80]
-    assert entry["hardware"][0]["memory_size"] == [274877906944] * 2
-    assert entry["software"]["mlx"] == "===0.32.4"
-    assert entry["workload"] == dict(mode="mtp", width=1, batch=1)
-    assert entry["model"]["geometry"] == [2048, 512, 256, 8, 4, 64]
-    assert entry["provenance"]["repetitions"] == {"default": 3, "mtp-3": 3}
+    cell = result["cells"][0]
+    assert cell["knobs"]["mtp_max_depth"] == 3
+    assert cell["hardware"][0]["gpu_cores"] == [80, 80]
+    assert cell["hardware"][0]["memory_size"] == [274877906944] * 2
+    assert cell["software"]["mlx"] == "===0.32.4"
+    assert cell["workload"] == dict(mode="mtp", width=1, batch=1)
+    assert cell["model"]["geometry"] == [2048, 512, 256, 8, 4, 64]
+    assert cell["provenance"]["repetitions"] == {"default": 3, "mtp-3": 3}
 
 
 @pytest.mark.parametrize(
@@ -132,14 +134,14 @@ def test_distill_exact_cell_and_profile_shape():
 def test_distiller_dense_and_moe_geometry(experts, top_k, accepted):
     runs = paired()
     for run in runs:
-        model = run["tuning"]["context"]["model"]
+        model = run["lattice"]["context"]["model"]
         model.update(num_experts=experts, top_k=top_k)
         if experts == 0:
             model["family"] = "qwen3_5_text"
-    result = tuning_distill.distill(runs, as_of=NOW)
-    assert bool(result["entries"]) is accepted
+    result = lattice_distill.distill(runs, as_of=NOW)
+    assert bool(result["cells"]) is accepted
     if accepted:
-        assert result["entries"][0]["model"]["geometry"][2:4] == [experts, top_k]
+        assert result["cells"][0]["model"]["geometry"][2:4] == [experts, top_k]
         assert not result["rejected"]
     else:
         assert all("facts" in row["reason"] for row in result["rejected"])
@@ -154,7 +156,7 @@ def test_distiller_conflicts_use_emitted_selector(fact, conflict):
         if fact == "checkpoint":
             run["model"]["components"][0]["source"]["resolved_revision"] = "2" * 40
         elif fact == "profiles":
-            run["tuning"]["context"]["profiles"]["overlay"] = "other.1"
+            run["lattice"]["context"]["profiles"]["overlay"] = "other.1"
         else:
             run["execution"]["runtime"]["distribution"] = "source"
             run["execution"]["runtime"]["rapid_mlx_revision"] = "2" * 40
@@ -162,26 +164,26 @@ def test_distiller_conflicts_use_emitted_selector(fact, conflict):
                 run["execution"]
             )
         if conflict and run["experiment"]["arm_id"] != "default":
-            run["tuning"]["overrides"]["mtp_max_depth"] = 4
-    assert tuning_distill.cell_key(first[0]) != tuning_distill.cell_key(second[0])
-    result = tuning_distill.distill(first + second, as_of=NOW)
+            run["lattice"]["overrides"]["mtp_max_depth"] = 4
+    assert lattice_distill.cell_key(first[0]) != lattice_distill.cell_key(second[0])
+    result = lattice_distill.distill(first + second, as_of=NOW)
     if conflict:
-        assert not result["entries"]
+        assert not result["cells"]
         assert len(result["rejected"]) == 1
         assert "conflicting" in result["rejected"][0]["reason"]
         assert "selector" in result["rejected"][0]["reason"]
     else:
         assert not result["rejected"]
-        assert len(result["entries"]) == 1
+        assert len(result["cells"]) == 1
         identities = json.loads(
-            result["entries"][0]["provenance"]["evidence"].removeprefix(
+            result["cells"][0]["provenance"]["evidence"].removeprefix(
                 "community-comparison:"
             )
         )
         assert identities == [
             {
                 "session": group[0]["experiment"]["group_id"],
-                "facts": json.loads(tuning_distill.cell_key(group[0])),
+                "facts": json.loads(lattice_distill.cell_key(group[0])),
             }
             for group in (first, second)
         ]
@@ -190,12 +192,12 @@ def test_distiller_conflicts_use_emitted_selector(fact, conflict):
 def test_distiller_keeps_distinct_emitted_selectors():
     first, second = paired(), paired()
     for run in second:
-        run["tuning"]["context"]["model"]["hidden_size"] = 4096
+        run["lattice"]["context"]["model"]["hidden_size"] = 4096
         if run["experiment"]["arm_id"] != "default":
-            run["tuning"]["overrides"]["mtp_max_depth"] = 4
-    result = tuning_distill.distill(first + second, as_of=NOW)
+            run["lattice"]["overrides"]["mtp_max_depth"] = 4
+    result = lattice_distill.distill(first + second, as_of=NOW)
     assert not result["rejected"]
-    assert [entry["knobs"]["mtp_max_depth"] for entry in result["entries"]] == [3, 4]
+    assert [cell["knobs"]["mtp_max_depth"] for cell in result["cells"]] == [3, 4]
 
 
 @pytest.mark.parametrize(
@@ -219,8 +221,8 @@ def test_distiller_separates_assistant_identities(field):
         elif field == "draft_model_identity_digest" and candidate:
             spec[field] = "sha256:" + "2" * 64
         run["execution"]["config_digest"] = execution_config_digest(run["execution"])
-    assert tuning_distill.cell_key(runs[0]) != tuning_distill.cell_key(runs[1])
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    assert lattice_distill.cell_key(runs[0]) != lattice_distill.cell_key(runs[1])
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
 @pytest.mark.parametrize("arm", ["default", "mtp-3", "both"])
@@ -229,22 +231,22 @@ def test_digest_equivalence_requires_every_measured_round(arm, count):
     runs = paired()
     for run in runs:
         if arm == "both" or run["experiment"]["arm_id"] == arm:
-            run["tuning"]["outputs"] = {
+            run["lattice"]["outputs"] = {
                 case["case_id"]: [DIGEST] * count for case in run["workload"]["cases"]
             }
-    assert not tuning_distill.quality_passes(runs[1::2], runs[::2])
+    assert not lattice_distill.quality_passes(runs[1::2], runs[::2])
 
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_digest_equivalence_requires_each_case(missing):
     runs = paired()
     for run in runs:
-        outputs = run["tuning"]["outputs"]
+        outputs = run["lattice"]["outputs"]
         if missing:
             outputs.pop(next(iter(outputs)))
         else:
             outputs["extra-case"] = [DIGEST] * 5
-    assert not tuning_distill.quality_passes(runs[1::2], runs[::2])
+    assert not lattice_distill.quality_passes(runs[1::2], runs[::2])
 
 
 @pytest.mark.parametrize(
@@ -279,7 +281,7 @@ def test_digest_equivalence_requires_each_case(missing):
 def test_distill_rejects_unqualified_evidence(change):
     runs = paired()
     candidate = runs[1]
-    ctx = candidate["tuning"]["context"]
+    ctx = candidate["lattice"]["context"]
     if change == "few":
         runs = runs[:4]
     elif change == "below_gain":
@@ -294,7 +296,7 @@ def test_distill_rejects_unqualified_evidence(change):
             candidate["measurements"][0]["decode_duration_ms"] + 20
         )
     elif change in ("diverged", "null", "unstable"):
-        candidate["tuning"]["outputs"]["pp512-tg128"][0] = (
+        candidate["lattice"]["outputs"]["pp512-tg128"][0] = (
             None if change == "null" else "sha256:" + "2" * 64
         )
     elif change in ("battery", "thermal", "pressure", "power"):
@@ -327,23 +329,23 @@ def test_distill_rejects_unqualified_evidence(change):
         runs = runs[1::2]
     elif change == "legacy":
         for run in runs:
-            del run["tuning"]
+            del run["lattice"]
     elif change == "overrides":
-        candidate["tuning"]["overrides"]["mtp_max_depth"] = 4
+        candidate["lattice"]["overrides"]["mtp_max_depth"] = 4
     elif change == "knobs":
-        candidate["tuning"]["context"]["knobs"]["qwen35_affine4_bank_views"][
+        candidate["lattice"]["context"]["knobs"]["qwen35_affine4_bank_views"][
             "value"
         ] = False
     elif change == "plain":
         for run in runs[1::2]:
-            run["tuning"]["context"]["mode"] = "plain"
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+            run["lattice"]["context"]["mode"] = "plain"
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
 def test_quality_note_and_commit_preserved():
     runs = paired()
     for run in runs[1::2]:
-        run["tuning"]["quality"] = dict(
+        run["lattice"]["quality"] = dict(
             n=100,
             questions_digest=DIGEST,
             plain=dict(delta_pp=2, paired_p=0.5),
@@ -353,11 +355,11 @@ def test_quality_note_and_commit_preserved():
         run["execution"]["runtime"].update(
             distribution="source", rapid_mlx_revision="a" * 40
         )
-    entry = tuning_distill.distill(runs, as_of=NOW)["entries"][0]
-    assert entry["provenance"]["commit"] == "a" * 40
-    assert entry["provenance"]["quality"][0]["n"] == 100
-    runs[1]["tuning"]["quality"].pop("plain")
-    assert not tuning_distill.quality_passes(runs[1::2], runs[::2])
+    cell = lattice_distill.distill(runs, as_of=NOW)["cells"][0]
+    assert cell["provenance"]["commit"] == "a" * 40
+    assert cell["provenance"]["quality"][0]["n"] == 100
+    runs[1]["lattice"]["quality"].pop("plain")
+    assert not lattice_distill.quality_passes(runs[1::2], runs[::2])
 
 
 def test_sessions_conflict_and_agreement():
@@ -369,11 +371,11 @@ def test_sessions_conflict_and_agreement():
     # Keep every second-session arm in one paired group.
     for r in second:
         r["experiment"]["group_id"] = SESSION.replace("0001", "0002")
-    assert len(tuning_distill.distill(first + second, as_of=NOW)["entries"]) == 1
+    assert len(lattice_distill.distill(first + second, as_of=NOW)["cells"]) == 1
     for r in second[1::2]:
-        r["tuning"]["overrides"]["mtp_max_depth"] = 4
-    result = tuning_distill.distill(first + second, as_of=NOW)
-    assert not result["entries"] and "conflicting" in result["rejected"][-1]["reason"]
+        r["lattice"]["overrides"]["mtp_max_depth"] = 4
+    result = lattice_distill.distill(first + second, as_of=NOW)
+    assert not result["cells"] and "conflicting" in result["rejected"][-1]["reason"]
 
 
 def test_schema_optional_and_identifier_free():
@@ -386,15 +388,15 @@ def test_schema_optional_and_identifier_free():
         ("outputs", "prompt"),
     ]:
         bad = copy.deepcopy(run)
-        bad["tuning"][block][key] = "private"
+        bad["lattice"][block][key] = "private"
         with pytest.raises(ValueError):
             validator.validate(bad)
-    del run["tuning"]
+    del run["lattice"]
     validator.validate(run)
 
 
 def test_candidates_come_from_registry():
-    context = sample()["tuning"]["context"]
+    context = sample()["lattice"]["context"]
     candidates = list(comparison.candidate_values(context))
     assert {"mtp_max_depth": 2} in candidates
     assert {"mtp_gdn_fusion": False} in candidates
@@ -408,7 +410,7 @@ def test_candidates_come_from_registry():
     distances = [len(c) for c in candidates]
     assert set(distances) == {1}
     names = list(dict.fromkeys(next(iter(c)) for c in candidates))
-    assert names == [name for name in tuning.KNOBS if name in names]
+    assert names == [name for name in lattice.KNOBS if name in names]
     for salt, name in enumerate(names):
         assert next(comparison.candidate_values(context, salt=salt)) == next(
             c for c in candidates if name in c
@@ -428,7 +430,7 @@ def test_run_comparison_interleaves_and_archives(
     observed = []
 
     def run_local(alias, **kwargs):
-        assert kwargs["tuning_observation"]
+        assert kwargs["lattice_observation"]
         observed.append(kwargs["acceleration"])
         return loaded_sample()
 
@@ -486,13 +488,13 @@ def test_default_without_neighbors_is_legacy_run(monkeypatch, tmp_path, observat
 
     run = sample()
     if observations:
-        for decision in run["tuning"]["context"]["knobs"].values():
+        for decision in run["lattice"]["context"]["knobs"].values():
             decision["source"] = "capability"
     else:
-        del run["tuning"]
+        del run["lattice"]
     run.pop("experiment")
     monkeypatch.setattr(
-        comparison, "planning_context", lambda *a: run.get("tuning", {}).get("context")
+        comparison, "planning_context", lambda *a: run.get("lattice", {}).get("context")
     )
     calls = []
 
@@ -518,13 +520,13 @@ def test_default_without_neighbors_is_legacy_run(monkeypatch, tmp_path, observat
     assert len(calls) == 1
     assert calls[0]["archive"] is archive
     assert "experiment" not in run and "paired_runs" not in run
-    assert "selection" not in run.get("tuning", {})
+    assert "selection" not in run.get("lattice", {})
 
 
 def test_summary_winners_divergence():
     runs = paired()
     assert "mtp-3" in comparison.summary_lines(runs)[-1]
-    runs[1]["tuning"]["outputs"]["pp512-tg128"][0] = "sha256:" + "2" * 64
+    runs[1]["lattice"]["outputs"]["pp512-tg128"][0] = "sha256:" + "2" * 64
     assert any(
         "outputs differ — not comparable" in line
         for line in comparison.summary_lines(runs)
@@ -538,14 +540,14 @@ def test_distiller_cli(tmp_path, capsys):
             {"configurations": paired(), "measured_configs": 2, "requested_configs": 2}
         )
     )
-    assert tuning_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
-    assert json.loads(capsys.readouterr().out)["entries"]
+    assert lattice_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
+    assert json.loads(capsys.readouterr().out)["cells"]
     file.write_text(json.dumps(sample()))
-    assert tuning_distill.main([str(file)]) == 0
-    assert not json.loads(capsys.readouterr().out)["entries"]
+    assert lattice_distill.main([str(file)]) == 0
+    assert not json.loads(capsys.readouterr().out)["cells"]
 
 
-def test_cli_comparison_entry(monkeypatch, tmp_path, capsys):
+def test_cli_comparison_cell(monkeypatch, tmp_path, capsys):
     from rapid_mlx.cli_parser import build_parser
     from rapid_mlx.community_bench import cli
     from rapid_mlx.community_bench.workspace import LocalRunArchive
@@ -582,7 +584,7 @@ def test_cli_comparison_entry(monkeypatch, tmp_path, capsys):
         ("plain", False, None, True),
     ],
 )
-def test_capture_tuning_is_json_and_identifier_free(
+def test_capture_lattice_is_json_and_identifier_free(
     monkeypatch, mode, experts, quant, has_args
 ):
     import sys
@@ -616,7 +618,7 @@ def test_capture_tuning_is_json_and_identifier_free(
         long=SimpleNamespace(rounds_raw=[SimpleNamespace(output_digest=DIGEST)]),
     )
     spec = {"method": mode, "max_draft_tokens": 4}
-    block = comparison.capture_tuning(
+    block = comparison.capture_lattice(
         SimpleNamespace(language_model=model), {"speculative_decoding": spec}, result
     )
     assert block["overrides"] == ({"mtp_max_depth": 3} if mode == "mtp" else {})
@@ -626,21 +628,21 @@ def test_capture_tuning_is_json_and_identifier_free(
     assert isinstance(block["context"]["model"]["attention_kinds"], list)
 
 
-def test_distiller_module_entry(tmp_path, monkeypatch, capsys):
+def test_distiller_module_cell(tmp_path, monkeypatch, capsys):
     import runpy
     import sys
 
     path = tmp_path / "run.json"
     path.write_text(json.dumps(sample()))
-    monkeypatch.setattr(sys, "argv", ["tuning_distill", str(path)])
-    monkeypatch.delitem(sys.modules, "scripts.tuning_distill")
+    monkeypatch.setattr(sys, "argv", ["lattice_distill", str(path)])
+    monkeypatch.delitem(sys.modules, "scripts.lattice_distill")
     with pytest.raises(SystemExit) as exc:
-        runpy.run_module("scripts.tuning_distill", run_name="__main__")
+        runpy.run_module("scripts.lattice_distill", run_name="__main__")
     assert exc.value.code == 0
-    assert "entries" in capsys.readouterr().out
+    assert "cells" in capsys.readouterr().out
 
 
-def test_tuning_schema_projection_is_generated():
+def test_lattice_schema_projection_is_generated():
     from scripts import sync_model_catalog_schemas
 
     source, name = sync_model_catalog_schemas.SOURCES[0]
@@ -656,8 +658,8 @@ def test_tuning_schema_projection_is_generated():
 )
 def test_distiller_rejects_inconsistent_hardware(field, value):
     runs = paired()
-    runs[1]["tuning"]["context"]["hardware"][field] = value
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    runs[1]["lattice"]["context"]["hardware"][field] = value
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
 def test_distiller_separates_fixed_execution_and_missing_model_facts():
@@ -666,22 +668,22 @@ def test_distiller_separates_fixed_execution_and_missing_model_facts():
     runs[1]["execution"]["config_digest"] = execution_config_digest(
         runs[1]["execution"]
     )
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
     runs = paired()
-    runs[1]["tuning"]["context"]["model"]["hidden_size"] = None
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    runs[1]["lattice"]["context"]["model"]["hidden_size"] = None
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
-def test_preview_preserves_the_optional_tuning_block():
+def test_preview_preserves_the_optional_lattice_block():
     from rapid_mlx.community_bench.atomic_upload import preview_run
 
     run = sample()
     preview = preview_run(run, install_id="a" * 12)
-    assert json.loads(preview["payload_json"])["tuning"] == run["tuning"]
+    assert json.loads(preview["payload_json"])["lattice"] == run["lattice"]
 
 
 def test_candidates_respect_the_model_depth_contract():
-    context = sample()["tuning"]["context"]
+    context = sample()["lattice"]["context"]
     context["model"]["family"] = "qwen4_exp"
     context["knobs"]["mtp_max_depth"]["value"] = 2
     candidates = list(comparison.candidate_values(context))
@@ -691,20 +693,20 @@ def test_candidates_respect_the_model_depth_contract():
 
 def test_distiller_requires_stable_distinct_configurations():
     runs = paired()
-    runs[0]["tuning"]["overrides"]["mtp_max_depth"] = 2
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    runs[0]["lattice"]["overrides"]["mtp_max_depth"] = 2
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
     runs = paired()
     for run in runs[::2]:
-        run["tuning"]["overrides"]["mtp_max_depth"] = 3
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+        run["lattice"]["overrides"]["mtp_max_depth"] = 3
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
 def test_distiller_handles_utc_dates_and_zero_decode_duration():
-    assert tuning_distill.distill(paired(), as_of=NOW.replace(tzinfo=None))["entries"]
+    assert lattice_distill.distill(paired(), as_of=NOW.replace(tzinfo=None))["cells"]
     runs = paired()
     runs[1]["measurements"][0]["decode_duration_ms"] = 0
     runs[1]["measurements"][0]["total_duration_ms"] = 20
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
 @pytest.mark.parametrize(
@@ -713,7 +715,7 @@ def test_distiller_handles_utc_dates_and_zero_decode_duration():
 def test_failed_quality_studies_remain_valid_observations(field, value):
     runs = paired()
     for run in runs[1::2]:
-        run["tuning"]["outputs"]["pp512-tg128"] = ["sha256:" + "2" * 64] * 5
+        run["lattice"]["outputs"]["pp512-tg128"] = ["sha256:" + "2" * 64] * 5
         note = dict(
             n=100,
             questions_digest=DIGEST,
@@ -724,25 +726,25 @@ def test_failed_quality_studies_remain_valid_observations(field, value):
             note[field] = value
         else:
             note["plain"][field] = value
-        run["tuning"]["quality"] = note
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+        run["lattice"]["quality"] = note
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
-def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
+def test_distilled_cell_loads_and_resolves_only_its_explicit_cell(
     tmp_path, monkeypatch
 ):
     from dataclasses import replace
 
-    from rapid_mlx.tuning import defaults
+    from rapid_mlx.lattice import defaults
 
     runs = paired()
-    entry = tuning_distill.distill(runs, as_of=NOW)["entries"][0]
+    cell = lattice_distill.distill(runs, as_of=NOW)["cells"][0]
     blocked = {
         name
-        for name, decision in runs[1]["tuning"]["context"]["knobs"].items()
+        for name, decision in runs[1]["lattice"]["context"]["knobs"].items()
         if decision["source"] == "capability"
     }
-    assert blocked and not blocked.intersection(entry["knobs"])
+    assert blocked and not blocked.intersection(cell["knobs"])
     path = tmp_path / "profile.json"
     path.write_text(
         json.dumps(
@@ -750,25 +752,27 @@ def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
                 schema_version=1,
                 profile_version="comparison.1",
                 generated_at=NOW.isoformat(),
-                entries=[entry],
+                cells=[cell],
             )
         )
     )
-    profile = defaults.load_profile(path, tuning.KNOBS)
-    assert len(profile.entries) == 1
-    monkeypatch.setattr(tuning, "overlay_profile", lambda: profile)
-    ctx = tuning.TuningContext(
-        tuning.HardwareProfile(**runs[1]["tuning"]["context"]["hardware"]),
+    profile = defaults.load_profile(path, lattice.KNOBS)
+    assert len(profile.cells) == 1
+    monkeypatch.setattr(lattice, "overlay_profile", lambda: profile)
+    ctx = lattice.LatticeContext(
+        lattice.HardwareProfile(**runs[1]["lattice"]["context"]["hardware"]),
         "0.32.4",
         "26.5.2",
-        tuning.ModelProfile("qwen3_5_moe_text", 2048, 512, 256, 8, 4, 64, (), "affine"),
+        lattice.ModelProfile(
+            "qwen3_5_moe_text", 2048, 512, 256, 8, 4, 64, (), "affine"
+        ),
         mode="mtp",
         has_mtp_head=True,
         rapid_mlx=__version__,
     )
-    decision = tuning.resolve("mtp_max_depth", ctx, environ={})
-    assert decision == tuning.Decision(
-        3, "overlay:" + entry["id"], profile_version="comparison.1"
+    decision = lattice.resolve("mtp_max_depth", ctx, environ={})
+    assert decision == lattice.Decision(
+        3, "overlay:" + cell["id"], profile_version="comparison.1"
     )
     for changed in (
         replace(ctx, hardware=replace(ctx.hardware, gpu_cores=79)),
@@ -778,7 +782,7 @@ def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
         replace(ctx, model=replace(ctx.model, hidden_size=4096)),
         replace(ctx, width=2),
     ):
-        assert not tuning.resolve(
+        assert not lattice.resolve(
             "mtp_max_depth", changed, environ={}
         ).source.startswith("overlay:")
 
@@ -786,19 +790,19 @@ def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
 @pytest.mark.parametrize("change", ["runtime", "profiles", "geometry"])
 def test_distiller_v2_facts_must_match(change):
     runs = paired()
-    ctx = runs[1]["tuning"]["context"]
+    ctx = runs[1]["lattice"]["context"]
     if change == "runtime":
         ctx["rapid_mlx"] = "0.1"
     elif change == "profiles":
         ctx["profiles"]["overlay"] = "other.1"
     else:
         ctx["model"]["num_experts"] = 0
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
 
 
 def test_schema_preserves_full_v2_profile_sources_and_versions():
     run = sample()
-    ctx = run["tuning"]["context"]
+    ctx = run["lattice"]["context"]
     assert ctx["rapid_mlx"] == __version__
     assert set(ctx["profiles"]) == {"builtin", "overlay"}
     decision = ctx["knobs"]["mtp_max_depth"]
@@ -807,9 +811,9 @@ def test_schema_preserves_full_v2_profile_sources_and_versions():
     for location in (ctx["profiles"], decision):
         bad = copy.deepcopy(run)
         target = (
-            bad["tuning"]["context"]["profiles"]
+            bad["lattice"]["context"]["profiles"]
             if location is ctx["profiles"]
-            else bad["tuning"]["context"]["knobs"]["mtp_max_depth"]
+            else bad["lattice"]["context"]["knobs"]["mtp_max_depth"]
         )
         target["builtin" if location is ctx["profiles"] else "profile_version"] = (
             "private/path"
@@ -839,23 +843,23 @@ def test_comparison_environment_restores_even_after_failure(monkeypatch):
     "raw", ['{"mtp_max_depth":2}', "null", "[]", "{", '{"mtp_max_depth":99}']
 )
 def test_registered_benchmark_overrides_obey_capabilities(raw):
-    context = sample()["tuning"]["context"]
-    ctx = tuning.TuningContext(
-        tuning.HardwareProfile(**context["hardware"]),
+    context = sample()["lattice"]["context"]
+    ctx = lattice.LatticeContext(
+        lattice.HardwareProfile(**context["hardware"]),
         context["mlx"],
         context["macos"],
-        tuning.ModelProfile(**context["model"]),
+        lattice.ModelProfile(**context["model"]),
         mode="mtp",
         has_mtp_head=True,
     )
     env = {"RAPID_MLX_BENCHMARK_KNOBS": raw, "RAPID_MLX_MTP_MAX_DEPTH": "1"}
-    decision = tuning.resolve("mtp_max_depth", ctx, environ=env)
+    decision = lattice.resolve("mtp_max_depth", ctx, environ=env)
     assert decision.value == (2 if raw == '{"mtp_max_depth":2}' else 1)
     assert decision.source == ("benchmark" if decision.value == 2 else "env")
     from dataclasses import replace
 
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth", replace(ctx, has_mtp_head=False), environ=env
         ).source
         == "capability"
@@ -878,14 +882,14 @@ def test_single_configuration_preserves_original_runner(monkeypatch, tmp_path):
         comparison.run_comparison("model", configs=1, archive=LocalRunArchive(tmp_path))
         is expected
     )
-    assert len(calls) == 1 and "tuning_observation" not in calls[0]
+    assert len(calls) == 1 and "lattice_observation" not in calls[0]
     for configs in (0, 17):
         with pytest.raises(ValueError, match="configs"):
             comparison.run_comparison("model", configs=configs)
 
 
 def test_neighbor_boundaries_and_rotation():
-    context = sample()["tuning"]["context"]
+    context = sample()["lattice"]["context"]
     context["knobs"]["mtp_max_depth"]["value"] = 1
     candidates = list(comparison.candidate_values(context))
     assert {"mtp_max_depth": 2} in candidates
@@ -912,12 +916,12 @@ def test_neighbor_boundaries_and_rotation():
 def test_distiller_accepts_boolean_neighbor_and_bundled_submission(tmp_path, capsys):
     runs = paired()
     for run in runs[1::2]:
-        run["tuning"]["overrides"]["mtp_max_depth"] = 1
-        run["tuning"]["context"]["knobs"]["qwen35_affine4_bank_views"].update(
+        run["lattice"]["overrides"]["mtp_max_depth"] = 1
+        run["lattice"]["context"]["knobs"]["qwen35_affine4_bank_views"].update(
             value=False, source="benchmark"
         )
     assert (
-        tuning_distill.distill(runs, as_of=NOW)["entries"][0]["knobs"][
+        lattice_distill.distill(runs, as_of=NOW)["cells"][0]["knobs"][
             "qwen35_affine4_bank_views"
         ]
         is False
@@ -926,21 +930,21 @@ def test_distiller_accepts_boolean_neighbor_and_bundled_submission(tmp_path, cap
     first["paired_runs"] = runs[1:]
     file = tmp_path / "paired.json"
     file.write_text(json.dumps(first))
-    assert tuning_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
-    assert json.loads(capsys.readouterr().out)["entries"]
+    assert lattice_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
+    assert json.loads(capsys.readouterr().out)["cells"]
     # The individual archives saved beside the bundle are identical copies.
     files = [str(file)]
     for index, run in enumerate(runs[1:]):
         path = tmp_path / f"run-{index}.json"
         path.write_text(json.dumps(run))
         files.append(str(path))
-    assert tuning_distill.main([*files, "--as-of", NOW.isoformat()]) == 0
-    assert json.loads(capsys.readouterr().out)["entries"]
+    assert lattice_distill.main([*files, "--as-of", NOW.isoformat()]) == 0
+    assert json.loads(capsys.readouterr().out)["cells"]
     conflicting = copy.deepcopy(runs[1])
     conflicting["measurements"][0]["ttft_ms"] += 1
     path = tmp_path / "conflict.json"
     path.write_text(json.dumps(conflicting))
-    assert tuning_distill.main([*files, str(path), "--as-of", NOW.isoformat()]) == 0
+    assert lattice_distill.main([*files, str(path), "--as-of", NOW.isoformat()]) == 0
     result = json.loads(capsys.readouterr().out)
     assert {"reason": "duplicate run"}.items() <= result["rejected"][0].items()
 
@@ -987,7 +991,7 @@ def test_cli_configs_one_and_default_help(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "run_local", lambda *a, **kw: seen.append(kw) or sample())
     args = parser.parse_args(["benchmark", "run", "model", "--configs", "1"])
     assert cli._benchmark_command(args) == 0
-    assert len(seen) == 1 and "tuning_observation" not in seen[0]
+    assert len(seen) == 1 and "lattice_observation" not in seen[0]
     assert "Comparing" not in capsys.readouterr().err
 
 
@@ -1005,10 +1009,10 @@ def test_requests_preserve_options_and_record_rotation(monkeypatch, tmp_path):
         values = json.loads(os.environ.get("RAPID_MLX_BENCHMARK_KNOBS", "{}"))
         run = sample()
         for name, value in values.items():
-            run["tuning"]["context"]["knobs"][name].update(
+            run["lattice"]["context"]["knobs"][name].update(
                 value=value, source="benchmark"
             )
-        run["tuning"]["overrides"]["mtp_max_depth"] = values.get("mtp_max_depth", 3)
+        run["lattice"]["overrides"]["mtp_max_depth"] = values.get("mtp_max_depth", 3)
         return run
 
     request = AccelerationRequest(
@@ -1038,7 +1042,7 @@ def test_requests_preserve_options_and_record_rotation(monkeypatch, tmp_path):
     )
     assert result["measured_configs"] == 2
     for run in result["configurations"]:
-        choice = run["tuning"]["selection"]
+        choice = run["lattice"]["selection"]
         assert choice["salt"] == salt
         assert choice["changed_knobs"] == (
             [] if run["experiment"]["arm_id"] == "default" else ["mtp_max_depth"]
@@ -1090,7 +1094,7 @@ def test_measure_configuration_uses_supervised_fresh_worker(monkeypatch, sinks):
     def run(target, args, **kwargs):
         assert target is comparison._configuration_worker
         assert args[0] == "model"
-        assert args[1]["tuning_observation"]
+        assert args[1]["lattice_observation"]
         kwargs["on_message"]("progress", "loading")
         kwargs["on_message"]("event", {"kind": "ready"})
         return expected
@@ -1099,7 +1103,7 @@ def test_measure_configuration_uses_supervised_fresh_worker(monkeypatch, sinks):
     assert (
         comparison.measure_configuration(
             "model",
-            tuning_observation=True,
+            lattice_observation=True,
             progress=progress.append if sinks else None,
             events=events.append if sinks else None,
         )
@@ -1193,19 +1197,19 @@ def test_default_cli_without_applicable_knobs_keeps_legacy_process(
     run.pop("experiment")
     if task == "text_generation":
         # Real registry decisions for an M3 text cell with no eligible knobs.
-        context = tuning.TuningContext(
-            tuning.HardwareProfile("applegpu_g15d", 15, "Ultra", 60, 274877906944),
+        context = lattice.LatticeContext(
+            lattice.HardwareProfile("applegpu_g15d", 15, "Ultra", 60, 274877906944),
             "0.32.4",
             "26.5.2",
-            tuning.ModelProfile(),
+            lattice.ModelProfile(),
         )
-        run["tuning"]["context"] = json.loads(json.dumps(tuning.dump(context)))
-        run["tuning"]["overrides"] = {}
-        assert not list(comparison.candidate_values(run["tuning"]["context"]))
+        run["lattice"]["context"] = json.loads(json.dumps(lattice.dump(context)))
+        run["lattice"]["overrides"] = {}
+        assert not list(comparison.candidate_values(run["lattice"]["context"]))
     else:
-        del run["tuning"]
+        del run["lattice"]
     monkeypatch.setattr(
-        comparison, "planning_context", lambda *a: run.get("tuning", {}).get("context")
+        comparison, "planning_context", lambda *a: run.get("lattice", {}).get("context")
     )
     run["workload"]["task_type"] = task
     calls = []
@@ -1286,9 +1290,9 @@ def test_shared_verdict_reasons(change, expected):
         runs[1]["outcome"]["status"] = "failed"
     elif change in {"digest", "baseline_unstable"}:
         run = runs[1] if change == "digest" else runs[0]
-        run["tuning"]["outputs"]["pp512-tg128"][0] = "sha256:" + "2" * 64
+        run["lattice"]["outputs"]["pp512-tg128"][0] = "sha256:" + "2" * 64
     elif change == "quality":
-        runs[1]["tuning"]["quality"] = {"n": 0}
+        runs[1]["lattice"]["quality"] = {"n": 0}
     elif change == "below":
         for run in runs[1::2]:
             for m in run["measurements"]:
@@ -1311,22 +1315,22 @@ def test_shared_verdict_reasons(change, expected):
 def test_distill_uses_shared_verdict_and_quality_is_additional(monkeypatch):
     runs = paired()
     for run in runs[1::2]:
-        run["tuning"]["quality"] = dict(
+        run["lattice"]["quality"] = dict(
             n=100,
             questions_digest=DIGEST,
             plain=dict(delta_pp=0, paired_p=1),
             default=dict(delta_pp=0, paired_p=1),
         )
-        run["tuning"]["outputs"]["pp512-tg128"] = ["sha256:" + "2" * 64] * 5
-    assert not tuning_distill.distill(runs, as_of=NOW)["entries"]
+        run["lattice"]["outputs"]["pp512-tg128"] = ["sha256:" + "2" * 64] * 5
+    assert not lattice_distill.distill(runs, as_of=NOW)["cells"]
     calls = []
 
     def reject(group, arm):
         calls.append(arm)
         return "no_reliable_gain", "below_threshold"
 
-    monkeypatch.setattr(tuning_distill, "arm_verdict", reject)
-    assert not tuning_distill.distill(paired(), as_of=NOW)["entries"]
+    monkeypatch.setattr(lattice_distill, "arm_verdict", reject)
+    assert not lattice_distill.distill(paired(), as_of=NOW)["cells"]
     assert calls == ["mtp-3"]
 
 
@@ -1352,7 +1356,7 @@ def test_incremental_manifest_and_balanced_order(monkeypatch, tmp_path, failure)
         if not calls:
             assert "Plan: 2 configs × 3 repetitions" in progress
             assert "estimated time: shown after the first repetition" in progress
-            source = sample()["tuning"]["context"]["knobs"]["mtp_max_depth"][
+            source = sample()["lattice"]["context"]["knobs"]["mtp_max_depth"][
                 "source"
             ].split(":")[0]
             assert f"mtp_max_depth: 1 → 2 (current source: {source})" in progress
@@ -1412,8 +1416,8 @@ def test_incremental_manifest_and_balanced_order(monkeypatch, tmp_path, failure)
     )
     assert not list(path.parent.glob("*.tmp"))
     assert any("estimated time remaining:" in line for line in progress)
-    for entry in manifest["runs"]:
-        for saved in entry["saved_paths"]:
+    for cell in manifest["runs"]:
+        for saved in cell["saved_paths"]:
             assert Path(saved).exists()
     if failure:
         assert (
@@ -1644,7 +1648,7 @@ def test_loaded_current_settings_must_match_plan(monkeypatch, tmp_path, capsys):
 
     def current(*a, **kw):
         run = sample()
-        run["tuning"]["overrides"]["mtp_max_depth"] = 4
+        run["lattice"]["overrides"]["mtp_max_depth"] = 4
         return run
 
     monkeypatch.setattr(

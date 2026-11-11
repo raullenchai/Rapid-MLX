@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from rapid_mlx.tuning import Decision
+from rapid_mlx.lattice import Decision
 
 
 @pytest.mark.parametrize(

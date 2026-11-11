@@ -526,7 +526,7 @@ def test_forward_passes_full_banks_and_token_geometry(monkeypatch, tokens):
 
 
 def test_bank_views_device_gate_and_kill_switch(monkeypatch):
-    from rapid_mlx.tuning import profiles
+    from rapid_mlx.lattice import profiles
 
     # The measured table entry is pinned to the MLX version it was measured on;
     # pin it here so the device gate is tested independently of the install.

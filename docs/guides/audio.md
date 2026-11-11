@@ -1,8 +1,8 @@
 # Audio Support
 
-<!-- NOTE for doc sweeps: the Chinese/Japanese sample payloads in this guide
+<!-- NOTE for doc reviews: the Chinese/Japanese sample payloads in this guide
      are intentional — they are functional TTS inputs for zh/ja voices
-     (qwen3-tts, f5-tts-zh, Kokoro zh/ja). English-only sweeps should skip
+     (qwen3-tts, f5-tts-zh, Kokoro zh/ja). English-only reviews should skip
      them rather than flag them. -->
 
 rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:

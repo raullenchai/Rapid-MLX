@@ -351,7 +351,7 @@ def _run_dispatch_mtp_inject(
         mtp_sidecar=mtp_sidecar,
     )
     if ok:
-        from ..tuning.mtp import gdn_fusion_enabled
+        from ..lattice.mtp import gdn_fusion_enabled
 
         if gdn_fusion_enabled(model):
             from ..gdn_in_proj_fusion import fuse_gdn_in_proj
@@ -2184,14 +2184,14 @@ class BatchedEngine(BaseEngine):
         if logger.isEnabledFor(logging.DEBUG) and isinstance(config, dict):
             import mlx.core as mx
 
-            from .. import tuning
+            from .. import lattice
 
-            self._tuning_context = tuning.runtime_context(
+            self._lattice_context = lattice.runtime_context(
                 mx.device_info(),
                 config=config,
                 mode="plain" if spec_decode == "none" else spec_decode,
             )
-            logger.debug("Resolved tuning: %s", tuning.dump(self._tuning_context))
+            logger.debug("Resolved lattice: %s", lattice.dump(self._lattice_context))
         self._mllm_dense_singleton_fastpath = False
         if _should_start_qwen36_native_text_cache(
             language_model,

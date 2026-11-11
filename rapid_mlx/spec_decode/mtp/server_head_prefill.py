@@ -9,7 +9,7 @@ class is patched globally.
 
 class HeadPrefillCapture:
     def __init__(self, model, mx, quantize_cache_fn):
-        from rapid_mlx.tuning.mtp import prefill_block_size
+        from rapid_mlx.lattice.mtp import prefill_block_size
 
         self.prefill_block_size = prefill_block_size(model)
         self.model = model
