@@ -318,11 +318,20 @@ def main(argv=None) -> int:
     parser.add_argument("--as-of", type=datetime.fromisoformat, default=None)
     args = parser.parse_args(argv)
     runs = []
+    seen: dict[str, str] = {}
     for path in args.files:
         document = json.loads(path.read_text())
-        runs.extend(
-            document.get("configurations", [document, *document.get("paired_runs", [])])
-        )
+        for run in document.get(
+            "configurations", [document, *document.get("paired_runs", [])]
+        ):
+            # A comparison's first archive embeds its paired runs, which are
+            # also saved individually; identical copies count once, while a
+            # conflicting record under the same id stays for the gate to reject.
+            encoded = json.dumps(run, sort_keys=True)
+            if seen.get(run.get("run_id")) == encoded:
+                continue
+            seen.setdefault(run.get("run_id"), encoded)
+            runs.append(run)
     result = distill(
         runs,
         as_of=args.as_of or datetime.now(timezone.utc),

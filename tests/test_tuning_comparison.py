@@ -928,6 +928,21 @@ def test_distiller_accepts_boolean_neighbor_and_bundled_submission(tmp_path, cap
     file.write_text(json.dumps(first))
     assert tuning_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
     assert json.loads(capsys.readouterr().out)["entries"]
+    # The individual archives saved beside the bundle are identical copies.
+    files = [str(file)]
+    for index, run in enumerate(runs[1:]):
+        path = tmp_path / f"run-{index}.json"
+        path.write_text(json.dumps(run))
+        files.append(str(path))
+    assert tuning_distill.main([*files, "--as-of", NOW.isoformat()]) == 0
+    assert json.loads(capsys.readouterr().out)["entries"]
+    conflicting = copy.deepcopy(runs[1])
+    conflicting["measurements"][0]["ttft_ms"] += 1
+    path = tmp_path / "conflict.json"
+    path.write_text(json.dumps(conflicting))
+    assert tuning_distill.main([*files, str(path), "--as-of", NOW.isoformat()]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert {"reason": "duplicate run"}.items() <= result["rejected"][0].items()
 
 
 def test_preview_projects_all_paired_runs_and_rejects_nested_bundles():
