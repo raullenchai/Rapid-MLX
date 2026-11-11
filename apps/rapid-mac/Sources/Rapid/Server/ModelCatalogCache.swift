@@ -35,6 +35,7 @@ actor ModelCatalogCache {
     typealias Loader = @Sendable (URL, URL?) async throws -> [ModelEntry]
     private let loader: Loader
     private let cacheTTL: TimeInterval
+    private let blockingIO: DiscoveryBlockingIO
     private let discoveryTimeout: TimeInterval
     private let volumeResolver: @Sendable (URL) -> String?
     private let requestedOverride: @Sendable () -> URL?
@@ -47,6 +48,7 @@ actor ModelCatalogCache {
         },
         ttl: TimeInterval = ModelCatalogCache.ttl,
         discoveryTimeout: TimeInterval = 10,
+        blockingIO: DiscoveryBlockingIO = .shared,
         volumeResolver: @escaping @Sendable (URL) -> String? = CachedModelDiscovery.externalVolumeName,
         requestedOverride: @escaping @Sendable () -> URL? = { CachedModelDiscovery.requestedOverrideURL() },
         directoryProbe: @escaping ModelsFolderPreference.DirectoryProbe = ModelsFolderPreference.isDirectory
@@ -54,6 +56,7 @@ actor ModelCatalogCache {
         self.loader = loader
         self.cacheTTL = ttl
         self.discoveryTimeout = discoveryTimeout
+        self.blockingIO = blockingIO
         self.volumeResolver = volumeResolver
         self.requestedOverride = requestedOverride
         self.directoryProbe = directoryProbe
@@ -267,11 +270,12 @@ actor ModelCatalogCache {
     ) -> InFlight {
         let loader = self.loader
         let timeout = discoveryTimeout
+        let blockingIO = self.blockingIO
         let volumeResolver = self.volumeResolver
         let directoryProbe = self.directoryProbe
         let task = Task<CachedModelDiscoveryResult, Never> {
             await CachedModelDiscovery.discoverCatalog(
-                timeout: timeout, requestedOverride: override,
+                timeout: timeout, requestedOverride: override, blockingIO: blockingIO,
                 directoryProbe: directoryProbe, volumeResolver: volumeResolver
             ) { validatedOverride in
                 try await loader(binary, validatedOverride)

@@ -215,6 +215,7 @@ enum CachedModelDiscovery {
     static func discoverCatalog(
         timeout: TimeInterval = 10,
         requestedOverride: URL?,
+        blockingIO: DiscoveryBlockingIO = .shared,
         directoryProbe: @escaping ModelsFolderPreference.DirectoryProbe = ModelsFolderPreference.isDirectory,
         volumeResolver: @escaping @Sendable (URL) -> String? = externalVolumeName,
         provider: @escaping @Sendable (URL?) async throws -> [ModelEntry]
@@ -226,7 +227,7 @@ enum CachedModelDiscovery {
             ),
             volumeResolver: volumeResolver
         ) {
-            let override = try await DiscoveryDeadline.run(seconds: timeout) {
+            let override = try await DiscoveryDeadline.run(seconds: timeout, blockingIO: blockingIO) {
                 try ModelsFolderPreference.discoveryOverrideURL(
                     requestedOverride, directoryProbe: directoryProbe
                 )
