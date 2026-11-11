@@ -61,6 +61,7 @@ API clients can also request grounded chat from explicitly selected registered f
 ## Bug Fixes
 
 - **Ask this folder:** small folders now decline unrelated questions instead of answering with citations to irrelevant files ([#5767](https://github.com/raullenchai/Rapid-MLX/issues/5767)).
+- Desktop recognizes models in a custom models folder after unloading and lets the next chat start them again ([#5768](https://github.com/raullenchai/Rapid-MLX/issues/5768)).
 
 - JSON output requests now use the same thinking preference as plain chat, avoiding unexpected reasoning that can leave the answer empty.
 - `pull` and `chat` now accept the suggested `--force-disk-check` option to proceed past insufficient-disk warnings.

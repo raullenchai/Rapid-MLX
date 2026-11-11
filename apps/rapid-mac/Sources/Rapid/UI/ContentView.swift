@@ -383,11 +383,19 @@ struct ContentView: View {
         displayedModelSwitch: ServerManager.PendingModelSwitch?
     ) -> some View {
         content
-        .onChange(of: server.state) { _, newState in
+        .onChange(of: server.state) { oldState, newState in
             // A chat-model replacement can keep the process or respawn it.
             // Dictation owns the same reconciliation entry point for both so
             // an enabled STT lane is resident before its hotkey reads Ready.
             dictation.serverStateDidChange(newState)
+            if case .ready = oldState, case .stopped = newState {
+                // A running model can mask an old inventory (for example one
+                // captured before the models folder changed). After an unload
+                // or stop, re-discover using the same override-aware path as
+                // launch before offering Send. Startup transitions must not
+                // reset the catalog the launch-time selection is waiting on.
+                downloads.markCacheChanged()
+            }
             // #223: clear the download-prompt CTA the moment the server
             // moves out of ``.idle``.
             if case .idle = newState {} else { autoStartPendingDownload = nil }
@@ -1155,27 +1163,22 @@ struct ContentView: View {
     /// What we know about this alias' weights — see the ``resolve`` docs
     /// for why neither unknown state resolves to "download".
     private func cacheState(for alias: String) -> ModelReadiness.CacheState {
+        Self.readinessCacheState(
+            for: alias, entries: catalogEntries,
+            loaded: catalogLoaded && catalogGeneration == downloads.cacheGeneration,
+            pendingDownloadAlias: autoStartPendingDownload?.alias
+        )
+    }
+
+    static func readinessCacheState(
+        for alias: String, entries: [ModelEntry], loaded: Bool,
+        pendingDownloadAlias: String? = nil
+    ) -> ModelReadiness.CacheState {
         guard !alias.isEmpty else { return .catalogPending }
-        // #223's launch-time decision already established that this
-        // alias needs pulling, and it lands before the catalog snapshot
-        // does. Trusting it here means a cold first launch says
-        // "isn't downloaded yet" immediately instead of flashing
-        // "isn't running" for the second the catalog takes to load.
-        if let pending = autoStartPendingDownload, pending.alias == alias {
-            return .notOnDisk
-        }
-        // An EMPTY catalog is not evidence that an alias is unknown.
-        // ``ModelCatalog.load`` returns `[]` as its failure sentinel (the
-        // `rapid-mlx models` subprocess failed), and ``catalogLoaded``
-        // flips to true either way. Treating that as "the catalog has
-        // spoken" would tell the user their model is unrecognised on the
-        // strength of a command that did not run.
-        guard catalogLoaded, !catalogEntries.isEmpty else { return .catalogPending }
-        guard let entry = catalogEntries.first(where: { $0.alias == alias }) else {
-            // A custom alias the user typed isn't in the catalog. We
-            // genuinely don't know whether it's on disk — and unlike the
-            // still-loading case, nothing is coming to tell us, so the
-            // banner must not claim it is already downloaded.
+        if pendingDownloadAlias == alias { return .notOnDisk }
+        // A previous generation is not evidence that weights are missing.
+        guard loaded, !entries.isEmpty else { return .catalogPending }
+        guard let entry = entries.first(where: { $0.alias == alias }) else {
             return .notInCatalog
         }
         return entry.cached ? .onDisk : .notOnDisk
