@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import cast
@@ -49,6 +50,17 @@ class Knob:
     profile_requirement: bool = False
 
     def valid(self, value):
+        if self.default == ():
+            return (
+                isinstance(value, (tuple, list))
+                and 3 <= len(value) <= 6
+                and all(
+                    type(v) in (int, float) and abs(v) <= sys.float_info.max
+                    for v in value
+                )
+                and all(v > 0 for v in value[:-1])
+                and value[-1] >= 0
+            )
         if type(self.default) is int:
             return type(value) is int and 1 <= value <= 4
         if type(self.default) is bool:
@@ -68,6 +80,11 @@ def _knob(name, scope, env=None, default=False, profile_requirement=False):
 
 
 KNOBS = {
+    "mtp_forward_costs_ms": _knob(
+        "mtp_forward_costs_ms",
+        lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,
+        default=(),
+    ),
     "mtp_max_depth": _knob(
         "mtp_max_depth",
         lambda c: c.mode == "mtp" and c.batch == 1,

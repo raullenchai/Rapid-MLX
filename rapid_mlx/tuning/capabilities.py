@@ -12,7 +12,7 @@ QSA_MLX_VERSIONS = frozenset({"0.32.2"})
 
 def requirement_reason(name: str, ctx: TuningContext) -> str | None:
     hw = ctx.hardware
-    if name == "mtp_max_depth" and not ctx.has_mtp_head:
+    if name in {"mtp_max_depth", "mtp_forward_costs_ms"} and not ctx.has_mtp_head:
         return "MTP head unavailable"
     if name in QSA_ARCHITECTURES:
         if ctx.mlx not in QSA_MLX_VERSIONS:

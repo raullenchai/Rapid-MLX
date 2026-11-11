@@ -17,19 +17,19 @@ text, on a fresh server and on a warm one.
 What a greedy request may use instead
 -------------------------------------
 
-Its own tokens, plus a host profile (:class:`GreedySchedule`) fixed once per
-process, model and ``max_k`` and shared by every greedy request. Each round's
+Its own tokens, plus a host profile (:class:`GreedySchedule`) supplied by the
+tuning cell or calibrated once per process, model and ``max_k``. Each round's
 depth maximizes expected committed tokens / cost on the measured curve and
 this request's own acceptance. No wall times or cross-request acceptance
 enter a greedy request's decisions after calibration.
 
-Calibration uses scratch forwards at one row and each verify width, plus
-the greedy draft head. Paired round-robin ratios suppress common clock drift;
-medians reject isolated stalls. The measured curve is continuous: crossing a
+Unmeasured cells fall back to calibration using scratch forwards at one row
+and each verify width, plus the greedy draft head. Paired round-robin ratios
+suppress common clock drift, and medians reject isolated stalls. The measured curve is continuous: crossing a
 verify/step ratio of 1.33 must not switch the K=1 price from 1.272 to 1.87.
-The profile is frozen after calibration to preserve repeated greedy output
-within a process. Across restarts, floating-point width sensitivity still
-makes exact text reproducibility best effort.
+Shipped curves preserve depth decisions across restarts for the same cell.
+Fallback calibration freezes its curve within the process. Timing variation
+in that fallback can still change greedy output across restarts.
 
 Seeded requests retain their configured depth and clock-free copy curve.
 An operator's ``disable_auto_k`` depth is used as configured.
@@ -95,7 +95,7 @@ TIMING_ROUNDS = 21
 
 @dataclass(frozen=True)
 class GreedySchedule:
-    """What a greedy request may know about its host, fixed for the process.
+    """Fixed host costs from a tuning cell or process-local calibration.
 
     Attributes:
         depth: the deepest round a request may draft (``max_k``), or ``0``
@@ -227,16 +227,7 @@ def reproducible_schedule(
             return cached
         try:
             step_ms, verify_ms, draft_ms = measure(max_k)
-            costs = round_costs(step_ms, verify_ms, draft_ms)
-            if len(verify_ms) < max_k:
-                raise ValueError("calibration omitted a configured verify depth")
-            schedule = GreedySchedule(
-                depth=depth_that_pays(costs, max_k),
-                # Diagnostic only for measured profiles, never a cost selector.
-                steep_verify=verify_is_steep(step_ms, verify_ms, max_k),
-                round_costs=costs,
-                verify_costs=(1.0,) + tuple(v / step_ms for v in verify_ms),
-            )
+            schedule = schedule_from_timings(step_ms, verify_ms, draft_ms, max_k)
         except Exception:  # noqa: BLE001 -- measurement must never fail a request
             logger.warning(
                 "[MTP] could not time the target forward for reproducible "
@@ -256,6 +247,21 @@ def reproducible_schedule(
             list(schedule.round_costs),
         )
         return schedule
+
+
+def schedule_from_timings(
+    step_ms: float, verify_ms: tuple[float, ...], draft_ms: float, max_k: int
+) -> GreedySchedule:
+    """Freeze one measured curve for request-local depth and copy decisions."""
+    costs = round_costs(step_ms, verify_ms, draft_ms)
+    if len(verify_ms) < max_k:
+        raise ValueError("calibration omitted a configured verify depth")
+    return GreedySchedule(
+        depth=depth_that_pays(costs, max_k),
+        steep_verify=verify_is_steep(step_ms, verify_ms, max_k),
+        round_costs=costs,
+        verify_costs=(1.0,) + tuple(v / step_ms for v in verify_ms),
+    )
 
 
 def time_target_forwards(model: Any, max_k: int) -> Timings:
@@ -348,7 +354,12 @@ def summarize_forward_samples(samples: list[list[float]]) -> Timings:
 
 
 def greedy_schedule(model: Any, key: str, max_k: int) -> GreedySchedule:
-    """:func:`reproducible_schedule` measured with :func:`time_target_forwards`."""
+    """Use the tuning cell's measured costs, falling back to process calibration."""
+    from ...tuning.mtp import forward_costs
+
+    values = forward_costs(model, max_k)
+    if values:
+        return schedule_from_timings(values[0], values[1:-1], values[-1], max_k)
     return reproducible_schedule(
         key, max_k, lambda depth: time_target_forwards(model, depth)
     )
