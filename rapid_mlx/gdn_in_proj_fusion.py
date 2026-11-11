@@ -50,7 +50,10 @@ from typing import Any
 
 import mlx.core as mx
 
+from .lattice.gdn import GDNPolicy
+
 logger = logging.getLogger(__name__)
+_POLICY = GDNPolicy(lambda: mx)
 
 # Fused single-matmul path is used only when B*S <= this. Must stay at or
 # below the byte-parity boundary of the narrow-batch quantized kernel
@@ -156,8 +159,11 @@ def _fused_projections(gdn: Any, inputs: mx.array):
     """
     fused = gdn.in_proj_fused
     bounds = gdn._rapid_gdn_bounds
+    max_rows = getattr(gdn, "_rapid_gdn_max_rows", None)
+    if max_rows is None:
+        max_rows = resolved_max_rows()
     if (
-        inputs.shape[0] * inputs.shape[1] <= _FUSED_MAX_ROWS
+        inputs.shape[0] * inputs.shape[1] <= max_rows
         and inputs.dtype in gdn._rapid_gdn_dtypes
     ):
         out = fused(inputs)
@@ -576,12 +582,19 @@ def _fuse_one(
 
     gdn._rapid_gdn_bounds = bounds
     gdn._rapid_gdn_dtypes = dtypes
+    # Resolved once at install so the per-token path reads a plain attribute.
+    gdn._rapid_gdn_max_rows = resolved_max_rows()
     gdn.in_proj_fused = fused
     if not retain_split:
         del gdn.in_proj_qkv
         del gdn.in_proj_z
         del gdn.in_proj_b
         del gdn.in_proj_a
+
+
+def resolved_max_rows() -> int:
+    """Lattice row policy, never above the parity-probed envelope."""
+    return min(_FUSED_MAX_ROWS, _POLICY.max_rows())
 
 
 def fuse_gdn_in_proj(model: Any, *, retain_split: bool = False) -> int:
@@ -606,6 +619,8 @@ def fuse_gdn_in_proj(model: Any, *, retain_split: bool = False) -> int:
         logger.info("[gdn_fusion] disabled via RAPID_MLX_GDN_IN_PROJ_FUSION=0")
         return 0
     try:
+        if not _POLICY.projection_enabled():
+            return 0
         return _install(model, retain_split=retain_split)
     except Exception:  # noqa: BLE001 — never let the optimization fail a load
         logger.warning("[gdn_fusion] install failed; model left as-is", exc_info=True)

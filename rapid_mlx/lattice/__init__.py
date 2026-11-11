@@ -120,6 +120,23 @@ def _knob(
 
 
 KNOBS = {
+    "qwen35_fused_gdn_decode": _knob(
+        "qwen35_fused_gdn_decode",
+        lambda c: (
+            c.model.family in ("qwen35_gdn", "qwen35_gdn_dense")
+            and type(c.model.hidden_size) is int
+            and c.model.hidden_size > 0
+        ),
+    ),
+    "gdn_in_proj_fusion": _knob(
+        "gdn_in_proj_fusion", lambda c: c.model.family == "gdn_in_proj"
+    ),
+    "gdn_in_proj_max_rows": _knob(
+        "gdn_in_proj_max_rows",
+        lambda c: c.model.family == "gdn_in_proj",
+        default=0,
+        validator=int_range(0),
+    ),
     "qwen35_eager_layer_dispatch": _knob(
         "qwen35_eager_layer_dispatch",
         lambda c: c.model.family == "qwen3_5_decoder_layer",

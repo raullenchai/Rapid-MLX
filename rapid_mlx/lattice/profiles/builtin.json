@@ -479,6 +479,46 @@
         "evidence": "rapid_mlx/patches/qwen3_5_eager_dispatch.py original gate; docs/engineering/performance/2026-09-13-qwen35-eager-layer-dispatch.md",
         "hardware_scope": "Preserves the original hardware-independent gate, including unknown devices; no new measurements."
       }
+    },
+    {
+      "id": "gdn-decode-legacy",
+      "model": {
+        "family": "qwen35_gdn",
+        "geometry": {
+          "hidden_size": 2048
+        }
+      },
+      "knobs": {
+        "qwen35_fused_gdn_decode": true
+      },
+      "provenance": {
+        "evidence": "Historical enrollment in rapid_mlx/qwen35_fused_gdn_decode.py and rapid_mlx/gdn_in_proj_fusion.py; no new qualification. Local probes and safety checks remain mandatory."
+      }
+    },
+    {
+      "id": "gdn-decode-dense",
+      "model": {
+        "family": "qwen35_gdn_dense"
+      },
+      "knobs": {
+        "qwen35_fused_gdn_decode": true
+      },
+      "provenance": {
+        "evidence": "Historical enrollment in rapid_mlx/qwen35_fused_gdn_decode.py and rapid_mlx/gdn_in_proj_fusion.py; no new qualification. Local probes and safety checks remain mandatory."
+      }
+    },
+    {
+      "id": "gdn-projection",
+      "model": {
+        "family": "gdn_in_proj"
+      },
+      "knobs": {
+        "gdn_in_proj_fusion": true,
+        "gdn_in_proj_max_rows": 8
+      },
+      "provenance": {
+        "evidence": "Historical enrollment in rapid_mlx/qwen35_fused_gdn_decode.py and rapid_mlx/gdn_in_proj_fusion.py; no new qualification. Local probes and safety checks remain mandatory."
+      }
     }
   ]
 }

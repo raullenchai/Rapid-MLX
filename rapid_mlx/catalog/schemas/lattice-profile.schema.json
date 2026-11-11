@@ -353,6 +353,16 @@
                   ]
                 }
               ]
+            },
+            "qwen35_fused_gdn_decode": {
+              "type": "boolean"
+            },
+            "gdn_in_proj_fusion": {
+              "type": "boolean"
+            },
+            "gdn_in_proj_max_rows": {
+              "type": "integer",
+              "minimum": 0
             }
           },
           "minProperties": 1

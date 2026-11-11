@@ -29,8 +29,10 @@ from .kernels.qwen4_fused_gdn_decode import (
     fused_gdn_decode,
     fused_gdn_runtime_supported,
 )
+from .lattice.gdn import GDNPolicy
 
 logger = logging.getLogger(__name__)
+_POLICY = GDNPolicy(lambda: mx)
 
 _NUM_KEY_HEADS = 16
 _NUM_VALUE_HEADS = 32
@@ -399,14 +401,7 @@ def _structurally_eligible(layer: Any, *, allow_dense: bool = False) -> bool:
             # The fused kernel consumes projected tensors, independent of the
             # input width. Preserve legacy enrollment unless a plain dense
             # loader explicitly opts in; runtime projection checks still apply.
-            and (
-                layer.hidden_size == 2048
-                or (
-                    allow_dense
-                    and type(layer.hidden_size) is int
-                    and layer.hidden_size > 0
-                )
-            )
+            and _POLICY.decode(layer.hidden_size, allow_dense)
             and (hasattr(layer, "in_proj_fused") or _has_split_projections(layer))
             and _shape(layer.conv1d.weight) == (_CONV_DIM, _CONV_KERNEL, 1)
             and _shape(layer.A_log) == (_NUM_VALUE_HEADS,)
