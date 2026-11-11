@@ -22,6 +22,7 @@ import mlx.core as mx
 
 from ._env import env_falsey
 from .compiled_precision import gate_sigmoid
+from .lattice.fusion import install_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,8 @@ def _patch_class(block_class: type) -> None:
 def install_qwen35_moe_router(model: Any) -> int:
     """Enroll compatible blocks from one loaded model; return their count."""
     if env_falsey("RAPID_MLX_QWEN35_MOE_ROUTER"):
+        return 0
+    if not install_enabled("qwen35_moe_router", mx, route="qwen35_moe_router_install"):
         return 0
     if not mx.metal.is_available():
         return 0

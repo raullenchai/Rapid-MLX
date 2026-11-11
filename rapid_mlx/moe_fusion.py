@@ -43,6 +43,8 @@ from typing import Any
 
 import mlx.core as mx
 
+from .lattice.fusion import install_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -399,6 +401,10 @@ def fuse_gate_up(model: Any, *, extended_call_contract: bool = False) -> int:
     """
     if os.environ.get("RAPID_MLX_MOE_GATE_UP_FUSION", "1") == "0":
         logger.info("[moe_fusion] disabled via RAPID_MLX_MOE_GATE_UP_FUSION=0")
+        return 0
+    if not install_enabled(
+        "moe_gate_up_fusion", mx, route="moe_gate_up_fusion_install"
+    ):
         return 0
     families = _switch_layer_families(extended_call_contract=extended_call_contract)
     if not families:

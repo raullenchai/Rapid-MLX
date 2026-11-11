@@ -50,6 +50,8 @@ API clients can also request grounded chat from explicitly selected registered f
 
 ## New Features and Improvements
 
+- **Benchmark is now a regular Desktop tab:** measure models on this Mac and, if you choose, publish results to the Community Benchmark. Nothing runs until you start a benchmark.
+
 - **Open an existing checkpoint:** **Settings → Models → Open existing checkpoint…** registers a complete local MLX chat checkpoint without copying weights or changing the managed download folder. **Remove reference** leaves its files intact; missing or incomplete checkpoints report a problem instead of starting a download ([#5660](https://github.com/raullenchai/Rapid-MLX/pull/5660)).
 - **Measured speed references:** Desktop recommendations and CLI `models` and `doctor` show offline references matched to chip, RAM and model configuration. After chat, **Generation details** saves supported execution facts and timing with the answer. Sparse or unmatched data stays unavailable; the ranges are references, not performance guarantees ([#5647](https://github.com/raullenchai/Rapid-MLX/pull/5647), [#5655](https://github.com/raullenchai/Rapid-MLX/pull/5655), [#5659](https://github.com/raullenchai/Rapid-MLX/pull/5659)).
 - **Idle speech release:** transcription, alignment and speech-synthesis models can unload while the API stays online, then reload on the next request. Desktop uses this with its idle setting on supported runtimes; CLI users opt in with `--audio-lane-idle-ttl` ([#5635](https://github.com/raullenchai/Rapid-MLX/pull/5635)).

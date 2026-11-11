@@ -75,3 +75,31 @@ hits perform no threshold resolution or profile loading. Profiles retain their
 process lifetime. Hardware/software-specific overlays can refine thresholds
 using those real facts. Legacy enable switches keep their original lifetimes;
 QSA enable-knob resolution remains at its existing call site.
+
+
+| Fusion enablement knob | Fallback | Installer scope and local requirements | Universal builtin policy |
+| --- | --- | --- | --- |
+| `dense_decode_fusion` | `False` | Explicit `dense_decode_fusion_install` fact and plain mode; existing backbone/decoder allowlists, width ≤4096, dtype/cache/composition probes | `True` |
+| `qwen35_affine4` | `False` | Explicit `qwen35_affine4_install` fact; exact expert classes, packed-bank layout, installed router and real-weight probe | `True` |
+| `qwen35_moe_router` | `False` | Explicit `qwen35_moe_router_install` fact; existing classes, expert/top-k bounds and parity probe | `True` |
+| `moe_decode_fusion` | `False` | Explicit `moe_decode_fusion_install` fact; existing block class and per-call single-row, alignment, dtype/bias/sharding checks | `True` |
+| `moe_gate_up_fusion` | `False` | Explicit `moe_gate_up_fusion_install` fact; existing expert classes, basic/extended call contracts and compatible projection formats | `True` |
+
+These five contiguous enrollment cells have no hardware or software selectors:
+unknown and future devices retain the historical default-on attempts. The
+`model.family` facts above identify existing installer entry points, separately
+from checkpoint declarations; missing installer facts decline, and dense also
+requires explicit plain mode. They do not certify implementation safety.
+Installers retain their exact local qualification and loader routes, including
+plain/MTP, vision and disk-streaming exclusions. Affine4 bank-view and row-tile
+policies remain independent and unchanged.
+
+`lattice.fusion.install_enabled` resolves once per installer invocation, before
+module traversal. Existing installed tags, rewritten projections and model-local
+classes carry the result into execution: no forward, eligibility predicate or
+per-layer function gains a policy call. Profiles retain their process lifetime.
+Legacy switches keep their original parsing and lifetime: dense and gate/up
+check exact `"0"` at installation; router checks falsey values at installation;
+affine4 and MoE decode check falsey values at installation and dynamically in
+forward/eligibility. Thus a live opt-out still works where it did before, while
+installation-only switches do not acquire dynamic semantics.

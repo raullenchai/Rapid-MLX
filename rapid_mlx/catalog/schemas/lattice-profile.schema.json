@@ -236,6 +236,21 @@
               "type": "integer",
               "minimum": 1
             },
+            "dense_decode_fusion": {
+              "type": "boolean"
+            },
+            "qwen35_affine4": {
+              "type": "boolean"
+            },
+            "qwen35_moe_router": {
+              "type": "boolean"
+            },
+            "moe_decode_fusion": {
+              "type": "boolean"
+            },
+            "moe_gate_up_fusion": {
+              "type": "boolean"
+            },
             "qwen35_affine4_bank_views": {
               "type": "boolean"
             },

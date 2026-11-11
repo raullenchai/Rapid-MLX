@@ -56,8 +56,6 @@ struct SettingsView: View {
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
     @AppStorage(ComputerUseFeatureConfig.enabledKey)
     private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
-    @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
-    private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
     @AppStorage(ShareComputeFeatureConfig.enabledKey)
     private var shareComputeEnabled = ShareComputeFeatureConfig.defaultEnabled
 
@@ -596,15 +594,6 @@ struct SettingsView: View {
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.ComputerUseToggle")
-                SettingsRowDivider()
-                Toggle(isOn: $communityBenchmarkEnabled) {
-                    SettingsRowLabel(
-                        title: String(localized: "Enable Community Benchmark"),
-                        description: String(localized: "Adds the Benchmark tab for measuring models on this Mac and, if you choose, publishing results to the Community Benchmark. Nothing runs until you start a benchmark.")
-                    )
-                }
-                .toggleStyle(TrailingSettingsToggleStyle())
-                .accessibilityIdentifier("Settings.Experimental.BenchmarkToggle")
                 SettingsRowDivider()
                 Toggle(isOn: $shareComputeEnabled) {
                     SettingsRowLabel(
