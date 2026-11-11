@@ -12,6 +12,9 @@ from pathlib import Path
 import mlx.core as mx
 
 from ..lattice import resolve, runtime_context
+from ..lattice.attention import AttentionThresholds
+
+_thresholds = AttentionThresholds(lambda: mx)
 
 _LOG = logging.getLogger(__name__)
 _DISABLED = False
@@ -85,7 +88,7 @@ def try_affine8_attention(q, k, v, *, scale, mask=None, group_size=64, bits=8):
         return None
     mr = hq // hkv * tq
     mpad = (mr + 7) // 8 * 8
-    if mpad > 56 or tk < (2048 if tq >= 4 else 8192 if tq >= 2 else 16384):
+    if mpad > 56 or tk < _thresholds.minimum("affine8_attention_min_kv", tq):
         return None
     for packed, scales, biases in (k, v):
         if (

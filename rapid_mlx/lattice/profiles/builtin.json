@@ -519,6 +519,160 @@
       "provenance": {
         "evidence": "Historical enrollment in rapid_mlx/qwen35_fused_gdn_decode.py and rapid_mlx/gdn_in_proj_fusion.py; no new qualification. Local probes and safety checks remain mandatory."
       }
+    },
+    {
+      "id": "affine8-attention-crossover-width-1",
+      "workload": {
+        "width": 1
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 16384
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-2",
+      "workload": {
+        "width": 2
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 8192
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-3",
+      "workload": {
+        "width": 3
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 8192
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-4",
+      "workload": {
+        "width": 4
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 2048
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-5",
+      "workload": {
+        "width": 5
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 2048
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-6",
+      "workload": {
+        "width": 6
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 2048
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-7",
+      "workload": {
+        "width": 7
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 2048
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "affine8-attention-crossover-width-8",
+      "workload": {
+        "width": 8
+      },
+      "knobs": {
+        "affine8_attention_min_kv": 2048
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/kernels/affine8_attention.py original physical KV crossover",
+        "hardware_scope": "Universal threshold only; existing affine8_attention enablement and runtime qualification remain authoritative."
+      }
+    },
+    {
+      "id": "qsa-stage1-crossovers",
+      "workload": {},
+      "knobs": {
+        "qsa_stage1_min_query": 64,
+        "qsa_stage1_min_kv": 65024
+      },
+      "provenance": {
+        "evidence": "Existing QSA query and physical KV crossovers",
+        "hardware_scope": "Universal thresholds only; existing opt-in and capability checks remain authoritative."
+      }
+    },
+    {
+      "id": "qsa-indexed-splitk-decode-crossover",
+      "workload": {
+        "width": 1
+      },
+      "knobs": {
+        "qsa_indexed_splitk_min_kv": 65536
+      },
+      "provenance": {
+        "evidence": "Existing QSA query and physical KV crossovers",
+        "hardware_scope": "Universal thresholds only; existing opt-in and capability checks remain authoritative."
+      }
+    },
+    {
+      "id": "qsa-indexed-splitk-verify-crossover",
+      "workload": {
+        "width": 3
+      },
+      "knobs": {
+        "qsa_indexed_splitk_min_kv": 16384
+      },
+      "provenance": {
+        "evidence": "Existing QSA query and physical KV crossovers",
+        "hardware_scope": "Universal thresholds only; existing opt-in and capability checks remain authoritative."
+      }
+    },
+    {
+      "id": "qsa-block-sparse-crossovers",
+      "workload": {},
+      "knobs": {
+        "qsa_block_sparse_min_query": 64,
+        "qsa_block_sparse_min_kv": 16384
+      },
+      "provenance": {
+        "evidence": "Existing QSA query and physical KV crossovers",
+        "hardware_scope": "Universal thresholds only; existing opt-in and capability checks remain authoritative."
+      }
     }
   ]
 }

@@ -9,12 +9,13 @@ from functools import lru_cache
 import mlx.core as mx
 
 from .._env import env_truthy
+from ..lattice.attention import AttentionThresholds
 
 logger = logging.getLogger(__name__)
 
+_thresholds = AttentionThresholds(lambda: mx)
+
 ENABLE_ENV = "RAPID_MLX_QSA_BLOCK_SPARSE"
-MIN_QUERY_LENGTH = 64
-MIN_PHYSICAL_KV_LENGTH = 16_384
 MAX_GQA_HEADS = 32
 MAX_THREADGROUP_MEMORY_BYTES = 32 * 1024
 
@@ -185,9 +186,11 @@ def block_sparse_decline_reason(
         return "disabled"
     if training:
         return "training"
-    if query_length < MIN_QUERY_LENGTH:
+    if query_length < _thresholds.minimum("qsa_block_sparse_min_query", query_length):
         return "query below crossover"
-    if physical_kv_length < MIN_PHYSICAL_KV_LENGTH:
+    if physical_kv_length < _thresholds.minimum(
+        "qsa_block_sparse_min_kv", query_length
+    ):
         return "physical KV below crossover"
     if not mx.metal.is_available():
         return "Metal runtime unavailable"
@@ -218,11 +221,7 @@ def block_sparse_layout_supported(
 
 @lru_cache(maxsize=1)
 def _log_activation() -> None:
-    logger.info(
-        "QSA block-sparse prefill enabled (query>=%d, physical_kv>=%d)",
-        MIN_QUERY_LENGTH,
-        MIN_PHYSICAL_KV_LENGTH,
-    )
+    logger.info("QSA block-sparse prefill enabled (lattice crossovers)")
 
 
 def block_sparse_attention(
