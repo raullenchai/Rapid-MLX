@@ -50,6 +50,10 @@ SOURCES = (
         ROOT / "proto" / "model-catalog" / "v2" / "catalog-snapshot.schema.json",
         "catalog-snapshot.schema.json",
     ),
+    (
+        ROOT / "proto" / "model-runtime" / "v1" / "lattice-profile.schema.json",
+        "lattice-profile.schema.json",
+    ),
 )
 
 

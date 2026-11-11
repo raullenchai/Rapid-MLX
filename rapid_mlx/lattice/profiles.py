@@ -139,6 +139,7 @@ class LatticeContext:
     batch: int = 1
     has_mtp_head: bool = False
     rapid_mlx: str = "unknown"
+    flattened_rows: int | None = None
 
 
 @lru_cache(maxsize=128)
@@ -155,6 +156,7 @@ def _context(
     batch,
     has_mtp_head,
     rapid_mlx,
+    flattened_rows,
 ) -> LatticeContext:
     tier = classify_chip_tier(name)
     arch = re.fullmatch(r"applegpu_g(\d+)[a-z]*", architecture)
@@ -179,6 +181,7 @@ def _context(
         batch,
         has_mtp_head,
         rapid_mlx,
+        flattened_rows,
     )
 
 
@@ -194,6 +197,7 @@ def runtime_context(
     batch=1,
     has_mtp_head=False,
     rapid_mlx=None,
+    flattened_rows=None,
 ) -> LatticeContext:
     return _context(
         device_key(info),
@@ -208,4 +212,5 @@ def runtime_context(
         batch,
         has_mtp_head,
         rapid_version() if rapid_mlx is None else rapid_mlx,
+        flattened_rows,
     )

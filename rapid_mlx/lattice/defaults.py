@@ -47,8 +47,8 @@ def _integer(value):
 def _cell(cell, knobs):
     _keys(
         cell,
-        ("id", "hardware", "knobs", "provenance"),
-        ("software", "model", "workload", "capabilities"),
+        ("id", "knobs", "provenance"),
+        ("hardware", "software", "model", "workload", "capabilities"),
     )
     _label(cell["id"])
     _keys(
@@ -76,9 +76,11 @@ def _cell(cell, knobs):
         or not cell["provenance"]["evidence"]
     ):
         raise ValueError("provenance requires evidence")
-    if not isinstance(cell["hardware"], list) or not cell["hardware"]:
+    if "hardware" in cell and (
+        not isinstance(cell["hardware"], list) or not cell["hardware"]
+    ):
         raise ValueError("hardware set required")
-    for hw in cell["hardware"]:
+    for hw in cell.get("hardware", []):
         _keys(hw, ("gpu_generation", "tier"), ("gpu_cores", "memory_size"))
         _integer(hw["gpu_generation"])
         if hw["tier"] not in ("base", "Pro", "Max", "Ultra"):
@@ -104,9 +106,26 @@ def _cell(cell, knobs):
         if key in model:
             _label(model[key])
     if "geometry" in model:
-        if not isinstance(model["geometry"], list) or len(model["geometry"]) != 6:
-            raise ValueError("expected six geometry dimensions")
-        for dimension in model["geometry"]:
+        geometry = model["geometry"]
+        if isinstance(geometry, dict):
+            _keys(
+                geometry,
+                (),
+                (
+                    "hidden_size",
+                    "intermediate_size",
+                    "num_experts",
+                    "top_k",
+                    "bits",
+                    "group_size",
+                ),
+            )
+            dimensions = geometry.values()
+        elif isinstance(geometry, list) and len(geometry) == 6:
+            dimensions = geometry
+        else:
+            raise ValueError("expected six dimensions or named geometry facts")
+        for dimension in dimensions:
             _integer(dimension)
     if "attention_kinds" in model:
         if not isinstance(model["attention_kinds"], list):
@@ -114,12 +133,21 @@ def _cell(cell, knobs):
         for kind in model["attention_kinds"]:
             _label(kind)
     workload = cell.get("workload", {})
-    _keys(workload, (), ("mode", "width", "batch"))
+    _keys(workload, (), ("mode", "width", "batch", "flattened_rows"))
     if "mode" in workload:
         _label(workload["mode"])
     for key in ("width", "batch"):
         if key in workload:
             _integer(workload[key])
+    if "flattened_rows" in workload:
+        bounds = workload["flattened_rows"]
+        if (
+            not isinstance(bounds, list)
+            or len(bounds) != 2
+            or any(type(v) is not int or v < 0 for v in bounds)
+            or bounds[0] > bounds[1]
+        ):
+            raise ValueError("expected inclusive nonnegative row range")
     if not isinstance(cell["knobs"], dict) or not cell["knobs"]:
         raise ValueError("empty knob set")
     for name, value in cell["knobs"].items():
@@ -187,7 +215,7 @@ def overlay_profile() -> Profile:
 
 def matches(cell, ctx: LatticeContext) -> bool:
     """Only declared sets match; absent pinned facts never supply evidence."""
-    if not any(
+    if "hardware" in cell and not any(
         ctx.hardware.gpu_generation == hw["gpu_generation"]
         and ctx.hardware.tier == hw["tier"]
         and all(
@@ -205,11 +233,23 @@ def matches(cell, ctx: LatticeContext) -> bool:
                 return False
         except InvalidVersion:
             return False
-    if any(
-        getattr(ctx.model, key) != (tuple(value) if isinstance(value, list) else value)
-        for key, value in cell.get("model", {}).items()
-    ):
-        return False
+    for key, value in cell.get("model", {}).items():
+        if key == "geometry" and isinstance(value, dict):
+            if any(
+                getattr(ctx.model, fact) != expected for fact, expected in value.items()
+            ):
+                return False
+        elif getattr(ctx.model, key) != (
+            tuple(value) if isinstance(value, list) else value
+        ):
+            return False
+    workload = cell.get("workload", {})
+    if "flattened_rows" in workload:
+        low, high = workload["flattened_rows"]
+        if ctx.flattened_rows is None or not low <= ctx.flattened_rows <= high:
+            return False
     return all(
-        getattr(ctx, key) == value for key, value in cell.get("workload", {}).items()
+        getattr(ctx, key) == value
+        for key, value in workload.items()
+        if key != "flattened_rows"
     )
