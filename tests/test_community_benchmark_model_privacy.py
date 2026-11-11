@@ -249,3 +249,25 @@ def test_local_source_refused_before_consent_or_upload(metadata, monkeypatch):
     consent.assert_not_called()
     post.assert_not_called()
     metadata.assert_not_called()
+
+
+def test_repo_id_outside_hub_rules_is_refused(metadata):
+    # Schema-shaped (org/name) but longer than the Hub allows, so it cannot
+    # be proven public and is refused before any network call.
+    from rapid_mlx.community_bench.publication import ensure_public_model_sources
+
+    with pytest.raises(PublicationRefused, match="no public Hugging Face"):
+        ensure_public_model_sources(_run("org/" + "a" * 120))
+    metadata.assert_not_called()
+
+
+def test_repeated_component_repo_is_checked_once(metadata):
+    run = _run()
+    twin = copy.deepcopy(run["model"]["components"][0])
+    twin["component_id"] = "z-twin"
+    twin["role"] = "other"
+    run["model"]["components"].append(twin)
+    from rapid_mlx.community_bench.publication import ensure_public_model_sources
+
+    ensure_public_model_sources(run)
+    metadata.assert_called_once_with("privacy-test/model", token=False, timeout=5)
