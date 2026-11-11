@@ -34,6 +34,8 @@ Compatible dense Qwen3.5, LFM2.5, LFM3 and Gemma 4 decode also combines residual
 
 ## More Reliable Agent Tool Calls
 
+- Tool calls using dotted or slash-separated names now resolve to a unique declared tool after normalizing those separators to underscores. Exact names take precedence; ambiguous and unknown names retain their existing behavior ([#5786](https://github.com/raullenchai/Rapid-MLX/issues/5786)).
+
 Gemma 3 12B and 27B gain structured tool calls, including streamed calls, parallel calls and tool-result history. The smaller 1B and 4B catalog variants stop advertising tool support they could not reliably produce. The new parser keeps quoted brackets inside arguments and fenced examples in prose consistent between streaming and non-streaming ([#5715](https://github.com/raullenchai/Rapid-MLX/pull/5715), [#5750](https://github.com/raullenchai/Rapid-MLX/pull/5750)).
 
 Forced and required tool choices on the Anthropic-compatible API now generate arguments instead of trying to invent an empty call. Automatic tool choice also works when parallel calls are disabled. Existing Qwen and GLM tool parsers pass undeclared tool names to the client so it can return a tool error and let the model recover; the built-in agent still refuses to run unknown tools ([#5724](https://github.com/raullenchai/Rapid-MLX/pull/5724), [#5723](https://github.com/raullenchai/Rapid-MLX/pull/5723), [#5700](https://github.com/raullenchai/Rapid-MLX/pull/5700)).

@@ -51,7 +51,27 @@ def config():
 @pytest.mark.parametrize("parser,wire", FORMATS)
 @pytest.mark.parametrize("api", ["chat", "messages"])
 @pytest.mark.parametrize("size", [None, 0, 1, 7])
-def test_unknown_tool_reaches_client(config, parser, wire, api, size):
+@pytest.mark.parametrize(
+    "emitted,declared,expected",
+    [
+        (NAME, ["write_file"], NAME),
+        (
+            "artifact.get_quest_state",
+            ["artifact_get_quest_state"],
+            "artifact_get_quest_state",
+        ),
+        ("artifact.get_quest_state", ["write_file"], "artifact.get_quest_state"),
+        (
+            "artifact-get_quest_state",
+            ["artifact_get_quest_state"],
+            "artifact-get_quest_state",
+        ),
+    ],
+)
+def test_unknown_tool_reaches_client(
+    config, parser, wire, api, size, emitted, declared, expected
+):
+    wire = wire.replace(NAME, emitted)
     config.tool_call_parser = parser
     config.engine = _Engine(
         "I'll query it. " + wire, deltas=deltas("I'll query it. " + wire, size or 0)
@@ -62,10 +82,17 @@ def test_unknown_tool_reaches_client(config, parser, wire, api, size):
         "model": "test-model",
         "messages": [{"role": "user", "content": "Query it"}],
         "stream": size is not None,
-        "tools": TOOLS
-        if api == "chat"
-        else [
-            {"name": "write_file", "input_schema": {"type": "object", "properties": {}}}
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            if api == "chat"
+            else {"name": name, "input_schema": {"type": "object", "properties": {}}}
+            for name in declared
         ],
     }
     if api == "messages":
@@ -135,7 +162,7 @@ def test_unknown_tool_reaches_client(config, parser, wire, api, size):
             assert [e for e in events if e["type"] == "message_delta"][-1]["delta"][
                 "stop_reason"
             ] == "tool_use"
-    assert name == NAME
+    assert name == expected
     assert args == {"query": "select 1"}
     assert "<" not in content
 
@@ -312,3 +339,58 @@ def test_qwen_stream_retains_named_choice_when_only_first_chunk_has_request():
         calls.extend((result or {}).get("tool_calls", []))
         previous = current
     assert calls == []
+
+
+@pytest.mark.parametrize("parser,wire", FORMATS)
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("separator", [".", "/"])
+def test_responses_resolves_tool_name(config, parser, wire, stream, separator):
+    from rapid_mlx.routes.responses import router as responses_router
+    from tests.test_responses_tool_choice_none_passthrough import (
+        _Engine as ResponsesEngine,
+    )
+
+    config.tool_call_parser = parser
+    engine = ResponsesEngine()
+    engine.text = wire.replace(NAME, f"artifact{separator}get_quest_state")
+    config.engine = engine
+    app = FastAPI()
+    app.include_router(responses_router)
+    response = TestClient(app).post(
+        "/v1/responses",
+        json={
+            "model": "test-model",
+            "input": "Query it",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "artifact_get_quest_state",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "stream": stream,
+            "max_output_tokens": 128,
+        },
+    )
+    assert response.status_code == 200, response.text
+    if stream:
+        events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        items = [
+            event["item"]
+            for event in events
+            if event["type"] == "response.output_item.done"
+            and event["item"]["type"] == "function_call"
+        ]
+    else:
+        items = [
+            item
+            for item in response.json()["output"]
+            if item["type"] == "function_call"
+        ]
+    assert len(items) == 1
+    assert items[0]["name"] == "artifact_get_quest_state"
+    assert json.loads(items[0]["arguments"]) == {"query": "select 1"}

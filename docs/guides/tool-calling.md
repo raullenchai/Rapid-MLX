@@ -47,6 +47,17 @@ if response.choices[0].message.tool_calls:
         print(f"Arguments: {tc.function.arguments}")
 ```
 
+## Tool Name Resolution
+
+Exact declared tool names always take precedence. If a parsed name is undeclared,
+Rapid-MLX compares it with declared names after replacing `.` and `/` with `_` in
+both. A unique match uses the client's declared spelling: for example,
+`artifact.get_quest_state` becomes `artifact_get_quest_state` when that is the
+only matching declared tool. Rewrites are logged at debug level.
+
+Ambiguous names, names without a match, and calls with no declared tools remain
+unchanged. The same resolution applies to streaming and non-streaming responses.
+
 ## Supported Parsers
 
 Use `--tool-call-parser` to select a parser for your model family:

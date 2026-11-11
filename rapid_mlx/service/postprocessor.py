@@ -30,7 +30,7 @@ from ..parsing.prompt_owner import (
 )
 from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
-from ..tool_call_authorization import call_name
+from ..tool_call_authorization import resolve_tool_names
 from ..tool_parsers.streaming import tool_openers
 
 if TYPE_CHECKING:
@@ -2041,10 +2041,14 @@ class StreamingPostProcessor:
         )
 
     def _filter_declared_calls(self, calls, *, incremental=False):
-        """Keep parsed names, including unknown tools, for client error recovery."""
+        """Resolve unique separator variants; keep unknown names for recovery."""
         from .helpers import tool_choice_is_none
 
-        return [] if tool_choice_is_none(self.request) else calls
+        return (
+            []
+            if tool_choice_is_none(self.request)
+            else resolve_tool_names(calls, self.request)
+        )
 
     def _apply_forced_tool_choice_filter(self, tool_calls: list[dict]) -> list[dict]:
         """Suppress streaming tool_calls deltas that violate the
@@ -4226,14 +4230,7 @@ class StreamingPostProcessor:
                             )
                         ]
                 if fb_tcs:
-                    allowed_names = self._filter_declared_calls(
-                        [tc.model_dump() for tc in fb_tcs]
-                    )
-                    fb_tcs = [
-                        tc
-                        for tc in fb_tcs
-                        if tc.function.name in {call_name(c) for c in allowed_names}
-                    ]
+                    fb_tcs = self._filter_declared_calls(fb_tcs)
                 if fb_tcs:
                     logger.info(
                         "[finalize] cross-format fallback recovered %d tool_call(s); "

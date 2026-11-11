@@ -50,7 +50,7 @@ from ..errors import (
     MemoryContextExceededError,
     MetalMemoryBackpressureError,
 )
-from ..tool_call_authorization import declared_names, log_drop
+from ..tool_call_authorization import declared_names, log_drop, resolve_tool_names
 from ..tool_parsers import ToolParserManager
 from ..utils.chat_template import (
     detect_native_reasoning_effort_levels,
@@ -3422,6 +3422,8 @@ def _parse_tool_calls_with_parser(
             )
     if tool_choice_is_none(request):
         return content, None
+    if tool_calls:
+        tool_calls = resolve_tool_names(tool_calls, request)
     return content, tool_calls
 
 
