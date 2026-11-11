@@ -209,6 +209,9 @@
             "qwen35_affine4_bank_views": {
               "type": "boolean"
             },
+            "qwen35_eager_layer_dispatch": {
+              "type": "boolean"
+            },
             "qwen35_residual_norm": {
               "type": "boolean"
             },

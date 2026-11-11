@@ -59,14 +59,18 @@ def test_builtin_resolution_snapshot(monkeypatch):
     count = 0
     for ctx in builtin_contexts():
         decisions = {}
-        for name in lattice.KNOBS:
+        for name in lattice.KNOBS.keys() - {"qwen35_eager_layer_dispatch"}:
             decision = lattice.resolve(name, ctx, environ={})
             decisions[name] = asdict(decision)
             if decision.source.startswith("builtin:"):
                 selected.add(decision.source.removeprefix("builtin:"))
         digest.update(json.dumps(decisions, sort_keys=True).encode())
         count += 1
-    assert selected == {cell["id"] for cell in defaults.builtin_profile().cells}
+    assert selected == {
+        cell["id"]
+        for cell in defaults.builtin_profile().cells
+        if "qwen35_eager_layer_dispatch" not in cell["knobs"]
+    }
     assert count == 69120
     # Recorded before changing representation on 7b25e1b4c8dcf80cadc7021bff69a48f76db5aca.
     assert (

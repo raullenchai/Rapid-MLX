@@ -467,6 +467,18 @@
         "decision": "Freeze measured costs, align prefill to 32-row snapshot boundaries, and enroll parity-qualified GDN execution with rollback-aware verification.",
         "hardware_scope": "Exact generation/tier and memory with explicit generalization across core variants, including unknown core facts omitted by MLX. Measured 60-core hardware is provenance."
       }
+    },
+    {
+      "id": "qwen35-eager-layer-dispatch",
+      "model": {
+        "geometry": {"hidden_size": 2048, "num_experts": 256, "top_k": 8}
+      },
+      "workload": {"flattened_rows": [0, 64]},
+      "knobs": {"qwen35_eager_layer_dispatch": true},
+      "provenance": {
+        "evidence": "rapid_mlx/patches/qwen3_5_eager_dispatch.py original gate; docs/engineering/performance/2026-09-13-qwen35-eager-layer-dispatch.md",
+        "hardware_scope": "Preserves the original hardware-independent gate, including unknown devices; no new measurements."
+      }
     }
   ]
 }

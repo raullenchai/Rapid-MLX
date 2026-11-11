@@ -11,6 +11,14 @@ QSA_MLX_VERSIONS = frozenset({"0.32.2"})
 
 
 def requirement_reason(name: str, ctx: LatticeContext) -> str | None:
+    if name == "qwen35_eager_layer_dispatch":
+        if ctx.mode == "compiled":
+            return "compiled decode excludes eager submission"
+        if ctx.flattened_rows is None or any(
+            fact is None or fact <= 0
+            for fact in (ctx.model.hidden_size, ctx.model.num_experts, ctx.model.top_k)
+        ):
+            return "installed layer facts unavailable"
     hw = ctx.hardware
     if (
         name
