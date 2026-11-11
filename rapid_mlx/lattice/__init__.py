@@ -120,6 +120,10 @@ def _knob(
 
 
 KNOBS = {
+    "qwen35_eager_layer_dispatch": _knob(
+        "qwen35_eager_layer_dispatch",
+        lambda c: c.model.family == "qwen3_5_decoder_layer",
+    ),
     "mtp_gdn_fusion": _knob(
         "mtp_gdn_fusion",
         lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,
