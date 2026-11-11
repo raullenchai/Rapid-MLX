@@ -14,6 +14,10 @@ OUTLIER_FAMILY_ALPHA = 0.05
 SEMANTIC_FILE_CAP = 100
 SEMANTIC_MIN_FILES = 4
 SEMANTIC_FALLBACK_FILES = 3
+# Without a usable cross-file background, require cosine >= 0.5 (angle <= 60°).
+# This conservative fallback policy is not a calibrated relevance probability;
+# merely positive cosine is common even between unrelated English passages.
+SEMANTIC_MIN_SIMILARITY = 0.5
 # Give a short head from every admitted modality a chance before long tails.
 SEMANTIC_HEAD_FILES = 3
 # Compare standardized outliers in normal-tail mass, using the admission budget.
@@ -46,22 +50,33 @@ def semantic_ranking(
 
     Estimate the query null from best-per-file scores so repeated chunks/frames
     do not create extra observations. Bonferroni corrects for the files tested.
-    With fewer than four files or zero variance, retain at most three best
-    positive-cosine neighbours because the outlier estimate is degenerate.
+    With fewer than four files or zero variance, the outlier estimate is
+    degenerate: require the index background instead, or the minimum similarity
+    when no usable background is available (a one-file folder, or files whose
+    embeddings are identical).
     """
     ids, mean, deviation = (
         statistics if statistics is not None else query_statistics(scores, rows)
     )
     values = dict(scores)
     samples = [values[i] for i in ids]
+    cap = SEMANTIC_FILE_CAP
     if len(samples) < SEMANTIC_MIN_FILES or deviation <= 1e-12:
-        return [i for i in ids if values[i] > 0][:SEMANTIC_FALLBACK_FILES]
-    outlier = math.inf
-    if len(samples) > 1:
-        if deviation > 0 and max(samples) > min(samples):
-            z = NormalDist().inv_cdf(1 - OUTLIER_FAMILY_ALPHA / len(samples))
-            outlier = mean + z * deviation
-    threshold = max(0.0, min(background, outlier))
+        threshold = (
+            background
+            # Identical files make the background 1.0, which no paraphrase
+            # can clear; treat that like an unavailable background too.
+            if math.isfinite(background) and 0 < background < 1 - 1e-6
+            else SEMANTIC_MIN_SIMILARITY
+        )
+        cap = SEMANTIC_FALLBACK_FILES
+    else:
+        outlier = math.inf
+        if len(samples) > 1:
+            if deviation > 0 and max(samples) > min(samples):
+                z = NormalDist().inv_cdf(1 - OUTLIER_FAMILY_ALPHA / len(samples))
+                outlier = mean + z * deviation
+        threshold = max(0.0, min(background, outlier))
     # The query dot products are float32; the cached background sums are float64.
     # Allow float32 accumulation error at the boundary, not a relevance margin.
     return [
@@ -69,7 +84,7 @@ def semantic_ranking(
         for i in ids
         if values[i] > 0
         and (values[i] >= threshold or math.isclose(values[i], threshold, rel_tol=1e-6))
-    ][:SEMANTIC_FILE_CAP]
+    ][:cap]
 
 
 def query_terms(query: str) -> list[str]:

@@ -60,6 +60,8 @@ API clients can also request grounded chat from explicitly selected registered f
 
 ## Bug Fixes
 
+- **Ask this folder:** small folders now decline unrelated questions instead of answering with citations to irrelevant files ([#5767](https://github.com/raullenchai/Rapid-MLX/issues/5767)).
+
 - JSON output requests now use the same thinking preference as plain chat, avoiding unexpected reasoning that can leave the answer empty.
 - `pull` and `chat` now accept the suggested `--force-disk-check` option to proceed past insufficient-disk warnings.
 - Structured output preserves reasoning and the user's system-prompt prefix, including on vision models. JSON constraints start after reasoning ends and accept the separator before the answer; fallback guidance is reported in a warning header on multimodal requests ([#5675](https://github.com/raullenchai/Rapid-MLX/pull/5675), [#5678](https://github.com/raullenchai/Rapid-MLX/pull/5678), [#5682](https://github.com/raullenchai/Rapid-MLX/pull/5682), [#5707](https://github.com/raullenchai/Rapid-MLX/pull/5707)).
