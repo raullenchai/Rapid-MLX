@@ -119,3 +119,84 @@ settings retain their existing path. Different cache states, concurrent serving
 lanes or different numerical kernels can change outputs and require separate
 qualification. The live fallback for unmeasured cells can still vary across
 process restarts.
+
+
+## Owner-review follow-up
+
+The follow-up starts at `1b4c85797bee04224b47c58f60519ceb27f81887`.
+Five fresh servers per arm use the same model/head revisions, 564 API prompt
+tokens and 256 greedy output tokens. Profile version `2026.11.10.3` qualifies
+32-row M3 prefill alignment and rollback-compatible GDN execution on both chips.
+The measured forward/draft prices retain their original calibration provenance.
+
+| Chip and cache protocol | MTP median [min, max] tok/s | Plain median [min, max] tok/s | Median gain | Slowest MTP / fastest plain gain |
+| --- | --- | --- | --- | --- |
+| M3 Ultra, caches disabled | 188.29 [186.75, 188.88] | 177.67 [177.36, 178.18] | +5.98% | +4.81% |
+| M3 Ultra, default caches | 188.71 [187.53, 190.69] | 178.93 [177.52, 180.53] | +5.47% | +3.88% |
+| M5 Max, caches disabled | 177.43 [177.36, 177.58] | 167.09 [166.88, 167.30] | +6.19% | +6.01% |
+
+M3 cache-disabled main measured 158.07 [155.67, 160.11]. A fresh default-cache
+main cohort measures 174.05 [169.55, 183.18], with four output digests and four
+depth programs. M5's follow-up owner baseline measures 172.12 [172.08, 172.23].
+The final M5 median improves by 3.09% over that baseline.
+
+Cold default-cache prefill forwards 544, 19 and 1 rows. Disabling prefix caching
+changes those widths to 563 and 1. Width-dependent target/head arithmetic then
+changes draft acceptance under the same frozen prices. `mtp_prefill_block_size`
+selects the measured segmentation through the tuning cell. Its default is zero.
+The M3 cell supplies 32, which restores the fast 2.23684 tokens/forward trajectory
+seen in earlier default-cache measurements.
+
+Every final M3 run consumes depth counts K=0/1/2/3 of 7/13/79/15, against owner
+HEAD's 12/80/42/12. The final text digest is `e3b1daf9b6ef8f5d` in both cache
+protocols, matching the earlier fast runs. All five requests per protocol have
+identical token digests, chosen depths and consumed widths. M5 retains its
+original program and 1.82143 tokens/forward. An explicit cap-3 M3 request matches
+the default arm's digest and complete depth program.
+
+`mtp_gdn_fusion` supplies a measured execution choice in both cells. Enrollment
+retains the split projections, validates the fused projections on loaded
+weights, and installs the existing parity-qualified singleton GDN recurrence.
+Rollback verification consumes the fused projections. The existing boundary
+kernel handles qualified two-row verification with its tuple snapshot ABI.
+The controller scores expected committed tokens per profile-priced round using
+request-local acceptance. Regression tests cover zero-depth parking and deeper
+throughput optima.
+
+| Chip | Control | Owner baseline median [min, max] tok/s | Final median [min, max] tok/s | Median delta |
+| --- | --- | --- | --- | --- |
+| M3 Ultra | 4B | 159.15 [137.36, 162.27] | 160.31 [156.40, 161.73] | +0.73% |
+| M3 Ultra | 9B | 112.20 [112.06, 113.18] | 112.27 [102.19, 118.18] | +0.06% |
+| M5 Max | 4B | 144.95 [144.36, 145.46] | 145.23 [144.87, 146.22] | +0.19% |
+| M5 Max | 9B | 97.15 [96.31, 97.36] | 96.59 [96.05, 96.92] | -0.58% |
+
+Each control condition has five fresh processes. All control output digests,
+depth programs, consumed widths and tokens/forward match their owner baseline.
+Observed ranges overlap. The initial owner 9B M3 median was 118.96, and the same
+source measures 112.20 in the follow-up. Raw phases and low samples are retained.
+
+The original 64.38 tok/s M3 sample remains in the evidence. Five fresh unchanged
+owner-HEAD reruns measure 157.34, 158.26, 158.15, 158.26 and 158.54, with identical
+digests and depths. The known earlier lock-holder finished over 157 seconds
+before the slow request window. Historical logs supply no per-process GPU
+attribution for the original slowdown.
+
+M3 median TTFT moves from 0.2861 seconds in owner reruns to 0.3115 after the
+extra boundary. The final default-cache median is 0.3112 and M5's is 0.1957.
+Warm prefix-cache replays can change the head history and output. Qualification
+covers five fresh servers with the same initial cache state. The report retains
+those warm replays and all provisional runs.
+
+The final headless suite passes 352 tests with 100% coverage of all 95 changed
+production lines against main. Native validation passes 398 numerical/lifecycle
+tests and 139 CLI wiring tests under the GPU lock. Ruff passes. Mypy reports
+1,516 diagnostics on both owner baseline and final, with zero new normalized
+messages. A supplementary forced-stub CLI invocation encounters the same 18
+baseline fixture failures on both source versions. Its native run passes.
+PR 5763 is open with an empty merge timestamp at the final check. Sweep was
+skipped under the requested merge condition.
+
+Full per-run histograms, calibration prices, source hashes, operating-state
+monitors and cleanup receipts are in
+`/private/tmp/rapid-mlx-gap-round20/REPORT.md` and its `review/` evidence directory.
+M5's owned lease was released after cleanup confirmation.

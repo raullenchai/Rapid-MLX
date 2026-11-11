@@ -9,6 +9,9 @@ class is patched globally.
 
 class HeadPrefillCapture:
     def __init__(self, model, mx, quantize_cache_fn):
+        from rapid_mlx.tuning.mtp import prefill_block_size
+
+        self.prefill_block_size = prefill_block_size(model)
         self.model = model
         self.mx = mx
         self.quantize_cache_fn = quantize_cache_fn
@@ -18,6 +21,15 @@ class HeadPrefillCapture:
         self.prompt_length = None
 
     def __call__(self, inputs, cache=None):
+        rows = inputs.shape[1]
+        block = self.prefill_block_size
+        boundary = rows // block * block if block else rows
+        if 0 < boundary < rows:
+            # Match the measured prefix-snapshot boundary before capturing head
+            # history. Target and head arithmetic both depend on forward width.
+            first = self(inputs[:, :boundary], cache=cache)
+            last = self(inputs[:, boundary:], cache=cache)
+            return self.mx.concatenate([first, last], axis=1)
         logits, hidden = self.model(inputs, cache=cache, return_hidden=True)
         # A chunk's last hidden waits for the next chunk's first token. Never
         # append the last prompt hidden here: it seeds the bootstrap chain.

@@ -62,6 +62,8 @@ class Knob:
                 and value[-1] >= 0
             )
         if type(self.default) is int:
+            if self.default == 0:
+                return type(value) is int and value >= 0
             return type(value) is int and 1 <= value <= 4
         if type(self.default) is bool:
             return type(value) is bool
@@ -80,6 +82,15 @@ def _knob(name, scope, env=None, default=False, profile_requirement=False):
 
 
 KNOBS = {
+    "mtp_gdn_fusion": _knob(
+        "mtp_gdn_fusion",
+        lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,
+    ),
+    "mtp_prefill_block_size": _knob(
+        "mtp_prefill_block_size",
+        lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,
+        default=0,
+    ),
     "mtp_forward_costs_ms": _knob(
         "mtp_forward_costs_ms",
         lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,

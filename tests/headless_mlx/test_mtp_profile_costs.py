@@ -269,6 +269,9 @@ def test_builtin_measured_cells_and_explicit_depth_priority(
     decision = tuning.resolve(NAME, ctx, environ={})
     assert decision.source.startswith("builtin:mtp-costs-")
     assert len(decision.value) >= depth + 2
+    assert tuning.resolve("mtp_prefill_block_size", ctx, environ={}).value == (
+        32 if generation == 15 else 0
+    )
     assert tuning.resolve("mtp_max_depth", ctx, environ={}).value == depth
     monkeypatch.setattr(policy, "_model_context", lambda m: ctx)
     assert policy.resolve_max_depth(model(), 2, explicit=True) == 2
@@ -308,3 +311,71 @@ def test_small_calibration_noise_changes_the_depth_program():
             controller.record(k, costs[k], [j < i % 4 for j in range(k)])
         sequences.append(choices)
     assert sequences[0] != sequences[1]
+
+
+@pytest.mark.parametrize("value", [0, 1, 32, 4096])
+def test_prefill_block_size_accepts_nonnegative_integers(value):
+    assert tuning.KNOBS["mtp_prefill_block_size"].valid(value)
+
+
+@pytest.mark.parametrize("value", [-1, False, True, None, "32", 32.0, ()])
+def test_prefill_block_size_rejects_invalid_values(value):
+    assert not tuning.KNOBS["mtp_prefill_block_size"].valid(value)
+
+
+def test_prefill_alignment_uses_the_same_profile_resolver(monkeypatch):
+    selected = entry()
+    selected["knobs"]["mtp_prefill_block_size"] = 32
+    install_profile(monkeypatch, [selected])
+    assert policy.prefill_block_size(model()) == 32
+    monkeypatch.setattr(policy, "_model_context", lambda m: None)
+    assert policy.prefill_block_size(model()) == 0
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [dict(mode="plain"), dict(batch=2), dict(width=2), dict(has_mtp_head=False)],
+)
+def test_prefill_alignment_requires_single_request_mtp_head(changes):
+    decision = tuning.resolve(
+        "mtp_prefill_block_size", replace(context(), **changes), environ={}
+    )
+    assert decision.value == 0 and decision.source == "capability"
+
+
+@pytest.mark.parametrize("accepted,expected", [(0, 0), (2, 2), (3, 3)])
+def test_frozen_curve_selects_expected_throughput_and_can_park(accepted, expected):
+    costs = (1.0, 1.45, 1.72, 2.0)
+    programs = []
+    for _ in range(5):
+        controller = rd.request_depth_controller(costs, 3)
+        for _ in range(50):
+            controller.acc.observe(3, accepted)
+        scores = [controller.acc.expected_committed(k) / costs[k] for k in range(4)]
+        assert max(range(4), key=scores.__getitem__) == expected
+        programs.append(controller.pick_k(refresh_park_costs=False))
+    assert programs == [expected] * 5
+
+
+def test_gdn_execution_policy_is_profile_scoped(monkeypatch):
+    selected = entry()
+    selected["knobs"]["mtp_gdn_fusion"] = True
+    install_profile(monkeypatch, [selected])
+    assert policy.gdn_fusion_enabled(model())
+    monkeypatch.setattr(policy, "_model_context", lambda m: None)
+    assert not policy.gdn_fusion_enabled(model())
+
+
+def test_gdn_policy_resolves_installed_inner_model(monkeypatch):
+    inner = model()
+    wrapper = SimpleNamespace(language_model=inner)
+    seen = []
+
+    def qualified(candidate):
+        seen.append(candidate)
+        return context()
+
+    install_profile(monkeypatch)
+    monkeypatch.setattr(policy, "_model_context", qualified)
+    assert not policy.gdn_fusion_enabled(wrapper)
+    assert seen == [inner]

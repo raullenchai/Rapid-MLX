@@ -107,3 +107,26 @@ def forward_costs(model, max_k: int) -> tuple[float, ...]:
         values,
     )
     return (values[0], *values[1 : max_k + 1], values[-1])
+
+
+def prefill_block_size(model) -> int:
+    """Qualified prefill segmentation shared by cold cached and uncached requests."""
+    ctx = _model_context(model)
+    if ctx is None:
+        return 0
+    return int(cast(int, resolve("mtp_prefill_block_size", ctx).value))
+
+
+def gdn_fusion_enabled(model) -> bool:
+    """Measured cells opt into the rollback-compatible GDN execution paths."""
+    ctx = _model_context(getattr(model, "language_model", model))
+    if ctx is None:
+        return False
+    decision = resolve("mtp_gdn_fusion", ctx)
+    logger.info(
+        "[MTP] GDN fusion %s from %s, profile %s",
+        decision.value,
+        decision.source,
+        decision.profile_version,
+    )
+    return bool(decision.value)

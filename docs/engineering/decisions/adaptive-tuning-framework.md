@@ -162,6 +162,22 @@ curves fall back to the existing process-cached scratch-forward calibration.
 Profile costs bypass that cache so a previously calibrated schedule cannot
 replace a measured cell.
 
+`mtp_prefill_block_size` supplies a measured nonnegative prefill alignment.
+Zero retains incoming chunks. A positive value splits an unaligned chunk at
+its last complete block before target forwarding and head-history capture.
+Its scope and installed-head requirement match the forward-cost cell. This
+keeps cold cached and uncached prefill on the qualified numerical path.
+The M3 Ultra 35B cell uses 32 rows. Width-dependent rounding in prefill can
+change subsequent draft acceptance even with identical frozen depth prices.
+
+`mtp_gdn_fusion` enrolls the measured cells' rollback-compatible GDN execution
+paths after head attachment. Projection enrollment retains the split modules
+and validates every fused row count on the loaded weights. Verification consumes
+the fused projections, and the existing singleton recurrence implementation runs
+its cache/output parity probe. Qualified two-row verification uses the existing
+boundary kernel and preserves its tuple rollback snapshot. The M3 Ultra and M5
+Max 35B cells enable this execution choice.
+
 Both sources use the existing normalized round-cost formula, including host
 round overhead, and the measured verify curve for prompt-copy decisions. The
 acceptance EMA, exploration counters and copy gate are created per request.

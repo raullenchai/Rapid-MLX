@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_version": "2026.11.10.2",
+  "profile_version": "2026.11.10.3",
   "generated_at": "2026-11-11T01:05:33Z",
   "entries": [
     {
@@ -385,6 +385,7 @@
         "batch": 1
       },
       "knobs": {
+        "mtp_gdn_fusion": true,
         "mtp_forward_costs_ms": [
           6.71783369,
           8.564853409,
@@ -401,9 +402,10 @@
         "gpu_cores": 40,
         "memory_size": 38654705664,
         "repetitions": {
-          "calibration": 5
+          "calibration": 5,
+          "qualification": 5
         },
-        "decision": "Freeze median paired forward/draft costs for greedy request-local depth selection.",
+        "decision": "Freeze measured forward/draft costs and enroll parity-qualified GDN execution with rollback-aware verification.",
         "hardware_scope": "Exact generation/tier and memory with explicit generalization across core variants, including unknown core facts omitted by MLX. Measured 40-core hardware is provenance."
       }
     },
@@ -441,6 +443,8 @@
         "batch": 1
       },
       "knobs": {
+        "mtp_gdn_fusion": true,
+        "mtp_prefill_block_size": 32,
         "mtp_forward_costs_ms": [
           6.800500007,
           9.010624999,
@@ -457,9 +461,10 @@
         "gpu_cores": 60,
         "memory_size": 274877906944,
         "repetitions": {
-          "calibration": 5
+          "calibration": 5,
+          "qualification": 5
         },
-        "decision": "Freeze median paired forward/draft costs for greedy request-local depth selection.",
+        "decision": "Freeze measured costs, align prefill to 32-row snapshot boundaries, and enroll parity-qualified GDN execution with rollback-aware verification.",
         "hardware_scope": "Exact generation/tier and memory with explicit generalization across core variants, including unknown core facts omitted by MLX. Measured 60-core hardware is provenance."
       }
     }

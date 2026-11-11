@@ -630,3 +630,61 @@ class TestVLMFamily:
         monkeypatch.setattr(gdn_in_proj_fusion, "_probe_projection_parity", probe)
         assert gdn_in_proj_fusion.fuse_gdn_in_proj(model) == 2
         assert {id(layer) for layer in probed} == {id(layer) for layer in model.layers}
+
+
+@pytest.mark.parametrize("rows", [2, 4, 9])
+def test_retained_projections_preserve_stock_call_and_mtp_verify(rows):
+    from rapid_mlx.spec_decode.mtp.cache_patch import (
+        _input_projections,
+        patch_gated_delta_net_for_mtp,
+    )
+
+    model = TinyGDNModel()
+    originals = [layer.in_proj_qkv for layer in model.layers]
+    inputs = _inputs(rows, model.hidden_size)
+    before = _run_all(model, inputs)
+    patch_gated_delta_net_for_mtp()
+    references = []
+    for layer in model.layers:
+        cache = ArraysCache(2)
+        cache.n_confirmed_for_mtp = 1
+        output = layer(inputs, cache=cache)
+        mx.eval(output, cache.cache)
+        references.append((output, cache))
+    call = GatedDeltaNet.__call__
+    assert gdn_in_proj_fusion.fuse_gdn_in_proj(model, retain_split=True) == 2
+    assert GatedDeltaNet.__call__ is call
+    for layer, original in zip(model.layers, originals):
+        assert layer.in_proj_qkv is original
+        expected = [
+            projection(inputs)
+            for projection in (
+                layer.in_proj_qkv,
+                layer.in_proj_z,
+                layer.in_proj_b,
+                layer.in_proj_a,
+            )
+        ]
+        actual = _input_projections(layer, inputs)
+        mx.eval(expected, actual)
+        assert all(_bits_equal(a, b) for a, b in zip(actual, expected))
+    assert all(_bits_equal(a, b) for a, b in zip(_run_all(model, inputs), before))
+    patch_gated_delta_net_for_mtp()
+    for layer, (expected_output, expected_cache) in zip(model.layers, references):
+        cache = ArraysCache(2)
+        cache.n_confirmed_for_mtp = 1
+        output = layer(inputs, cache=cache)
+        mx.eval(output, cache.cache)
+        assert _bits_equal(output, expected_output)
+        actual_pairs = [cache.rollback_state] if rows == 2 else cache.rollback_state
+        expected_pairs = (
+            [expected_cache.rollback_state]
+            if rows == 2
+            else expected_cache.rollback_state
+        )
+        assert len(actual_pairs) == rows - 1
+        for actual_pair, expected_pair in zip(actual_pairs, expected_pairs):
+            for actual, expected in zip(actual_pair, expected_pair):
+                assert mx.allclose(actual, expected, rtol=1e-5, atol=1e-6).item()
+        for actual, expected in zip(cache.cache, expected_cache.cache):
+            assert mx.allclose(actual, expected, rtol=1e-5, atol=1e-6).item()
