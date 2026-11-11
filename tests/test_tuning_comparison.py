@@ -370,7 +370,7 @@ def test_schema_optional_and_identifier_free():
     validator.validate(run)
     for block, key in [
         ("context", "hostname"),
-        ("overrides", "secret"),
+        ("overrides", "invalid-knob"),
         ("outputs", "prompt"),
     ]:
         bad = copy.deepcopy(run)
@@ -384,15 +384,23 @@ def test_schema_optional_and_identifier_free():
 def test_candidates_come_from_registry():
     context = sample()["tuning"]["context"]
     candidates = list(comparison.candidate_values(context))
-    assert candidates[0] == {"mtp_max_depth": 2}
+    assert {"mtp_max_depth": 2} in candidates
+    assert {"mtp_gdn_fusion": False} in candidates
+    assert not any(
+        name in c
+        for name in ("mtp_prefill_block_size", "mtp_forward_costs_ms")
+        for c in candidates
+    )
     assert {"qwen35_affine4_bank_views": False} in candidates
     assert {"qwen35_affine4_rows": (2, 4)} in candidates
     distances = [len(c) for c in candidates]
     assert set(distances) == {1}
-    singles = [c for c in candidates if len(c) == 1]
-    assert list(comparison.candidate_values(context, salt=1))[0] == next(
-        c for c in singles if "qwen35_affine4_bank_views" in c
-    )
+    names = list(dict.fromkeys(next(iter(c)) for c in candidates))
+    assert names == [name for name in tuning.KNOBS if name in names]
+    for salt, name in enumerate(names):
+        assert next(comparison.candidate_values(context, salt=salt)) == next(
+            c for c in candidates if name in c
+        )
     assert not any(
         "lane_simd_probe" in c or "lane_tensor_units" in c for c in candidates
     )
@@ -868,18 +876,16 @@ def test_neighbor_boundaries_and_rotation():
     context = sample()["tuning"]["context"]
     context["knobs"]["mtp_max_depth"]["value"] = 1
     candidates = list(comparison.candidate_values(context))
-    assert candidates[0] == {"mtp_max_depth": 2}
+    assert {"mtp_max_depth": 2} in candidates
     context["knobs"]["mtp_max_depth"]["value"] = 4
-    assert list(comparison.candidate_values(context))[0] == {"mtp_max_depth": 3}
+    candidates = list(comparison.candidate_values(context))
+    assert {"mtp_max_depth": 3} in candidates
+    names = {next(iter(c)) for c in candidates}
     choices = {
         next(iter(next(comparison.candidate_values(context, salt=salt))))
-        for salt in range(3)
+        for salt in range(len(names))
     }
-    assert choices == {
-        "mtp_max_depth",
-        "qwen35_affine4_bank_views",
-        "qwen35_affine4_rows",
-    }
+    assert choices == names
     context["knobs"]["mtp_max_depth"]["value"] = 99
     assert all("mtp_max_depth" not in c for c in comparison.candidate_values(context))
     context["mode"] = "plain"
@@ -986,6 +992,12 @@ def test_requests_preserve_options_and_record_rotation(monkeypatch, tmp_path):
             ),
         }
     )
+    # Exercise depth override merging regardless of its registry position.
+    context = comparison.planning_context("model", request)
+    names = list(
+        dict.fromkeys(name for c in comparison.candidate_values(context) for name in c)
+    )
+    salt = names.index("mtp_max_depth")
     from rapid_mlx.community_bench import local_runner
 
     monkeypatch.setattr(local_runner, "run_local", measure)
@@ -993,14 +1005,14 @@ def test_requests_preserve_options_and_record_rotation(monkeypatch, tmp_path):
     result = comparison.run_comparison(
         "model",
         configs=2,
-        salt=0,
+        salt=salt,
         archive=LocalRunArchive(tmp_path),
         acceleration=request,
     )
     assert result["measured_configs"] == 2
     for run in result["configurations"]:
         choice = run["tuning"]["selection"]
-        assert choice["salt"] == 0
+        assert choice["salt"] == salt
         assert choice["changed_knobs"] == (
             [] if run["experiment"]["arm_id"] == "default" else ["mtp_max_depth"]
         )
