@@ -2901,8 +2901,15 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 and current.code in (401, 403)
             )
         ):
+            terms = ""
+            if "flux-3-image-klein" in rendered_model_id.casefold():
+                from rapid_mlx.image.engine import image_license_info
+
+                metadata = image_license_info(rendered_model_id)
+                terms = f"  {metadata['license']}: {metadata['license_notice']}\n"
             return (
-                f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
+                terms
+                + f"  Error: access to '{rendered_model_id}' is gated on Hugging Face.\n"
                 f"  Accept the licence or request access at "
                 f"https://huggingface.co/{rendered_model_id}\n"
                 "  Then run `hf auth login` or set `HF_TOKEN`, "
@@ -11410,10 +11417,19 @@ def _available_models_json_payload() -> dict:
             raw = None  # pragma: no cover - defensive
         modality = _modality(p)
         default_steps = None
+        image_metadata = {}
         if modality == "image-gen":
-            from rapid_mlx.image.engine import default_steps_for_model
+            from rapid_mlx.image.engine import (
+                default_steps_for_model,
+                image_license_info,
+                max_reference_images_for_model,
+            )
 
             default_steps = default_steps_for_model(p.hf_path)
+            image_metadata = {
+                "max_reference_images": max_reference_images_for_model(p.hf_path),
+                **image_license_info(p.hf_path),
+            }
         return {
             "alias": alias,
             "expected_decode": expectation(
@@ -11454,6 +11470,7 @@ def _available_models_json_payload() -> dict:
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
             "default_steps": default_steps,
+            **image_metadata,
             # Video aliases are only launchable when this host's actual video
             # runtime preflight passes. The check is side-effect free and
             # reuses the serve/pull gate, so there is no separate capability

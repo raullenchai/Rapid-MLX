@@ -1071,6 +1071,12 @@ def _always_reasoning(model_id: str, reasoning_parser: str | None) -> bool | Non
 
 def _build_model_info(model_id: str) -> ModelInfo:
     info = _build_model_info_base(model_id)
+    profile = resolve_profile(model_id)
+    if profile is not None and profile.modality == "image-gen":
+        from ..image.engine import max_reference_images_for_model
+
+        info.max_reference_images = max_reference_images_for_model(profile.hf_path)
+
     # ``reasoning_parser`` on the payload is already the effective one.
     info.always_reasoning = _always_reasoning(model_id, info.reasoning_parser)
     return info

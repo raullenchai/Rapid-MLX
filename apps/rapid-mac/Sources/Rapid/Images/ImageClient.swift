@@ -119,6 +119,7 @@ struct ImageClient {
     /// built by hand (there is no shared multipart helper in the app).
     func edit(
         imagePNG: Data,
+        additionalImages: [Data] = [],
         prompt: String,
         model: String,
         count: Int,
@@ -148,7 +149,7 @@ struct ImageClient {
         req.httpBody = Self.multipartBody(
             boundary: boundary, fields: fields,
             fileField: "image", fileName: "input.png",
-            fileMime: "image/png", fileData: imagePNG
+            fileMime: "image/png", fileData: imagePNG, additionalFiles: additionalImages
         )
         let images = try await sendAndDecode(req)
         return images.map { GeneratedImage(pngData: $0, prompt: prompt, isEdit: true) }
@@ -267,7 +268,8 @@ struct ImageClient {
         fileField: String,
         fileName: String,
         fileMime: String,
-        fileData: Data
+        fileData: Data,
+        additionalFiles: [Data] = []
     ) -> Data {
         var body = Data()
         let dashes = "--\(boundary)\r\n"
@@ -276,13 +278,15 @@ struct ImageClient {
             body.append(Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
             body.append(Data("\(value)\r\n".utf8))
         }
-        body.append(Data(dashes.utf8))
-        body.append(Data(
-            "Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(fileName)\"\r\n".utf8
-        ))
-        body.append(Data("Content-Type: \(fileMime)\r\n\r\n".utf8))
-        body.append(fileData)
-        body.append(Data("\r\n".utf8))
+        for data in [fileData] + additionalFiles {
+            body.append(Data(dashes.utf8))
+            body.append(Data(
+                "Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(fileName)\"\r\n".utf8
+            ))
+            body.append(Data("Content-Type: \(fileMime)\r\n\r\n".utf8))
+            body.append(data)
+            body.append(Data("\r\n".utf8))
+        }
         body.append(Data("--\(boundary)--\r\n".utf8))
         return body
     }

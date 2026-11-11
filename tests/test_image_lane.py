@@ -8,6 +8,7 @@ validation / dispatch / transport contract rather than the diffusion pipeline.
 
 import base64
 import io
+import os
 import types
 
 import pytest
@@ -557,7 +558,7 @@ def test_flux2_adapter_residency_can_preload_edit_variant(monkeypatch):
     monkeypatch.setattr(
         engine._engine,
         "_ensure_loaded",
-        lambda *, for_edit=None: modes.append(for_edit),
+        lambda *, for_edit=None, reference_count=0: modes.append(for_edit),
     )
 
     engine.ensure_resident(mode="editing")
@@ -571,7 +572,7 @@ def test_image_adapter_residency_without_mode_preserves_family_default(monkeypat
     monkeypatch.setattr(
         engine._engine,
         "_ensure_loaded",
-        lambda *, for_edit=None: modes.append(for_edit),
+        lambda *, for_edit=None, reference_count=0: modes.append(for_edit),
     )
 
     engine.ensure_resident()
@@ -593,7 +594,7 @@ def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
     monkeypatch.setattr(
         engine._engine,
         "_ensure_loaded",
-        lambda *, for_edit=None: loaded_modes.append(for_edit),
+        lambda *, for_edit=None, reference_count=0: loaded_modes.append(for_edit),
     )
     monkeypatch.setattr(engine._engine, "performance_snapshot", lambda: expected)
     monkeypatch.setattr(
@@ -1339,7 +1340,7 @@ def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch, model_ref):
 @pytest.mark.parametrize(
     "model,kwargs,message",
     [
-        ("Qwen/Qwen-Image-2.1", {"image_paths": ["a", "b"]}, "one input image"),
+        ("Qwen/Qwen-Image-2.1", {"image_paths": ["a"] * 11}, "reference images"),
         ("Qwen/Qwen-Image-Edit-2509", {}, "requires at least one input image"),
         ("Qwen/Qwen-Image", {"image_paths": ["a"]}, "text-to-image only"),
         ("HiDream-O1-Image-Dev", {"prompt": "x" * 4097}, "4096 characters"),
@@ -1608,7 +1609,7 @@ def test_image_adapter_emits_model_served_before_backend_failure(
         original_validate(**kwargs)
         events.append("validated")
 
-    def load(*, for_edit):
+    def load(*, for_edit, reference_count=0):
         assert for_edit is editing
         events.append("loaded")
 
@@ -1674,3 +1675,58 @@ def test_generation_bounds_and_restores_allocator_cache(
         engine.generate(**kwargs)
     assert state["limit"] == initial
     assert state["clears"] == 1
+
+
+@pytest.mark.parametrize("field", ["image", "image[]"])
+@pytest.mark.parametrize("count,status", [(1, 200), (3, 200), (11, 400)])
+def test_multiple_edit_references(client, monkeypatch, field, count, status):
+    engine = _FakeImageEngine(is_edit=True, family="flux3-klein")
+    engine.max_reference_images = 10
+    _patch_engine(monkeypatch, engine)
+    response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "combine", "seed": "4"},
+        files=[
+            (field, (f"{index}.png", _png_upload_bytes(), "image/png"))
+            for index in range(count)
+        ],
+    )
+    assert response.status_code == status
+    if status == 200:
+        assert len(engine.image_paths_seen[0]) == count
+        assert len(set(engine.image_paths_seen[0])) == count
+        assert all(not os.path.exists(path) for path in engine.image_paths_seen[0])
+        assert engine.dims_seen == [(None, None)]
+        assert engine.seeds == [4]
+    else:
+        assert "10 reference" in response.text
+        assert not engine.image_paths_seen
+
+
+@pytest.mark.parametrize(
+    "family,limit", [("flux2-klein", 1), ("qwen-image-edit", 1), ("qwen-image-2.1", 3)]
+)
+def test_edit_route_family_limits(client, monkeypatch, family, limit):
+    engine = _FakeImageEngine(is_edit=True, family=family)
+    engine.max_reference_images = limit
+    _patch_engine(monkeypatch, engine)
+    response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "combine"},
+        files=[("image", ("a.png", _png_upload_bytes(), "image/png"))] * (limit + 1),
+    )
+    assert response.status_code == 400
+    assert f"{limit} reference" in response.text
+
+
+def test_flux3_dimensions_return_400(client, monkeypatch):
+    from rapid_mlx.image.engine import ImageGenerationEngine
+
+    engine = ImageGenerationEngine("flux3-klein")
+    engine.is_image_gen = True
+    _patch_engine(monkeypatch, engine)
+    response = client.post(
+        "/v1/images/generations", json={"prompt": "cat", "size": "513x512"}
+    )
+    assert response.status_code == 400
+    assert "multiple" in response.text

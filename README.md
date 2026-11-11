@@ -274,6 +274,8 @@ family default shown below.
 <!-- image-model-matrix:start -->
 | Alias or HF repo ID | Best fit | Modes | Download | Minimum unified memory | Default steps |
 | --- | --- | --- | ---: | ---: | ---: |
+| `flux3-klein` | FLUX 3 Klein, gated | Generate + edit (1–10 references) | 18.9 GiB | 24 GB (provisional) | 16 |
+| `flux3-klein-base` | FLUX 3 Klein base, gated | Generate + edit (1–10 references) | 18.9 GiB | 24 GB (provisional) | 50 |
 | `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 16 GB | 4 |
 | `bonsai-image-4b-2bit` | Smallest download | Generate | 3.6 GiB | 12 GB | 4 |
 | `z-image-turbo` | Photorealistic images | Generate | 5.5 GiB | 16 GB | 8 |
@@ -287,6 +289,12 @@ family default shown below.
 | `qwen-image-2.1-turbo` | Eight-step distilled Qwen Image 2.1 | Generate | 30.2 GiB | 32 GB | 8 |
 | `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->
+
+`flux3-klein` and `flux3-klein-base` require mflux 0.23 or later and gated
+Hugging Face access under the FLUX Kommunity License. Both accept 1–10 reference
+images for editing. Their 24 GB memory floor is provisional pending real-peak
+measurement; download sizes use estimated component totals. See the
+[FLUX 3 Klein guide](docs/models/families/flux3-klein.md) for setup.
 
 `qwen-image-2.1` uses mflux 0.20 with a native MLX q4 transformer and q4 text
 encoder. `qwen-image-2.1-bf16` preserves the previous 8-bit-on-load transformer

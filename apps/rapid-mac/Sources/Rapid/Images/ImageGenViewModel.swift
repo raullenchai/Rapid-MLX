@@ -199,6 +199,9 @@ final class ImageGenViewModel {
 
     /// Engine family defaults, including the Qwen-Image 2.1 compatibility alias.
     nonisolated static func seedSteps(for alias: String) -> Int {
+        if alias.localizedCaseInsensitiveContains("flux3-klein") {
+            return alias.localizedCaseInsensitiveContains("base") ? 50 : 16
+        }
         // The distilled Qwen-Image 2.1 Turbo checkpoint runs its eight-step schedule.
         if alias.localizedCaseInsensitiveContains("qwen-image-2.1-turbo") { return 8 }
         if alias.lowercased() == "qwen-image"
@@ -224,6 +227,14 @@ final class ImageGenViewModel {
     }
 
     // MARK: - Edit
+    var additionalReferences: [GeneratedImage] = []
+    var maxReferenceImages: Int {
+        max(1, min(10, imageModels.first { $0.alias == selectedAlias }?.maxReferenceImages ?? 1))
+    }
+    func addReference(_ image: GeneratedImage) {
+        guard isEditing, additionalReferences.count + 1 < maxReferenceImages else { return }
+        additionalReferences.append(image)
+    }
     var editSource: GeneratedImage?
     var isEditing: Bool { editSource != nil }
     private var previousGenerationAlias: String?
@@ -255,6 +266,7 @@ final class ImageGenViewModel {
 
     var canSubmit: Bool {
         !isGenerating
+            && (!isEditing || additionalReferences.count + 1 <= maxReferenceImages)
             && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedAlias.isEmpty
             && selectableModels.contains { $0.alias == selectedAlias }
@@ -399,6 +411,7 @@ final class ImageGenViewModel {
 
     private func runEdit(source: GeneratedImage, target: RequestTarget) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let references = additionalReferences.map(\.pngData)
         guard !trimmed.isEmpty else { return }
         await withRequest {
             guard await self.server.ensureServing(
@@ -416,7 +429,7 @@ final class ImageGenViewModel {
             let poll = self.startPolling(model: target.alias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.edit(
-                imagePNG: source.pngData, prompt: trimmed, model: target.alias,
+                imagePNG: source.pngData, additionalImages: references, prompt: trimmed, model: target.alias,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
             if !self.cancelling, !Task.isCancelled,
@@ -429,6 +442,7 @@ final class ImageGenViewModel {
                 // Continue from the newest result so iterative edits never
                 // accidentally reapply to the original source.
                 self.editSource = first
+                self.additionalReferences = []
                 self.onProductValueDelivered(.editedImage)
             }
             self.prompt = ""
@@ -464,6 +478,7 @@ final class ImageGenViewModel {
 
     func beginEdit(_ image: GeneratedImage) {
         if !isEditing { previousGenerationAlias = selectedAlias }
+        additionalReferences = []
         editSource = image
         activeID = image.id
         prompt = ""
@@ -475,6 +490,7 @@ final class ImageGenViewModel {
 
     func cancelEdit() {
         editSource = nil
+        additionalReferences = []
         prompt = ""
         if let previousGenerationAlias,
            generationModels.contains(where: { $0.alias == previousGenerationAlias }) {

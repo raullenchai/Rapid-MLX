@@ -16,6 +16,8 @@ column.
 <!-- image-release-matrix:start -->
 | Alias | Runtime family | Required operation | Exact-candidate proof | Historical real-weight receipt |
 | --- | --- | --- | --- | --- |
+| `flux3-klein` | mflux / FLUX 3 Klein; gated, FLUX Kommunity License | Generate + edit (1–10 references) | Required manually | Pending real-weight qualification |
+| `flux3-klein-base` | mflux / FLUX 3 Klein base; gated, FLUX Kommunity License | Generate + edit (1–10 references) | Required manually | Pending real-weight qualification |
 | `flux2-klein-4b` | mflux / FLUX.2 Klein q4 | Generate + edit | Required; generation is automated in the release sidecar | [Mini release-readiness dogfood](2026-08-22-mini-release-readiness-dogfood.md) |
 | `bonsai-image-4b-2bit` | Native Bonsai | Generate | Required manually | [Bonsai Image 4B 2-bit dogfood](../performance/2026-09-05-bonsai-image-4b-2bit-dogfood.md) |
 | `z-image-turbo` | mflux / Z-Image | Generate | Required manually | [Initial real-weight qualification](https://github.com/raullenchai/Rapid-MLX/commit/056ebe79b9904dd432049a550b1bf6c3b298783d) |

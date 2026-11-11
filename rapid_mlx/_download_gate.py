@@ -1859,6 +1859,8 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Qwen/Qwen-Image-2.1": "790c92633540aa0cb11d9abf19eb46d861714758",
     "Qwen/Qwen-Image-2.1-Turbo": "fc13ba1986fcb905854dc8de2f52eee395f49b5b",
     "OsaurusAI/Qwen-Image-Edit-mflux-q8": "a458969f2a612433cf036bfc3d8d818ceba29fab",
+    "black-forest-labs/flux-3-image-klein": "09561231f44e41381c461caf53d5452005a60ac9",
+    "black-forest-labs/flux-3-image-klein-base": "a83ce283b1daa2f3d782645ae7b06c8e73af1b41",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
     BONSAI_IMAGE_REPO: BONSAI_IMAGE_REVISION,
@@ -1942,6 +1944,8 @@ _MFLUX_EXTRA_TOKENIZERS: dict[str, tuple[str, ...]] = {
     "mflux-community/flux-1-schnell-mflux-q4": ("tokenizer_2",),
 }
 _MFLUX_TOKENIZER_DIRS: dict[str, tuple[str, ...]] = {
+    "black-forest-labs/flux-3-image-klein": ("text_encoder",),
+    "black-forest-labs/flux-3-image-klein-base": ("text_encoder",),
     # Official Qwen 2.1 stores its Qwen3-VL tokenizer under processor/.
     "Qwen/Qwen-Image-2.1": ("processor",),
     "Qwen/Qwen-Image-2.1-Turbo": ("processor",),
@@ -1956,6 +1960,12 @@ _MFLUX_EXTRA_COMPONENTS: dict[str, tuple[str, ...]] = {
 # Keep this exception revision-bound through ``IMAGE_MODEL_REVISIONS`` rather
 # than accepting an arbitrary lone safetensors file from every repository.
 _MFLUX_SINGLE_FILE_COMPONENTS: dict[str, dict[str, str]] = {
+    "black-forest-labs/flux-3-image-klein": {
+        "vae": "diffusion_pytorch_model.safetensors"
+    },
+    "black-forest-labs/flux-3-image-klein-base": {
+        "vae": "diffusion_pytorch_model.safetensors"
+    },
     "mflux-community/flux2-klein-4b-mflux-bf16": {
         "transformer": "diffusion_pytorch_model.safetensors",
         "vae": "diffusion_pytorch_model.safetensors",
@@ -1971,6 +1981,12 @@ _MFLUX_SINGLE_FILE_COMPONENTS: dict[str, dict[str, str]] = {
     },
 }
 _MFLUX_INDEX_FILES: dict[str, dict[str, str]] = {
+    "black-forest-labs/flux-3-image-klein": {
+        "transformer": "diffusion_pytorch_model.safetensors.index.json"
+    },
+    "black-forest-labs/flux-3-image-klein-base": {
+        "transformer": "diffusion_pytorch_model.safetensors.index.json"
+    },
     "Qwen/Qwen-Image-2.1": {
         "transformer": "diffusion_pytorch_model.safetensors.index.json",
     },
