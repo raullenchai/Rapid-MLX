@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .engine_startup_errors import startup_failure_boundary
@@ -1472,11 +1472,17 @@ def _text_lane_image_note(cfg) -> str | None:
     return image_rejection_guidance(reason, engine=engine, include_paths=True)
 
 
+from .middleware.lan_inference import (  # noqa: E402
+    LANInferenceMiddleware,
+    verify_lan_inference_route,
+)
+
 app = FastAPI(
     title="Rapid-MLX API",
     description="OpenAI-compatible API for MLX LLM/MLLM inference on Apple Silicon",
     version="0.6.0",
     lifespan=lifespan,
+    dependencies=[Depends(verify_lan_inference_route)],
 )
 
 from .middleware.activity import ActivityMiddleware  # noqa: E402
@@ -1566,9 +1572,7 @@ from .middleware.probe_fastpath import install_probe_fastpath_middleware  # noqa
 install_probe_fastpath_middleware(app)
 
 # LAN auth also wraps probe fast paths, which otherwise bypass dependencies.
-from .middleware.lan_inference import LANInferenceMiddleware  # noqa: E402
-
-app.add_middleware(LANInferenceMiddleware, router=app.router)
+app.add_middleware(LANInferenceMiddleware)
 
 # CORS configuration — configurable via --cors-origins CLI flag and the
 # ``RAPID_MLX_CORS_*`` env-var family (F-090 / F-091). The previous default

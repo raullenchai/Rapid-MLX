@@ -9,9 +9,8 @@ This is deliberately separate from normal CLI authentication and CORS policy.
 import ipaddress
 import os
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse
-from starlette.routing import Match
 
 from ..config import get_config
 from .auth import verify_api_key_for_scope
@@ -64,33 +63,51 @@ def is_loopback_peer(client) -> bool:
         return False
 
 
-def _allowed(scope, router) -> bool:
-    method, path = scope["method"], scope["path"]
-    if path in _INFERENCE_ROUTES.get(method, ()):
-        return True
+_LOCAL_ONLY_DETAIL = "This route is available only on this Mac"
+_PENDING_ROUTE_CHECK = "rapid_mlx.lan_pending_route_check"
+_DYNAMIC_GET_ROUTES = frozenset(
+    {
+        "/v1/models/{model_id:path}",
+        "/v1/videos/{video_id}",
+        "/v1/videos/{video_id}/content",
+    }
+)
+
+
+async def _authenticate(scope):
+    # Even probes and routes with no auth dependency require a key.
+    if not get_config().api_key:
+        raise HTTPException(401, "LAN access requires an API key")
+    await verify_api_key_for_scope(scope)
+
+
+class _LANRouteError(Exception):
+    """Return boundary errors through the middleware, preserving its JSON body."""
+
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+
+
+async def verify_lan_inference_route(request: Request):
+    """App-level dependency: authorize dynamic GETs after routing, before handlers."""
+    if not request.scope.get(_PENDING_ROUTE_CHECK):
+        return
+    request.scope[_PENDING_ROUTE_CHECK] = False
     # Model IDs may contain slashes, but /v1/models/residency is management.
-    # Check the first route the router would select, so a more specific admin
-    # route (including future additions) cannot inherit model-lookup permission.
-    if (
-        method == "GET"
-        and path.startswith(("/v1/models/", "/v1/videos/"))
-        and router is not None
-    ):
-        for route in router.routes:
-            match, _ = route.matches(scope)
-            if match == Match.FULL:
-                return getattr(route, "path", None) in {
-                    "/v1/models/{model_id:path}",
-                    "/v1/videos/{video_id}",
-                    "/v1/videos/{video_id}/content",
-                }
-    return False
+    # Check the route actually selected, so a more specific admin route
+    # (including future additions) cannot inherit model-lookup permission.
+    if getattr(request.scope.get("route"), "path", None) not in _DYNAMIC_GET_ROUTES:
+        raise _LANRouteError(403, _LOCAL_ONLY_DETAIL)
+    try:
+        await _authenticate(request.scope)
+    except HTTPException as exc:
+        raise _LANRouteError(exc.status_code, exc.detail) from exc
 
 
 class LANInferenceMiddleware:
-    def __init__(self, app, *, enabled: bool | None = None, router=None):
+    def __init__(self, app, *, enabled: bool | None = None):
         self.app = app
-        self.router = router
         self.enabled = (
             os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") == "1"
             if enabled is None
@@ -107,16 +124,43 @@ class LANInferenceMiddleware:
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
-        if not _allowed(scope, self.router):
-            response = JSONResponse(
-                {"detail": "This route is available only on this Mac"}, status_code=403
-            )
+        if (
+            scope["method"] == "GET"
+            and scope["path"].startswith(("/v1/models/", "/v1/videos/"))
+            and scope["path"] not in _INFERENCE_ROUTES["GET"]
+        ):
+            scope[_PENDING_ROUTE_CHECK] = True
+            refused = False
+
+            async def checked_send(message):
+                nonlocal refused
+                if refused:
+                    return
+                if message["type"] == "http.response.start" and scope.get(
+                    _PENDING_ROUTE_CHECK
+                ):
+                    # No dependency ran (e.g. an unmatched URL or redirect).
+                    # Keep unlisted paths local rather than leaking router responses.
+                    refused = True
+                    response = JSONResponse(
+                        {"detail": _LOCAL_ONLY_DETAIL}, status_code=403
+                    )
+                    await response(scope, receive, send)
+                    return
+                await send(message)
+
+            try:
+                return await self.app(scope, receive, checked_send)
+            except _LANRouteError as exc:
+                response = JSONResponse(
+                    {"detail": exc.detail}, status_code=exc.status_code
+                )
+                return await response(scope, receive, send)
+        if scope["path"] not in _INFERENCE_ROUTES.get(scope["method"], ()):
+            response = JSONResponse({"detail": _LOCAL_ONLY_DETAIL}, status_code=403)
         else:
             try:
-                # Even probes and routes with no auth dependency require a key.
-                if not get_config().api_key:
-                    raise HTTPException(401, "LAN access requires an API key")
-                await verify_api_key_for_scope(scope)
+                await _authenticate(scope)
             except HTTPException as exc:
                 response = JSONResponse(
                     {"detail": exc.detail}, status_code=exc.status_code
