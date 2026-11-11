@@ -129,7 +129,7 @@ struct DownloadManagerTests {
         // Parallel suites may resolve or override that environment variable
         // concurrently, which made this deterministic unit test depend on
         // unrelated full-suite scheduling.
-        let mgr = DownloadManager(binaryPath: stale, binaryLocator: { fresh })
+        let mgr = DownloadManager(binaryPath: stale, binaryLocator: { fresh }, cacheAccessCheck: { nil })
         let started = mgr.startDownload(alias: "fake-alias")
         #expect(started)
         // Reap the spawned child on EVERY exit path — success, an assertion
@@ -581,7 +581,11 @@ struct DownloadManagerTests {
     // through startDownload, without network traffic or model/cache writes.
     private func retryManager() -> DownloadManager {
         let binary = URL(fileURLWithPath: "/usr/bin/true")
-        return DownloadManager(binaryPath: binary, binaryLocator: { binary }, endpointPreference: { nil })
+        // Inject access: the real probe would read this host's actual HF cache.
+        return DownloadManager(
+            binaryPath: binary, binaryLocator: { binary }, endpointPreference: { nil },
+            cacheAccessCheck: { nil }
+        )
     }
 
     private func awaitRetry(_ mgr: DownloadManager, replacing job: DownloadManager.Job) async throws -> DownloadManager.Job {

@@ -25,7 +25,7 @@ struct OpenedCheckpointRealUserTests {
         let weights = selected.appendingPathComponent("model.safetensors")
         let originalBytes = try weights.resourceValues(forKeys: [.fileSizeKey]).fileSize
         let server = ServerManager(testingState: .stopped, binaryPath: binary, sessionDefaults: prefs)
-        let downloads = DownloadManager(binaryPath: binary, binaryLocator: { binary })
+        let downloads = DownloadManager(binaryPath: binary, binaryLocator: { binary }, cacheAccessCheck: { nil })
         let settings = GoldenStage(ScrollView {
             SettingsModelManagementPanel(checkpointDefaults: prefs, checkpointDirectory: { selected })
                 .environment(server).environment(downloads)
