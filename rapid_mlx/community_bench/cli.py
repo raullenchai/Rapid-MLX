@@ -592,7 +592,7 @@ def _benchmark_command(args) -> int:
                         progress_sink = None
                     runner = run_local
                     comparison_options: dict = {}
-                    configs = getattr(args, "configs", 2)
+                    configs = getattr(args, "configs", 1)
                     if configs > 1:
                         from .comparison import run_comparison
 
@@ -757,10 +757,6 @@ def _benchmark_command(args) -> int:
     elif "configurations" in value:
         from .comparison import summary_lines
 
-        if value["measured_configs"] < value["requested_configs"]:
-            print(
-                f"Only {value['measured_configs']} applicable configurations exist; requested {value['requested_configs']}."
-            )
         for line in summary_lines(value["configurations"]):
             print(line)
         run = value["configurations"][0]

@@ -14,7 +14,14 @@ from pathlib import Path
 
 from rapid_mlx import __version__
 from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
-from rapid_mlx.community_bench.comparison import arm_statistics, speed_winners
+from rapid_mlx.community_bench.comparison import (
+    arm_statistics,
+    arm_verdict,
+    outputs_equal,
+)
+from rapid_mlx.community_bench.comparison import (
+    quality_passes as reports_pass,
+)
 from rapid_mlx.tuning.profiles import runtime_context
 
 
@@ -61,33 +68,7 @@ def effective_configuration(run: dict) -> dict:
 
 
 def quality_passes(runs: list[dict], defaults: list[dict]) -> bool:
-    outputs = [r["tuning"]["outputs"] for r in defaults + runs]
-    complete = all(
-        set(run["tuning"]["outputs"])
-        == {case["case_id"] for case in run["workload"]["cases"]}
-        and all(
-            len(run["tuning"]["outputs"][case["case_id"]]) == case["measured_rounds"]
-            and all(run["tuning"]["outputs"][case["case_id"]])
-            for case in run["workload"]["cases"]
-        )
-        for run in defaults + runs
-    )
-    canonical = {json.dumps(output, sort_keys=True) for output in outputs}
-    # Equality must include repeatability inside each case as well as across loads.
-    stable = all(
-        len(set(hashes)) == 1 for output in outputs for hashes in output.values()
-    )
-    if complete and stable and len(canonical) == 1:
-        return True
-    for run in runs:
-        quality = run["tuning"].get("quality", {})
-        if quality.get("n", 0) < 100 or "questions_digest" not in quality:
-            return False
-        for baseline in ("plain", "default"):
-            pair = quality.get(baseline, {})
-            if abs(pair.get("delta_pp", 100)) > 3 or pair.get("paired_p", 0) < 0.05:
-                return False
-    return True
+    return outputs_equal(defaults + runs) and reports_pass(defaults + runs)
 
 
 def distill(
@@ -199,12 +180,14 @@ def distill(
                 {"session": session, "reason": "default configuration changed"}
             )
             continue
-        winners = speed_winners(group)
+        winners = [
+            arm
+            for arm in dict.fromkeys(r["experiment"]["arm_id"] for r in group)
+            if arm != "default" and arm_verdict(group, arm)[0] == "faster"
+        ]
         accepted = []
         for arm in winners:
             evidence = [r for r in group if r["experiment"]["arm_id"] == arm]
-            if not quality_passes(evidence, defaults):
-                continue
             candidate_config = effective_configuration(evidence[0])
             if candidate_config == baseline_config or any(
                 effective_configuration(run) != candidate_config for run in evidence

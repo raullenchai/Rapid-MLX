@@ -1756,9 +1756,9 @@
            "class": "argparse._StoreAction",
            "completer": null,
            "const": null,
-           "default": 2,
+           "default": 1,
            "dest": "configs",
-           "help": "Configurations to compare: your current config plus nearest neighbors (default: 2; 1 runs only your current config)",
+           "help": "Configurations to compare: your current config plus nearest neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
            "metavar": null,
            "nargs": null,
            "option_strings": [

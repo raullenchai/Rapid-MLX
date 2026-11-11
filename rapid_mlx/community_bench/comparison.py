@@ -7,9 +7,9 @@ import json
 import os
 import secrets
 import statistics
+import time
 from contextlib import contextmanager
 from dataclasses import replace
-from itertools import combinations, product
 from typing import Any
 from uuid import uuid4
 
@@ -68,7 +68,7 @@ def capture_tuning(
 
 
 def candidate_values(context: dict, *, salt: int = 0):
-    """Adjacent registry values, ordered by the number of changed knobs.
+    """Single-knob adjacent registry values.
 
     Rotate knobs (rather than flattened neighbors) so two-sided integer knobs
     do not receive twice the community coverage of boolean knobs.
@@ -124,10 +124,9 @@ def candidate_values(context: dict, *, salt: int = 0):
         return
     offset = salt % len(neighbors)
     neighbors = neighbors[offset:] + neighbors[:offset]
-    for distance in range(1, len(neighbors) + 1):
-        for selected in combinations(neighbors, distance):
-            for values in product(*(values for _, values in selected)):
-                yield dict(zip((name for name, _ in selected), values))
+    for name, values in neighbors:
+        for value in values:
+            yield {name: value}
 
 
 @contextmanager
@@ -201,10 +200,66 @@ def measure_configuration(alias, *, progress=None, events=None, **options):
     return result
 
 
+def planning_context(alias: str, request: AccelerationRequest) -> dict | None:
+    """Resolve metadata and launch settings without loading model weights."""
+    from rapid_mlx.cli import _resolve_checkpoint_config
+    from rapid_mlx.model_aliases import resolve_profile, resolve_subfolder
+
+    from .acceleration import resolve_benchmark_acceleration
+    from .workspace import plan_for_alias
+
+    plan = plan_for_alias(alias)
+    if plan["model"]["task_type"] != "text_generation":
+        return None
+    launch, args = resolve_benchmark_acceleration(alias, request)
+    if launch.lane != "engine":
+        return None
+    config = _resolve_checkpoint_config(alias, resolve_profile(alias))
+    if not config:
+        from pathlib import Path
+
+        from rapid_mlx.model_downloads import hf_hub_download
+
+        path = hf_hub_download(
+            plan["model"]["repo_id"], "config.json", subfolder=resolve_subfolder(alias)
+        )
+        config = json.loads(Path(path).read_text())
+    import mlx.core as mx
+
+    mode = "mtp" if launch.scheduler_kwargs.get("spec_decode") == "mtp" else "plain"
+    context = json.loads(
+        json.dumps(
+            tuning.dump(
+                tuning.runtime_context(
+                    mx.device_info(),
+                    config=config,
+                    mode=mode,
+                    has_mtp_head=mode == "mtp",
+                )
+            )
+        )
+    )
+    if mode == "mtp":
+        from rapid_mlx.cli import _resolve_mtp_depth_for_model
+
+        decision = context["knobs"]["mtp_max_depth"]
+        explicit = getattr(args, "_speculative_config_explicit", False)
+        if explicit or decision["source"] in {"default", "capability"}:
+            decision.update(
+                value=_resolve_mtp_depth_for_model(
+                    context["model"]["family"],
+                    launch.scheduler_kwargs.get("mtp_max_k", 1),
+                    explicit=explicit,
+                ),
+                source="default",
+            )
+    return context
+
+
 def run_comparison(
     alias: str,
     *,
-    configs: int = 2,
+    configs: int,
     repetitions: int = 3,
     archive=None,
     acceleration: AccelerationRequest | None = None,
@@ -229,88 +284,188 @@ def run_comparison(
     group = str(uuid4())
     salt = secrets.randbelow(2147483648) if salt is None else salt
     runs: list[dict[str, Any]] = []
+    progress = kwargs.get("progress")
 
-    def measure(arm, values):
-        arm_request = request
-        if "mtp_max_depth" in values:
-            # Explicit serve caps take precedence over policy; replace only that
-            # cap while preserving the user's installed head and other options.
-            overrides = dict(request.overrides)
-            original = json.loads(overrides.get("speculative_config", "{}"))
-            original.update(
-                method="mtp", num_speculative_tokens=values["mtp_max_depth"]
-            )
-            overrides["speculative_config"] = json.dumps(original)
-            arm_request = replace(request, overrides=overrides)
-        with configuration_environment(values):
-            run = measure_configuration(
-                alias,
-                archive=destination,
-                acceleration=arm_request,
-                tuning_observation=True,
-                **kwargs,
-            )
-        return record(run, arm, values)
+    def announce(message):
+        if progress is not None:
+            progress(message)
 
-    def record(run, arm, values):
-        run["tuning"]["selection"] = {
-            "salt": salt,
-            "changed_knobs": list(values),
-            "requested_configs": configs,
-        }
-        run["experiment"] = {
-            "group_id": group,
-            "arm_id": arm,
-            "role": "baseline" if arm == "default" else "candidate",
-            "sequence_index": len(runs) + 1,
-            "order_strategy": "alternating",
-            "assignment_seed": salt,
-            "varied_fields": ["/tuning/context/knobs/" + name for name in values]
-            or ["/tuning/context/knobs"],
-        }
-        destination.save(run)
-        runs.append(run)
-        return run
-
-    # Discover applicability through the legacy measurement itself. No new
-    # process is needed for media, unsupported runtimes, or cells without a
-    # neighbor, and parent-process loader/preflight behavior remains intact.
-    first: dict = run_local(
-        alias,
-        archive=destination,
-        acceleration=request,
-        tuning_observation=True,
-        **kwargs,
+    context = planning_context(alias, request)
+    candidates = (
+        list(islice(candidate_values(context, salt=salt), configs - 1))
+        if context
+        else []
     )
-    if "tuning" not in first:
-        return first
-    context = json.loads(json.dumps(first["tuning"]["context"]))
-    # Effective explicit/clamped depth is the user's current value too.
-    for name, value in first["tuning"]["overrides"].items():
-        context["knobs"][name]["value"] = value
-    candidates = list(islice(candidate_values(context, salt=salt), configs - 1))
-    if not candidates:
-        return first
-    if kwargs.get("progress") is not None:
-        count = len(candidates) + 1
-        kwargs["progress"](
-            f"Comparing {count} configurations × {repetitions} repetitions: about {count * repetitions}× a single-configuration run."
-        )
-    record(first, "default", {})
     arms = [("default", {}), *[(f"nearby-{i}", v) for i, v in enumerate(candidates, 1)]]
-    for repetition in range(repetitions):
-        offset = repetition % len(arms)
-        for arm, values in arms[offset:] + arms[:offset]:
-            if repetition == 0 and arm == "default":
-                continue
-            measure(arm, values)
-    first["paired_runs"] = json.loads(json.dumps(runs[1:]))
-    destination.save(first)
+    count = len(arms)
+    actual_repetitions = repetitions if candidates else 1
+    if not candidates:
+        announce("No tunable settings apply here; ran a single benchmark instead.")
+    elif count < configs:
+        announce(
+            f"Only {len(candidates)} single-change neighbors are valid for this model/mode (requested {configs - 1})"
+        )
+    announce(f"Plan: {count} configs × {actual_repetitions} repetitions")
+    changes = []
+    for arm, values in arms[1:]:
+        name, value = next(iter(values.items()))
+        decision = context["knobs"][name]
+        change = f"{name}: {decision['value']} → {value} (current source: {decision['source'].split(':')[0]})"
+        changes.append({"arm_id": arm, "change": change})
+        announce(change)
+    announce("estimated time: shown after the first repetition")
+    # Alternate forward/reverse traversals: two arms yield ABBA blocks.
+    schedule = [
+        (rep, index, *arms[index])
+        for rep in range(actual_repetitions)
+        for index in (range(count) if rep % 2 == 0 else reversed(range(count)))
+    ]
+    manifest = {
+        "group_id": group,
+        "status": "running",
+        "plan": {
+            "configs": count,
+            "repetitions": actual_repetitions,
+            "changes": changes,
+            "order_strategy": "balanced_rotation",
+        },
+        "runs": [
+            {
+                "arm_id": arm,
+                "repetition": rep + 1,
+                "status": "pending",
+                "saved_paths": [],
+            }
+            for rep, _, arm, _ in schedule
+        ],
+    }
+
+    def save_manifest():
+        return destination._atomic_save(
+            destination.root / "experiments", group, manifest
+        )
+
+    manifest_path = save_manifest()
+    started = time.monotonic()
+    active = None
+    try:
+        for sequence, (rep, index, arm, values) in enumerate(schedule):
+            active = manifest["runs"][sequence]
+            active["status"] = "running"
+            save_manifest()
+            announce(
+                f"config {index + 1}/{count} · repetition {rep + 1}/{actual_repetitions}"
+            )
+            arm_request = request
+            if "mtp_max_depth" in values:
+                overrides = dict(request.overrides)
+                original = json.loads(overrides.get("speculative_config", "{}"))
+                original.update(
+                    method="mtp", num_speculative_tokens=values["mtp_max_depth"]
+                )
+                overrides["speculative_config"] = json.dumps(original)
+                arm_request = replace(request, overrides=overrides)
+            with configuration_environment(values):
+                runner = run_local if sequence == 0 else measure_configuration
+                run = runner(
+                    alias,
+                    archive=destination,
+                    acceleration=arm_request,
+                    tuning_observation=True,
+                    **kwargs,
+                )
+            if candidates:
+                run["tuning"]["selection"] = {
+                    "salt": salt,
+                    "changed_knobs": list(values),
+                    "requested_configs": configs,
+                }
+                run["experiment"] = {
+                    "group_id": group,
+                    "arm_id": arm,
+                    "role": "baseline" if arm == "default" else "candidate",
+                    "sequence_index": sequence + 1,
+                    "order_strategy": "balanced_rotation",
+                    "assignment_seed": salt,
+                    "varied_fields": [
+                        "/tuning/context/knobs/" + name for name in values
+                    ]
+                    or ["/tuning/context/knobs"],
+                }
+            path = (
+                destination.save(run)
+                if candidates
+                else destination.runs_dir / (run["run_id"] + ".json")
+            )
+            runs.append(run)
+            active.update(
+                status="completed"
+                if run["outcome"]["status"] == "completed"
+                else "failed",
+                run_id=run["run_id"],
+                saved_paths=[str(path)],
+            )
+            save_manifest()
+            if active["status"] == "failed":
+                raise ValueError(f"Benchmark run {run['run_id']} failed")
+            if sequence == 0 and candidates:
+                observed = {
+                    name: decision["value"]
+                    for name, decision in run["tuning"]["context"]["knobs"].items()
+                }
+                observed.update(run["tuning"]["overrides"])
+                if any(
+                    observed[name] != context["knobs"][name]["value"]
+                    for values in candidates
+                    for name in values
+                ):
+                    raise ValueError(
+                        "Loaded settings differ from the comparison plan; the current run is saved. Re-run with explicit settings."
+                    )
+            if sequence == 0:
+                remaining = (time.monotonic() - started) * (len(schedule) - 1)
+                announce(
+                    f"estimated time remaining: {remaining * 0.8:.0f}–{remaining * 1.5:.0f} seconds"
+                )
+        if candidates:
+            runs[0]["paired_runs"] = json.loads(json.dumps(runs[1:]))
+            destination.save(runs[0])
+        manifest["status"] = "completed"
+        save_manifest()
+    except BaseException as exc:
+        manifest["status"] = (
+            "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+        )
+        if active is not None and active["status"] == "running":
+            active["status"] = "failed"
+            failed_run = getattr(exc, "run", None)
+            if failed_run and getattr(exc, "saved", False):
+                active.update(
+                    run_id=failed_run["run_id"],
+                    saved_paths=[
+                        str(destination.runs_dir / (failed_run["run_id"] + ".json"))
+                    ],
+                )
+        save_manifest()
+        completed = sum(item["status"] == "completed" for item in manifest["runs"])
+        message = (
+            f"Experiment {group}: {completed} completed runs; manifest: {manifest_path}"
+        )
+        if progress is None:
+            import sys
+
+            print(message, file=sys.stderr)
+        else:
+            announce(message)
+        raise
+    if not candidates:
+        return runs[0]
     return {
         "schema_version": 1,
         "configurations": runs,
         "requested_configs": configs,
-        "measured_configs": len(arms),
+        "measured_configs": count,
+        "verdicts": verdicts(runs),
     }
 
 
@@ -346,64 +501,136 @@ def arm_statistics(runs: list[dict]) -> dict:
     return arms
 
 
-def speed_winners(runs: list[dict], *, min_repetitions: int = 3) -> list[str]:
-    stats = arm_statistics(runs)
-    default = stats.get("default", {})
-    winners = []
-    for arm, cases in stats.items():
-        if arm == "default" or cases.keys() != default.keys():
+VERDICT_LABELS = {
+    "faster": "faster (reliable)",
+    "no_reliable_gain": "no reliable gain",
+    "outputs_differ": "outputs differ — not comparable",
+    "incomplete": "incomplete",
+    "quality_failed": "quality check failed",
+}
+
+
+def outputs_equal(runs: list[dict]) -> bool:
+    """Require complete, stable per-case digests, including within each load."""
+    canonical = set()
+    for run in runs:
+        outputs = run["tuning"]["outputs"]
+        cases = run["workload"]["cases"]
+        if set(outputs) != {c["case_id"] for c in cases}:
+            return False
+        for case in cases:
+            hashes = outputs[case["case_id"]]
+            if (
+                len(hashes) != case["measured_rounds"]
+                or not hashes
+                or not all(hashes)
+                or len(set(hashes)) != 1
+            ):
+                return False
+        canonical.add(json.dumps(outputs, sort_keys=True))
+    return len(canonical) == 1
+
+
+def quality_passes(runs: list[dict]) -> bool:
+    for run in runs:
+        quality = run["tuning"].get("quality")
+        if quality is None:
             continue
-        if all(
-            len(rows) >= min_repetitions
-            and len(default[case]) >= min_repetitions
-            and statistics.median(r[0] for r in rows)
-            >= 1.02 * statistics.median(r[0] for r in default[case])
-            and min(r[2] for r in rows) > max(r[3] for r in default[case])
-            for case, rows in cases.items()
-        ):
-            winners.append(arm)
-    return winners
+        if quality.get("n", 0) < 100 or not quality.get("questions_digest"):
+            return False
+        for baseline in ("plain", "default"):
+            pair = quality.get(baseline, {})
+            if abs(pair.get("delta_pp", 100)) > 3 or pair.get("paired_p", 0) < 0.05:
+                return False
+    return True
+
+
+def arm_verdict(
+    runs: list[dict], arm: str, *, min_repetitions: int = 3
+) -> tuple[str, str]:
+    """One ordered eligibility and speed decision for every comparison consumer."""
+    min_repetitions = max(3, min_repetitions)
+    evidence = [r for r in runs if r["experiment"]["arm_id"] in {"default", arm}]
+    stats = arm_statistics(evidence)
+    expected = {c["case_id"] for r in evidence for c in r["workload"]["cases"]}
+    if (
+        not expected
+        or any(
+            {c["case_id"] for c in r["workload"]["cases"]} != expected
+            or {
+                m["case_id"]
+                for m in r["measurements"]
+                if m["decode_duration_ms"] > 0 and m["output_tokens"] > 1
+            }
+            != expected
+            for r in evidence
+        )
+        or any(
+            set(stats.get(name, {})) != expected
+            or any(len(stats[name][case]) < min_repetitions for case in expected)
+            for name in ("default", arm)
+        )
+        or any(r["outcome"]["status"] != "completed" for r in evidence)
+    ):
+        return "incomplete", "incomplete"
+    if not outputs_equal(evidence):
+        return "outputs_differ", "outputs_differ"
+    if not quality_passes(evidence):
+        return "quality_failed", "quality_failed"
+    default, candidate = stats["default"], stats[arm]
+    if any(
+        statistics.median(r[0] for r in candidate[c])
+        < 1.02 * statistics.median(r[0] for r in default[c])
+        for c in expected
+    ):
+        return "no_reliable_gain", "below_threshold"
+    if any(
+        min(r[2] for r in candidate[c]) <= max(r[3] for r in default[c])
+        for c in expected
+    ):
+        return "no_reliable_gain", "overlapping_ranges"
+    if any(
+        statistics.median(r[1] for r in candidate[c])
+        > 1.05 * statistics.median(r[1] for r in default[c])
+        for c in expected
+    ):
+        return "no_reliable_gain", "ttft_regressed"
+    return "faster", "faster"
+
+
+def verdicts(runs: list[dict]) -> dict:
+    return {
+        arm: dict(zip(("label", "reason_code"), arm_verdict(runs, arm)))
+        for arm in dict.fromkeys(r["experiment"]["arm_id"] for r in runs)
+        if arm != "default"
+    }
+
+
+def speed_winners(runs: list[dict], *, min_repetitions: int = 3) -> list[str]:
+    return [
+        arm
+        for arm in dict.fromkeys(r["experiment"]["arm_id"] for r in runs)
+        if arm != "default"
+        and arm_verdict(runs, arm, min_repetitions=min_repetitions)[0] == "faster"
+    ]
 
 
 def summary_lines(runs: list[dict]) -> list[str]:
     lines = [
         "Your current config vs nearby configs (local observation)",
-        "Config       Case                tok/s median [min, max]     TTFT ms    reps    greedy",
+        "Results are a local observation; this run does not change your configuration.",
+        "Config       Case                tok/s median [min, max]     TTFT ms    reps",
     ]
-    baseline = {
-        json.dumps(r["tuning"]["outputs"], sort_keys=True)
-        for r in runs
-        if r["experiment"]["arm_id"] == "default"
-    }
     for arm, cases in arm_statistics(runs).items():
-        outputs = {
-            json.dumps(r["tuning"]["outputs"], sort_keys=True)
-            for r in runs
-            if r["experiment"]["arm_id"] == arm
-        }
-        equality = "equal" if len(baseline) == 1 and outputs == baseline else "diverged"
         for case, rows in cases.items():
             rates = [r[0] for r in rows]
             lines.append(
-                f"{('current' if arm == 'default' else arm):<12} {case:<19} {statistics.median(rates):7.2f} [{min(r[2] for r in rows):.2f}, {max(r[3] for r in rows):.2f}]  {statistics.median(r[1] for r in rows):9.2f} {len(rows):7}    {equality}"
+                f"{('current' if arm == 'default' else arm):<12} {case:<19} {statistics.median(rates):7.2f} [{min(r[2] for r in rows):.2f}, {max(r[3] for r in rows):.2f}]  {statistics.median(r[1] for r in rows):9.2f} {len(rows):7}"
             )
-    stats = arm_statistics(runs)
-    default = stats.get("default", {})
-    for arm, cases in stats.items():
-        if arm != "default" and cases.keys() == default.keys():
-            gains = [
-                100
-                * (
-                    statistics.median(r[0] for r in rows)
-                    / statistics.median(r[0] for r in default[case])
-                    - 1
-                )
-                for case, rows in cases.items()
-            ]
-            if gains and min(gains) > 0:
-                lines.append(
-                    f"Nearby config {arm} was faster by {min(gains):.1f}% or more across cases on this machine (local observation; submit to help tune defaults)."
-                )
+    for arm, verdict in verdicts(runs).items():
+        lines.append(
+            f"{arm}: {VERDICT_LABELS[verdict['label']]} ({verdict['reason_code']})"
+        )
     winners = speed_winners(runs)
     lines.append(
         "Local speed-gate winners (>=2%, non-overlapping, >=3 reps per arm): "

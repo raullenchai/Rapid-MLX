@@ -1232,7 +1232,7 @@ enum CommunityBenchmarkCommand {
             // Stream RS-tagged live progress so the run shows a determinate
             // bar + ETA; the untagged failure document stays clean.
             "--progress",
-            "--inherit-process-group",
+            "--configs", "1", "--inherit-process-group",
         ]
     }
 

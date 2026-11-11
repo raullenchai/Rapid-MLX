@@ -2329,9 +2329,9 @@ def _add_benchmark_parser(
     community_run.add_argument(
         "--configs",
         type=int,
-        default=2,
+        default=1,
         choices=range(1, 17),
-        help="Configurations to compare: your current config plus nearest neighbors (default: 2; 1 runs only your current config)",
+        help="Configurations to compare: your current config plus nearest neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
     )
     community_run.add_argument(
         "--repetitions",

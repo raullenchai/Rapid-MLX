@@ -265,8 +265,15 @@ def upload_run(
         raise SubmitError(
             "the install id changed before upload; review the payload and try again"
         )
-    response = post_submission(wire, url=target)
-    receipt = _validated_receipt(response, run["run_id"], wire_digest)
+    try:
+        response = post_submission(wire, url=target)
+        receipt = _validated_receipt(response, run["run_id"], wire_digest)
+    except SubmitError as exc:
+        if run.get("paired_runs"):
+            raise SubmitError(
+                f"Comparison upload failed; local results are kept. {exc}"
+            ) from exc
+        raise
     return AtomicUploadAcceptance(receipt, candidate, wire_digest)
 
 
