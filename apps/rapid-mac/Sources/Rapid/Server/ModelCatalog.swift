@@ -335,6 +335,12 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var isBuiltinProfile: Bool? = nil
     /// Authoritative alias pin. An explicit `true` always keeps the text lane.
     var isTextOnly: Bool? = nil
+    var totalParamsB: Double? = nil
+    var activeParamsB: Double? = nil
+
+    var parameterLabel: String? {
+        DecodeExpectations.parameterLabel(total: totalParamsB, active: activeParamsB)
+    }
 
     /// Shared engine discovery verdict. Nil preserves older sidecar behavior.
     var cachedChatDiscovery: CachedChatDiscovery? = nil
@@ -534,6 +540,8 @@ enum ModelCatalog {
             enriched.speculativeDecodingPreset = speculativeCapabilities[entry.alias]
             enriched.isBuiltinProfile = availableResult.profiles[entry.alias]?.isBuiltin
             enriched.isTextOnly = availableResult.profiles[entry.alias]?.isTextOnly
+            enriched.totalParamsB = availableResult.profiles[entry.alias]?.totalParamsB
+            enriched.activeParamsB = availableResult.profiles[entry.alias]?.activeParamsB
             enriched.recommendationPolicyDigests =
                 availableResult.profiles[entry.alias]?.recommendationPolicyDigests ?? []
             enriched.allowsLegacyRecommendationPolicy =
@@ -927,6 +935,8 @@ enum ModelCatalog {
         let isTextOnly: Bool
         let recommendationPolicyDigests: Set<String>
         let allowsLegacyRecommendationPolicy: Bool
+        var totalParamsB: Double? = nil
+        var activeParamsB: Double? = nil
     }
 
     /// Parse the machine-readable alias SSOT used for Desktop launch policy.
@@ -960,7 +970,9 @@ enum ModelCatalog {
                     isBuiltin: isBuiltin,
                     isTextOnly: isTextOnly,
                     recommendationPolicyDigests: [],
-                    allowsLegacyRecommendationPolicy: isPreAtomicCatalog && isBuiltin
+                    allowsLegacyRecommendationPolicy: isPreAtomicCatalog && isBuiltin,
+                    totalParamsB: row["total_params_b"] as? Double,
+                    activeParamsB: row["active_params_b"] as? Double
                 )
             }
             if row["tensorfold_mtp"] as? Bool == true,
@@ -1060,7 +1072,9 @@ enum ModelCatalog {
                         isBuiltin: entry.isBuiltinProfile == true,
                         isTextOnly: entry.isTextOnly == true,
                         recommendationPolicyDigests: entry.recommendationPolicyDigests,
-                        allowsLegacyRecommendationPolicy: false
+                        allowsLegacyRecommendationPolicy: false,
+                        totalParamsB: entry.totalParamsB,
+                        activeParamsB: entry.activeParamsB
                     )
                 )
             }
@@ -1346,7 +1360,9 @@ enum ModelCatalog {
                 sourceSubfolder: model.subfolder,
                 recommendationPolicyDigests: policyDigests,
                 isBuiltinProfile: origin == "builtin",
-                isTextOnly: isTextOnly
+                isTextOnly: isTextOnly,
+                totalParamsB: ((row["presentation"] as? [String: Any])?["total_params_million"] as? Double).map { $0 / 1000 },
+                activeParamsB: ((row["presentation"] as? [String: Any])?["active_params_million"] as? Double).map { $0 / 1000 }
             ))
         }
         let hidden = nonStandaloneAliases(root)

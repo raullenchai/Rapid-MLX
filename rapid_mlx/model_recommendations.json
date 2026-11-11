@@ -173,6 +173,10 @@
             "fits_memory_tier"
           ]
         }
+      ],
+      "prefer_fast_chip_classes": [
+        "base",
+        "pro"
       ]
     },
     {
@@ -200,6 +204,10 @@
             "fits_memory_tier"
           ]
         }
+      ],
+      "prefer_fast_chip_classes": [
+        "base",
+        "pro"
       ]
     },
     {
@@ -227,8 +235,12 @@
             "fits_memory_tier"
           ]
         }
+      ],
+      "prefer_fast_chip_classes": [
+        "base",
+        "pro"
       ]
     }
   ],
-  "policy_digest": "sha256:cad2d9b551808ed3d488a182d671ac9959c9e5b8c44ab8c5f5c99d5e4e403645"
+  "policy_digest": "sha256:246f933e50b9986c8dc17f354ff3c63e9e27b9a5b6e96d69932724157f646827"
 }

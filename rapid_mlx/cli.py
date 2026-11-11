@@ -11068,7 +11068,11 @@ def recipe_command(args) -> None:
     """
     import json
 
-    from rapid_mlx.recommendations import physical_ram_gb, recommendation_payload
+    from rapid_mlx.recommendations import (
+        parameter_label,
+        physical_ram_gb,
+        recommendation_payload,
+    )
 
     ram_gb = (
         float(args.max_ram)
@@ -11077,7 +11081,9 @@ def recipe_command(args) -> None:
     )
     if ram_gb <= 0:
         raise SystemExit("Could not detect physical RAM. Pass --max-ram GB explicitly.")
-    payload = recommendation_payload(ram_gb)
+    from rapid_mlx.decode_expectations import detected_chip
+
+    payload = recommendation_payload(ram_gb, chip=detected_chip())
     _annotate_recipe_picks(payload)
 
     if getattr(args, "json", False):
@@ -11095,6 +11101,10 @@ def recipe_command(args) -> None:
         # won't-fit line below. Without the label the two GB numbers read as
         # contradictory (e.g. "20.0 GB" then "needs ~16.72 GB").
         stats = [f"{pick['footprint_gb']:.1f} GB RAM"]
+        if label := parameter_label(
+            pick.get("total_params_b"), pick.get("active_params_b")
+        ):
+            stats.append(label)
         if pick.get("caveat"):
             stats.append(pick["caveat"])
         else:
@@ -11417,6 +11427,8 @@ def _available_models_json_payload() -> dict:
             "reasoning_parser": p.reasoning_parser,
             "is_hybrid": bool(getattr(p, "is_hybrid", False)),
             "is_moe": bool(getattr(p, "is_moe", False)),
+            "total_params_b": p.total_params_b,
+            "active_params_b": p.active_params_b,
             "supports_spec_decode": bool(getattr(p, "supports_spec_decode", False)),
             "supports_native_mtp": bool(getattr(p, "supports_native_mtp", False)),
             "native_mtp_draft_model": getattr(p, "native_mtp_draft_model", None),

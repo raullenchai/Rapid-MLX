@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,23 @@ class Recommendation:
 class RecommendationTier:
     floor_gb: int
     picks: tuple[Recommendation, Recommendation]
+    prefer_fast_chip_classes: tuple[str, ...] = ()
+
+    def ordered(self, chip: str | None) -> RecommendationTier:
+        if chip_class(chip) in self.prefer_fast_chip_classes:
+            return replace(
+                self, picks=(self.picks[1], self.picks[0]), prefer_fast_chip_classes=()
+            )
+        return self
+
+
+def chip_class(chip: str | None) -> str:
+    from .decode_expectations import chip_name
+
+    name = chip_name(chip or "")
+    if name is None:
+        return "unknown"
+    return name.split()[1].lower() if " " in name else "base"
 
 
 def load_product_recommendation_policy() -> dict[str, Any]:
@@ -120,7 +137,16 @@ def load_recommendation_tiers(
         floor_mib = int(raw_tier["minimum_memory_mib"])
         if floor_mib % 1024:
             raise ValueError("Desktop RAM tier floors must be whole GiB values")
-        tiers.append(RecommendationTier(floor_mib // 1024, picks))
+        classes = raw_tier.get("prefer_fast_chip_classes", [])
+        if (
+            not isinstance(classes, list)
+            or not classes
+            and "prefer_fast_chip_classes" in raw_tier
+            or any(c not in ("base", "pro") for c in classes)
+            or len(set(classes)) != len(classes)
+        ):
+            raise ValueError("invalid prefer_fast_chip_classes")
+        tiers.append(RecommendationTier(floor_mib // 1024, picks, tuple(classes)))
     if not tiers or any(
         current.floor_gb <= previous.floor_gb
         for previous, current in zip(tiers, tiers[1:])
@@ -148,18 +174,22 @@ def physical_ram_gb() -> float:
 
 
 def recommendation_tier(
-    ram_gb: float, *, validate_catalog: bool = True
+    ram_gb: float, *, validate_catalog: bool = True, chip: str | None = None
 ) -> RecommendationTier:
     tiers = load_recommendation_tiers(validate_catalog=validate_catalog)
     chosen = tiers[0]
     for tier in tiers:
         if ram_gb >= tier.floor_gb:
             chosen = tier
-    return chosen
+    return chosen.ordered(chip)
 
 
 def fitting_picks(
-    ram_gb: float, budget_gb: float, *, exclude: str | None = None
+    ram_gb: float,
+    budget_gb: float,
+    *,
+    exclude: str | None = None,
+    chip: str | None = None,
 ) -> tuple[str, ...]:
     """Return recommendations in tier order that fit the GPU budget."""
     tiers = load_recommendation_tiers(validate_catalog=False)
@@ -168,17 +198,21 @@ def fitting_picks(
         pick.alias
         for tier in reversed(tiers)
         if tier.floor_gb <= current.floor_gb
-        for pick in tier.picks
+        for pick in tier.ordered(chip).picks
         if (exclude is None or pick.alias.casefold() != exclude.casefold())
         and pick.footprint_gb <= budget_gb
     )
 
 
 def fitting_pick(
-    ram_gb: float, budget_gb: float, *, exclude: str | None = None
+    ram_gb: float,
+    budget_gb: float,
+    *,
+    exclude: str | None = None,
+    chip: str | None = None,
 ) -> str | None:
     """Return the first recommendation that fits the GPU budget."""
-    picks = fitting_picks(ram_gb, budget_gb, exclude=exclude)
+    picks = fitting_picks(ram_gb, budget_gb, exclude=exclude, chip=chip)
     return picks[0] if picks else None
 
 
@@ -196,7 +230,7 @@ def starter_baseline_for_ram(ram_gb: float, *, validate_catalog: bool = True) ->
 
 
 def starter_model_candidates(
-    ram_gb: float, *, validate_catalog: bool = True
+    ram_gb: float, *, validate_catalog: bool = True, chip: str | None = None
 ) -> tuple[str, ...]:
     """Return RAM-safe cached-model preferences in installer order.
 
@@ -215,17 +249,23 @@ def starter_model_candidates(
         pick.alias
         for tier in reversed(tiers)
         if tier.floor_gb <= current.floor_gb
-        for pick in tier.picks
+        for pick in tier.ordered(chip).picks
         if pick.alias != low_memory
     ]
     return tuple(dict.fromkeys(ordered))
 
 
 def select_starter_model(
-    ram_gb: float, cached_aliases: set[str], *, validate_catalog: bool = True
+    ram_gb: float,
+    cached_aliases: set[str],
+    *,
+    validate_catalog: bool = True,
+    chip: str | None = None,
 ) -> str:
     """Prefer the best RAM-safe cached starter, else the small baseline."""
-    for alias in starter_model_candidates(ram_gb, validate_catalog=validate_catalog):
+    for alias in starter_model_candidates(
+        ram_gb, validate_catalog=validate_catalog, chip=chip
+    ):
         if alias in cached_aliases:
             return alias
     return starter_baseline_for_ram(ram_gb, validate_catalog=validate_catalog)
@@ -266,16 +306,37 @@ def is_recommended_alias(alias: str, ram_gb: float) -> bool:
     )
 
 
+def parameter_label(total: float | None, active: float | None) -> str | None:
+    """Describe sparse total/active parameters without implying active memory size."""
+    import math
+
+    if (
+        total is None
+        or active is None
+        or not (math.isfinite(total) and math.isfinite(active) and 0 < active <= total)
+    ):
+        return None
+    return f"{total:g}B total · {active:g}B active"
+
+
 def recommendation_payload(
-    ram_gb: float, *, validate_catalog: bool = True
+    ram_gb: float, *, validate_catalog: bool = True, chip: str | None = None
 ) -> dict[str, Any]:
-    tier = recommendation_tier(ram_gb, validate_catalog=validate_catalog)
+    from .model_aliases import list_profiles
+
+    tier = recommendation_tier(ram_gb, validate_catalog=validate_catalog, chip=chip)
+    profiles = list_profiles()
     return {
         "schema_version": 1,
         "physical_ram_gb": round(ram_gb, 1),
         "tier_floor_gb": tier.floor_gb,
         "picks": [
-            {**asdict(pick), "launch_flags": list(pick.launch_flags)}
+            {
+                **asdict(pick),
+                "launch_flags": list(pick.launch_flags),
+                "total_params_b": profiles[pick.alias].total_params_b,
+                "active_params_b": profiles[pick.alias].active_params_b,
+            }
             for pick in tier.picks
         ],
     }

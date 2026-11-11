@@ -209,6 +209,15 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
             )
         )
 
+    for row in aliases:
+        profile = profiles[row["alias"]]
+        if profile.total_params_b is not None and profile.active_params_b is not None:
+            # Atomic digests use integer-only RCJ-1; counts are in millions.
+            row["presentation"] = {
+                "total_params_million": round(profile.total_params_b * 1000),
+                "active_params_million": round(profile.active_params_b * 1000),
+            }
+
     for entry in list_audio_aliases():
         model_id = _registry_model_id(entry.hf_id, None)
         model = {

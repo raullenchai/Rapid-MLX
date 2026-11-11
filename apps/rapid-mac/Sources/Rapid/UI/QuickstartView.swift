@@ -3340,7 +3340,8 @@ struct QuickstartView: View {
     static func shortlist(
         catalog: [ModelEntry],
         selection: String,
-        physicalRAMGB: Double? = nil
+        physicalRAMGB: Double? = nil,
+        chip: String? = nil
     ) -> Shortlist {
         let choices = QuickstartCoordinator.onboardingChoices
         let starterAlias = physicalRAMGB.map {
@@ -3365,7 +3366,7 @@ struct QuickstartView: View {
         var pinnedAliases: Set<String> = [selection, starterAlias]
         if let ram = physicalRAMGB {
             pinnedAliases.formUnion(
-                RAMBucketedDefault.picks(forPhysicalRAMGB: ram).map(\.alias)
+                RAMBucketedDefault.picks(forPhysicalRAMGB: ram, chip: chip).map(\.alias)
             )
         }
         cachedPresentation = compactCachedPresentation(
@@ -3385,7 +3386,7 @@ struct QuickstartView: View {
                 excluded.insert(QuickstartCoordinator.lowMemoryChoice.alias)
             }
             let resolved = RAMBucketedDefault.catalogPicks(
-                from: RAMBucketedDefault.picks(forPhysicalRAMGB: ram),
+                from: RAMBucketedDefault.picks(forPhysicalRAMGB: ram, chip: chip),
                 catalog: catalog
             )
             recommended = Self.recommendedChoices(
@@ -3483,7 +3484,8 @@ struct QuickstartView: View {
         Self.shortlist(
             catalog: cachedModels,
             selection: coordinator.selection.alias,
-            physicalRAMGB: hardware.physicalRAMGB
+            physicalRAMGB: hardware.physicalRAMGB,
+            chip: hardware.brandString
         )
     }
 
@@ -3672,19 +3674,23 @@ struct QuickstartView: View {
         recommendedForPhysicalRAMGB physicalRAMGB: Double?,
         catalogEntry: ModelEntry? = nil
     ) -> String {
+        func labelled(_ text: String) -> String {
+            [text, (catalogEntry ?? cached)?.parameterLabel].compactMap { $0 }
+                .filter { !$0.isEmpty }.joined(separator: " · ")
+        }
         let capability = physicalRAMGB.flatMap { gb in
             RAMBucketedDefault.picks(forPhysicalRAMGB: gb)
                 .first { $0.alias == choice.alias }?
                 .capabilityPct
         }
         if let onDisk = (catalogEntry ?? cached)?.displayedModelSize?.displayText, !onDisk.isEmpty {
-            guard let capability else { return onDisk }
-            return "\(onDisk) · \(ModelPickerBar.capabilityText(capability))"
+            guard let capability else { return labelled(onDisk) }
+            return labelled("\(onDisk) · \(ModelPickerBar.capabilityText(capability))")
         }
         // A cached row with no known size must not present a download estimate
         // as its on-disk size; its cached badge still communicates its status.
-        if cached != nil { return "" }
-        return sizeText(for: choice)
+        if cached != nil { return labelled("") }
+        return labelled(sizeText(for: choice))
     }
 
     /// Stable, bounded presentation for models already on disk. The catalogue

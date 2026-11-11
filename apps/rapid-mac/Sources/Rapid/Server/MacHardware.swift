@@ -141,6 +141,15 @@ struct MacHardware: Sendable, Equatable {
     /// Classify ``Apple M3 Pro`` → (.m3, .pro). Falls through to
     /// ``.mUnknown / .unknown`` for anything we don't recognise so
     /// the picker stays functional on forward-compat chips.
+    /// Strict, forward-compatible M-series parsing for default recommendations.
+    /// Unknown hardware must retain the dense primary, even if its name contains Pro.
+    static func recommendationChipClass(_ brand: String?) -> String {
+        guard let brand else { return "unknown" }
+        let name = brand.hasPrefix("Apple ") ? String(brand.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines) : brand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.range(of: #"^M[1-9][0-9]*(?: Pro| Max| Ultra)?$"#, options: .regularExpression) != nil else { return "unknown" }
+        return name.split(separator: " ").dropFirst().first.map { $0.lowercased() } ?? "base"
+    }
+
     static func classify(_ brand: String) -> (ChipFamily, ChipTier) {
         let lower = brand.lowercased()
         let family: ChipFamily = {

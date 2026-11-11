@@ -157,7 +157,9 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.5-35b-4bit": {
     "supports_image_input": true,
@@ -170,7 +172,9 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.5-35b-6bit": {
     "supports_image_input": true,
@@ -183,7 +187,9 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.5-122b-mxfp4": {
     "hf_path": "nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx",
@@ -194,7 +200,9 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 122,
+    "active_params_b": 10
   },
   "qwen3.5-122b-8bit": {
     "supports_image_input": true,
@@ -207,7 +215,9 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 122,
+    "active_params_b": 10
   },
   "qwen3.5-122b-6bit": {
     "supports_image_input": true,
@@ -219,7 +229,9 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "total_params_b": 122,
+    "active_params_b": 10
   },
   "tmax-9b": {
     "hf_path": "mlx-community/Tmax-9B-MLX-4bit",
@@ -343,7 +355,9 @@
     "mtp_default_enabled": true,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-35b-6bit": {
     "supports_image_input": true,
@@ -359,7 +373,9 @@
     "mtp_speculative_tokens": 2,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-35b-8bit": {
     "supports_image_input": true,
@@ -375,7 +391,9 @@
     "mtp_speculative_tokens": 2,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-35b-ud": {
     "supports_image_input": true,
@@ -390,7 +408,9 @@
     "mtp_draft_model": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "mtp_speculative_tokens": 2,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-35b-dwq": {
     "supports_image_input": true,
@@ -404,7 +424,9 @@
     "supports_spec_decode": false,
     "is_moe": true,
     "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "turboquant_tier": "k8v4_verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-35b-mxfp4": {
     "supports_image_input": true,
@@ -416,7 +438,9 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.8-27b-4bit": {
     "supports_image_input": true,
@@ -532,7 +556,9 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true
+    "is_moe": true,
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-27b": {
     "supports_image_input": true,
@@ -561,7 +587,9 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "mtp_speculative_tokens": 2,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.5-4b-mtp-4bit": {
     "hf_path": "mlx-community/Qwen3.5-4B-MTP-4bit",
@@ -605,7 +633,9 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-27b-optiq-4bit": {
     "supports_image_input": true,
@@ -631,7 +661,9 @@
     "is_hybrid": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "qwen3.6-27b-ud-3bit": {
     "supports_image_input": true,
@@ -2720,7 +2752,9 @@
     "is_moe": true,
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
-    "experimental": true
+    "experimental": true,
+    "total_params_b": 35,
+    "active_params_b": 3
   },
   "nanbeige4.3-33b-4bit": {
     "hf_path": "pratikgx/Nanbeige4.3-33B-MLX-4bit",

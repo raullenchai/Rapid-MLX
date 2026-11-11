@@ -263,6 +263,8 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             # rationale.
             "is_hybrid_explicit",
             "is_moe",
+            "total_params_b",
+            "active_params_b",
             "supports_spec_decode",
             "supports_native_mtp",
             "native_mtp_draft_model",
@@ -859,7 +861,26 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"{sorted(VALID_CHAT_TEMPLATE_IDS)}"
             )
 
+    total, active = value.get("total_params_b"), value.get("active_params_b")
+    if total is not None or active is not None:
+        import math
+
+        counts = [
+            n
+            for n in (total, active)
+            if isinstance(n, (int, float))
+            and not isinstance(n, bool)
+            and math.isfinite(n)
+            and n > 0
+        ]
+        if not value.get("is_moe") or len(counts) != 2 or counts[1] > counts[0]:
+            raise ValueError(
+                f"alias {alias!r}: invalid total_params_b / active_params_b"
+            )
+
     return AliasProfile(
+        total_params_b=total,
+        active_params_b=active,
         hf_path=hf_path,
         revision=checkpoint_revision,
         model_type=model_type,

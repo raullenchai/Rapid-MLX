@@ -1029,8 +1029,19 @@ struct ModelPickerBar: View {
             selectedAlias: alias,
             rowAlias: entry.alias
         )
+        let primary = RAMBucketedDefault.tier(
+            forPhysicalRAMGB: hardware.physicalRAMGB, chip: hardware.brandString
+        ).primary
+        let rowLabel: String
+        if isPrimary {
+            rowLabel = String(localized: "Recommended")
+        } else if RAMBucketedDefault.secondaryIsHigherCapability(pick, primary: primary) {
+            rowLabel = String(localized: "Alternative pick")
+        } else {
+            rowLabel = String(localized: "Faster")
+        }
         let baseTitle = ModelPickerBar.recommendedRowMenuTitle(
-            label: isPrimary ? String(localized: "Recommended") : String(localized: "Faster"),
+            label: rowLabel,
             alias: entry.alias
         )
         let title = isSelected
@@ -1039,14 +1050,14 @@ struct ModelPickerBar: View {
         // Tagline = "best pick / faster alternative" + the measured
         // capability and (where we have it) tok/s. Surfaced as the row's
         // NSMenuItem tooltip via ``.help(_)`` and its accessibility label.
-        let tagline = ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary, repoID: entry.hfRepo, hardware: hardware)
+        let tagline = [ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary, repoID: entry.hfRepo, hardware: hardware), entry.parameterLabel].compactMap { $0 }.joined(separator: " · ")
         // The tagline rides the row's native NSMenuItem tooltip via
         // ``.help(_)`` (below) — the reliable way to expose it inside the
         // open dropdown, since a SwiftUI ``.popover`` attached to a row
         // inside a ``Menu`` is silently dropped once the dropdown becomes
         // an NSMenu — and doubles as the row's accessibility label.
         let row = ModelPickerVisibility.rowPresentation(
-            title: title, accessibilityLabel: "\(ModelDisplayName.name(for: entry.alias)). \(tagline)",
+            title: [title, entry.parameterLabel].compactMap { $0 }.joined(separator: " · "), accessibilityLabel: "\(ModelDisplayName.name(for: entry.alias)). \(tagline)",
             isDownloading: downloads.isDownloading(entry.alias)
         )
         return Button {
@@ -1090,7 +1101,17 @@ struct ModelPickerBar: View {
     }
 
     static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool, repoID: String? = nil, hardware: MacHardware = .detect()) -> String {
-        let lead = isPrimary ? String(localized: "Best pick for your Mac") : String(localized: "Faster, lighter alternative")
+        let primary = RAMBucketedDefault.tier(
+            forPhysicalRAMGB: hardware.physicalRAMGB, chip: hardware.brandString
+        ).primary
+        let lead: String
+        if isPrimary {
+            lead = String(localized: "Best pick for your Mac")
+        } else if RAMBucketedDefault.secondaryIsHigherCapability(pick, primary: primary) {
+            lead = String(localized: "Alternative pick")
+        } else {
+            lead = String(localized: "Faster, lighter alternative")
+        }
         var parts = [lead]
         if let caveat = pick.caveat {
             parts.append(caveat)

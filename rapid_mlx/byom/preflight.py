@@ -1219,6 +1219,7 @@ def _same_task_fitting_pick(
             _is_sidecar_drafter,
         )
         from rapid_mlx.catalog.legacy import _main_capabilities
+        from rapid_mlx.decode_expectations import detected_chip
         from rapid_mlx.model_aliases import (
             draft_only_conflict,
             list_builtin_aliases,
@@ -1238,10 +1239,11 @@ def _same_task_fitting_pick(
         plain_text = task == "text_generation" and not text_diffusion
         if plain_text and not (ram_bytes and budget):
             return None, "text"
+        chip = detected_chip()
         rec_ranks: dict[str, int] = {}
         if plain_text and ram_bytes and budget:
             for rank, pick in enumerate(
-                fitting_picks(ram_bytes / _GIB, budget / _GIB, exclude=alias)
+                fitting_picks(ram_bytes / _GIB, budget / _GIB, exclude=alias, chip=chip)
             ):
                 rec_ranks.setdefault(pick, rank)
 
@@ -1315,7 +1317,9 @@ def _same_task_fitting_pick(
             if not plain_text or not (not_cached and no_disk_fit):
                 return entry[-1], label
         if (plain_text or text_diffusion) and ram_bytes and budget:
-            return fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias), label
+            return fitting_pick(
+                ram_bytes / _GIB, budget / _GIB, exclude=alias, chip=chip
+            ), label
         return None, label
     except Exception:
         return None, None

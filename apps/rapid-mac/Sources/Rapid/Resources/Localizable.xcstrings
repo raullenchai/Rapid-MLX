@@ -2,6 +2,18 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%gB total · %gB active" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%gB total · %gB active" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%gB 总参数 · %gB 活跃参数" } }
+      }
+    },
+    "Alternative pick" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Alternative pick" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "备选模型" } }
+      }
+    },
     "Rapid needs permission to read models on %@. Allow Rapid access to this volume in System Settings → Privacy & Security, or choose a models folder on this Mac in Settings → Models. Then retry." : {
       "extractionState" : "manual",
       "localizations" : {
