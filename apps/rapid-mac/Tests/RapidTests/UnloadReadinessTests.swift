@@ -94,7 +94,7 @@ struct UnloadReadinessTests {
             $0.components(separatedBy: "//")[0]
         }.joined(separator: "\n")
         let compact = uncommented.components(separatedBy: .whitespacesAndNewlines).joined()
-        #expect(compact.contains("ifcase.stopped=newState{downloads.markCacheChanged()}"))
+        #expect(compact.contains("ifcase.ready=oldState,case.stopped=newState{downloads.markCacheChanged()}"))
         #expect(compact.contains("loaded:catalogLoaded&&catalogGeneration==downloads.cacheGeneration"))
     }
 }

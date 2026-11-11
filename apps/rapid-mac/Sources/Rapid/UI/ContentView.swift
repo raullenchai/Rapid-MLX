@@ -383,15 +383,17 @@ struct ContentView: View {
         displayedModelSwitch: ServerManager.PendingModelSwitch?
     ) -> some View {
         content
-        .onChange(of: server.state) { _, newState in
+        .onChange(of: server.state) { oldState, newState in
             // A chat-model replacement can keep the process or respawn it.
             // Dictation owns the same reconciliation entry point for both so
             // an enabled STT lane is resident before its hotkey reads Ready.
             dictation.serverStateDidChange(newState)
-            if case .stopped = newState {
+            if case .ready = oldState, case .stopped = newState {
                 // A running model can mask an old inventory (for example one
-                // captured before the models folder changed). Re-discover using
-                // the same override-aware path as launch before offering Send.
+                // captured before the models folder changed). After an unload
+                // or stop, re-discover using the same override-aware path as
+                // launch before offering Send. Startup transitions must not
+                // reset the catalog the launch-time selection is waiting on.
                 downloads.markCacheChanged()
             }
             // #223: clear the download-prompt CTA the moment the server
