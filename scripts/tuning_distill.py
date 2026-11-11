@@ -152,11 +152,13 @@ def distill(
                 for key in (
                     "hidden_size",
                     "intermediate_size",
-                    "num_experts",
-                    "top_k",
                     "bits",
                     "group_size",
                 )
+            )
+            and (
+                model["num_experts"] == model["top_k"] == 0
+                or 0 < model["top_k"] <= model["num_experts"]
             )
             and hw["tier"] != "unknown"
             and ctx["width"] == ctx["batch"] == 1
@@ -268,7 +270,8 @@ def distill(
             },
             "knobs": knobs,
             "provenance": {
-                "evidence": "community-comparison:" + session,
+                "evidence": "community-comparison:"
+                + json.dumps([{"session": session, "facts": json.loads(cell)}]),
                 "hardware_scope": "Measured exact core and memory cell; review workload and model generalization before merging.",
                 "date": run["completed_at"][:10],
                 "repetitions": {"default": len(defaults), arm: len(evidence)},
@@ -291,16 +294,34 @@ def distill(
         }
         if "rapid_mlx_revision" in runtime:
             entry["provenance"]["commit"] = runtime["rapid_mlx_revision"]
-        candidates[cell].append(entry)
+        selector = json.dumps(
+            {key: entry[key] for key in ("hardware", "software", "model", "workload")},
+            sort_keys=True,
+        )
+        candidates[selector].append(entry)
     entries = []
     for cell_entries in candidates.values():
         if len({json.dumps(e["knobs"], sort_keys=True) for e in cell_entries}) == 1:
+            cell_entries[0]["provenance"]["evidence"] = (
+                "community-comparison:"
+                + json.dumps(
+                    [
+                        identity
+                        for entry in cell_entries
+                        for identity in json.loads(
+                            entry["provenance"]["evidence"].removeprefix(
+                                "community-comparison:"
+                            )
+                        )
+                    ]
+                )
+            )
             entries.append(cell_entries[0])
         else:
             rejected.append(
                 {
                     "cell": cell_entries[0]["id"],
-                    "reason": "conflicting sessions require review",
+                    "reason": "conflicting knob values for emitted selector require review",
                 }
             )
     return {"entries": entries, "rejected": rejected}

@@ -95,6 +95,86 @@ def test_distill_exact_cell_and_profile_shape():
 
 
 @pytest.mark.parametrize(
+    "experts,top_k,accepted",
+    [
+        (0, 0, True),
+        (8, 8, True),
+        (8, 2, True),
+        (0, 1, False),
+        (8, 0, False),
+        (8, 9, False),
+    ],
+)
+def test_distiller_dense_and_moe_geometry(experts, top_k, accepted):
+    runs = paired()
+    for run in runs:
+        model = run["tuning"]["context"]["model"]
+        model.update(num_experts=experts, top_k=top_k)
+        if experts == 0:
+            model["family"] = "qwen3_5_text"
+    result = tuning_distill.distill(runs, as_of=NOW)
+    assert bool(result["entries"]) is accepted
+    if accepted:
+        assert result["entries"][0]["model"]["geometry"][2:4] == [experts, top_k]
+        assert not result["rejected"]
+    else:
+        assert all("facts" in row["reason"] for row in result["rejected"])
+
+
+@pytest.mark.parametrize("fact", ["checkpoint", "profiles", "revision"])
+@pytest.mark.parametrize("conflict", [False, True])
+def test_distiller_conflicts_use_emitted_selector(fact, conflict):
+    first, second = paired(), paired()
+    for run in second:
+        run["experiment"]["group_id"] = SESSION.replace("0001", "0002")
+        if fact == "checkpoint":
+            run["model"]["components"][0]["source"]["resolved_revision"] = "2" * 40
+        elif fact == "profiles":
+            run["tuning"]["context"]["profiles"]["overlay"] = "other.1"
+        else:
+            run["execution"]["runtime"]["distribution"] = "source"
+            run["execution"]["runtime"]["rapid_mlx_revision"] = "2" * 40
+            run["execution"]["config_digest"] = execution_config_digest(
+                run["execution"]
+            )
+        if conflict and run["experiment"]["arm_id"] != "default":
+            run["tuning"]["overrides"]["mtp_max_depth"] = 4
+    assert tuning_distill.cell_key(first[0]) != tuning_distill.cell_key(second[0])
+    result = tuning_distill.distill(first + second, as_of=NOW)
+    if conflict:
+        assert not result["entries"]
+        assert len(result["rejected"]) == 1
+        assert "conflicting" in result["rejected"][0]["reason"]
+        assert "selector" in result["rejected"][0]["reason"]
+    else:
+        assert not result["rejected"]
+        assert len(result["entries"]) == 1
+        identities = json.loads(
+            result["entries"][0]["provenance"]["evidence"].removeprefix(
+                "community-comparison:"
+            )
+        )
+        assert identities == [
+            {
+                "session": group[0]["experiment"]["group_id"],
+                "facts": json.loads(tuning_distill.cell_key(group[0])),
+            }
+            for group in (first, second)
+        ]
+
+
+def test_distiller_keeps_distinct_emitted_selectors():
+    first, second = paired(), paired()
+    for run in second:
+        run["tuning"]["context"]["model"]["hidden_size"] = 4096
+        if run["experiment"]["arm_id"] != "default":
+            run["tuning"]["overrides"]["mtp_max_depth"] = 4
+    result = tuning_distill.distill(first + second, as_of=NOW)
+    assert not result["rejected"]
+    assert [entry["knobs"]["mtp_max_depth"] for entry in result["entries"]] == [3, 4]
+
+
+@pytest.mark.parametrize(
     "field", ["assistant_source", "draft_model_identity_digest", "assistant_component"]
 )
 def test_distiller_separates_assistant_identities(field):
