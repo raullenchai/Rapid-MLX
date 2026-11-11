@@ -165,6 +165,8 @@ class ModelProfile:
     # expert-routing churn; PoC measured 0.76-0.82× regression regardless
     # of precision on Qwen3.6-35B-A3B).
     is_moe: bool = False
+    total_params_b: float | None = None
+    active_params_b: float | None = None
     # ``supports_spec_decode`` controls SuffixDecoding / draft-model
     # speculative decoding. Disabled for hybrid models because the
     # batched-verify path through GatedDeltaNet derails generation.

@@ -20,6 +20,7 @@ can actually understand.
 ### Changed
 
 - **Benchmark is now a regular Desktop tab**: measure models on this Mac and, if you choose, publish results to the Community Benchmark. Nothing runs until you start a benchmark.
+- On base and Pro M-series Macs with 48 GB or more RAM, recommendations now lead with Qwen3.6 35B MoE; model labels show total and active parameters so its speed is easier to understand.
 
 ### Deprecated model names
 

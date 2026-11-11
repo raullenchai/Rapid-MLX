@@ -3,6 +3,12 @@ import Foundation
 /// Offline benchmark references. Never treat an MTP-off cohort as the default
 /// MTP-on expectation. Sparse data stays unavailable.
 enum DecodeExpectations {
+    static func parameterLabel(total: Double?, active: Double?) -> String? {
+        guard let total, let active, total.isFinite, active.isFinite,
+              total > 0, active > 0, active <= total else { return nil }
+        return localized("%gB total · %gB active", total, active)
+    }
+
     struct Cohort: Decodable, Sendable {
         let chip: String
         let method: String

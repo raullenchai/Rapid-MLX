@@ -72,6 +72,8 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         # ``AliasProfile.is_hybrid_explicit``.
         "is_hybrid_explicit",
         "is_moe",
+        "total_params_b",
+        "active_params_b",
         "supports_spec_decode",
         "supports_native_mtp",
         "native_mtp_draft_model",

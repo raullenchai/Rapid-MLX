@@ -1,0 +1,32 @@
+[
+  {
+    "total": 35,
+    "active": 3,
+    "label": "35B total · 3B active"
+  },
+  {
+    "total": 122,
+    "active": 10,
+    "label": "122B total · 10B active"
+  },
+  {
+    "total": null,
+    "active": null,
+    "label": null
+  },
+  {
+    "total": 35,
+    "active": null,
+    "label": null
+  },
+  {
+    "total": 35,
+    "active": 36,
+    "label": null
+  },
+  {
+    "total": 0,
+    "active": 3,
+    "label": null
+  }
+]

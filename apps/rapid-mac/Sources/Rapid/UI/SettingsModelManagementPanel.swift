@@ -985,6 +985,18 @@ struct SettingsModelManagementPanel: View {
     private func recommendedCard(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> some View {
         let alias = pick.alias
         let entry = entry(forAlias: alias)
+        let primary = RAMBucketedDefault.tier(
+            forPhysicalRAMGB: hardware.physicalRAMGB, chip: hardware.brandString
+        ).primary
+        let markerTitle: String = {
+            if isPrimary {
+                return String(localized: "Best pick")
+            } else if RAMBucketedDefault.secondaryIsHigherCapability(pick, primary: primary) {
+                return String(localized: "Alternative pick")
+            } else {
+                return String(localized: "Faster")
+            }
+        }()
         let badge = ModelCacheActions.statusBadge(
             for: entry,
             downloadJob: downloads.jobs[entry.alias],
@@ -1002,7 +1014,7 @@ struct SettingsModelManagementPanel: View {
             // capsule goes because the card's own brand tint, brand border
             // and shadow already say "this is the featured one", and the
             // table below still pills the same alias as RECOMMENDED.
-            Label(isPrimary ? String(localized: "Best pick") : String(localized: "Faster"),
+            Label(markerTitle,
                   systemImage: isPrimary ? "star.fill" : "hare.fill")
                 .font(RapidFont.caption)
                 .foregroundStyle(isPrimary ? RapidTheme.brandPrimaryDeep : RapidTheme.textSecondary)
@@ -1018,7 +1030,7 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(Self.pickStatsLine(pick, repoID: entry.hfRepo, hardware: hardware))
+                    Text([Self.pickStatsLine(pick, repoID: entry.hfRepo, hardware: hardware), entry.parameterLabel].compactMap { $0 }.joined(separator: " · "))
                         .help(DecodeExpectations.summary(alias: pick.alias, repoID: entry.hfRepo, hardware: hardware))
                         .accessibilityValue(DecodeExpectations.summary(alias: pick.alias, repoID: entry.hfRepo, hardware: hardware))
                         .font(RapidFont.caption)
@@ -1547,6 +1559,11 @@ struct SettingsModelManagementPanel: View {
                     } else {
                         rowBadge(for: entry.alias)
                     }
+                }
+                if let label = entry.parameterLabel {
+                    Text(label)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                 }
                 Text(entry.isFromHuggingFace
                      ? [entry.hfRepo?.components(separatedBy: "/").first, String(localized: "community upload, not tested")].compactMap { $0 }.joined(separator: " · ")

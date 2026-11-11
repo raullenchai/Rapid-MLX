@@ -1,0 +1,548 @@
+[
+  {
+    "ram_gib": 8,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 8,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "lfm2.5-2.6b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 16,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.5-4b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 18,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.5-9b-4bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 24,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "bonsai-27b-2bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 32,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 47.9,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 64,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 96,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Apple M4",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Apple M4 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "M5 Pro",
+    "chip_class": "pro",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Apple M3 Max",
+    "chip_class": "max",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Apple M2 Ultra",
+    "chip_class": "ultra",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Intel Core Pro",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Apple M4 Extreme",
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  },
+  {
+    "ram_gib": 256,
+    "chip": "Apple M40",
+    "chip_class": "base",
+    "primary": "qwen3.6-35b-4bit"
+  },
+  {
+    "ram_gib": 48,
+    "chip": null,
+    "chip_class": "unknown",
+    "primary": "qwen3.8-27b-4bit"
+  }
+]

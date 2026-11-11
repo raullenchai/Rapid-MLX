@@ -67,6 +67,9 @@ private final class RecommendationBundleFinder: NSObject {}
 /// 87 % — so "Best pick" never looks weaker than "Faster". Every alias
 /// is verified to exist in the bundled ``aliases.json`` by
 /// ``RAMBucketedDefaultTests``.
+// At 48 GiB and above, the policy promotes the fast MoE pick on base/Pro
+// chips. Max/Ultra and unknown chips keep smart-first ordering. The stored
+// capability scores and footprints are independent of the primary position.
 enum RAMBucketedDefault {
     /// One recommended model for a RAM tier: the alias, the numbers the
     /// picker shows, and the launch flags it needs to fit/run on that
@@ -93,14 +96,27 @@ enum RAMBucketedDefault {
         var caveat: String? = nil
     }
 
+    /// A secondary with a higher policy capability score is an alternative
+    /// capability trade-up rather than a faster/lighter recommendation.
+    static func secondaryIsHigherCapability(_ pick: Pick, primary: Pick) -> Bool {
+        pick.capabilityPct > primary.capabilityPct
+    }
+
     /// A RAM tier: the ``floorGB`` it applies from (up to the next tier),
     /// its ``primary`` (smart) pick, and its ``alt`` (fast/light) pick.
     struct Tier: Sendable, Equatable {
         let floorGB: Double
         let primary: Pick
         let alt: Pick?
+        var preferFastChipClasses: [String] = []
 
-        /// Smart pick first, then the fast alt if present.
+        func ordered(chip: String?) -> Tier {
+            guard preferFastChipClasses.contains(MacHardware.recommendationChipClass(chip)),
+                  let alt else { return self }
+            return Tier(floorGB: floorGB, primary: alt, alt: primary)
+        }
+
+        /// Resolved primary first, then the alternative if present.
         var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
     }
 
@@ -167,9 +183,11 @@ enum RAMBucketedDefault {
     private struct RawTier: Decodable {
         let minimumMemoryMiB: Int
         let picks: [RawPick]
+        let preferFastChipClasses: [String]?
 
         enum CodingKeys: String, CodingKey {
             case minimumMemoryMiB = "minimum_memory_mib"
+            case preferFastChipClasses = "prefer_fast_chip_classes"
             case picks
         }
     }
@@ -324,7 +342,11 @@ enum RAMBucketedDefault {
                 }
                 footprints[key] = pick.footprintMiB
             }
-            tiers.append(Tier(floorGB: floorGB, primary: primary, alt: alt))
+            let classes = raw.preferFastChipClasses ?? []
+            guard raw.preferFastChipClasses == nil || !classes.isEmpty,
+                  Set(classes).count == classes.count,
+                  classes.allSatisfy({ ["base", "pro"].contains($0) }) else { return nil }
+            tiers.append(Tier(floorGB: floorGB, primary: primary, alt: alt, preferFastChipClasses: classes))
         }
         return tiers
     }
@@ -339,7 +361,7 @@ enum RAMBucketedDefault {
             "schema_version", "policy_id", "policy_digest", "task_type",
             "machine_dimension", "tiers",
         ]
-        let tierKeys: Set<String> = ["minimum_memory_mib", "picks"]
+        let tierKeys: Set<String> = ["minimum_memory_mib", "picks", "prefer_fast_chip_classes"]
         let pickKeys: Set<String> = [
             "role", "alias", "execution_preset_id", "evidence_status",
             "evidence_id", "footprint_mib", "capability_score_x100",
@@ -354,6 +376,8 @@ enum RAMBucketedDefault {
                   let picks = tier["picks"] as? [[String: Any]] else {
                 return false
             }
+            if tier.keys.contains("prefer_fast_chip_classes"),
+               !(tier["prefer_fast_chip_classes"] is [String]) { return false }
             return picks.allSatisfy { Set($0.keys).isSubset(of: pickKeys) }
         }
     }
@@ -406,24 +430,24 @@ enum RAMBucketedDefault {
 
     /// The tier a Mac with ``physicalRAMGB`` lands in: the highest floor
     /// ≤ RAM. A sub-16 GB Mac clamps to the smallest tier.
-    static func tier(forPhysicalRAMGB physicalRAMGB: Double) -> Tier {
+    static func tier(forPhysicalRAMGB physicalRAMGB: Double, chip: String? = nil) -> Tier {
         var chosen = tiers[0]
         for candidate in tiers where physicalRAMGB >= candidate.floorGB {
             chosen = candidate
         }
-        return chosen
+        return chosen.ordered(chip: chip)
     }
 
     /// Primary alias for a Mac — kept for the first-launch /
     /// ``ServerManager`` callers that need a single default alias.
-    static func alias(forPhysicalRAMGB physicalRAMGB: Double) -> String {
-        tier(forPhysicalRAMGB: physicalRAMGB).primary.alias
+    static func alias(forPhysicalRAMGB physicalRAMGB: Double, chip: String? = nil) -> String {
+        tier(forPhysicalRAMGB: physicalRAMGB, chip: chip).primary.alias
     }
 
     /// The picks (primary, then optional alt) shown in the picker's
     /// "Recommended for your N GB Mac" section.
-    static func picks(forPhysicalRAMGB physicalRAMGB: Double) -> [Pick] {
-        tier(forPhysicalRAMGB: physicalRAMGB).picks
+    static func picks(forPhysicalRAMGB physicalRAMGB: Double, chip: String? = nil) -> [Pick] {
+        tier(forPhysicalRAMGB: physicalRAMGB, chip: chip).picks
     }
 
     /// Measured/curated working set for a known alias, independent of RAM tier.
@@ -463,14 +487,14 @@ enum RAMBucketedDefault {
 
     /// Quality-aware order for choosing among models that are already on
     /// disk. Begin with the closest tier this Mac qualifies for and walk
-    /// downward, preserving smart-before-fast within each tier and removing
+    /// downward, preserving the chip-aware primary within each tier and removing
     /// aliases repeated across tiers.
-    static func preferenceOrder(forPhysicalRAMGB physicalRAMGB: Double) -> [String] {
+    static func preferenceOrder(forPhysicalRAMGB physicalRAMGB: Double, chip: String? = nil) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
         let effectiveRAMGB = max(physicalRAMGB, tiers[0].floorGB)
         for tier in tiers.reversed() where tier.floorGB <= effectiveRAMGB {
-            for alias in tier.picks.map(\.alias) where seen.insert(alias).inserted {
+            for alias in tier.ordered(chip: chip).picks.map(\.alias) where seen.insert(alias).inserted {
                 result.append(alias)
             }
         }
@@ -522,7 +546,7 @@ extension MacHardware {
     /// first-touch with the small bundled model; this is the RAM-tier
     /// fallback for the "nothing cached" case.)
     var bucketedDefaultAlias: String {
-        RAMBucketedDefault.alias(forPhysicalRAMGB: physicalRAMGB)
+        RAMBucketedDefault.alias(forPhysicalRAMGB: physicalRAMGB, chip: brandString)
     }
 
     /// Recommended picks (primary, then optional fast alternative) shown
@@ -530,7 +554,7 @@ extension MacHardware {
     /// source of truth for both the picker and the Model Management panel,
     /// so they can never drift.
     var recommendedPicks: [RAMBucketedDefault.Pick] {
-        RAMBucketedDefault.picks(forPhysicalRAMGB: physicalRAMGB)
+        RAMBucketedDefault.picks(forPhysicalRAMGB: physicalRAMGB, chip: brandString)
     }
 }
 
@@ -786,7 +810,7 @@ enum CacheAwareDefault {
     ) -> String? {
         let aliases = Set(entries.map(\.alias))
         if let curated = RAMBucketedDefault.preferenceOrder(
-            forPhysicalRAMGB: hardware.physicalRAMGB
+            forPhysicalRAMGB: hardware.physicalRAMGB, chip: hardware.brandString
         ).first(where: aliases.contains) {
             return curated
         }

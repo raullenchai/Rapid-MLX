@@ -4,6 +4,10 @@ Rapid-MLX 1.0.3 adds HunyuanVideo 1.5 text-to-video, faster decode on qualified 
 
 **Download:** [Rapid-MLX Desktop for macOS](https://github.com/raullenchai/Rapid-MLX/releases/download/rapid-mac-v1.0.3/rapid-mlx-desktop.dmg) | CLI: `rapid-mlx upgrade` or `curl -fsSL https://rapidmlx.com/install.sh | bash`
 
+## [Unreleased]
+
+- On base and Pro M-series Macs with 48 GB or more RAM, recommendations now lead with Qwen3.6 35B MoE; model labels show total and active parameters so its speed is easier to understand.
+
 ## Video: HunyuanVideo 1.5
 
 HunyuanVideo 1.5 generates 480p video from text on Apple Silicon Macs with 64 GB or more unified memory. Both `hunyuan-video-1.5-480p` and `hunyuan-video-1.5-480p-distilled` use the existing video jobs, progress, cancellation and MP4 output. The base checkpoint downloads about 53 GB directly from Hugging Face ([#5679](https://github.com/raullenchai/Rapid-MLX/pull/5679), [#5687](https://github.com/raullenchai/Rapid-MLX/pull/5687)).

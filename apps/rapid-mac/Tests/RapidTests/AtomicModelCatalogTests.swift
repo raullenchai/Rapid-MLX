@@ -4,6 +4,25 @@ import Testing
 
 @Suite("Atomic product model catalog")
 struct AtomicModelCatalogTests {
+    @Test func parameterMetadataSurvivesAtomicCatalogProjection() throws {
+        let output = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            aliases[0]["presentation"] = ["total_params_million": 35000, "active_params_million": 3000]
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entry = try #require(ModelCatalog.parseAtomicModelEntriesJSON(output)?.first { $0.alias == "chat" })
+        #expect(entry.totalParamsB == 35)
+        #expect(entry.activeParamsB == 3)
+        #expect(entry.parameterLabel == "35B total · 3B active")
+        let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
+        #expect(parsed.profiles["chat"]?.totalParamsB == 35)
+        #expect(parsed.profiles["chat"]?.activeParamsB == 3)
+    }
+
     @Test func draftRowsAreExcludedFromAtomicAndLegacyCatalogs() throws {
         let draftPayload = Self.mutated { root in
             root["text"] = [["alias": "chat", "standalone": false]]
