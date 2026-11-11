@@ -17,17 +17,44 @@ can actually understand.
 
 ## [Unreleased]
 
-### Changed
+## [1.0.3] — 2026-11-11
 
-- **Benchmark is now a regular Desktop tab**: measure models on this Mac and, if you choose, publish results to the Community Benchmark. Nothing runs until you start a benchmark.
-- On base and Pro M-series Macs with 48 GB or more RAM, recommendations now lead with Qwen3.6 35B MoE; model labels show total and active parameters so its speed is easier to understand.
+Desktop adds opt-in LAN access, folder-scoped chat, a memory overview and opening existing checkpoints, with measured speed references, idle speech unloading and fixes for model selection, downloads and conversation recovery.
+
+### New features and improvements
+
+- **Benchmark tab**: Benchmark is now a regular sidebar tab instead of an experimental setting. Measure models on this Mac and, if you choose, publish results to the Community Benchmark; nothing runs until you start. ([#5781](https://github.com/raullenchai/Rapid-MLX/pull/5781))
+- **Faster default on base and Pro Macs**: with 48 GB or more on a base or Pro chip, recommendations lead with Qwen3.6 35B-A3B MoE; model labels show total and active parameters. Max and Ultra Macs keep the dense 27B first. ([#5784](https://github.com/raullenchai/Rapid-MLX/pull/5784))
+- **LAN access**: Settings → Tools can share inference with devices on your network using a persistent bearer key saved in Keychain and copyable connection details. Access is off by default and uses plain HTTP; model management, administrative routes and Local Search, including grounded chat, stay on this Mac. ([#5676](https://github.com/raullenchai/Rapid-MLX/pull/5676), [#5749](https://github.com/raullenchai/Rapid-MLX/pull/5749))
+- **Ask this folder…**: start a chat scoped to a registered Local Search folder, with a removable folder chip and saved passage previews below each answer. Requires Built-in Agent Harness (Experimental); folder questions are text-only with tools disabled. With no matching evidence, the app abstains without running inference. Saved excerpts survive changes to the file or index, but do not guarantee a correct answer. ([#5654](https://github.com/raullenchai/Rapid-MLX/pull/5654))
+- **Memory overview**: Performance settings shows app, wired, compressed and unused memory alongside engine allocations, prompt-prefix cache use, running and waiting requests, and a five-minute trend. Engine allocations overlap the Mac totals; missing measurements show a dash. VoiceOver and Simplified Chinese are supported. ([#5651](https://github.com/raullenchai/Rapid-MLX/pull/5651), [#5677](https://github.com/raullenchai/Rapid-MLX/pull/5677))
+- **Open an existing checkpoint**: Settings → Models → Open existing checkpoint… registers a complete local MLX chat checkpoint without copying weights or changing the download folder. Remove reference leaves the files intact; incomplete or missing checkpoints report a problem. ([#5660](https://github.com/raullenchai/Rapid-MLX/pull/5660))
+- **Measured speed references and Generation details**: recommendations show offline speed references matched to chip, RAM and model configuration. Generation details saves supported execution facts and timing with each answer. Unmatched data stays unavailable, and reference ranges are not performance guarantees. ([#5647](https://github.com/raullenchai/Rapid-MLX/pull/5647), [#5655](https://github.com/raullenchai/Rapid-MLX/pull/5655), [#5659](https://github.com/raullenchai/Rapid-MLX/pull/5659))
+- **Idle speech release**: on supported runtimes, the idle setting unloads transcription, alignment and speech-synthesis models while keeping the API online; the next request reloads them. ([#5635](https://github.com/raullenchai/Rapid-MLX/pull/5635))
+- **Faster replies on qualified models**: guarded Qwen3.5 dense and Qwen3.5/3.6 35B-A3B decode tuning improves measured throughput on supported chips. Other compatible models gain fused decode operations, and MTP reduces unused work and improves verification. Fused 4-bit MoE experts use approximate arithmetic, so output can differ slightly. ([#5690](https://github.com/raullenchai/Rapid-MLX/pull/5690), [#5728](https://github.com/raullenchai/Rapid-MLX/pull/5728), [#5695](https://github.com/raullenchai/Rapid-MLX/pull/5695), [#5674](https://github.com/raullenchai/Rapid-MLX/pull/5674), [#5689](https://github.com/raullenchai/Rapid-MLX/pull/5689), [#5694](https://github.com/raullenchai/Rapid-MLX/pull/5694))
+- **Gemma 3 tool support**: 12B and 27B models support structured tool calls, including streaming, parallel calls and tool-result history. The 1B and 4B catalog variants no longer advertise unreliable tool support. ([#5715](https://github.com/raullenchai/Rapid-MLX/pull/5715), [#5750](https://github.com/raullenchai/Rapid-MLX/pull/5750))
+- **Clearer catalog names**: 44 niche or superseded aliases leave discovery; old names warn and forward for one release, with repository execution profiles preserved. GLM 4.7 Flash is correctly labeled as MoE and renamed to glm4.7-flash-4bit; existing downloads are reused and the old name forwards for one release. ([#5684](https://github.com/raullenchai/Rapid-MLX/pull/5684), [#5748](https://github.com/raullenchai/Rapid-MLX/pull/5748))
+- **Anonymous usage measurements**: consented metrics include Desktop launches, daily foreground use and coarse startup and agent-readiness failure categories. Categories exclude raw messages, paths and credentials; concurrent first runs share one install identity. ([#5697](https://github.com/raullenchai/Rapid-MLX/pull/5697), [#5634](https://github.com/raullenchai/Rapid-MLX/pull/5634), [#5698](https://github.com/raullenchai/Rapid-MLX/pull/5698), [#5668](https://github.com/raullenchai/Rapid-MLX/pull/5668), [#5709](https://github.com/raullenchai/Rapid-MLX/pull/5709))
+
+### Bug fixes
+
+- **Folder answers**: small folders decline unrelated questions instead of citing irrelevant files. ([#5767](https://github.com/raullenchai/Rapid-MLX/issues/5767))
+- **Custom models folder**: models remain recognized after unloading, and the next chat can start them again. ([#5768](https://github.com/raullenchai/Rapid-MLX/issues/5768))
+- **Model search and names**: results appear directly below the search box, long repository names keep their distinguishing text, raw repositories retain their identity, and colliding menu titles get distinct labels. ([#5633](https://github.com/raullenchai/Rapid-MLX/pull/5633), [#5669](https://github.com/raullenchai/Rapid-MLX/pull/5669), [#5733](https://github.com/raullenchai/Rapid-MLX/pull/5733))
+- **External-volume access**: pending or denied access shows an explanation and Retry. Downloads and onboarding explain cache-volume permissions before pulling and after a stall, with remedies and a fresh access check on retry. ([#5670](https://github.com/raullenchai/Rapid-MLX/pull/5670), [#5765](https://github.com/raullenchai/Rapid-MLX/issues/5765))
+- **Download recovery**: Desktop falls back from an unforced failing mirror to Hugging Face within its retry budget. Corrupt cached files get one targeted repair attempt; disk-full errors keep partial files for retry, and removing one subfolder variant preserves other variants and shared files. ([#5666](https://github.com/raullenchai/Rapid-MLX/pull/5666), [#5736](https://github.com/raullenchai/Rapid-MLX/pull/5736), [#5746](https://github.com/raullenchai/Rapid-MLX/pull/5746), [#5735](https://github.com/raullenchai/Rapid-MLX/pull/5735))
+- **Conversation deletion**: deleting a server-backed conversation also requests server deletion and revokes saved-passage access once confirmed. Offline or unconfirmed deletion stays pending with Retry across relaunch. Original files and the search index remain intact; retained database and attachment bytes are not physically purged. ([#5658](https://github.com/raullenchai/Rapid-MLX/pull/5658))
+- **Vision answers**: reasoning budgets are enforced during generation, leaving room for the answer. ([#5730](https://github.com/raullenchai/Rapid-MLX/pull/5730))
+- **Model memory admission**: dynamic loads use a default memory budget, evicting idle unpinned models or reporting insufficient memory instead of risking an overcommit. Explicit limits retain their behavior. ([#5701](https://github.com/raullenchai/Rapid-MLX/pull/5701))
+- **Speech and media errors**: Whisper large-v3 turbo translation requests explain how to use Whisper large-v3 or transcribe in the source language; media errors explain local-media access and direct audio users to transcribe before chatting. ([#5719](https://github.com/raullenchai/Rapid-MLX/pull/5719), [#5740](https://github.com/raullenchai/Rapid-MLX/pull/5740))
+- **CJK message formatting**: emphasis renders correctly next to symbols, with less repeated work on long streamed messages. ([#5708](https://github.com/raullenchai/Rapid-MLX/pull/5708))
 
 ### Deprecated model names
 
 The following 44 curated short names are deprecated and hidden from model discovery.
 For this release they still work with a warning; use `rapid-mlx serve ORG/REPO`
 with the corresponding Hugging Face repo ID instead. Repo execution profiles,
-revision pins, parsers and capability settings are unchanged.
+revision pins, parsers and capability settings are unchanged. ([#5684](https://github.com/raullenchai/Rapid-MLX/pull/5684))
 
 - `k2-horizon-7b-4bit`, `north-mini-code-bf16`, `tmax-9b-6bit`, `tmax-9b-8bit`, `tmax-9b-bf16`.
 - `tmax-27b`, `tmax-27b-6bit`, `tmax-27b-8bit`, `llama-3.1-8b-8bit`, `hermes3-8b-4bit`.
@@ -4608,7 +4635,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.2...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.3...HEAD
+[1.0.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.2...rapid-mac-v1.0.3
 [1.0.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...rapid-mac-v1.0.2
 [1.0.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...rapid-mac-v1.0.1
 [1.0.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...rapid-mac-v1.0.0
