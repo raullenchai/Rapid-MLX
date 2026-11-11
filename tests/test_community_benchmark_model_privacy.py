@@ -271,3 +271,111 @@ def test_repeated_component_repo_is_checked_once(metadata):
 
     ensure_public_model_sources(run)
     metadata.assert_called_once_with("privacy-test/model", token=False, timeout=5)
+
+
+def _paired_run(repo, depth):
+    run = _run(repo)
+    for _ in range(depth):
+        outer = _run("mlx-community/LFM2.5-1.2B-Instruct-4bit")
+        outer["paired_runs"] = [run]
+        run = outer
+    return run
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"private": True, "gated": False},
+        {"private": False, "gated": "auto"},
+        {"private": False, "gated": "manual"},
+    ],
+)
+def test_paired_private_or_gated_component_refused(depth, fields, metadata):
+    paired = _run("mlx-community/LFM2.5-1.2B-Instruct-4bit")
+    drafter = copy.deepcopy(paired["model"]["components"][0])
+    drafter.update(component_id="z-draft", role="other")
+    drafter["source"]["repo_id"] = "private-org/draft"
+    paired["model"]["components"].append(drafter)
+    run = paired
+    for _ in range(depth):
+        outer = _run("mlx-community/LFM2.5-1.2B-Instruct-4bit")
+        outer["paired_runs"] = [run]
+        run = outer
+    metadata.return_value = SimpleNamespace(**fields)
+
+    with pytest.raises(PublicationRefused) as error:
+        ensure_public_model_sources(run)
+
+    assert "paired_runs[0]." * depth + "model.components[1]" in str(error.value)
+    metadata.assert_called_once_with("private-org/draft", token=False, timeout=5)
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"kind": "local"},
+        {"kind": "huggingface", "repo_id": "/private/models/secret"},
+        {"kind": "huggingface", "repo_id": "./secret"},
+    ],
+)
+def test_paired_local_source_refused(depth, source, metadata):
+    run = _paired_run("privacy-test/model", depth)
+    paired = run
+    for _ in range(depth):
+        paired = paired["paired_runs"][0]
+    paired["model"]["components"][0]["source"] = source
+
+    with pytest.raises(PublicationRefused) as error:
+        ensure_public_model_sources(run)
+
+    assert "paired_runs[0]." * depth + "model.components[0]" in str(error.value)
+    assert "local-path" in str(error.value)
+    metadata.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "repo", ["mlx-community/LFM2.5-1.2B-Instruct-4bit", "privacy-test/model"]
+)
+def test_paired_catalog_or_public_repo_accepted(repo, metadata):
+    run = _paired_run(repo, 1)
+    preview = atomic_upload.preview_run(run, install_id="0123456789ab")
+    source = preview["payload"]["paired_runs"][0]["model"]["components"][0]["source"]
+    assert source["repo_id"] == repo
+    if repo == "privacy-test/model":
+        metadata.assert_called_once_with(repo, token=False, timeout=5)
+    else:
+        metadata.assert_not_called()
+
+
+def test_repo_shared_by_outer_and_nested_runs_checked_once(metadata):
+    run = _run()
+    run["paired_runs"] = [_paired_run("privacy-test/model", 2), _run()]
+    ensure_public_model_sources(run)
+    metadata.assert_called_once_with("privacy-test/model", token=False, timeout=5)
+
+
+@pytest.mark.parametrize("unreachable", [False, True])
+def test_paired_refusal_precedes_payload_digest_and_consent(
+    unreachable, metadata, monkeypatch
+):
+    if unreachable:
+        metadata.side_effect = TimeoutError()
+    else:
+        metadata.return_value = SimpleNamespace(private=True, gated=False)
+    stages = [
+        "project_run_for_publication",
+        "atomic_run_digest",
+        "_ask_consent",
+        "post_submission",
+    ]
+    mocks = [Mock() for _ in stages]
+    for name, mock in zip(stages, mocks):
+        monkeypatch.setattr(atomic_upload, name, mock)
+
+    with pytest.raises(PublicationRefused, match=r"paired_runs\[0\]\.model"):
+        atomic_upload.upload_run(_paired_run("privacy-test/model", 1))
+
+    for mock in mocks:
+        mock.assert_not_called()

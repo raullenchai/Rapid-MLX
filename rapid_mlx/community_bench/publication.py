@@ -10,6 +10,7 @@ service that cannot store them rejects the upload.
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator
 from typing import Any
 
 from .workspace import ProvenanceUnreadable, validate_provenance
@@ -33,7 +34,7 @@ class PublicationRefused(Exception):  # noqa: N818 - stable domain error name
 
 
 def ensure_public_model_sources(run: dict[str, Any]) -> None:
-    """Require public identity for every component, including draft models.
+    """Require public identity for every component, including paired runs.
 
     Cached proof has the telemetry classifier's lease and revocation rules.
     Otherwise query metadata anonymously: readable metadata alone is not
@@ -42,11 +43,19 @@ def ensure_public_model_sources(run: dict[str, Any]) -> None:
     from rapid_mlx.model_aliases import catalog_alias_for
     from rapid_mlx.telemetry import model_id
 
+    def components(
+        record: dict[str, Any], path: str = ""
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
+        for index, component in enumerate(record["model"]["components"]):
+            yield f"{path}model.components[{index}]", component
+        for index, paired in enumerate(record.get("paired_runs", [])):
+            yield from components(paired, f"{path}paired_runs[{index}].")
+
     checked: set[str] = set()
-    for index, component in enumerate(run["model"]["components"]):
+    for path, component in components(run):
         source = component["source"]
         repo = source.get("repo_id")
-        prefix = f"Cannot publish model.components[{index}]: "
+        prefix = f"Cannot publish {path}: "
         if (
             source.get("kind") != "huggingface"
             or not isinstance(repo, str)
