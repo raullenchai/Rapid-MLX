@@ -538,7 +538,12 @@ def _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update, *vlm_helpers) -> 
         return False
 
 
-def _fuse_one(gdn: Any, dtypes: frozenset = frozenset({mx.bfloat16})) -> None:
+def _fuse_one(
+    gdn: Any,
+    dtypes: frozenset = frozenset({mx.bfloat16}),
+    *,
+    retain_split: bool = False,
+) -> None:
     """Rewrite one layer, failure-atomically.
 
     Everything that can realistically fail (array concat + eval) happens
@@ -572,14 +577,18 @@ def _fuse_one(gdn: Any, dtypes: frozenset = frozenset({mx.bfloat16})) -> None:
     gdn._rapid_gdn_bounds = bounds
     gdn._rapid_gdn_dtypes = dtypes
     gdn.in_proj_fused = fused
-    del gdn.in_proj_qkv
-    del gdn.in_proj_z
-    del gdn.in_proj_b
-    del gdn.in_proj_a
+    if not retain_split:
+        del gdn.in_proj_qkv
+        del gdn.in_proj_z
+        del gdn.in_proj_b
+        del gdn.in_proj_a
 
 
-def fuse_gdn_in_proj(model: Any) -> int:
+def fuse_gdn_in_proj(model: Any, *, retain_split: bool = False) -> int:
     """Fuse the GDN input projections on a loaded model, in place.
+
+    ``retain_split`` retains the stock call and projections for MTP rollback
+    verification, whose body consumes the fused projections directly.
 
     Returns the number of fused ``GatedDeltaNet`` instances (0 when
     disabled via ``RAPID_MLX_GDN_IN_PROJ_FUSION=0``, mlx-lm is
@@ -597,21 +606,23 @@ def fuse_gdn_in_proj(model: Any) -> int:
         logger.info("[gdn_fusion] disabled via RAPID_MLX_GDN_IN_PROJ_FUSION=0")
         return 0
     try:
-        return _install(model)
+        return _install(model, retain_split=retain_split)
     except Exception:  # noqa: BLE001 — never let the optimization fail a load
         logger.warning("[gdn_fusion] install failed; model left as-is", exc_info=True)
         return 0
 
 
-def _install(model: Any) -> int:
+def _install(model: Any, *, retain_split: bool = False) -> int:
     committed = 0
     for imports in (_gdn_imports(), _vlm_gdn_imports()):
         if imports is not None:
-            committed += _install_family(model, *imports)
+            committed += _install_family(model, *imports, retain_split=retain_split)
     return committed
 
 
-def _install_family(model, nn, gated_delta_update, gdn_cls, *vlm_helpers) -> int:
+def _install_family(
+    model, nn, gated_delta_update, gdn_cls, *vlm_helpers, retain_split=False
+) -> int:
     try:
         modules = [m for _, m in model.named_modules()]
     except Exception:  # noqa: BLE001 — unusual model containers: no fusion
@@ -639,8 +650,13 @@ def _install_family(model, nn, gated_delta_update, gdn_cls, *vlm_helpers) -> int
         )
         return 0
 
-    _ensure_call_patch(gdn_cls, nn, gated_delta_update, *vlm_helpers)
-    if not _probe_whole_layer_parity(gdn_cls, nn, gated_delta_update, *vlm_helpers):
+    # MTP consumes the parity-proven projections in its rollback-aware body.
+    # Keep the stock call and split attributes available for every other width.
+    if not retain_split:
+        _ensure_call_patch(gdn_cls, nn, gated_delta_update, *vlm_helpers)
+    if not retain_split and not _probe_whole_layer_parity(
+        gdn_cls, nn, gated_delta_update, *vlm_helpers
+    ):
         logger.warning(
             "[gdn_fusion] whole-layer byte-parity probe failed (dependency "
             "body drift?); leaving model stock"
@@ -653,7 +669,10 @@ def _install_family(model, nn, gated_delta_update, gdn_cls, *vlm_helpers) -> int
     committed = 0
     try:
         for gdn, dtypes in plans:
-            _fuse_one(gdn, dtypes)
+            if retain_split:
+                _fuse_one(gdn, dtypes, retain_split=True)
+            else:
+                _fuse_one(gdn, dtypes)
             committed += 1
             # Freed projection buffers land in the MLX pool; drain per
             # layer so the load transient stays bounded to one layer's

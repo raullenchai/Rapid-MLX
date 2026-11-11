@@ -159,9 +159,11 @@ def test_batch_generator_uses_worker_default_stream(monkeypatch) -> None:
     from rapid_mlx import mllm_batch_generator as module
 
     stream = object()
-    monkeypatch.setattr(module.mx, "default_device", lambda: "gpu")
-    monkeypatch.setattr(module.mx, "default_stream", lambda device: stream)
-    monkeypatch.setattr(module.mx.metal, "is_available", lambda: False)
+    # Patch the dicts: undoing setattr on the headless MagicMock stub deletes
+    # the auto-created child, breaking later tests in the same process.
+    monkeypatch.setitem(vars(module.mx), "default_device", lambda: "gpu")
+    monkeypatch.setitem(vars(module.mx), "default_stream", lambda device: stream)
+    monkeypatch.setitem(vars(module.mx.metal), "is_available", lambda: False)
 
     generator = module.MLLMBatchGenerator(
         model=SimpleNamespace(language_model=object()),

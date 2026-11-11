@@ -382,6 +382,10 @@ def test_bootstrap_delivery_is_suppressed_once():
 # below runs the same cases through the normally imported scheduler as well.
 @pytest.fixture(params=["cpu", pytest.param("native", marks=pytest.mark.requires_mlx)])
 def installed_capture(request, monkeypatch):
+    from rapid_mlx.tuning import mtp as tuning_mtp
+
+    # Lifecycle fixtures provide NumPy model/cache facts, with no device profile.
+    monkeypatch.setattr(tuning_mtp, "prefill_block_size", lambda model: 0)
     mx = SimpleNamespace(
         array=np.array,
         uint32=np.uint32,
@@ -657,3 +661,68 @@ def test_installed_capture_terminal_failure_discards_provisional_state(
     assert h.captures == {}
     assert 7 in h.gb._mtp_vendored_terminal_uids
     assert h.gb.orig_step_calls == 0
+
+
+@pytest.mark.parametrize("rows", [1, 19, 32, 33, 63, 64, 65, 563])
+def test_measured_prefill_alignment_preserves_logits_pairs_and_caches(
+    monkeypatch, rows
+):
+    from rapid_mlx.tuning import mtp as policy
+
+    monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
+    seen = []
+    expected_cache = []
+
+    class RecordingModel(Model):
+        def __call__(self, inputs, cache=None, return_hidden=False):
+            seen.append(inputs.shape[1])
+            assert cache is expected_cache
+            return super().__call__(inputs, cache, return_hidden)
+
+    model = RecordingModel()
+    mx = SimpleNamespace(concatenate=np.concatenate, eval=lambda *a: None)
+    capture = module.HeadPrefillCapture(model, mx, lambda c: None)
+    inputs = np.arange(rows)[None]
+    logits = capture(inputs, cache=expected_cache)
+    assert np.array_equal(logits, inputs)
+    assert model.rows == [(10 * t, t + 1) for t in range(rows - 1)]
+    assert capture.hidden.tolist() == [[[(rows - 1) * 10]]]
+    boundary = rows // 32 * 32
+    assert seen == ([boundary, rows - boundary] if 0 < boundary < rows else [rows])
+
+
+def test_profile_alignment_matches_cold_prefix_snapshot_calls(monkeypatch):
+    from rapid_mlx.tuning import mtp as policy
+
+    monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
+    mx = SimpleNamespace(concatenate=np.concatenate, eval=lambda *a: None)
+    cached, uncached = Model(), Model()
+    left = module.HeadPrefillCapture(cached, mx, lambda c: None)
+    right = module.HeadPrefillCapture(uncached, mx, lambda c: None)
+    tokens = np.arange(564)[None]
+    left(tokens[:, :544], cache=[])
+    left(tokens[:, 544:-1], cache=[])
+    left(tokens[:, -1:], cache=[])
+    right(tokens[:, :-1], cache=[])
+    right(tokens[:, -1:], cache=[])
+    assert cached.rows == uncached.rows
+    assert np.array_equal(left.hidden, right.hidden)
+
+
+def test_prefill_alignment_requires_a_shared_cache(monkeypatch):
+    from rapid_mlx.tuning import mtp as policy
+
+    monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
+    seen = []
+
+    class RecordingModel(Model):
+        def __call__(self, inputs, cache=None, return_hidden=False):
+            seen.append(inputs.shape[1])
+            return super().__call__(inputs, cache, return_hidden)
+
+    mx = SimpleNamespace(concatenate=np.concatenate, eval=lambda *a: None)
+    capture = module.HeadPrefillCapture(RecordingModel(), mx, lambda c: None)
+    # Without a cache, a trailing chunk would lose the leading chunk's state.
+    logits = capture(np.arange(40)[None])
+    assert seen == [40]
+    assert np.array_equal(logits, np.arange(40)[None])

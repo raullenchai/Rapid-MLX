@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "profile_version": "2026.11.10.1",
-  "generated_at": "2026-11-10T00:00:00Z",
+  "profile_version": "2026.11.10.3",
+  "generated_at": "2026-11-11T01:05:33Z",
   "entries": [
     {
       "id": "singleton-15-ultra",
@@ -349,6 +349,123 @@
           64
         ],
         "quant_mode": "affine"
+      }
+    },
+    {
+      "id": "mtp-costs-17-max-36g-qwen35-moe",
+      "hardware": [
+        {
+          "gpu_generation": 17,
+          "tier": "Max",
+          "memory_size": [
+            38654705664,
+            38654705664
+          ]
+        }
+      ],
+      "software": {
+        "mlx": "===0.32.3",
+        "macos": "===27.0.1"
+      },
+      "model": {
+        "family": "qwen3_5_moe_text",
+        "geometry": [
+          2048,
+          512,
+          256,
+          8,
+          4,
+          64
+        ],
+        "quant_mode": "affine"
+      },
+      "workload": {
+        "mode": "mtp",
+        "width": 1,
+        "batch": 1
+      },
+      "knobs": {
+        "mtp_gdn_fusion": true,
+        "mtp_forward_costs_ms": [
+          6.71783369,
+          8.564853409,
+          10.033190635,
+          11.40994858,
+          13.10045261,
+          1.061060239
+        ]
+      },
+      "provenance": {
+        "evidence": "docs/engineering/performance/2026-11-10-mtp-depth-costs.md",
+        "date": "2026-11-10",
+        "commit": "e299a09c53642f23d73cfe04d034be4b53c18bf6",
+        "gpu_cores": 40,
+        "memory_size": 38654705664,
+        "repetitions": {
+          "calibration": 5,
+          "qualification": 5
+        },
+        "decision": "Freeze measured forward/draft costs and enroll parity-qualified GDN execution with rollback-aware verification.",
+        "hardware_scope": "Exact generation/tier and memory with explicit generalization across core variants, including unknown core facts omitted by MLX. Measured 40-core hardware is provenance."
+      }
+    },
+    {
+      "id": "mtp-costs-15-ultra-256g-qwen35-moe",
+      "hardware": [
+        {
+          "gpu_generation": 15,
+          "tier": "Ultra",
+          "memory_size": [
+            274877906944,
+            274877906944
+          ]
+        }
+      ],
+      "software": {
+        "mlx": "===0.32.4",
+        "macos": "===26.5.2"
+      },
+      "model": {
+        "family": "qwen3_5_moe_text",
+        "geometry": [
+          2048,
+          512,
+          256,
+          8,
+          4,
+          64
+        ],
+        "quant_mode": "affine"
+      },
+      "workload": {
+        "mode": "mtp",
+        "width": 1,
+        "batch": 1
+      },
+      "knobs": {
+        "mtp_gdn_fusion": true,
+        "mtp_prefill_block_size": 32,
+        "mtp_forward_costs_ms": [
+          6.800500007,
+          9.010624999,
+          10.513812041,
+          12.027729643,
+          13.952790992,
+          0.992714634
+        ]
+      },
+      "provenance": {
+        "evidence": "docs/engineering/performance/2026-11-10-mtp-depth-costs.md",
+        "date": "2026-11-10",
+        "commit": "e299a09c53642f23d73cfe04d034be4b53c18bf6",
+        "gpu_cores": 60,
+        "memory_size": 274877906944,
+        "repetitions": {
+          "calibration": 5,
+          "qualification": 5
+        },
+        "decision": "Freeze measured costs, align prefill to 32-row snapshot boundaries, and enroll parity-qualified GDN execution with rollback-aware verification.",
+        "hardware_scope": "Exact generation/tier and memory with explicit generalization across core variants, including unknown core facts omitted by MLX. Measured 60-core hardware is provenance."
       }
     }
   ]

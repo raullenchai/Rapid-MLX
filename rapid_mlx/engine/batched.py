@@ -351,6 +351,14 @@ def _run_dispatch_mtp_inject(
         mtp_sidecar=mtp_sidecar,
     )
     if ok:
+        from ..tuning.mtp import gdn_fusion_enabled
+
+        if gdn_fusion_enabled(model):
+            from ..gdn_in_proj_fusion import fuse_gdn_in_proj
+            from ..qwen35_fused_gdn_decode import install_qwen35_fused_gdn_decode
+
+            fuse_gdn_in_proj(model, retain_split=True)
+            install_qwen35_fused_gdn_decode(model)
         logger.info(
             "[MTP-vendored] dispatch_mtp_inject succeeded for model_type=%r sidecar=%r",
             model_type,

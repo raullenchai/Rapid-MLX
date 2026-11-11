@@ -20,7 +20,7 @@ Existing chip parsing is consumed, not refactored.
 Resolution order is **capability/scope block > environment > local calibration
 > user overlay profile > builtin profile > knob default**. Boolean environment
 spellings use the shared parser. Invalid overrides and calibration values defer.
-The calibration slot is still empty. `tuning.dump(ctx)` includes every knob's
+The local-calibration precedence slot is still empty. `tuning.dump(ctx)` includes every knob's
 value, source (`capability`, `env`, `local`, `overlay:<id>`, `builtin:<id>`, or
 `default`), reason and selected profile version (null for a non-profile choice),
 plus both loaded profile versions. It excludes device names, model paths,
@@ -142,14 +142,61 @@ fixed questions, absolute accuracy difference <=3 points and exact paired
 p>=0.05 against plain and main MTP, alongside the existing speed gate. This
 never relaxes kernel arithmetic probes.
 
+### Reproducible MTP depth costs
+
+`mtp_forward_costs_ms` supplies measured target and draft costs to the greedy
+request-local acceptance controller. Its value is a flat array of milliseconds,
+`[step, verify_2_rows, ..., verify_K_plus_1_rows, draft]`, with one to four verify
+widths. Target costs must be finite and positive. Draft cost must be finite and
+nonnegative. An empty default selects live calibration. Scope requires MTP mode,
+width one, batch one and an installed head. The existing profile matching,
+overlay precedence, conflict handling and provenance rules apply. The knob has
+no environment override.
+
+The installed model adapter uses the same geometry and expert quantization facts
+as `mtp_max_depth`. The configured cap is resolved and checkpoint-clamped first.
+Explicit speculative depth, `disable_auto_k` and the depth environment override
+retain their existing priority. Fixed-depth requests bypass schedule resolution.
+A measured curve is sliced through the configured cap. Missing or insufficient
+curves fall back to the existing process-cached scratch-forward calibration.
+Profile costs bypass that cache so a previously calibrated schedule cannot
+replace a measured cell.
+
+`mtp_prefill_block_size` supplies a measured nonnegative prefill alignment.
+Zero retains incoming chunks. A positive value splits an unaligned chunk at
+its last complete block before target forwarding and head-history capture.
+Its scope and installed-head requirement match the forward-cost cell. This
+keeps cold cached and uncached prefill on the qualified numerical path.
+The M3 Ultra 35B cell uses 32 rows. Width-dependent rounding in prefill can
+change subsequent draft acceptance even with identical frozen depth prices.
+
+`mtp_gdn_fusion` enrolls the measured cells' rollback-compatible GDN execution
+paths after head attachment. Projection enrollment retains the split modules
+and validates every fused row count on the loaded weights. Verification consumes
+the fused projections, and the existing singleton recurrence implementation runs
+its cache/output parity probe. Qualified two-row verification uses the existing
+boundary kernel and preserves its tuple rollback snapshot. The M3 Ultra and M5
+Max 35B cells enable this execution choice.
+
+Both sources use the existing normalized round-cost formula, including host
+round overhead, and the measured verify curve for prompt-copy decisions. The
+acceptance EMA, exploration counters and copy gate are created per request.
+Measured cells therefore make depth decisions from fixed costs and that
+request's acceptance history across process restarts. The shared observer still
+records live timings for diagnostics. Unmeasured fallback cells can retain
+cross-process timing variation. Prefix-cache state and width-dependent floating
+point arithmetic remain relevant when comparing output digests across workloads.
+
+The measured 35B cost cells and their repeated-server evidence are documented in
+[the depth-cost measurements](../performance/2026-11-10-mtp-depth-costs.md).
+
 Follow-ups:
 
 - Community `--sweep` A/B mode, a tuning block in submissions, and a distillation
   script producing reviewable data-only PRs through our gates.
 - Network profile updates through `rapid-mlx tune --update`.
 - Local `rapid-mlx tune` measurement/calibration and persistent calibrated cells.
-- MTP depth calibration stability, including the varied committed-default
-  follow-up recorded in the M3 evidence.
+- Additional measured MTP forward-cost cells for currently unmeasured runtimes.
 - Unify existing chip fact parsers; acceleration-flag mapping; runtime adaptation.
 
 Further kernel migrations need their own evidence.

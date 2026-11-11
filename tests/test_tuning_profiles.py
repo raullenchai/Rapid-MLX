@@ -288,7 +288,7 @@ def test_builtin_resource_and_package_declaration():
     resource = files("rapid_mlx.tuning").joinpath("profiles/builtin.json")
     data = json.loads(resource.read_text())
     assert data["schema_version"] == 1
-    assert len(defaults.builtin_profile().entries) == len(data["entries"]) == 7
+    assert len(defaults.builtin_profile().entries) == len(data["entries"]) == 9
     config = tomllib.loads(Path("pyproject.toml").read_text())
     assert (
         "tuning/profiles/*.json"

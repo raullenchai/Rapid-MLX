@@ -111,6 +111,20 @@ def patch_arrays_cache_rollback_state() -> bool:
         return True
 
 
+def _input_projections(layer, inputs):
+    """Use the installed byte-parity-qualified projection path during verify."""
+    if hasattr(layer, "in_proj_fused"):
+        from rapid_mlx.gdn_in_proj_fusion import _fused_projections
+
+        return _fused_projections(layer, inputs)
+    return (
+        layer.in_proj_qkv(inputs),
+        layer.in_proj_z(inputs),
+        layer.in_proj_b(inputs),
+        layer.in_proj_a(inputs),
+    )
+
+
 def patch_gated_delta_net_for_mtp() -> bool:
     """Wrap ``GatedDeltaNet.__call__`` with a chunk-split version that
     snapshots SSM/conv state at a confirmed boundary.
@@ -239,10 +253,8 @@ def patch_gated_delta_net_for_mtp() -> bool:
 
             # Steps 1-3: projections + conv prefix — identical to the
             # original call. Build all derived tensors once.
-            qkv = self.in_proj_qkv(inputs)
-            z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
-            b = self.in_proj_b(inputs)
-            a = self.in_proj_a(inputs)
+            qkv, z, b, a = _input_projections(self, inputs)
+            z = z.reshape(B, S, self.num_v_heads, self.head_v_dim)
 
             if cache is not None and cache[0] is not None:
                 conv_state = cache[0]
@@ -292,13 +304,14 @@ def patch_gated_delta_net_for_mtp() -> bool:
             # Keep the position-wise implementation as the exact fallback for
             # training, CPU, and unsupported key widths. Ordinary prefill and
             # decode still take the original mlx-lm call above.
-            if S > 2:
-                use_boundary_kernel = (
-                    not self.training
-                    and mx.default_device() == mx.gpu
-                    and mx.metal.is_available()
-                    and q.shape[-1] % 32 == 0
-                )
+            use_boundary_kernel = (
+                (S > 2 or hasattr(self, "in_proj_fused"))
+                and not self.training
+                and mx.default_device() == mx.gpu
+                and mx.metal.is_available()
+                and q.shape[-1] % 32 == 0
+            )
+            if S > 2 or use_boundary_kernel:
                 if use_boundary_kernel:
                     from rapid_mlx.kernels.qwen4_gdn_verify import (
                         gated_delta_verify_with_states,
@@ -316,7 +329,7 @@ def patch_gated_delta_net_for_mtp() -> bool:
                         mask,
                         use_kernel=True,
                     )
-                    cache.rollback_state = [
+                    snapshots = [
                         (
                             mx.contiguous(
                                 conv_input[:, position + 1 : position + 1 + n_keep, :]
@@ -325,6 +338,7 @@ def patch_gated_delta_net_for_mtp() -> bool:
                         )
                         for position in range(S - 1)
                     ]
+                    cache.rollback_state = snapshots[0] if S == 2 else snapshots
                     cache[1] = cur_state
                     cache.advance(S)
                     out = self.norm(out, z)
