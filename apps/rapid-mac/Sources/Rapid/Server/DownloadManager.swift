@@ -102,6 +102,7 @@ final class DownloadManager {
         let retryAttempt: Int
         fileprivate(set) var retryDelaySeconds: Int?
         fileprivate(set) var isStalled = false
+        fileprivate(set) var cacheAccessFailure: CachedModelDiscoveryFailure?
         fileprivate(set) var failureKind: FailureDiagnosis.Kind?
         fileprivate(set) var failureCause: DesktopFunnelReporter.DownloadFailureCause?
         /// Live handle to the HF cache-directory byte monitor, when
@@ -203,6 +204,8 @@ final class DownloadManager {
     private let endpointPreference: () -> String?
     private let settlementSleep: @MainActor () async throws -> Void
     private var shutdownSignalledAt: Date?
+    private let cacheAccessCheck: @MainActor () async -> CachedModelDiscoveryFailure?
+    private var accessTasks: [String: Task<Void, Never>] = [:]
 
     private var processes: [String: Process] = [:]
     private var cancellingProcesses: [String: Process] = [:]
@@ -287,8 +290,12 @@ final class DownloadManager {
     init(
         binaryPath: URL?,
         binaryLocator: @escaping () -> URL? = ServerLocator.find,
-        endpointPreference: @escaping () -> String? = { ModelDownloadEndpointPreference.storedEndpoint() }
+        endpointPreference: @escaping () -> String? = { ModelDownloadEndpointPreference.storedEndpoint() },
+        cacheAccessCheck: @escaping @MainActor () async -> CachedModelDiscoveryFailure? = {
+            await CachedModelDiscovery.downloadAccessFailure()
+        }
     ) {
+        self.cacheAccessCheck = cacheAccessCheck
         self.binaryPath = binaryPath
         self.resolvesBinaryAtStart = true
         self.binaryLocator = binaryLocator
@@ -304,10 +311,12 @@ final class DownloadManager {
     /// finalize via ``_testingFinish``.
     internal init(
         endpointPreference: @escaping () -> String? = { ModelDownloadEndpointPreference.storedEndpoint() },
+        cacheAccessCheck: @escaping @MainActor () async -> CachedModelDiscoveryFailure? = { nil },
         settlementSleep: @escaping @MainActor () async throws -> Void = {
             try await Task.sleep(nanoseconds: 250_000_000)
         }
     ) {
+        self.cacheAccessCheck = cacheAccessCheck
         self.binaryPath = nil
         self.resolvesBinaryAtStart = false
         self.binaryLocator = { nil }
@@ -370,7 +379,8 @@ final class DownloadManager {
     /// Spawn ``rapid-mlx pull <alias>`` in the background. No-op if a
     /// running job already exists for this alias (clicking the
     /// download icon a second time mid-pull should be idle, not
-    /// double-fire). Returns ``true`` if a new process was spawned.
+    /// double-fire). Returns ``true`` if a new attempt was accepted; the
+    /// bounded cache-access check runs before spawning its subprocess.
     ///
     /// ``hfPath`` (optional) and ``totalBytes`` (optional) are routed
     /// through to the HF cache-directory byte monitor so the picker
@@ -450,6 +460,20 @@ final class DownloadManager {
         jobs[trimmed] = job
         stderrTails[trimmed] = []
 
+        accessTasks[trimmed] = Task { @MainActor [weak self, weak job] in
+            guard let self, let job else { return }
+            let failure = await self.cacheAccessCheck()
+            guard !Task.isCancelled, self.jobs[trimmed] === job,
+                  job.status == .running else { return }
+            self.accessTasks.removeValue(forKey: trimmed)
+            if self.recordCacheAccessFailure(failure, job: job) { return }
+            self.spawnDownload(binary: binary, job: job)
+        }
+        return true
+    }
+
+    private func spawnDownload(binary: URL, job: Job) {
+        let trimmed = job.alias
         let process = Process()
         process.executableURL = binary
         process.arguments = ["pull", trimmed]
@@ -459,8 +483,8 @@ final class DownloadManager {
         process.standardError = stderrPipe
         process.standardInput = FileHandle.nullDevice
         process.environment = augmentedEnv(
-            for: binary, source: effectiveSource, forceMirror: forceMirror,
-            downloadEndpoint: downloadEndpoint
+            for: binary, source: job.source, forceMirror: job.forceMirror,
+            downloadEndpoint: job.downloadEndpoint
         )
 
         // tqdm refreshes via \r when stderr is not a TTY (same shape
@@ -524,7 +548,7 @@ final class DownloadManager {
             job.status = .failed(
                 message: FailureDiagnoser.diagnosis(for: .downloadFailed).message
             )
-            return false
+            return
         }
         // Register pipes + process AFTER spawn succeeds so a throw
         // above leaves the manager's bookkeeping untouched.
@@ -541,11 +565,10 @@ final class DownloadManager {
         // the existing tqdm-derived copy stays in charge.
         installByteMonitor(
             job: job,
-            hfPath: hfPath,
-            totalBytes: totalBytes
+            hfPath: job.hfPath,
+            totalBytes: job.totalBytes
         )
         installStallWatchdog(alias: trimmed, process: process, job: job)
-        return true
     }
 
     private func installStallWatchdog(alias: String, process: Process, job: Job) {
@@ -688,6 +711,11 @@ final class DownloadManager {
     /// job's status flips to ``.cancelled`` via ``handleExit``.
     func cancelDownload(alias: String) {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let accessTask = accessTasks.removeValue(forKey: trimmed) {
+            accessTask.cancel()
+            if let job = jobs[trimmed] { markCancelled(job) }
+            return
+        }
         if let retryTask = retryTasks.removeValue(forKey: trimmed) {
             retryTask.cancel()
             if let job = jobs[trimmed] { markCancelled(job) }
@@ -755,6 +783,11 @@ final class DownloadManager {
     /// already gone.
     func beginShutdown() {
         if shutdownSignalledAt == nil { shutdownSignalledAt = Date() }
+        for (alias, task) in accessTasks {
+            task.cancel()
+            if let job = jobs[alias] { markCancelled(job) }
+        }
+        accessTasks.removeAll()
         for task in retryTasks.values { task.cancel() }
         retryTasks.removeAll()
         for (_, process) in processes where process.isRunning {
@@ -851,12 +884,21 @@ final class DownloadManager {
         }
 
         if stalledProcesses.removeValue(forKey: alias) === process {
-            if !scheduleAutomaticRetry(job: job, alias: alias) {
-                job.failureKind = .downloadFailed
-                job.failureCause = .network
-                job.status = .failed(
-                    message: "The download stopped making progress. Check your network and try again."
-                )
+            accessTasks[alias] = Task { @MainActor [weak self, weak job] in
+                guard let self, let job else { return }
+                let failure = await self.cacheAccessCheck()
+                // Match the previous synchronous stall handling: only a
+                // cancellation or a replacement job stops the decision.
+                guard !Task.isCancelled, self.jobs[alias] === job else { return }
+                self.accessTasks.removeValue(forKey: alias)
+                if self.recordCacheAccessFailure(failure, job: job) { return }
+                if !self.scheduleAutomaticRetry(job: job, alias: alias) {
+                    job.failureKind = .downloadFailed
+                    job.failureCause = .network
+                    job.status = .failed(
+                        message: "The download stopped making progress. Check your network and try again."
+                    )
+                }
             }
             return
         }
@@ -885,6 +927,16 @@ final class DownloadManager {
                 message: FailureDiagnoser.diagnosis(for: .downloadFailed).message
             )
         }
+    }
+
+    @discardableResult
+    private func recordCacheAccessFailure(_ failure: CachedModelDiscoveryFailure?, job: Job) -> Bool {
+        guard let failure, failure.volumeName != nil else { return false }
+        job.cacheAccessFailure = failure
+        job.failureKind = .downloadFailed
+        job.failureCause = .other
+        job.status = .failed(message: failure.downloadMessage)
+        return true
     }
 
     /// Keep the job running while a bounded backoff is pending so onboarding
@@ -1304,6 +1356,10 @@ final class DownloadManager {
             reason: reason,
             wasCancelling: wasCancelling
         )
+    }
+
+    internal func _testingHasProcess(alias: String) -> Bool {
+        processes[alias] != nil
     }
 
     internal func _testingDecodedLines(from data: Data) -> [String] {

@@ -112,7 +112,7 @@ struct HuggingFaceModelTests {
         let desktop = file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let fake = desktop.appendingPathComponent("scripts/fake-rapid-mlx.sh")
         let server = ServerManager(testingState: .stopped, binaryPath: fake)
-        let downloads = DownloadManager(binaryPath: fake, binaryLocator: { fake })
+        let downloads = DownloadManager(binaryPath: fake, binaryLocator: { fake }, cacheAccessCheck: { nil })
         let router = SettingsRouter()
         router.addFromHuggingFace(clipboard: "https://hf.co/org/new-model/tree/main") {}
         let stage = GoldenStage(
@@ -136,7 +136,7 @@ struct HuggingFaceModelTests {
         let desktop = file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let fake = desktop.appendingPathComponent("scripts/fake-rapid-mlx.sh")
         let server = ServerManager(testingState: .stopped, binaryPath: fake)
-        let downloads = DownloadManager(binaryPath: fake, binaryLocator: { fake })
+        let downloads = DownloadManager(binaryPath: fake, binaryLocator: { fake }, cacheAccessCheck: { nil })
         let router = SettingsRouter()
         let link = "https://hf.co/org/new-model/tree/main"
         router.addFromHuggingFace(clipboard: link) {}

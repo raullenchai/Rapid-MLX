@@ -2,6 +2,23 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Rapid needs permission to read models on %@. Allow Rapid access to this volume in System Settings → Privacy & Security, or choose a models folder on this Mac in Settings → Models. Then retry." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid needs permission to read models on %@. Allow Rapid access to this volume in System Settings → Privacy & Security, or choose a models folder on this Mac in Settings → Models. Then retry."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 需要权限才能读取 %@ 上的模型。请在“系统设置 → 隐私与安全性”中允许 Rapid 访问此宗卷，或在“设置 → 模型”中选择此 Mac 上的模型文件夹，然后重试。"
+          }
+        }
+      }
+    },
     "Changing network access restarts a running model and interrupts active requests.": {
       "extractionState": "manual",
       "localizations": {

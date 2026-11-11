@@ -137,6 +137,11 @@ private final class DiscoveryRace<Value: Sendable>: @unchecked Sendable {
 
 struct CachedModelDiscoveryFailure: Error, Sendable, Equatable {
     let volumeName: String?
+    var downloadMessage: String {
+        guard let volumeName else { return message }
+        return String(localized: "Rapid needs permission to read models on \(volumeName). Allow Rapid access to this volume in System Settings → Privacy & Security, or choose a models folder on this Mac in Settings → Models. Then retry.")
+    }
+
     var message: String {
         if let volumeName {
             return String(localized: "Rapid needs permission to read models on \(volumeName)")
@@ -163,6 +168,41 @@ final class DiscoveryProbeFailure: @unchecked Sendable {
 }
 
 enum CachedModelDiscovery {
+    /// Use discovery's override validation, deadline and volume classification
+    /// for pulls too. Enumerating the directory tests read access without
+    /// scanning model files; an absent cache is normal before a first download.
+    static func downloadAccessFailure(
+        timeout: TimeInterval = 10,
+        blockingIO: DiscoveryBlockingIO = .shared,
+        requestedOverride: URL? = requestedOverrideURL(),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        directoryProbe: @escaping ModelsFolderPreference.DirectoryProbe = ModelsFolderPreference.isDirectory,
+        volumeResolver: @escaping @Sendable (URL) -> String? = externalVolumeName,
+        readDirectory: @escaping @Sendable (URL) throws -> Void = {
+            _ = try FileManager.default.contentsOfDirectory(atPath: $0.path)
+        }
+    ) async -> CachedModelDiscoveryFailure? {
+        let result = await discover(
+            timeout: timeout,
+            cacheURL: BundledModel.userHFCacheURL(environment: environment, preferredOverride: requestedOverride),
+            volumeResolver: volumeResolver
+        ) {
+            try await DiscoveryDeadline.run(seconds: timeout, blockingIO: blockingIO) {
+                let override = try ModelsFolderPreference.discoveryOverrideURL(
+                    requestedOverride, directoryProbe: directoryProbe
+                )
+                if let root = BundledModel.userHFCacheURL(environment: environment, preferredOverride: override),
+                   try ModelsFolderPreference.discoveryOverrideURL(root, directoryProbe: directoryProbe) != nil {
+                    try readDirectory(root)
+                }
+                return []
+            }
+        }
+        // Generic I/O failures are left to the pull's existing diagnostics.
+        guard result.failure?.volumeName != nil else { return nil }
+        return result.failure
+    }
+
     /// Snapshot the preference without stat() on the UI or cache actor. Actual
     /// validation belongs inside the timed worker, since it can prompt too.
     static func requestedOverrideURL(defaults: UserDefaults = .standard) -> URL? {

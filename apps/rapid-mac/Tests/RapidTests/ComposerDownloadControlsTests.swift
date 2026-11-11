@@ -93,10 +93,17 @@ struct ComposerDownloadControlsTests {
         let binary = root.appendingPathComponent("fake-pull")
         try "#!/bin/sh\nexec /bin/sleep 30\n".write(to: binary, atomically: true, encoding: .utf8)
         chmod(binary.path, 0o755)
-        let downloads = DownloadManager(binaryPath: binary, binaryLocator: { binary })
+        let downloads = DownloadManager(
+            binaryPath: binary, binaryLocator: { binary }, cacheAccessCheck: { nil }
+        )
         defer { downloads.beginShutdown(); downloads.finishShutdown() }
         #expect(downloads.startDownload(alias: alias, hfPath: "test/model", totalBytes: 1024))
         let first = try #require(downloads.job(for: alias))
+        // The pull spawns after the async cache-access preflight.
+        let spawnDeadline = Date().addingTimeInterval(5)
+        while !downloads._testingHasProcess(alias: alias) && Date() < spawnDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(!downloads.canRetryDownload(alias: alias))
         let chat = ChatViewModel(persistsConversations: false)
         let server = ServerManager(testingState: .idle)

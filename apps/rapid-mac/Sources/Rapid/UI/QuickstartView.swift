@@ -4391,6 +4391,7 @@ struct QuickstartView: View {
                 }
                 if startupFailure == nil,
                    job != nil,
+                   job?.cacheAccessFailure == nil,
                    (kind == .downloadFailed || kind == .downloadSourceUnavailable),
                    diagnosis.action != .switchDownloadSource {
                     Button("Switch source") {
@@ -4958,7 +4959,8 @@ struct QuickstartView: View {
             )
             enterRecovery(
                 kind: kind,
-                message: kind == .downloadSourceUnavailable ? message : QuickstartView.friendlyFailureMessage(raw: message),
+                message: job.cacheAccessFailure?.downloadMessage
+                    ?? (kind == .downloadSourceUnavailable ? message : QuickstartView.friendlyFailureMessage(raw: message)),
                 origin: .download
             )
         }

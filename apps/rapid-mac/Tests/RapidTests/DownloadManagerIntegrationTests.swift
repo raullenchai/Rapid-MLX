@@ -113,7 +113,7 @@ struct DownloadManagerIntegrationTests {
         // The test is about plumbing, not model choice — using a
         // sub-1B model here is fine because we're not running
         // inference (which is what the no-tiny-models rule guards).
-        let mgr = DownloadManager(binaryPath: binary)
+        let mgr = DownloadManager(binaryPath: binary, cacheAccessCheck: { nil })
         let alias = "qwen3-0.6b-8bit"
         let started = Self.withRapidBin(binary) {
             mgr.startDownload(alias: alias)
@@ -141,7 +141,7 @@ struct DownloadManagerIntegrationTests {
     @Test("Bad alias: real pull exits non-zero → job lands in .failed with a non-empty message")
     func badAliasFails() async throws {
         guard let binary = Self.resolveBinary() else { return }
-        let mgr = DownloadManager(binaryPath: binary)
+        let mgr = DownloadManager(binaryPath: binary, cacheAccessCheck: { nil })
         // Deliberately bogus alias — rapid-mlx prints an error and
         // exits non-zero. The pattern catches a bug where bad-alias
         // failures silently land as .completed (e.g. forgetting to
@@ -170,7 +170,7 @@ struct DownloadManagerIntegrationTests {
     @Test("Cancel during real pull: SIGTERM lands as .cancelled, not .failed")
     func cancelDuringRealPull() async throws {
         guard let binary = Self.resolveBinary() else { return }
-        let mgr = DownloadManager(binaryPath: binary)
+        let mgr = DownloadManager(binaryPath: binary, cacheAccessCheck: { nil })
         let alias = "qwen3-0.6b-8bit"
         let started = Self.withRapidBin(binary) {
             mgr.startDownload(alias: alias)
@@ -213,7 +213,7 @@ struct DownloadManagerIntegrationTests {
     @Test("dismissJob after a real completed pull frees the slot for a fresh start")
     func dismissAndRestart() async throws {
         guard let binary = Self.resolveBinary() else { return }
-        let mgr = DownloadManager(binaryPath: binary)
+        let mgr = DownloadManager(binaryPath: binary, cacheAccessCheck: { nil })
         let alias = "qwen3-0.6b-8bit"
 
         // Round 1.

@@ -165,7 +165,7 @@ struct DownloadCatalogHardeningTests {
     @MainActor
     @Test("DownloadManager rejects option-shaped aliases before spawning rapid-mlx")
     func downloadManagerRejectsOptionAlias() {
-        let mgr = DownloadManager(binaryPath: URL(fileURLWithPath: "/bin/echo"))
+        let mgr = DownloadManager(binaryPath: URL(fileURLWithPath: "/bin/echo"), cacheAccessCheck: { nil })
         #expect(!mgr.startDownload(alias: "--help"))
 
         let job = mgr.job(for: "--help")
