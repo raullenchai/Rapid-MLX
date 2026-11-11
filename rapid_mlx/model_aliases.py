@@ -865,17 +865,15 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     if total is not None or active is not None:
         import math
 
-        if (
-            not value.get("is_moe")
-            or any(
-                isinstance(n, bool)
-                or not isinstance(n, (int, float))
-                or not math.isfinite(n)
-                or n <= 0
-                for n in (total, active)
-            )
-            or active > total
-        ):
+        counts = [
+            n
+            for n in (total, active)
+            if isinstance(n, (int, float))
+            and not isinstance(n, bool)
+            and math.isfinite(n)
+            and n > 0
+        ]
+        if not value.get("is_moe") or len(counts) != 2 or counts[1] > counts[0]:
             raise ValueError(
                 f"alias {alias!r}: invalid total_params_b / active_params_b"
             )
