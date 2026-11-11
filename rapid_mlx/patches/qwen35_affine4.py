@@ -17,7 +17,7 @@ from pathlib import Path
 import mlx.core as mx
 
 from .._env import env_falsey
-from ..tuning import QWEN35_AFFINE4, ModelProfile, enabled, resolve, runtime_context
+from ..lattice import QWEN35_AFFINE4, ModelProfile, enabled, resolve, runtime_context
 
 logger = logging.getLogger(__name__)
 _GATE = None

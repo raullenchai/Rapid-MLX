@@ -16,8 +16,8 @@ from importlib.metadata import PackageNotFoundError, version
 import mlx.core as mx
 
 from .._env import env_truthy
-from ..tuning import resolve, runtime_context
-from ..tuning.capabilities import (
+from ..lattice import resolve, runtime_context
+from ..lattice.capabilities import (
     QSA_ARCHITECTURES,
     QSA_MLX_VERSIONS,
     requirement_reason,

@@ -382,10 +382,10 @@ def test_bootstrap_delivery_is_suppressed_once():
 # below runs the same cases through the normally imported scheduler as well.
 @pytest.fixture(params=["cpu", pytest.param("native", marks=pytest.mark.requires_mlx)])
 def installed_capture(request, monkeypatch):
-    from rapid_mlx.tuning import mtp as tuning_mtp
+    from rapid_mlx.lattice import mtp as lattice_mtp
 
     # Lifecycle fixtures provide NumPy model/cache facts, with no device profile.
-    monkeypatch.setattr(tuning_mtp, "prefill_block_size", lambda model: 0)
+    monkeypatch.setattr(lattice_mtp, "prefill_block_size", lambda model: 0)
     mx = SimpleNamespace(
         array=np.array,
         uint32=np.uint32,
@@ -522,7 +522,7 @@ def installed_capture(request, monkeypatch):
         requests={"req-7": req},
         uid_to_request_id={7: "req-7"},
         disable_auto_k=True,
-        # Fix the harness depth without probing MLX hardware for tuning.
+        # Fix the harness depth without probing MLX hardware for lattice.
         explicit_depth=True,
     )
     try:
@@ -667,7 +667,7 @@ def test_installed_capture_terminal_failure_discards_provisional_state(
 def test_measured_prefill_alignment_preserves_logits_pairs_and_caches(
     monkeypatch, rows
 ):
-    from rapid_mlx.tuning import mtp as policy
+    from rapid_mlx.lattice import mtp as policy
 
     monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
     seen = []
@@ -692,7 +692,7 @@ def test_measured_prefill_alignment_preserves_logits_pairs_and_caches(
 
 
 def test_profile_alignment_matches_cold_prefix_snapshot_calls(monkeypatch):
-    from rapid_mlx.tuning import mtp as policy
+    from rapid_mlx.lattice import mtp as policy
 
     monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
     mx = SimpleNamespace(concatenate=np.concatenate, eval=lambda *a: None)
@@ -710,7 +710,7 @@ def test_profile_alignment_matches_cold_prefix_snapshot_calls(monkeypatch):
 
 
 def test_prefill_alignment_requires_a_shared_cache(monkeypatch):
-    from rapid_mlx.tuning import mtp as policy
+    from rapid_mlx.lattice import mtp as policy
 
     monkeypatch.setattr(policy, "prefill_block_size", lambda model: 32)
     seen = []

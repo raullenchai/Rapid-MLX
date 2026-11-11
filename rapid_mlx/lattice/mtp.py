@@ -5,7 +5,7 @@ import logging
 from dataclasses import replace
 from typing import cast
 
-from . import TuningContext, model_profile, resolve, runtime_context
+from . import LatticeContext, model_profile, resolve, runtime_context
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _expert_quantization(model):
             # Expert activation modules have no weight format to qualify.
             if ".switch_mlp." in name and hasattr(module, "weight")
         }
-    except Exception:  # noqa: BLE001 -- unavailable facts cannot qualify a table row
+    except Exception:  # noqa: BLE001 -- unavailable facts cannot qualify a lattice cell
         return None
     if len(formats) == 1:
         bits, group_size, mode = formats.pop()
@@ -35,8 +35,8 @@ def _expert_quantization(model):
     return None
 
 
-def _model_context(model) -> TuningContext | None:
-    """Snapshot installed-head and expert facts for MTP tuning cells."""
+def _model_context(model) -> LatticeContext | None:
+    """Snapshot installed-head and expert facts for MTP lattice cells."""
     has_head = (
         all(
             callable(getattr(model, name, None))

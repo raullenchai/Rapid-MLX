@@ -10,7 +10,7 @@ from rapid_mlx.telemetry.model_events import serve_failure_subtype
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("spec_decode,mode", [("none", "plain"), ("mtp", "mtp")])
-async def test_multimodal_startup_logs_resolved_tuning(
+async def test_multimodal_startup_logs_resolved_lattice(
     monkeypatch, caplog, spec_decode, mode
 ):
     import logging
@@ -18,7 +18,7 @@ async def test_multimodal_startup_logs_resolved_tuning(
 
     import mlx
 
-    from rapid_mlx import engine_core, mllm_scheduler, tuning
+    from rapid_mlx import engine_core, lattice, mllm_scheduler
     from rapid_mlx.engine import batched
     from rapid_mlx.models import mllm
     from rapid_mlx.scheduler import SchedulerConfig
@@ -57,10 +57,10 @@ async def test_multimodal_startup_logs_resolved_tuning(
         with caplog.at_level(logging.DEBUG, logger=batched.__name__):
             await engine._start_mllm()
         scheduler.start.assert_awaited_once()
-        assert engine._tuning_context.mode == mode
-        records = [r for r in caplog.records if r.msg == "Resolved tuning: %s"]
+        assert engine._lattice_context.mode == mode
+        records = [r for r in caplog.records if r.msg == "Resolved lattice: %s"]
         assert len(records) == 1
-        assert records[0].args == tuning.dump(engine._tuning_context)
+        assert records[0].args == lattice.dump(engine._lattice_context)
         assert "/private/model" not in records[0].getMessage()
     finally:
         if engine._model_load_executor is not None:

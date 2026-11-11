@@ -129,7 +129,7 @@ def model_profile(config: Mapping) -> ModelProfile:
 
 
 @dataclass(frozen=True)
-class TuningContext:
+class LatticeContext:
     hardware: HardwareProfile
     mlx: str
     macos: str
@@ -155,7 +155,7 @@ def _context(
     batch,
     has_mtp_head,
     rapid_mlx,
-) -> TuningContext:
+) -> LatticeContext:
     tier = classify_chip_tier(name)
     arch = re.fullmatch(r"applegpu_g(\d+)[a-z]*", architecture)
     # Older MLX device_info omitted architecture. Only known Apple generations
@@ -169,7 +169,7 @@ def _context(
             else None
         )
     )
-    return TuningContext(
+    return LatticeContext(
         HardwareProfile(architecture, generation, tier.variant, cores, memory),
         library_version,
         macos,
@@ -194,7 +194,7 @@ def runtime_context(
     batch=1,
     has_mtp_head=False,
     rapid_mlx=None,
-) -> TuningContext:
+) -> LatticeContext:
     return _context(
         device_key(info),
         str(info.get("architecture", "unknown")),

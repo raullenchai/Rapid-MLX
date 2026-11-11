@@ -51,7 +51,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from ...tuning import resolve, runtime_context
+from ...lattice import resolve, runtime_context
 from . import simd
 
 QUANT_BITS = (2, 3, 4, 5, 6, 8)

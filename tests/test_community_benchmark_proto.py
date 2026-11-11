@@ -35,13 +35,13 @@ SCHEMA_PATHS = (
 
 @pytest.fixture
 def future_knob_run():
-    from rapid_mlx import tuning
+    from rapid_mlx import lattice
 
     run = _load(BENCH_ROOT / "examples" / "benchmark-run.image.example.json")
-    context = tuning.dump(tuning.TuningContext(tuning.HardwareProfile(), "1", "1"))
+    context = lattice.dump(lattice.LatticeContext(lattice.HardwareProfile(), "1", "1"))
     context = json.loads(json.dumps(context))
     context["knobs"]["future_knob"] = {"value": True, "source": "default"}
-    run["tuning"] = {
+    run["lattice"] = {
         "context": context,
         "overrides": {"future_knob": True},
         "outputs": {"pp512-tg128": [None], "pp2048-tg512": [None]},
@@ -57,7 +57,7 @@ def future_knob_run():
         "role": "candidate",
         "sequence_index": 1,
         "order_strategy": "fixed",
-        "varied_fields": ["/tuning/context/knobs/future_knob"],
+        "varied_fields": ["/lattice/context/knobs/future_knob"],
     }
     return run
 
@@ -71,14 +71,14 @@ def test_future_knob_submission_validates(schemas, registry, future_knob_run):
 
 def test_older_knob_snapshot_still_validates(schemas, registry, future_knob_run):
     run = future_knob_run
-    knobs = run["tuning"]["context"]["knobs"]
-    required = schemas["benchmark-run.schema.json"]["$defs"]["tuning"]["properties"][
+    knobs = run["lattice"]["context"]["knobs"]
+    required = schemas["benchmark-run.schema.json"]["$defs"]["lattice"]["properties"][
         "context"
     ]["properties"]["knobs"]["required"]
-    run["tuning"]["context"]["knobs"] = {name: knobs[name] for name in required}
-    run["tuning"]["overrides"] = {"mtp_max_depth": 2}
-    run["tuning"]["selection"]["changed_knobs"] = ["mtp_max_depth"]
-    run["experiment"]["varied_fields"] = ["/tuning/context/knobs"]
+    run["lattice"]["context"]["knobs"] = {name: knobs[name] for name in required}
+    run["lattice"]["overrides"] = {"mtp_max_depth": 2}
+    run["lattice"]["selection"]["changed_knobs"] = ["mtp_max_depth"]
+    run["experiment"]["varied_fields"] = ["/lattice/context/knobs"]
     _validator(schemas["benchmark-run.schema.json"], registry).validate(run)
 
 
@@ -96,7 +96,7 @@ def test_older_knob_snapshot_still_validates(schemas, registry, future_knob_run)
 def test_open_overrides_preserve_value_constraints(
     schemas, registry, future_knob_run, overrides
 ):
-    future_knob_run["tuning"]["overrides"] = overrides
+    future_knob_run["lattice"]["overrides"] = overrides
     with pytest.raises(jsonschema.ValidationError):
         _validator(schemas["benchmark-run.schema.json"], registry).validate(
             future_knob_run
@@ -112,14 +112,14 @@ def test_invalid_knob_names_rejected(
 ):
     run = future_knob_run
     if location == "context":
-        knobs = run["tuning"]["context"]["knobs"]
+        knobs = run["lattice"]["context"]["knobs"]
         knobs[name] = knobs.pop("future_knob")
     elif location == "overrides":
-        run["tuning"]["overrides"] = {name: True}
+        run["lattice"]["overrides"] = {name: True}
     elif location == "selection":
-        run["tuning"]["selection"]["changed_knobs"] = [name]
+        run["lattice"]["selection"]["changed_knobs"] = [name]
     else:
-        run["experiment"]["varied_fields"] = [f"/tuning/context/knobs/{name}"]
+        run["experiment"]["varied_fields"] = [f"/lattice/context/knobs/{name}"]
     with pytest.raises(jsonschema.ValidationError):
         _validator(schemas["benchmark-run.schema.json"], registry).validate(run)
 
@@ -131,13 +131,13 @@ def test_knob_collection_sizes_are_bounded(
     run = future_knob_run
     names = [f"future_{i}" for i in range(129)]
     if location == "context":
-        run["tuning"]["context"]["knobs"].update(
+        run["lattice"]["context"]["knobs"].update(
             {name: {"value": True, "source": "default"} for name in names}
         )
     elif location == "overrides":
-        run["tuning"]["overrides"] = dict.fromkeys(names, True)
+        run["lattice"]["overrides"] = dict.fromkeys(names, True)
     else:
-        run["tuning"]["selection"]["changed_knobs"] = names
+        run["lattice"]["selection"]["changed_knobs"] = names
     with pytest.raises(jsonschema.ValidationError):
         _validator(schemas["benchmark-run.schema.json"], registry).validate(run)
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Strict data-only profiles. Invalid documents/entries never select a value."""
+"""Strict data-only profiles. Invalid documents/cells never select a value."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Any
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from .profiles import TuningContext
+from .profiles import LatticeContext
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Profile:
     version: str | None = None
-    entries: tuple[dict[str, Any], ...] = ()
+    cells: tuple[dict[str, Any], ...] = ()
 
 
 def _keys(value, required, optional=()):
@@ -44,15 +44,15 @@ def _integer(value):
         raise ValueError("expected positive integer")
 
 
-def _entry(entry, knobs):
+def _cell(cell, knobs):
     _keys(
-        entry,
+        cell,
         ("id", "hardware", "knobs", "provenance"),
         ("software", "model", "workload", "capabilities"),
     )
-    _label(entry["id"])
+    _label(cell["id"])
     _keys(
-        entry["provenance"],
+        cell["provenance"],
         ("evidence",),
         (
             "gpu_cores",
@@ -71,14 +71,14 @@ def _entry(entry, knobs):
         ),
     )
     if (
-        not isinstance(entry["provenance"], dict)
-        or not isinstance(entry["provenance"].get("evidence"), str)
-        or not entry["provenance"]["evidence"]
+        not isinstance(cell["provenance"], dict)
+        or not isinstance(cell["provenance"].get("evidence"), str)
+        or not cell["provenance"]["evidence"]
     ):
         raise ValueError("provenance requires evidence")
-    if not isinstance(entry["hardware"], list) or not entry["hardware"]:
+    if not isinstance(cell["hardware"], list) or not cell["hardware"]:
         raise ValueError("hardware set required")
-    for hw in entry["hardware"]:
+    for hw in cell["hardware"]:
         _keys(hw, ("gpu_generation", "tier"), ("gpu_cores", "memory_size"))
         _integer(hw["gpu_generation"])
         if hw["tier"] not in ("base", "Pro", "Max", "Ultra"):
@@ -92,13 +92,13 @@ def _entry(entry, knobs):
                     _integer(bound)
                 if bounds[0] > bounds[1]:
                     raise ValueError("inverted range")
-    software = entry.get("software", {})
+    software = cell.get("software", {})
     _keys(software, (), ("mlx", "macos", "rapid_mlx"))
     for constraint in software.values():
         if not isinstance(constraint, str) or not constraint:
             raise ValueError("expected software constraint")
         SpecifierSet(constraint)
-    model = entry.get("model", {})
+    model = cell.get("model", {})
     _keys(model, (), ("family", "geometry", "quant_mode", "attention_kinds"))
     for key in ("family", "quant_mode"):
         if key in model:
@@ -113,55 +113,55 @@ def _entry(entry, knobs):
             raise ValueError("expected attention kinds")
         for kind in model["attention_kinds"]:
             _label(kind)
-    workload = entry.get("workload", {})
+    workload = cell.get("workload", {})
     _keys(workload, (), ("mode", "width", "batch"))
     if "mode" in workload:
         _label(workload["mode"])
     for key in ("width", "batch"):
         if key in workload:
             _integer(workload[key])
-    if not isinstance(entry["knobs"], dict) or not entry["knobs"]:
+    if not isinstance(cell["knobs"], dict) or not cell["knobs"]:
         raise ValueError("empty knob set")
-    for name, value in entry["knobs"].items():
+    for name, value in cell["knobs"].items():
         if name not in knobs or not knobs[name].valid(value):
             raise ValueError("unknown knob or invalid value")
         if isinstance(value, list):
-            entry["knobs"][name] = tuple(value)
-    capabilities = entry.get("capabilities", [])
+            cell["knobs"][name] = tuple(value)
+    capabilities = cell.get("capabilities", [])
     if not isinstance(capabilities, list) or any(
         name not in knobs or not knobs[name].profile_requirement
         for name in capabilities
     ):
         raise ValueError("unknown capability")
-    return entry
+    return cell
 
 
 def load_profile(path, knobs) -> Profile:
-    """Read a packaged resource or user file; reject entries independently."""
+    """Read a packaged resource or user file; reject cells independently."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        _keys(data, ("schema_version", "profile_version", "generated_at", "entries"))
+        _keys(data, ("schema_version", "profile_version", "generated_at", "cells"))
         if type(data["schema_version"]) is not int or data["schema_version"] != 1:
             raise ValueError("unsupported schema")
         _label(data["profile_version"])
         datetime.fromisoformat(data["generated_at"].replace("Z", "+00:00"))
-        if not isinstance(data["entries"], list):
-            raise ValueError("expected entries")
+        if not isinstance(data["cells"], list):
+            raise ValueError("expected cells")
     except (OSError, ValueError, TypeError, AttributeError, RecursionError) as exc:
-        logger.debug("Rejected tuning profile: %s", exc)
+        logger.debug("Rejected lattice profile: %s", exc)
         return Profile()
-    entries = []
-    ids = [e.get("id") for e in data["entries"] if isinstance(e, dict)]
-    for entry in data["entries"]:
+    cells = []
+    ids = [e.get("id") for e in data["cells"] if isinstance(e, dict)]
+    for cell in data["cells"]:
         try:
-            entry = _entry(entry, knobs)
-            if ids.count(entry["id"]) != 1:
-                raise ValueError("duplicate entry id")
+            cell = _cell(cell, knobs)
+            if ids.count(cell["id"]) != 1:
+                raise ValueError("duplicate cell id")
         except (ValueError, TypeError, InvalidSpecifier) as exc:
-            logger.debug("Rejected tuning entry: %s", exc)
+            logger.debug("Rejected lattice cell: %s", exc)
             continue
-        entries.append(entry)
-    return Profile(data["profile_version"], tuple(entries))
+        cells.append(cell)
+    return Profile(data["profile_version"], tuple(cells))
 
 
 @cache
@@ -169,13 +169,13 @@ def builtin_profile() -> Profile:
     from . import KNOBS
 
     return load_profile(
-        files("rapid_mlx.tuning").joinpath("profiles/builtin.json"), KNOBS
+        files("rapid_mlx.lattice").joinpath("profiles/builtin.json"), KNOBS
     )
 
 
 def overlay_path() -> Path:
     """Same user config directory as user-aliases.json."""
-    return Path.home() / ".config" / "rapid-mlx" / "tuning-profile.json"
+    return Path.home() / ".config" / "rapid-mlx" / "lattice-profile.json"
 
 
 @cache
@@ -185,7 +185,7 @@ def overlay_profile() -> Profile:
     return load_profile(overlay_path(), KNOBS)
 
 
-def matches(entry, ctx: TuningContext) -> bool:
+def matches(cell, ctx: LatticeContext) -> bool:
     """Only declared sets match; absent pinned facts never supply evidence."""
     if not any(
         ctx.hardware.gpu_generation == hw["gpu_generation"]
@@ -196,10 +196,10 @@ def matches(entry, ctx: TuningContext) -> bool:
             for key, bounds in hw.items()
             if key in {"gpu_cores", "memory_size"}
         )
-        for hw in entry["hardware"]
+        for hw in cell["hardware"]
     ):
         return False
-    for key, constraint in entry.get("software", {}).items():
+    for key, constraint in cell.get("software", {}).items():
         try:
             if Version(getattr(ctx, key)) not in SpecifierSet(constraint):
                 return False
@@ -207,9 +207,9 @@ def matches(entry, ctx: TuningContext) -> bool:
             return False
     if any(
         getattr(ctx.model, key) != (tuple(value) if isinstance(value, list) else value)
-        for key, value in entry.get("model", {}).items()
+        for key, value in cell.get("model", {}).items()
     ):
         return False
     return all(
-        getattr(ctx, key) == value for key, value in entry.get("workload", {}).items()
+        getattr(ctx, key) == value for key, value in cell.get("workload", {}).items()
     )

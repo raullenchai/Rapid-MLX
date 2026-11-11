@@ -92,7 +92,7 @@ weaker reference conditioning:
 ```bash
 curl http://127.0.0.1:8000/v1/videos \
   -F model=ltx-2.3-mlx-q4 \
-  -F 'prompt=the camera sweeps around the subject' \
+  -F 'prompt=the camera circles the subject' \
   -F input_reference=@start.png \
   -F fps=12 \
   -F frames=17 \

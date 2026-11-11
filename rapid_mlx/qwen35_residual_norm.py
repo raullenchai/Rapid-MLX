@@ -15,7 +15,7 @@ import mlx.core as mx
 
 from ._env import env_falsey
 from .dense_decode_fusion import _bits_equal, _decode, _norm_probe, _probe_cache
-from .tuning import QWEN35_AFFINE4, enabled
+from .lattice import QWEN35_AFFINE4, enabled
 
 logger = logging.getLogger(__name__)
 _SWITCH = "RAPID_MLX_QWEN35_RESIDUAL_NORM"

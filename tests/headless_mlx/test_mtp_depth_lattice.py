@@ -6,14 +6,16 @@ from unittest.mock import Mock
 
 import pytest
 
-from rapid_mlx import tuning
-from rapid_mlx.tuning.mtp import resolve_max_depth
+from rapid_mlx import lattice
+from rapid_mlx.lattice.mtp import resolve_max_depth
 
 ENV = "RAPID_MLX_MTP_MAX_DEPTH"
 
 
 def context(**changes):
-    return replace(tuning.runtime_context({}, mode="mtp", has_mtp_head=True), **changes)
+    return replace(
+        lattice.runtime_context({}, mode="mtp", has_mtp_head=True), **changes
+    )
 
 
 def model(**changes):
@@ -24,15 +26,15 @@ def model(**changes):
 
 @pytest.mark.parametrize("raw,expected", [(str(k), k) for k in range(1, 5)])
 def test_integer_override(raw, expected):
-    decision = tuning.resolve("mtp_max_depth", context(), environ={ENV: raw})
+    decision = lattice.resolve("mtp_max_depth", context(), environ={ENV: raw})
     assert type(decision.value) is int
     assert (decision.value, decision.source) == (expected, "env")
 
 
 @pytest.mark.parametrize("raw", ["", "yes", "false", "0", "-1", "5", "2.5", "x"])
 def test_invalid_override_defers(raw):
-    assert tuning.resolve("mtp_max_depth", context(), environ={ENV: raw}) == (
-        tuning.Decision(1, "default")
+    assert lattice.resolve("mtp_max_depth", context(), environ={ENV: raw}) == (
+        lattice.Decision(1, "default")
     )
 
 
@@ -40,41 +42,41 @@ def test_invalid_override_defers(raw):
     "change", [{"has_mtp_head": False}, {"mode": "plain"}, {"batch": 2}]
 )
 def test_override_cannot_bypass_capability_or_scope(change):
-    decision = tuning.resolve("mtp_max_depth", context(**change), environ={ENV: "4"})
+    decision = lattice.resolve("mtp_max_depth", context(**change), environ={ENV: "4"})
     assert decision.value == 1 and decision.source == "capability"
 
 
 @pytest.mark.parametrize("chip", ["unknown", "Apple M3 Ultra", "Apple M5 Max"])
 def test_unmeasured_default(chip):
-    ctx = tuning.runtime_context({"device_name": chip}, mode="mtp", has_mtp_head=True)
-    assert tuning.resolve("mtp_max_depth", ctx, environ={}).value == 1
+    ctx = lattice.runtime_context({"device_name": chip}, mode="mtp", has_mtp_head=True)
+    assert lattice.resolve("mtp_max_depth", ctx, environ={}).value == 1
 
 
 def test_typed_local_and_table_precedence(monkeypatch):
-    from rapid_mlx.tuning.defaults import Profile
+    from rapid_mlx.lattice.defaults import Profile
 
-    ctx = context(hardware=tuning.HardwareProfile(gpu_generation=15, tier="Ultra"))
-    entry = dict(
+    ctx = context(hardware=lattice.HardwareProfile(gpu_generation=15, tier="Ultra"))
+    cell = dict(
         id="test-depth",
         hardware=[dict(gpu_generation=15, tier="Ultra")],
         knobs={"mtp_max_depth": 3},
         provenance={"evidence": "test only"},
     )
-    monkeypatch.setattr(tuning, "builtin_profile", lambda: Profile("test", (entry,)))
-    assert tuning.resolve("mtp_max_depth", ctx, environ={}).value == 3
+    monkeypatch.setattr(lattice, "builtin_profile", lambda: Profile("test", (cell,)))
+    assert lattice.resolve("mtp_max_depth", ctx, environ={}).value == 3
     for invalid in (True, 0, 5, "2"):
         monkeypatch.setattr(
-            tuning,
+            lattice,
             "local_calibration",
             lambda c, value=invalid: {"mtp_max_depth": value},
         )
         assert (
-            tuning.resolve("mtp_max_depth", ctx, environ={}).source
+            lattice.resolve("mtp_max_depth", ctx, environ={}).source
             == "builtin:test-depth"
         )
-    monkeypatch.setattr(tuning, "local_calibration", lambda c: {"mtp_max_depth": 2})
-    assert tuning.resolve("mtp_max_depth", ctx, environ={}).source == "local"
-    assert tuning.resolve("mtp_max_depth", ctx, environ={ENV: "4"}).value == 4
+    monkeypatch.setattr(lattice, "local_calibration", lambda c: {"mtp_max_depth": 2})
+    assert lattice.resolve("mtp_max_depth", ctx, environ={}).source == "local"
+    assert lattice.resolve("mtp_max_depth", ctx, environ={ENV: "4"}).value == 4
 
 
 def test_adapter_preserves_explicit_and_requires_real_head(monkeypatch):
@@ -227,16 +229,16 @@ def test_calibration_uses_every_resolved_width(monkeypatch):
 
 @pytest.mark.parametrize("raw,value", [("0", False), ("1", True)])
 def test_existing_boolean_override_keeps_its_type(raw, value):
-    ctx = tuning.runtime_context({}, mode="plain")
-    decision = tuning.resolve("lane_simd_probe", ctx, environ={})
+    ctx = lattice.runtime_context({}, mode="plain")
+    decision = lattice.resolve("lane_simd_probe", ctx, environ={})
     assert type(decision.value) is bool
-    ctx = tuning.runtime_context(
+    ctx = lattice.runtime_context(
         {"device_name": "Apple M3 Ultra"},
-        model=tuning.ModelProfile("qwen35_moe", *tuning.QWEN35_AFFINE4),
+        model=lattice.ModelProfile("qwen35_moe", *lattice.QWEN35_AFFINE4),
     )
-    decision = tuning.resolve(
+    decision = lattice.resolve(
         "qwen35_affine4_bank_views",
         ctx,
         environ={"RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS": raw},
     )
-    assert decision == tuning.Decision(value, "env")
+    assert decision == lattice.Decision(value, "env")

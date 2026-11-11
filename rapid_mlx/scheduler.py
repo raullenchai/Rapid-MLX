@@ -740,7 +740,7 @@ class SchedulerConfig:
     # last chunk before a grid position can still be shorter.
     decode_stall_min_chunk_size: int = 64
 
-    # Appended to preserve positional callers; explicit depths bypass tuning.
+    # Appended to preserve positional callers; explicit depths bypass the lattice.
     mtp_depth_explicit: bool = False
 
     def __post_init__(self) -> None:
@@ -1658,6 +1658,7 @@ def _install_mtp_vendored(
     # Lazy import — the generator module pulls in mlx-lm's sample_utils and
     # patches ArraysCache; keep the import off the scheduler boot path so a
     # non-MTP build has zero cost.
+    from .lattice.mtp import resolve_max_depth
     from .spec_decode.mtp.draft_k_controller_v2 import derive_controller_key
     from .spec_decode.mtp.generator import (
         _effective_prompt_lookup_policy,
@@ -1665,7 +1666,6 @@ def _install_mtp_vendored(
         mtp_generate_step,
     )
     from .spec_decode.mtp.reproducible_depth import greedy_schedule
-    from .tuning.mtp import resolve_max_depth
 
     max_k = resolve_max_depth(mtp_model, max_k, explicit=explicit_depth)
     model_max_k = getattr(mtp_model, "mtp_max_speculative_tokens", max_k)

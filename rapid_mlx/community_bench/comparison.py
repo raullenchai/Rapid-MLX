@@ -13,13 +13,13 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
-from rapid_mlx import tuning
-from rapid_mlx.tuning.mtp import _expert_quantization, resolve_max_depth
+from rapid_mlx import lattice
+from rapid_mlx.lattice.mtp import _expert_quantization, resolve_max_depth
 
 from .acceleration import AccelerationRequest
 
 
-def capture_tuning(
+def capture_lattice(
     model, language: dict, result, *, config=None, explicit_depth=False
 ) -> dict:
     """Snapshot installed facts and effective depth before unloading the model."""
@@ -27,7 +27,7 @@ def capture_tuning(
 
     model = getattr(model, "language_model", model)
     args = getattr(model, "args", None) or getattr(model, "config", None)
-    profile = tuning.model_profile(
+    profile = lattice.model_profile(
         config or (vars(args) if hasattr(args, "__dict__") else {})
     )
     if profile.num_experts:
@@ -45,7 +45,7 @@ def capture_tuning(
         and callable(getattr(model, "mtp_forward", None))
         and callable(getattr(model, "make_mtp_cache", None))
     )
-    context = tuning.runtime_context(
+    context = lattice.runtime_context(
         mx.device_info(), model=profile, mode=mode, has_mtp_head=has_head
     )
     depth = None
@@ -55,7 +55,7 @@ def capture_tuning(
         )
         depth = min(depth, getattr(model, "mtp_max_speculative_tokens", depth))
     return {
-        "context": json.loads(json.dumps(tuning.dump(context))),
+        "context": json.loads(json.dumps(lattice.dump(context))),
         "overrides": {"mtp_max_depth": depth} if mode == "mtp" else {},
         "outputs": {
             case: [r.output_digest for r in bucket.rounds_raw]
@@ -73,11 +73,11 @@ def candidate_values(context: dict, *, salt: int = 0):
     Rotate knobs (rather than flattened neighbors) so two-sided integer knobs
     do not receive twice the community coverage of boolean knobs.
     """
-    ctx = tuning.TuningContext(
-        tuning.HardwareProfile(**context["hardware"]),
+    ctx = lattice.LatticeContext(
+        lattice.HardwareProfile(**context["hardware"]),
         context["mlx"],
         context["macos"],
-        tuning.ModelProfile(
+        lattice.ModelProfile(
             **{
                 **context["model"],
                 "attention_kinds": tuple(context["model"]["attention_kinds"]),
@@ -90,7 +90,7 @@ def candidate_values(context: dict, *, salt: int = 0):
         rapid_mlx=context["rapid_mlx"],
     )
     neighbors = []
-    for name, knob in tuning.KNOBS.items():
+    for name, knob in lattice.KNOBS.items():
         decision = context["knobs"][name]
         if (
             not knob.scope(ctx)
@@ -229,8 +229,8 @@ def planning_context(alias: str, request: AccelerationRequest) -> dict | None:
     mode = "mtp" if launch.scheduler_kwargs.get("spec_decode") == "mtp" else "plain"
     context: dict = json.loads(
         json.dumps(
-            tuning.dump(
-                tuning.runtime_context(
+            lattice.dump(
+                lattice.runtime_context(
                     mx.device_info(),
                     config=config,
                     mode=mode,
@@ -371,11 +371,11 @@ def run_comparison(
                     alias,
                     archive=destination,
                     acceleration=arm_request,
-                    tuning_observation=True,
+                    lattice_observation=True,
                     **kwargs,
                 )
             if candidates:
-                run["tuning"]["selection"] = {
+                run["lattice"]["selection"] = {
                     "salt": salt,
                     "changed_knobs": list(values),
                     "requested_configs": configs,
@@ -388,9 +388,9 @@ def run_comparison(
                     "order_strategy": "balanced_rotation",
                     "assignment_seed": salt,
                     "varied_fields": [
-                        "/tuning/context/knobs/" + name for name in values
+                        "/lattice/context/knobs/" + name for name in values
                     ]
-                    or ["/tuning/context/knobs"],
+                    or ["/lattice/context/knobs"],
                 }
             path = (
                 destination.save(run)
@@ -411,9 +411,9 @@ def run_comparison(
             if candidates:
                 observed = {
                     name: decision["value"]
-                    for name, decision in run["tuning"]["context"]["knobs"].items()
+                    for name, decision in run["lattice"]["context"]["knobs"].items()
                 }
-                observed.update(run["tuning"]["overrides"])
+                observed.update(run["lattice"]["overrides"])
                 expected = {
                     name: values.get(name, context["knobs"][name]["value"])
                     for planned in candidates
@@ -519,7 +519,7 @@ def outputs_equal(runs: list[dict]) -> bool:
     """Require complete, stable per-case digests, including within each load."""
     canonical = set()
     for run in runs:
-        outputs = run["tuning"]["outputs"]
+        outputs = run["lattice"]["outputs"]
         cases = run["workload"]["cases"]
         if set(outputs) != {c["case_id"] for c in cases}:
             return False
@@ -538,7 +538,7 @@ def outputs_equal(runs: list[dict]) -> bool:
 
 def quality_passes(runs: list[dict]) -> bool:
     for run in runs:
-        quality = run["tuning"].get("quality")
+        quality = run["lattice"].get("quality")
         if quality is None:
             continue
         if quality.get("n", 0) < 100 or not quality.get("questions_digest"):
@@ -622,7 +622,7 @@ def speed_winners(runs: list[dict], *, min_repetitions: int = 3) -> list[str]:
 
 def summary_lines(runs: list[dict]) -> list[str]:
     lines = [
-        "Your current config vs nearby configs (local observation)",
+        "Rapid Lattice: your current config vs nearby configs (local observation)",
         "Results are a local observation; this run does not change your configuration.",
         "Config       Case                tok/s median [min, max]     TTFT ms    reps",
     ]

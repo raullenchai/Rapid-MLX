@@ -1,17 +1,19 @@
-# Adaptive tuning framework: explicit cells and versioned profiles
+# Rapid Lattice: explicit cells and versioned profiles
 
-Performance policy is a high-dimensional matrix. Hardware dimensions include
+Rapid Lattice: every Mac, every model, every workload gets its own best configuration, and it keeps getting faster as the community benchmarks.
+
+Performance policy is a high-dimensional lattice. Hardware dimensions include
 chip generation/tier, GPU cores and memory; software includes macOS, MLX and
 Rapid-MLX versions; model dimensions include family, geometry, quantization,
 attention kinds and installed capabilities; workload includes mode, width and
 batch. Every cell always has a working value: its registered knob default,
 which is conservative and need not be optimal. Measurements improve individual
-cells over time through a shipped, versioned performance profile.
+cells over time through a shipped, versioned lattice profile.
 
-`rapid_mlx/tuning` separates these choices from execution. Profiles can select
+`rapid_mlx/lattice` separates these choices from execution. Profiles can select
 only registered values; they cannot create code paths. Scope, capability
 requirements and execution-site shape/cache/output-parity probes still run
-locally. Importing tuning loads no MLX, reads no profile and starts no hardware
+locally. Importing `rapid_mlx.lattice` loads no MLX, reads no profile and starts no hardware
 probe, benchmark or disk cache. `runtime_context(info, config=loaded_config,
 mode=..., width=...)` snapshots existing facts into immutable profiles. Create
 a replacement context when workload changes; do not infer mode from model names.
@@ -20,29 +22,29 @@ Existing chip parsing is consumed, not refactored.
 Resolution order is **capability/scope block > environment > local calibration
 > user overlay profile > builtin profile > knob default**. Boolean environment
 spellings use the shared parser. Invalid overrides and calibration values defer.
-The local-calibration precedence slot is still empty. `tuning.dump(ctx)` includes every knob's
+The local-calibration precedence slot is still empty. `lattice.dump(ctx)` includes every knob's
 value, source (`capability`, `env`, `local`, `overlay:<id>`, `builtin:<id>`, or
 `default`), reason and selected profile version (null for a non-profile choice),
 plus both loaded profile versions. It excludes device names, model paths,
 serials, prompts, accounts and raw environment values.
 
-A profile entry matches only its explicitly declared hardware set. There is no
+A lattice profile cell matches only its explicitly declared hardware set. There is no
 runtime nearest-neighbor distance or implicit borrowing, including within a
 generation/tier. Each hardware selector names a GPU generation and tier and may
 restrict cores/memory to inclusive ranges. Selectors within the list are ORed;
 software, model and workload restrictions are ANDed. A missing pinned fact fails
 the match. Omitted restrictions deliberately include all values, including
 unknown core/memory facts. Generalizing a measurement is an explicit reviewed
-entry with provenance, never a runtime guess. Matching entries in one layer
+cell with provenance, never a runtime guess. Matching cells in one layer
 must agree on a knob value; a conflict uses the knob default, without falling
-through to a lower profile. Agreeing entries use the lexically first ID for
+through to a lower profile. Agreeing cells use the lexically first ID for
 diagnostics. Narrower selectors have no implicit priority: distillation must
 produce non-conflicting cells.
 
-The migration preserves all seven historical entries, including their original
+The migration preserves all seven historical cells, including their original
 software pins and model scope:
 
-| Entry | Explicit hardware set | Values preserved |
+| Cell | Explicit hardware set | Values preserved |
 | --- | --- | --- |
 | `singleton-15-ultra` | GPU generation 15 / Ultra, all core/memory variants, including M3 Ultra 60 and 80 cores | bank views + residual norm on, MLX 0.32.4 |
 | `singleton-16-pro` | Generation 16 / Pro, all core/memory variants | pair off, MLX 0.32.4 |
@@ -58,12 +60,12 @@ covered unmeasured variant changes value in this migration. This includes
 variants that formerly reached those rows through nearest-feature fallback.
 There was no cross-generation/tier borrowing on main. Unlisted generation/tier
 pairs, mismatched software/model scopes and unmeasured MTP memory sizes use the
-default, as before. Future narrowly measured entries leave every undeclared
+default, as before. Future narrowly measured cells leave every undeclared
 chip at default, even a similar one: that is the agreed explicit-cell semantics.
 
-Builtin data lives at `rapid_mlx/tuning/profiles/builtin.json` and ships as wheel
+Builtin data lives at `rapid_mlx/lattice/profiles/builtin.json` and ships as wheel
 package data. The optional overlay is
-`~/.config/rapid-mlx/tuning-profile.json`, alongside `user-aliases.json`.
+`~/.config/rapid-mlx/lattice-profile.json`, alongside `user-aliases.json`.
 Both use schema version 1:
 
 ```json
@@ -71,7 +73,7 @@ Both use schema version 1:
   "schema_version": 1,
   "profile_version": "2026.11.10.1",
   "generated_at": "2026-11-10T00:00:00Z",
-  "entries": [{
+  "cells": [{
     "id": "example-reviewed-cell",
     "hardware": [{"gpu_generation": 15, "tier": "Ultra",
                   "gpu_cores": [60, 80], "memory_size": [274877906944, 274877906944]}],
@@ -92,8 +94,8 @@ unknown installed versions fail pinned constraints. Optional model selectors
 are `family`, six-element `geometry`, `quant_mode`, and `attention_kinds`;
 workload selectors are exact `mode`, `width`, `batch`. IDs and profile versions
 are short identifiers. Unknown document keys/unsupported schemas reject the
-whole document. Unknown entry/selector keys, unknown knobs/capabilities,
-wrong-type/out-of-range values and duplicate IDs reject entries with a debug
+whole document. Unknown cell/selector keys, unknown knobs/capabilities,
+wrong-type/out-of-range values and duplicate IDs reject cells with a debug
 log, leaving valid siblings usable. Missing/unreadable/malformed profiles defer
 without crashing. Row values serialize as two-element arrays and normalize to
 tuples. Booleans are not integer depth values.
@@ -108,7 +110,7 @@ There is no new environment variable, file creation, or network access. A future
 `rapid-mlx tune --update` will validate a downloaded profile and atomically drop
 it at the overlay path; this PR implements neither download nor that command.
 
-Affine8's runtime qualification now resides in the builtin entry's hardware and
+Affine8's runtime qualification now resides in the builtin cell's hardware and
 software selectors plus `capabilities: ["affine8_attention"]`. The knob registry
 requires that qualification before checking environment/calibration/overlay.
 Only builtin data can qualify a runtime: overlay capability declarations cannot
@@ -198,23 +200,33 @@ Follow-ups:
 - Unify existing chip fact parsers; acceleration-flag mapping; runtime adaptation.
 
 Further kernel migrations need their own evidence.
+## Glossary
+
+- **Rapid Lattice** is the whole system; **the lattice** is its short name.
+- A **cell** is one context key: hardware × software × model × mode/workload.
+- A **knob** is a registered option with a scope, capability requirement, environment override and default.
+- A **default** is the program value every cell starts with; the lattice is never empty.
+- A **lattice profile** is a published, versioned data file of sparse cell overrides. The builtin profile is `rapid_mlx/lattice/profiles/builtin.json`; the local overlay is `~/.config/rapid-mlx/lattice-profile.json`.
+- **Neighbors**, or **nearby configurations**, are the configurations compared by `benchmark run --configs N`.
+- **Distill** / **distillation** turns community submissions into a data-only lattice profile PR with `scripts/lattice_distill.py`.
+
 ## Absorbing community results
 
-`rapid-mlx benchmark run qwen3.6-35b-4bit` compares your current resolved
-configuration with its nearest neighbor on this machine. `--configs N` selects
-1–16 configurations (default 2); `--configs 1` retains the original single-run
-behavior. `--repetitions` defaults to 3 interleaved fresh loads per configuration
-and accepts 3–10. Before loading, the CLI reports the expected runtime: N ×
-repetitions times a single run, approximately 6× by default when neighbors apply.
-The first measurement uses the legacy in-process runner. Only when its tuning
+`rapid-mlx benchmark run qwen3.6-35b-4bit` defaults to `--configs 1`,
+a quick benchmark of the current resolved configuration. `--configs N` selects
+1–16 configurations; comparisons with neighbors start at `--configs 2`.
+For comparisons, `--repetitions` defaults to 3 interleaved fresh loads per
+configuration and accepts 3–10. The CLI reports the expected runtime: N ×
+repetitions times a single run, approximately 6× for `--configs 2` when a neighbor applies.
+The first measurement uses the legacy in-process runner. Only when its lattice
 observations identify a valid neighbor do subsequent measurements use fresh
 supervised interpreters, so import-time kernel choices follow the configuration.
 Every measurement uses the same registered prompt cases, warmups and five
 measured rounds per case.
-Non-text runtimes, runtimes without tuning observations, and text cells with no
+Non-text runtimes, runtimes without lattice observations, and text cells with no
 applicable neighbor return that first legacy run without workers or repetitions.
 
-The starting cell comes from `tuning.dump(ctx)`, including environment and user
+The starting cell comes from `lattice.dump(ctx)`, including environment and user
 profile choices. Effective explicit/clamped MTP depth is included. Neighbors
 use only knobs in scope whose capability requirements pass: integer values move
 one declared step, booleans flip, and enums move to adjacent registry values.
@@ -226,7 +238,7 @@ If fewer configurations exist than requested, the CLI reports the measured count
 to each fresh worker, restores the previous environment afterward, and cannot
 bypass scope or capability gates. It does not change the selected runtime.
 
-Each atomic run carries `experiment` pairing fields and optional `tuning`:
+Each atomic run carries `experiment` pairing fields and optional `lattice`:
 identifier-free context, profile versions, knob values and sources, effective
 depth overrides, selection metadata, and SHA-256 output-token digests by case
 and round. The table compares throughput, TTFT, full measured throughput spread,
@@ -242,7 +254,7 @@ during benchmarking, and old submissions without these optional fields remain
 valid. The board needs an ingestion-validator/storage follow-up to retain the
 new optional fields; this PR covers the client and offline processing.
 
-`python -m scripts.tuning_distill comparison.json` reads `benchmark run --json`,
+`python -m scripts.lattice_distill comparison.json` reads `benchmark run --json`,
 the first archived run with paired evidence, or individual archived runs.
 It groups exact hardware, runtime versions/revision, primary checkpoint, model
 facts, fixed execution settings, mode and workload within each session. Gates
@@ -256,7 +268,7 @@ Output digests must be stable and equal for every measured round and load.
 Divergence may instead have a structured `quality` note with `n >= 100`, a
 `questions_digest`, and `plain` and `default` comparisons recording
 `abs(delta_pp) <= 3` and `paired_p >= 0.05`. Review the underlying study.
-The distiller emits candidate explicit-cell profile entries with exact hardware
+The distiller emits candidate explicit-cell profile cells with exact hardware
 ranges, pinned software, complete applicable knob combinations and workload
 selectors; it never writes `builtin.json`. Conflicting sessions require review.
 Retain raw runs with candidate data-only PRs and review other-mode regression

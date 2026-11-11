@@ -1044,7 +1044,7 @@ def _save_local_copy(payload: dict) -> Path | None:
     """Write the payload next to the user's config. Never raises.
 
     Deliberately BEFORE the network call. If the board is unreachable the
-    run is still on disk, so a contributor never loses a 5-round sweep to a
+    run is still on disk, so a contributor never loses a 5-round benchmark to a
     flaky connection — they can retry and the server dedupes on
     ``submission_id``.
     """

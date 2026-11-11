@@ -48,7 +48,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from ...tuning import resolve, runtime_context
+from ...lattice import resolve, runtime_context
 
 MAX_ROWS = 1 << 16
 RT_MAX = 2  # 8-row tiles a threadgroup: more rows than 8 RT_MAX spread over the grid's y axis

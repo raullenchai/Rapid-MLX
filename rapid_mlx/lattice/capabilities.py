@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Numerical/ISA requirements; environment overrides cannot bypass them."""
 
-from .profiles import TuningContext
+from .profiles import LatticeContext
 
 QSA_ARCHITECTURES = {
     "qsa_stage1": frozenset({"applegpu_g14s", "applegpu_g15d"}),
@@ -10,7 +10,7 @@ QSA_ARCHITECTURES = {
 QSA_MLX_VERSIONS = frozenset({"0.32.2"})
 
 
-def requirement_reason(name: str, ctx: TuningContext) -> str | None:
+def requirement_reason(name: str, ctx: LatticeContext) -> str | None:
     hw = ctx.hardware
     if (
         name

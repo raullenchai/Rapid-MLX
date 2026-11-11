@@ -1,4 +1,4 @@
-"""Keep device/OS optimization policy in the tuning registry."""
+"""Keep device/OS optimization policy in the lattice registry."""
 
 import ast
 import re
@@ -48,12 +48,12 @@ def test_no_inline_hardware_policy():
     found = []
     for path in root.rglob("*.py"):
         relative = path.relative_to(root)
-        if relative.parts[0] == "tuning" or str(relative) in fact_readers:
+        if relative.parts[0] == "lattice" or str(relative) in fact_readers:
             continue
         found.extend(
             f"{relative}:{line}" for line in inline_hardware_policy(path.read_text())
         )
-    assert not found, "Move hardware policy to tuning: " + ", ".join(found)
+    assert not found, "Move hardware policy to lattice: " + ", ".join(found)
 
 
 def test_guard_detects_reintroduced_policy():

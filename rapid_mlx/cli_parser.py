@@ -637,7 +637,7 @@ def _add_serve_parser(
             '0.0.0.0 (or "") to expose the server on every '
             "interface (LAN reachable) — only do this once the "
             "bearer-auth posture has been reviewed. The wildcard "
-            "bind also widens the PortSweep collision window: macOS "
+            "bind also widens the port-scanning collision window: macOS "
             "lets a wildcard listener coexist with a more-specific "
             "(127.0.0.1) listener on the same port, so a second "
             "server may start and silently shadow the first on the "
@@ -2331,7 +2331,7 @@ def _add_benchmark_parser(
         type=int,
         default=1,
         choices=range(1, 17),
-        help="Configurations to compare: your current config plus nearest neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
+        help="Rapid Lattice configurations: your current config plus neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
     )
     community_run.add_argument(
         "--repetitions",

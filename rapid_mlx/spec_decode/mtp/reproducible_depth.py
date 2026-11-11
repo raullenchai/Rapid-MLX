@@ -18,7 +18,7 @@ What a greedy request may use instead
 -------------------------------------
 
 Its own tokens, plus a host profile (:class:`GreedySchedule`) supplied by the
-tuning cell or calibrated once per process, model and ``max_k``. Each round's
+lattice cell or calibrated once per process, model and ``max_k``. Each round's
 depth maximizes expected committed tokens / cost on the measured curve and
 this request's own acceptance. No wall times or cross-request acceptance
 enter a greedy request's decisions after calibration.
@@ -95,7 +95,7 @@ TIMING_ROUNDS = 21
 
 @dataclass(frozen=True)
 class GreedySchedule:
-    """Fixed host costs from a tuning cell or process-local calibration.
+    """Fixed host costs from a lattice cell or process-local calibration.
 
     Attributes:
         depth: the deepest round a request may draft (``max_k``), or ``0``
@@ -354,8 +354,8 @@ def summarize_forward_samples(samples: list[list[float]]) -> Timings:
 
 
 def greedy_schedule(model: Any, key: str, max_k: int) -> GreedySchedule:
-    """Use the tuning cell's measured costs, falling back to process calibration."""
-    from ...tuning.mtp import forward_costs
+    """Use the lattice cell's measured costs, falling back to process calibration."""
+    from ...lattice.mtp import forward_costs
 
     values = forward_costs(model, max_k)
     if values:

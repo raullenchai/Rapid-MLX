@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from rapid_mlx import tuning
-from rapid_mlx.tuning.mtp import resolve_max_depth
+from rapid_mlx import lattice
+from rapid_mlx.lattice.mtp import resolve_max_depth
 
 ENTRY = next(
     e
-    for e in tuning.builtin_profile().entries
+    for e in lattice.builtin_profile().cells
     if e["id"] == "mtp-depth-17-max-36g-qwen35-moe"
 )
 INFO = dict(
@@ -21,10 +21,10 @@ INFO = dict(
 
 
 def context():
-    return tuning.runtime_context(
+    return lattice.runtime_context(
         INFO,
-        model=tuning.ModelProfile(
-            "qwen3_5_moe_text", *tuning.QWEN35_AFFINE4, quant_mode="affine"
+        model=lattice.ModelProfile(
+            "qwen3_5_moe_text", *lattice.QWEN35_AFFINE4, quant_mode="affine"
         ),
         library_version="0.32.3",
         macos="27.0.1",
@@ -56,14 +56,14 @@ def loaded_model(modules):
 
 def test_qualified_context_and_overrides():
     ctx = context()
-    assert tuning.resolve("mtp_max_depth", ctx, environ={}) == tuning.Decision(
-        4, "builtin:" + ENTRY["id"], profile_version=tuning.builtin_profile().version
+    assert lattice.resolve("mtp_max_depth", ctx, environ={}) == lattice.Decision(
+        4, "builtin:" + ENTRY["id"], profile_version=lattice.builtin_profile().version
     )
-    assert tuning.resolve(
+    assert lattice.resolve(
         "mtp_max_depth", ctx, environ={"RAPID_MLX_MTP_MAX_DEPTH": "1"}
-    ) == tuning.Decision(1, "env")
+    ) == lattice.Decision(1, "env")
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth", ctx, environ={"RAPID_MLX_MTP_MAX_DEPTH": "bad"}
         ).value
         == 4
@@ -86,7 +86,7 @@ def test_qualified_context_and_overrides():
 def test_other_models_remain_conservative(changes):
     ctx = context()
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth",
             replace(ctx, model=replace(ctx.model, **changes)),
             environ={},
@@ -108,7 +108,7 @@ def test_other_models_remain_conservative(changes):
 def test_other_or_unknown_hardware_remains_conservative(changes):
     ctx = context()
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth",
             replace(ctx, hardware=replace(ctx.hardware, **changes)),
             environ={},
@@ -129,24 +129,26 @@ def test_other_or_unknown_hardware_remains_conservative(changes):
 )
 def test_other_workloads_and_software_remain_conservative(changes):
     assert (
-        tuning.resolve("mtp_max_depth", replace(context(), **changes), environ={}).value
+        lattice.resolve(
+            "mtp_max_depth", replace(context(), **changes), environ={}
+        ).value
         == 1
     )
 
 
 def test_exact_features_include_pinned_cores_if_provided(monkeypatch):
-    from rapid_mlx.tuning.defaults import Profile
+    from rapid_mlx.lattice.defaults import Profile
 
     hardware = [dict(ENTRY["hardware"][0], gpu_cores=[40, 40])]
     monkeypatch.setattr(
-        tuning,
+        lattice,
         "builtin_profile",
         lambda: Profile("test", (dict(ENTRY, hardware=hardware),)),
     )
     ctx = context()
-    assert tuning.resolve("mtp_max_depth", ctx, environ={}).value == 1
+    assert lattice.resolve("mtp_max_depth", ctx, environ={}).value == 1
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth",
             replace(ctx, hardware=replace(ctx.hardware, gpu_cores=40)),
             environ={},
@@ -158,7 +160,7 @@ def test_exact_features_include_pinned_cores_if_provided(monkeypatch):
 def test_actual_experts_supply_format_and_ignore_router(monkeypatch):
     import mlx.core as mx
 
-    from rapid_mlx.tuning import mtp
+    from rapid_mlx.lattice import mtp
 
     monkeypatch.setattr(mx, "device_info", lambda: INFO, raising=False)
     monkeypatch.setattr(
@@ -199,7 +201,7 @@ def test_declared_quantization_cannot_qualify_unknown_or_mixed_weights(
 ):
     import mlx.core as mx
 
-    from rapid_mlx.tuning import mtp
+    from rapid_mlx.lattice import mtp
 
     monkeypatch.setattr(mx, "device_info", lambda: INFO, raising=False)
     monkeypatch.setattr(
@@ -213,7 +215,7 @@ def test_declared_quantization_cannot_qualify_unknown_or_mixed_weights(
 def test_missing_module_metadata_is_conservative(monkeypatch, broken):
     import mlx.core as mx
 
-    from rapid_mlx.tuning import mtp
+    from rapid_mlx.lattice import mtp
 
     monkeypatch.setattr(mx, "device_info", lambda: INFO, raising=False)
     monkeypatch.setattr(
@@ -233,19 +235,19 @@ def test_missing_module_metadata_is_conservative(monkeypatch, broken):
 
 
 @pytest.mark.parametrize(
-    "entry",
-    [e for e in tuning.builtin_profile().entries if e["id"].startswith("mtp-depth-")],
+    "cell",
+    [e for e in lattice.builtin_profile().cells if e["id"].startswith("mtp-depth-")],
 )
-def test_entry_has_speed_and_paired_quality_evidence(entry):
-    assert Path(entry["provenance"]["evidence"]).is_file()
-    before, after = entry["provenance"]["mtp_tps"]
+def test_cell_has_speed_and_paired_quality_evidence(cell):
+    assert Path(cell["provenance"]["evidence"]).is_file()
+    before, after = cell["provenance"]["mtp_tps"]
     assert after / before >= 1.02
     assert (
-        entry["provenance"]["mtp_ranges_tps"][0][1]
-        < entry["provenance"]["mtp_ranges_tps"][1][0]
+        cell["provenance"]["mtp_ranges_tps"][0][1]
+        < cell["provenance"]["mtp_ranges_tps"][1][0]
     )
-    assert entry["provenance"]["repetitions"]["mtp"] >= 3
-    q = entry["provenance"]["quality"]
+    assert cell["provenance"]["repetitions"]["mtp"] >= 3
+    q = cell["provenance"]["quality"]
     n = q["n"]
     assert n >= 100 and len(q["questions_sha256"]) == 64
     for reference, pair in q["paired"].items():
@@ -263,14 +265,14 @@ def test_entry_has_speed_and_paired_quality_evidence(entry):
         assert pair["delta_pp"] == 100 * (wins - losses) / n
         assert abs(pair["delta_pp"]) <= 3
         assert (
-            q["correct"][f"cap{entry['knobs']['mtp_max_depth']}"]
+            q["correct"][f"cap{cell['knobs']['mtp_max_depth']}"]
             - q["correct"][reference]
             == wins - losses
         )
 
 
 def m3_context():
-    return tuning.runtime_context(
+    return lattice.runtime_context(
         {
             "device_name": "Apple M3 Ultra",
             "architecture": "applegpu_g15d",
@@ -286,26 +288,26 @@ def m3_context():
 
 def test_m3_measured_context_and_override():
     ctx = m3_context()
-    entry = next(
+    cell = next(
         e
-        for e in tuning.builtin_profile().entries
+        for e in lattice.builtin_profile().cells
         if e["id"] == "mtp-depth-15-ultra-256g-qwen35-moe"
     )
-    assert tuning.resolve("mtp_max_depth", ctx, environ={}) == tuning.Decision(
-        entry["knobs"]["mtp_max_depth"],
-        "builtin:" + entry["id"],
-        profile_version=tuning.builtin_profile().version,
+    assert lattice.resolve("mtp_max_depth", ctx, environ={}) == lattice.Decision(
+        cell["knobs"]["mtp_max_depth"],
+        "builtin:" + cell["id"],
+        profile_version=lattice.builtin_profile().version,
     )
-    assert tuning.resolve(
+    assert lattice.resolve(
         "mtp_max_depth", ctx, environ={"RAPID_MLX_MTP_MAX_DEPTH": "1"}
-    ) == tuning.Decision(1, "env")
+    ) == lattice.Decision(1, "env")
 
 
 @pytest.mark.parametrize("memory", [None, 192 * 2**30, 512 * 2**30])
 def test_m3_unmeasured_memory_does_not_borrow(memory):
     ctx = m3_context()
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth",
             replace(ctx, hardware=replace(ctx.hardware, memory_size=memory)),
             environ={},
@@ -317,20 +319,20 @@ def test_m3_unmeasured_memory_does_not_borrow(memory):
 @pytest.mark.parametrize(
     "profile",
     [
-        tuning.ModelProfile(
+        lattice.ModelProfile(
             "qwen3_5_text", hidden_size=2560, bits=4, group_size=64, quant_mode="affine"
         ),
-        tuning.ModelProfile(
+        lattice.ModelProfile(
             "qwen3_5_text", hidden_size=4096, bits=4, group_size=64, quant_mode="affine"
         ),
-        tuning.ModelProfile(
+        lattice.ModelProfile(
             "qwen3_5_moe_text", 2048, 512, 256, 8, 8, 64, quant_mode="affine"
         ),
     ],
 )
 def test_m3_dense_controls_and_other_quantization_stay_at_one(profile):
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth", replace(m3_context(), model=profile), environ={}
         ).value
         == 1
@@ -349,7 +351,7 @@ def test_m3_dense_controls_and_other_quantization_stay_at_one(profile):
 )
 def test_m3_unmeasured_runtime_or_workload_stays_conservative(changes):
     assert (
-        tuning.resolve(
+        lattice.resolve(
             "mtp_max_depth", replace(m3_context(), **changes), environ={}
         ).value
         == 1

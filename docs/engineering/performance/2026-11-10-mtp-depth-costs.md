@@ -6,7 +6,7 @@ maintained its own acceptance controller. Across process restarts, timing noise
 still changed the expected-value comparisons and therefore verify widths.
 Width-dependent floating-point rounding then changed some greedy argmax results.
 
-The tuning profile now supplies `mtp_forward_costs_ms`. The installed MTP adapter
+The lattice profile now supplies `mtp_forward_costs_ms`. The installed MTP adapter
 qualifies geometry and actual expert quantization using the existing depth-cell
 facts. It slices measured costs through the resolved, checkpoint-clamped cap.
 The same round-cost and measured copy-verify formulas consume either source.
@@ -143,7 +143,7 @@ The final M5 median improves by 3.09% over that baseline.
 Cold default-cache prefill forwards 544, 19 and 1 rows. Disabling prefix caching
 changes those widths to 563 and 1. Width-dependent target/head arithmetic then
 changes draft acceptance under the same frozen prices. `mtp_prefill_block_size`
-selects the measured segmentation through the tuning cell. Its default is zero.
+selects the measured segmentation through the lattice cell. Its default is zero.
 The M3 cell supplies 32, which restores the fast 2.23684 tokens/forward trajectory
 seen in earlier default-cache measurements.
 
@@ -193,7 +193,7 @@ tests and 139 CLI wiring tests under the GPU lock. Ruff passes. Mypy reports
 1,516 diagnostics on both owner baseline and final, with zero new normalized
 messages. A supplementary forced-stub CLI invocation encounters the same 18
 baseline fixture failures on both source versions. Its native run passes.
-PR 5763 is open with an empty merge timestamp at the final check. Sweep was
+PR 5763 is open with an empty merge timestamp at the final check. Benchmark comparison was
 skipped under the requested merge condition.
 
 Full per-run histograms, calibration prices, source hashes, operating-state

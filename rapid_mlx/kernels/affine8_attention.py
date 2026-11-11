@@ -11,7 +11,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from ..tuning import resolve, runtime_context
+from ..lattice import resolve, runtime_context
 
 _LOG = logging.getLogger(__name__)
 _DISABLED = False

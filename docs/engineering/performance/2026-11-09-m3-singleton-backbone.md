@@ -1,4 +1,4 @@
-# Singleton backbone submission, residual carry, and device tuning
+# Singleton backbone submission, residual carry, and device lattice policy
 
 Qwen3.6-35B-A3B plain decoding spent avoidable time submitting small command
 buffers. Two changes address the measured path without changing its arithmetic:
@@ -134,7 +134,7 @@ text, model files, private caches, or raw benchmark artifacts are committed.
 
 ## Round 14: per-chip policy qualification
 
-The device gates now resolve through [measured tuning policy](adaptive-tuning.md).
+The device gates now resolve through [measured lattice policy](rapid-lattice.md).
 The checked-in table keys exact chip variant and MLX version. Both defaults
 remain on for M3 Ultra / MLX 0.32.4; M4 Pro and M5 Max / MLX 0.32.4 are
 explicitly **measured-off** for both knobs. All other device/version combinations
@@ -184,7 +184,7 @@ residual-only gives +1.63%; adding residual carry to bank-only gives +1.70%.
 It therefore does not justify enabling either knob under the per-knob rule.
 MTP differences (-0.01% M4, -0.06% M5) are smaller than observed candidate
 spreads; no positive MTP gain is claimed. Both measured-off decisions are
-retained in `rapid_mlx/tuning/defaults.py` with commit/date/rate provenance.
+retained in `rapid_mlx/lattice/defaults.py` with commit/date/rate provenance.
 
 All 36 cells have exact 256-token cold and repeated-request raw ID equality
 against their chip/mode baseline. All 12 residual-enabled plain enrollments
@@ -202,11 +202,11 @@ receipts live under `/private/tmp/rapid-mlx-gap-round14/`, including `REPORT.md`
 
 The final focused roster passes 276 tests, plus 136 dense/native-cache neighbors
 in a fresh process: 412 total (the original 385 plus 27 new cases).
-Scoped Ruff check/format, tuning-module type check and `git diff --check` pass.
+Scoped Ruff check/format, lattice-module type check and `git diff --check` pass.
 
 ## Round 15: combination policy
 
-The [MVP tuning framework](../decisions/adaptive-tuning-framework.md) permits
+The [Rapid Lattice framework](../decisions/rapid-lattice.md) permits
 a measured configuration to set a combination of knobs. Under this rule the
 existing M5 Max three-repetition evidence above qualifies **the pair** for
 MLX 0.32.4: plain +2.71%, baseline range 167.07–167.46 versus pair

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Distill local paired comparison evidence into reviewable profile entries."""
+"""Distill local paired comparison evidence into reviewable lattice profile cells."""
 
 from __future__ import annotations
 
@@ -22,13 +22,13 @@ from rapid_mlx.community_bench.comparison import (
 from rapid_mlx.community_bench.comparison import (
     quality_passes as reports_pass,
 )
-from rapid_mlx.tuning.profiles import runtime_context
+from rapid_mlx.lattice.profiles import runtime_context
 
 
 def cell_key(run: dict) -> str:
-    ctx = run["tuning"]["context"]
+    ctx = run["lattice"]["context"]
     language = dict(run["execution"]["task"]["language"])
-    # MTP depth is a tuning knob; method, assistant source and checkpoint
+    # MTP depth is a lattice knob; method, assistant source and checkpoint
     # identity are fixed facts that must agree across the paired arms.
     if ctx["mode"] == "mtp":
         language["speculative_decoding"] = {
@@ -57,13 +57,13 @@ def cell_key(run: dict) -> str:
 
 
 def effective_configuration(run: dict) -> dict:
-    ctx = run["tuning"]["context"]
+    ctx = run["lattice"]["context"]
     knobs = {
         name: decision["value"]
         for name, decision in ctx["knobs"].items()
         if decision["source"] != "capability"
     }
-    knobs.update(run["tuning"]["overrides"])
+    knobs.update(run["lattice"]["overrides"])
     return {"mode": ctx["mode"], "knobs": knobs}
 
 
@@ -79,25 +79,25 @@ def distill(
     rapid_version: str = __version__,
 ) -> dict:
     as_of = as_of.replace(tzinfo=timezone.utc) if as_of.tzinfo is None else as_of
-    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    sessions_by_cell: dict[tuple[str, str], list[dict]] = defaultdict(list)
     rejected = []
     validator = BenchmarkRunValidator()
     for run in runs:
         validator.validate(run)
         if (
-            "tuning" not in run
+            "lattice" not in run
             or "experiment" not in run
             or run["outcome"]["status"] != "completed"
             or run["workload"]["task_type"] != "text_generation"
         ):
             rejected.append(
-                {"run_id": run["run_id"], "reason": "paired tuning evidence missing"}
+                {"run_id": run["run_id"], "reason": "paired lattice evidence missing"}
             )
             continue
         age = (
             as_of - datetime.fromisoformat(run["completed_at"].replace("Z", "+00:00"))
         ).total_seconds() / 86400
-        ctx = run["tuning"]["context"]
+        ctx = run["lattice"]["context"]
         runtime = run["execution"]["runtime"]
         conditions = [
             run["machine"][key] for key in ("conditions_before", "conditions_after")
@@ -163,15 +163,15 @@ def distill(
                 }
             )
             continue
-        groups[(cell_key(run), run["experiment"]["group_id"])].append(run)
+        sessions_by_cell[(cell_key(run), run["experiment"]["group_id"])].append(run)
     candidates: dict[str, list[dict]] = defaultdict(list)
-    for (cell, session), group in groups.items():
-        defaults = [r for r in group if r["experiment"]["arm_id"] == "default"]
+    for (cell, session), session_runs in sessions_by_cell.items():
+        defaults = [r for r in session_runs if r["experiment"]["arm_id"] == "default"]
         if not defaults:
             rejected.append({"session": session, "reason": "default arm missing"})
             continue
         # Each repetition is an independently loaded runner, with one unique run ID.
-        if len({r["run_id"] for r in group}) != len(group):
+        if len({r["run_id"] for r in session_runs}) != len(session_runs):
             rejected.append({"session": session, "reason": "duplicate run"})
             continue
         baseline_config = effective_configuration(defaults[0])
@@ -182,12 +182,12 @@ def distill(
             continue
         winners = [
             arm
-            for arm in dict.fromkeys(r["experiment"]["arm_id"] for r in group)
-            if arm != "default" and arm_verdict(group, arm)[0] == "faster"
+            for arm in dict.fromkeys(r["experiment"]["arm_id"] for r in session_runs)
+            if arm != "default" and arm_verdict(session_runs, arm)[0] == "faster"
         ]
         accepted = []
         for arm in winners:
-            evidence = [r for r in group if r["experiment"]["arm_id"] == arm]
+            evidence = [r for r in session_runs if r["experiment"]["arm_id"] == arm]
             candidate_config = effective_configuration(evidence[0])
             if candidate_config == baseline_config or any(
                 effective_configuration(run) != candidate_config for run in evidence
@@ -209,13 +209,13 @@ def distill(
             continue
         _, arm, evidence = max(accepted, key=lambda item: (item[0], item[1]))
         run = evidence[0]
-        ctx = run["tuning"]["context"]
+        ctx = run["lattice"]["context"]
         hw = ctx["hardware"]
         model = ctx["model"]
         runtime = run["execution"]["runtime"]
         knobs = effective_configuration(run)["knobs"]
         statistics_by_arm = arm_statistics(defaults + evidence)
-        entry: dict = {
+        cell: dict = {
             "id": "community-" + hashlib.sha256(cell.encode()).hexdigest()[:16],
             "hardware": [
                 {
@@ -259,7 +259,7 @@ def distill(
                 "date": run["completed_at"][:10],
                 "repetitions": {"default": len(defaults), arm: len(evidence)},
                 "decision": "Paired local comparison passed freshness, conditions, output/quality and speed gates.",
-                "quality": [r["tuning"].get("quality") for r in evidence],
+                "quality": [r["lattice"].get("quality") for r in evidence],
                 "mtp_tps": {
                     name: {
                         case: [row[0] for row in rows] for case, rows in cases.items()
@@ -276,38 +276,38 @@ def distill(
             },
         }
         if "rapid_mlx_revision" in runtime:
-            entry["provenance"]["commit"] = runtime["rapid_mlx_revision"]
+            cell["provenance"]["commit"] = runtime["rapid_mlx_revision"]
         selector = json.dumps(
-            {key: entry[key] for key in ("hardware", "software", "model", "workload")},
+            {key: cell[key] for key in ("hardware", "software", "model", "workload")},
             sort_keys=True,
         )
-        candidates[selector].append(entry)
-    entries = []
-    for cell_entries in candidates.values():
-        if len({json.dumps(e["knobs"], sort_keys=True) for e in cell_entries}) == 1:
-            cell_entries[0]["provenance"]["evidence"] = (
+        candidates[selector].append(cell)
+    cells = []
+    for cell_cells in candidates.values():
+        if len({json.dumps(e["knobs"], sort_keys=True) for e in cell_cells}) == 1:
+            cell_cells[0]["provenance"]["evidence"] = (
                 "community-comparison:"
                 + json.dumps(
                     [
                         identity
-                        for entry in cell_entries
+                        for cell in cell_cells
                         for identity in json.loads(
-                            entry["provenance"]["evidence"].removeprefix(
+                            cell["provenance"]["evidence"].removeprefix(
                                 "community-comparison:"
                             )
                         )
                     ]
                 )
             )
-            entries.append(cell_entries[0])
+            cells.append(cell_cells[0])
         else:
             rejected.append(
                 {
-                    "cell": cell_entries[0]["id"],
+                    "cell": cell_cells[0]["id"],
                     "reason": "conflicting knob values for emitted selector require review",
                 }
             )
-    return {"entries": entries, "rejected": rejected}
+    return {"cells": cells, "rejected": rejected}
 
 
 def main(argv=None) -> int:
