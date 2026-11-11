@@ -408,16 +408,21 @@ def run_comparison(
             save_manifest()
             if active["status"] == "failed":
                 raise ValueError(f"Benchmark run {run['run_id']} failed")
-            if sequence == 0 and candidates:
+            if candidates:
                 observed = {
                     name: decision["value"]
                     for name, decision in run["tuning"]["context"]["knobs"].items()
                 }
                 observed.update(run["tuning"]["overrides"])
-                if any(
-                    observed[name] != context["knobs"][name]["value"]
-                    for values in candidates
-                    for name in values
+                expected = {
+                    name: values.get(name, context["knobs"][name]["value"])
+                    for planned in candidates
+                    for name in planned
+                }
+                # Every repetition of every arm must have loaded its planned
+                # values; otherwise timing differences are not attributable.
+                if json.loads(json.dumps(expected)) != json.loads(
+                    json.dumps({name: observed.get(name) for name in expected})
                 ):
                     raise ValueError(
                         "Loaded settings differ from the comparison plan; the current run is saved. Re-run with explicit settings."

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,6 +72,17 @@ def sample(arm="default", rate=100):
         m["decode_duration_ms"] = (m["output_tokens"] - 1) * 1000 / rate
         m["ttft_ms"] = 20
         m["total_duration_ms"] = m["decode_duration_ms"] + 20
+    return run
+
+
+def loaded_sample():
+    """A run whose recorded knobs reflect the arm values the worker received."""
+    run = sample()
+    values = json.loads(os.environ.get("RAPID_MLX_BENCHMARK_KNOBS", "{}"))
+    for name, value in values.items():
+        run["tuning"]["context"]["knobs"][name]["value"] = value
+        if name in run["tuning"]["overrides"]:
+            run["tuning"]["overrides"][name] = value
     return run
 
 
@@ -418,7 +430,7 @@ def test_run_comparison_interleaves_and_archives(
     def run_local(alias, **kwargs):
         assert kwargs["tuning_observation"]
         observed.append(kwargs["acceleration"])
-        return sample()
+        return loaded_sample()
 
     from rapid_mlx.community_bench import local_runner
 
@@ -1134,7 +1146,9 @@ def test_cli_reports_insufficient_neighbors(monkeypatch, tmp_path, capsys):
         cli.LocalRunArchive, "default", lambda: LocalRunArchive(tmp_path)
     )
     monkeypatch.setattr(cli, "run_local", lambda *a, **kw: sample())
-    monkeypatch.setattr(comparison, "measure_configuration", lambda *a, **kw: sample())
+    monkeypatch.setattr(
+        comparison, "measure_configuration", lambda *a, **kw: loaded_sample()
+    )
     monkeypatch.setattr(
         comparison, "candidate_values", lambda *a, **kw: iter([{"mtp_max_depth": 2}])
     )
@@ -1337,7 +1351,7 @@ def test_incremental_manifest_and_balanced_order(monkeypatch, tmp_path, failure)
                 run = sample()
                 archive.save(run)
                 raise LocalBenchmarkError("broken", run, saved=True)
-        run = sample()
+        run = loaded_sample()
         if failure == "outcome" and len(calls) == 3:
             run["outcome"]["status"] = "failed"
             run["outcome"]["failure_code"] = "runtime_error"
@@ -1585,7 +1599,9 @@ def test_comparison_plan_and_progress_remain_rs_tagged(monkeypatch, tmp_path, ca
         cli.LocalRunArchive, "default", lambda: LocalRunArchive(tmp_path)
     )
     monkeypatch.setattr(cli, "run_local", lambda *a, **kw: sample())
-    monkeypatch.setattr(comparison, "measure_configuration", lambda *a, **kw: sample())
+    monkeypatch.setattr(
+        comparison, "measure_configuration", lambda *a, **kw: loaded_sample()
+    )
     args = build_parser().parse_args(
         ["benchmark", "run", "model", "--json", "--progress", "--configs", "2"]
     )
@@ -1635,3 +1651,23 @@ def test_loaded_current_settings_must_match_plan(monkeypatch, tmp_path, capsys):
     assert manifest["status"] == "failed"
     assert manifest["runs"][0]["status"] == "completed"
     assert "1 completed runs" in capsys.readouterr().err
+
+
+def test_every_repetition_must_load_its_planned_arm(monkeypatch, tmp_path):
+    """A candidate whose override is ignored cannot be reported as faster."""
+    from rapid_mlx.community_bench.workspace import LocalRunArchive
+
+    monkeypatch.setattr(
+        comparison, "candidate_values", lambda *a, **kw: iter([{"mtp_max_depth": 2}])
+    )
+    monkeypatch.setattr(comparison, "measure_configuration", lambda *a, **kw: sample())
+    with pytest.raises(ValueError, match="Loaded settings differ"):
+        comparison.run_comparison(
+            "model",
+            configs=2,
+            current_runner=lambda *a, **kw: sample(),
+            archive=LocalRunArchive(tmp_path),
+        )
+    manifest = json.loads(next((tmp_path / "experiments").glob("*.json")).read_text())
+    assert manifest["status"] == "failed"
+    assert [r["status"] for r in manifest["runs"][:2]] == ["completed", "completed"]
