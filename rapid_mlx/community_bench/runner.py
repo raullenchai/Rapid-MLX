@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import random
 import statistics
 import time
@@ -57,6 +58,7 @@ class RoundResult:
     peak_ram_mb: int | None = None
     prompt_tokens: int | None = None
     output_tokens: int | None = None
+    output_digest: str | None = None
 
 
 # Progress observer: ``(case_label, phase, index, total, result)`` where
@@ -355,6 +357,10 @@ async def _run_one_round(
         ttft_ms=(t_first_token - t_start) * 1000.0,
         prompt_tokens=prompt_tokens_actual,
         output_tokens=completion_tokens,
+        output_digest="sha256:"
+        + hashlib.sha256(
+            json.dumps(last_output.output_token_ids, separators=(",", ":")).encode()
+        ).hexdigest(),
     )
 
 

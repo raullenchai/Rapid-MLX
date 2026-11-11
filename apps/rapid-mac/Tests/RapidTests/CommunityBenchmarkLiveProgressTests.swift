@@ -372,7 +372,7 @@ struct CommunityBenchmarkLiveProgressTests {
         #expect(
             argv == [
                 "benchmark", "run", "qwen3.5-9b-4bit", "--json",
-                "--progress", "--inherit-process-group",
+                "--progress", "--configs", "1", "--inherit-process-group",
             ]
         )
     }

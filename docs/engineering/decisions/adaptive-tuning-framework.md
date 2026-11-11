@@ -192,11 +192,72 @@ The measured 35B cost cells and their repeated-server evidence are documented in
 
 Follow-ups:
 
-- Community `--sweep` A/B mode, a tuning block in submissions, and a distillation
-  script producing reviewable data-only PRs through our gates.
 - Network profile updates through `rapid-mlx tune --update`.
 - Local `rapid-mlx tune` measurement/calibration and persistent calibrated cells.
 - Additional measured MTP forward-cost cells for currently unmeasured runtimes.
 - Unify existing chip fact parsers; acceleration-flag mapping; runtime adaptation.
 
 Further kernel migrations need their own evidence.
+## Absorbing community results
+
+`rapid-mlx benchmark run qwen3.6-35b-4bit` compares your current resolved
+configuration with its nearest neighbor on this machine. `--configs N` selects
+1–16 configurations (default 2); `--configs 1` retains the original single-run
+behavior. `--repetitions` defaults to 3 interleaved fresh loads per configuration
+and accepts 3–10. Before loading, the CLI reports the expected runtime: N ×
+repetitions times a single run, approximately 6× by default when neighbors apply.
+The first measurement uses the legacy in-process runner. Only when its tuning
+observations identify a valid neighbor do subsequent measurements use fresh
+supervised interpreters, so import-time kernel choices follow the configuration.
+Every measurement uses the same registered prompt cases, warmups and five
+measured rounds per case.
+Non-text runtimes, runtimes without tuning observations, and text cells with no
+applicable neighbor return that first legacy run without workers or repetitions.
+
+The starting cell comes from `tuning.dump(ctx)`, including environment and user
+profile choices. Effective explicit/clamped MTP depth is included. Neighbors
+use only knobs in scope whose capability requirements pass: integer values move
+one declared step, booleans flip, and enums move to adjacent registry values.
+Boundaries use the available side. All one-knob neighbors precede two-knob
+combinations. A random salt rotates the first eligible knob, spreading default
+A/B measurements across knobs; the salt and changed knob names are recorded.
+If fewer configurations exist than requested, the CLI reports the measured count.
+`RAPID_MLX_BENCHMARK_KNOBS` temporarily transports registered candidate values
+to each fresh worker, restores the previous environment afterward, and cannot
+bypass scope or capability gates. It does not change the selected runtime.
+
+Each atomic run carries `experiment` pairing fields and optional `tuning`:
+identifier-free context, profile versions, knob values and sources, effective
+depth overrides, selection metadata, and SHA-256 output-token digests by case
+and round. The table compares throughput, TTFT, full measured throughput spread,
+and output equality against your current configuration. Divergence is recorded,
+not failed. A plain-language speed comparison remains a local observation;
+it invites submission to help tune defaults and never changes local defaults.
+
+The first archived run also carries optional `paired_runs` containing every
+other configuration and repetition. Its printed `benchmark share <run-id>`
+command shares the complete comparison through the existing preview and consent
+flow. `--preview --json` shows the exact projected payload. No upload happens
+during benchmarking, and old submissions without these optional fields remain
+valid. The board needs an ingestion-validator/storage follow-up to retain the
+new optional fields; this PR covers the client and offline processing.
+
+`python -m scripts.tuning_distill comparison.json` reads `benchmark run --json`,
+the first archived run with paired evidence, or individual archived runs.
+It groups exact hardware, runtime versions/revision, primary checkpoint, model
+facts, fixed execution settings, mode and workload within each session. Gates
+remain: at least three independent repetitions, >=2% gain on every case with
+non-overlapping full ranges, AC power, nominal thermal state, normal memory
+pressure, low-power mode off before and after each load, and freshness within
+`--max-age-days` (default 30), relative to `--as-of` or current UTC time. Unknown
+conditions cannot qualify. `--rapid-version` selects a historical runtime.
+
+Output digests must be stable and equal for every measured round and load.
+Divergence may instead have a structured `quality` note with `n >= 100`, a
+`questions_digest`, and `plain` and `default` comparisons recording
+`abs(delta_pp) <= 3` and `paired_p >= 0.05`. Review the underlying study.
+The distiller emits candidate explicit-cell profile entries with exact hardware
+ranges, pinned software, complete applicable knob combinations and workload
+selectors; it never writes `builtin.json`. Conflicting sessions require review.
+Retain raw runs with candidate data-only PRs and review other-mode regression
+evidence. MTP determinism is separate work.

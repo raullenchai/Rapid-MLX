@@ -2326,6 +2326,20 @@ def _add_benchmark_parser(
         action="store_true",
         help="Measure with every acceleration off (the original Community Benchmark protocol)",
     )
+    community_run.add_argument(
+        "--configs",
+        type=int,
+        default=1,
+        choices=range(1, 17),
+        help="Configurations to compare: your current config plus nearest neighbors (default: 1, a quick benchmark of your current config; use 2 or more to help find faster settings)",
+    )
+    community_run.add_argument(
+        "--repetitions",
+        type=int,
+        default=3,
+        choices=range(3, 11),
+        help="Interleaved fresh-load repetitions per configuration (default: 3; range: 3..10; applies when --configs > 1)",
+    )
     acceleration = community_run.add_argument_group(
         "acceleration (same flags and meaning as `rapid-mlx serve`)"
     )

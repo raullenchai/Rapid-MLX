@@ -216,6 +216,13 @@ def project_run_for_publication(
                     WithheldFact(f"{prefix}.source.{key}", source[key], _SOURCE_REASON)
                 )
                 del source[key]
+    for index, paired in enumerate(public.get("paired_runs", [])):
+        projected, hidden = project_run_for_publication(paired)
+        public["paired_runs"][index] = projected
+        withheld.extend(
+            WithheldFact(f"paired_runs[{index}].{fact.path}", fact.value, fact.reason)
+            for fact in hidden
+        )
     return public, withheld
 
 

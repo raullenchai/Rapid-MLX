@@ -33,6 +33,115 @@ SCHEMA_PATHS = (
 )
 
 
+@pytest.fixture
+def future_knob_run():
+    from rapid_mlx import tuning
+
+    run = _load(BENCH_ROOT / "examples" / "benchmark-run.image.example.json")
+    context = tuning.dump(tuning.TuningContext(tuning.HardwareProfile(), "1", "1"))
+    context = json.loads(json.dumps(context))
+    context["knobs"]["future_knob"] = {"value": True, "source": "default"}
+    run["tuning"] = {
+        "context": context,
+        "overrides": {"future_knob": True},
+        "outputs": {"pp512-tg128": [None], "pp2048-tg512": [None]},
+        "selection": {
+            "salt": 0,
+            "changed_knobs": ["future_knob"],
+            "requested_configs": 2,
+        },
+    }
+    run["experiment"] = {
+        "group_id": "00000000-0000-4000-8000-000000000001",
+        "arm_id": "candidate",
+        "role": "candidate",
+        "sequence_index": 1,
+        "order_strategy": "fixed",
+        "varied_fields": ["/tuning/context/knobs/future_knob"],
+    }
+    return run
+
+
+def test_future_knob_submission_validates(schemas, registry, future_knob_run):
+    _validator(schemas["benchmark-run.schema.json"], registry).validate(future_knob_run)
+    assert (BENCH_ROOT / "benchmark-run.schema.json").read_bytes() == (
+        REPO_ROOT / "rapid_mlx/catalog/schemas/benchmark-run.schema.json"
+    ).read_bytes()
+
+
+def test_older_knob_snapshot_still_validates(schemas, registry, future_knob_run):
+    run = future_knob_run
+    knobs = run["tuning"]["context"]["knobs"]
+    required = schemas["benchmark-run.schema.json"]["$defs"]["tuning"]["properties"][
+        "context"
+    ]["properties"]["knobs"]["required"]
+    run["tuning"]["context"]["knobs"] = {name: knobs[name] for name in required}
+    run["tuning"]["overrides"] = {"mtp_max_depth": 2}
+    run["tuning"]["selection"]["changed_knobs"] = ["mtp_max_depth"]
+    run["experiment"]["varied_fields"] = ["/tuning/context/knobs"]
+    _validator(schemas["benchmark-run.schema.json"], registry).validate(run)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mtp_max_depth": 5},
+        {"mtp_gdn_fusion": 1},
+        {"mtp_prefill_block_size": "0"},
+        {"mtp_forward_costs_ms": ["1"]},
+        {"future_knob": "a" * 129},
+        {"future_knob": [0] * 17},
+    ],
+)
+def test_open_overrides_preserve_value_constraints(
+    schemas, registry, future_knob_run, overrides
+):
+    future_knob_run["tuning"]["overrides"] = overrides
+    with pytest.raises(jsonschema.ValidationError):
+        _validator(schemas["benchmark-run.schema.json"], registry).validate(
+            future_knob_run
+        )
+
+
+@pytest.mark.parametrize("name", ["Bad_knob", "bad-knob", "1knob", "a" * 65, ""])
+@pytest.mark.parametrize(
+    "location", ["context", "overrides", "selection", "varied_fields"]
+)
+def test_invalid_knob_names_rejected(
+    schemas, registry, future_knob_run, name, location
+):
+    run = future_knob_run
+    if location == "context":
+        knobs = run["tuning"]["context"]["knobs"]
+        knobs[name] = knobs.pop("future_knob")
+    elif location == "overrides":
+        run["tuning"]["overrides"] = {name: True}
+    elif location == "selection":
+        run["tuning"]["selection"]["changed_knobs"] = [name]
+    else:
+        run["experiment"]["varied_fields"] = [f"/tuning/context/knobs/{name}"]
+    with pytest.raises(jsonschema.ValidationError):
+        _validator(schemas["benchmark-run.schema.json"], registry).validate(run)
+
+
+@pytest.mark.parametrize("location", ["context", "overrides", "selection"])
+def test_knob_collection_sizes_are_bounded(
+    schemas, registry, future_knob_run, location
+):
+    run = future_knob_run
+    names = [f"future_{i}" for i in range(129)]
+    if location == "context":
+        run["tuning"]["context"]["knobs"].update(
+            {name: {"value": True, "source": "default"} for name in names}
+        )
+    elif location == "overrides":
+        run["tuning"]["overrides"] = dict.fromkeys(names, True)
+    else:
+        run["tuning"]["selection"]["changed_knobs"] = names
+    with pytest.raises(jsonschema.ValidationError):
+        _validator(schemas["benchmark-run.schema.json"], registry).validate(run)
+
+
 def test_submission_receipt_contract(schemas, registry) -> None:
     receipt = {
         "schema_version": 1,

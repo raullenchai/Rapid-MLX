@@ -214,6 +214,8 @@ def acceleration_probes(monkeypatch):
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", core)
+    # Policy probes use inert MLX; skip optional upstream cache registration.
+    monkeypatch.setitem(sys.modules, "mlx_lm", None)
     import rapid_mlx.api.utils as utils
     import rapid_mlx.model_auto_config as auto
     import rapid_mlx.spec_decode.mtp as mtp
@@ -439,12 +441,31 @@ def _fake_live_serving_scheduler(
 
 
 @pytest.mark.parametrize("runtime_method", ["mtp", None])
+@pytest.mark.parametrize("explicit_depth", [False, True])
 def test_text_measurements_uses_live_serving_scheduler(
-    monkeypatch, tmp_path, runtime_method
+    monkeypatch, tmp_path, runtime_method, explicit_depth
 ):
     import asyncio
 
     lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, runtime_method)
+    from types import SimpleNamespace
+
+    original_resolve = lr.resolve_benchmark_acceleration
+    original_load = lr._load_serving_engine
+
+    def resolve(*args):
+        plan, serve_args = original_resolve(*args)
+        serve_args._speculative_config = SimpleNamespace(
+            num_speculative_tokens=3 if explicit_depth else None
+        )
+        return plan, serve_args
+
+    async def load(model, config, args):
+        assert config.mtp_depth_explicit is explicit_depth
+        return await original_load(model, config, args)
+
+    monkeypatch.setattr(lr, "resolve_benchmark_acceleration", resolve)
+    monkeypatch.setattr(lr, "_load_serving_engine", load)
     capture = {}
     token = lr._LOADED_IDENTITY.set(capture)
     try:

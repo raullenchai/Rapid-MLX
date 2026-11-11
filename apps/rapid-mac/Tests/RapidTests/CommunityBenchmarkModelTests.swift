@@ -357,7 +357,7 @@ struct CommunityBenchmarkModelTests {
         #expect(
             CommunityBenchmarkCommand.benchmarkRunArguments(alias: "flux2-klein-4b") == [
                 "benchmark", "run", "flux2-klein-4b", "--json", "--progress",
-                "--inherit-process-group",
+                "--configs", "1", "--inherit-process-group",
             ]
         )
         #expect(

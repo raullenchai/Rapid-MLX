@@ -10,6 +10,7 @@ import signal
 import statistics
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -590,7 +591,19 @@ def _benchmark_command(args) -> int:
                         event_sink = _tagged_event_to_stderr
                     else:
                         progress_sink = None
-                    value = run_local(
+                    runner: Callable[..., dict[str, Any]] = run_local
+                    comparison_options: dict = {}
+                    configs = getattr(args, "configs", 1)
+                    if configs > 1:
+                        from .comparison import run_comparison
+
+                        runner = run_comparison
+                        comparison_options.update(
+                            configs=configs,
+                            repetitions=getattr(args, "repetitions", 3),
+                            current_runner=run_local,
+                        )
+                    value = runner(
                         args.benchmark_model,
                         archive=archive,
                         inherit_process_group=getattr(
@@ -599,6 +612,7 @@ def _benchmark_command(args) -> int:
                         progress=progress_sink,
                         events=event_sink,
                         acceleration=acceleration,
+                        **comparison_options,
                     )
                 finally:
                     if main_thread:
@@ -741,6 +755,16 @@ def _benchmark_command(args) -> int:
                 )
         else:
             print("Upload cancelled. Nothing was sent.")
+    elif "configurations" in value:
+        from .comparison import summary_lines
+
+        for line in summary_lines(value["configurations"]):
+            print(line)
+        run = value["configurations"][0]
+        print(
+            f"Share all paired configurations: rapid-mlx benchmark share {run['run_id']}"
+        )
+        print("Nothing was uploaded.")
     else:  # run
         print(f"Saved local result {value['run_id']}")
         task = value.get("execution", {}).get("task", {})

@@ -250,6 +250,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
     the opposite of what the response is asking for.
     """
     target = url or board_url()
+    comparison_group = bool(payload.get("paired_runs"))
     body = submission_body(payload)
     last: Exception | None = None
 
@@ -302,6 +303,22 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
             except Exception:  # noqa: BLE001 - diagnostic only
                 pass
             if exc.code < 500 or attempt == _MAX_ATTEMPTS:
+                if comparison_group:
+                    if exc.code == 413:
+                        reason = "Comparison upload too large (HTTP 413)."
+                    elif 400 <= exc.code < 500 and any(
+                        word in detail.lower()
+                        for word in (
+                            "schema",
+                            "validation",
+                            "unsupported",
+                            "additional properties",
+                        )
+                    ):
+                        reason = f"Server unsupported/validation error for comparison (HTTP {exc.code})."
+                    else:
+                        reason = f"Comparison upload rejected (HTTP {exc.code})."
+                    raise SubmitError(reason + " " + detail) from exc
                 raise SubmitError(
                     f"the board rejected this submission (HTTP {exc.code}). {detail}"
                 ) from exc
@@ -313,7 +330,8 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
                 # something only the caller knows, and asserting it from this
                 # layer told users their run was safe when archiving had
                 # already failed and warned otherwise.
-                raise SubmitError(f"could not reach {target}: {exc}") from exc
+                prefix = "Comparison upload network error. " if comparison_group else ""
+                raise SubmitError(f"{prefix}could not reach {target}: {exc}") from exc
             last = exc
             _sleep_before_retry(attempt, None)
 
