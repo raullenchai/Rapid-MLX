@@ -1187,3 +1187,112 @@ def test_rejected_channel_call_preserves_held_reasoning_on_finalize():
     assert all(not event.content for event in events)
     assert any(event.tool_calls for event in events)
     assert not pp.undeclared_tool_dropped
+
+
+@pytest.mark.parametrize("tool_request", [None, {}, {"tools": []}])
+def test_separator_resolution_without_tools_preserves_calls(tool_request):
+    from rapid_mlx.tool_call_authorization import resolve_tool_names
+
+    calls = [anchor("artifact.get_quest_state")]
+    assert resolve_tool_names(calls, tool_request) is calls
+    pp = processor()
+    pp.request = tool_request
+    assert pp._filter_declared_calls(calls, incremental=True) is calls
+
+
+def test_separator_resolution_preserves_stream_fragments_and_logs(caplog):
+    pp = processor()
+    pp.request = {
+        "tools": [
+            {"type": "function", "function": {"name": "artifact_get_quest_state"}}
+        ]
+    }
+    calls = [
+        anchor("artifact.get_quest_state", 3),
+        {"index": 3, "function": {"arguments": '"query":"select 1"}'}},
+    ]
+    with caplog.at_level("DEBUG", logger="rapid_mlx.tool_call_authorization"):
+        resolved = pp._filter_declared_calls(calls, incremental=True)
+    assert resolved[0] == {
+        **calls[0],
+        "function": {"name": "artifact_get_quest_state", "arguments": "{"},
+    }
+    assert resolved[1] is calls[1]
+    assert calls[0]["function"]["name"] == "artifact.get_quest_state"
+    rewrites = [
+        record for record in caplog.records if "Resolved tool name" in record.message
+    ]
+    assert len(rewrites) == 1
+    assert rewrites[0].levelname == "DEBUG"
+
+
+@pytest.mark.parametrize(
+    "emitted,names,expected",
+    [
+        (
+            "artifact.get_quest_state",
+            ["artifact_get_quest_state"],
+            "artifact_get_quest_state",
+        ),
+        (
+            "artifact/get_quest_state",
+            ["artifact_get_quest_state"],
+            "artifact_get_quest_state",
+        ),
+        (
+            "artifact.get_quest_state",
+            ["artifact_get_quest_state", "artifact/get_quest_state"],
+            "artifact.get_quest_state",
+        ),
+        ("artifact.get_quest_state", ["write_file"], "artifact.get_quest_state"),
+        (
+            "artifact.get_quest_state",
+            ["artifact_get_quest_state", "artifact.get_quest_state"],
+            "artifact.get_quest_state",
+        ),
+        (
+            "artifact_get_quest_state",
+            ["artifact/get_quest_state"],
+            "artifact/get_quest_state",
+        ),
+        (
+            "artifact-get_quest_state",
+            ["artifact_get_quest_state"],
+            "artifact-get_quest_state",
+        ),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+def test_shared_separator_resolution(monkeypatch, emitted, names, expected, stream):
+    tool_request = {
+        "tools": [{"type": "function", "function": {"name": name}} for name in names]
+    }
+    if stream:
+        pp = processor()
+        pp.request = tool_request
+        calls = pp._filter_declared_calls([anchor(emitted)], incremental=True)
+        assert calls[0]["function"]["name"] == expected
+    else:
+        parser = Mock()
+        parser._undeclared_dropped = 0
+        parser.extract_tool_calls.return_value = ExtractedToolCallInformation(
+            tools_called=True,
+            tool_calls=[{"id": "call_0", "name": emitted, "arguments": "{}"}],
+            content="Narration",
+        )
+        monkeypatch.setattr(
+            helpers.ToolParserManager, "get_tool_parser", lambda _: lambda _: parser
+        )
+        cfg = reset_config()
+        cfg.enable_auto_tool_choice = True
+        cfg.tool_call_parser = "hermes"
+        try:
+            req = _Request()
+            req.model_dump = lambda: tool_request
+            content, calls = helpers._parse_tool_calls_with_parser("wire", req)
+            assert content == "Narration"
+            assert calls[0].function.name == expected
+            assert calls[0].id == "call_0"
+            assert calls[0].function.arguments == "{}"
+        finally:
+            reset_config()

@@ -29,5 +29,40 @@ def call_name(call):
     return call.get("function", call).get("name")
 
 
+def resolve_tool_names(calls, request):
+    """Resolve separator variants only when one declared name matches.
+
+    Exact names win, including dotted names. Unknown and ambiguous names
+    remain available for client error recovery; argument deltas pass through.
+    """
+    names = declared_names(request)
+    if not names:
+        return calls
+
+    def canonical(name):
+        return name.replace(".", "_").replace("/", "_")
+
+    candidates: dict[str, set[str]] = {}
+    for name in names:
+        candidates.setdefault(canonical(name), set()).add(name)
+
+    resolved = []
+    for call in calls:
+        name = call_name(call)
+        matches = candidates.get(canonical(name), set()) if name else set()
+        if name not in names and len(matches) == 1:
+            target = next(iter(matches))
+            logger.debug("Resolved tool name %r to declared tool %r", name, target)
+            if hasattr(call, "model_copy"):
+                function = call.function.model_copy(update={"name": target})
+                call = call.model_copy(update={"function": function})
+            elif "function" in call:
+                call = {**call, "function": {**call["function"], "name": target}}
+            else:
+                call = {**call, "name": target}
+        resolved.append(call)
+    return resolved
+
+
 def log_drop(name):
     logger.warning("Dropping call to undeclared tool %r", name)
