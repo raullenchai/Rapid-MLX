@@ -269,6 +269,9 @@ def test_run_comparison_interleaves_and_archives(monkeypatch, tmp_path, repetiti
         observed.append(kwargs["acceleration"])
         return sample()
 
+    from rapid_mlx.community_bench import local_runner
+
+    monkeypatch.setattr(local_runner, "run_local", run_local)
     monkeypatch.setattr(comparison, "measure_configuration", run_local)
     archive = LocalRunArchive(tmp_path)
     result = comparison.run_comparison(
@@ -301,26 +304,36 @@ def test_comparison_rejects_invalid_options(repetitions, acceleration):
         )
 
 
-def test_comparison_unsupported_and_no_candidates(monkeypatch, tmp_path):
+@pytest.mark.parametrize("observations", [False, True])
+def test_default_without_neighbors_is_legacy_run(monkeypatch, tmp_path, observations):
+    from rapid_mlx.community_bench import local_runner
     from rapid_mlx.community_bench.workspace import LocalRunArchive
 
     run = sample()
-    run["tuning"]["context"]["has_mtp_head"] = False
-    for decision in run["tuning"]["context"]["knobs"].values():
-        decision["source"] = "capability"
+    if observations:
+        for decision in run["tuning"]["context"]["knobs"].values():
+            decision["source"] = "capability"
+    else:
+        del run["tuning"]
+    run.pop("experiment")
+    calls = []
+
+    def legacy(alias, **kwargs):
+        calls.append(kwargs)
+        return run
+
+    monkeypatch.setattr(local_runner, "run_local", legacy)
     monkeypatch.setattr(
-        comparison, "measure_configuration", lambda *a, **kw: copy.deepcopy(run)
+        comparison,
+        "measure_configuration",
+        lambda *a, **kw: pytest.fail("no neighbor must never start a worker"),
     )
-    assert (
-        len(
-            comparison.run_comparison("model", archive=LocalRunArchive(tmp_path))[
-                "configurations"
-            ]
-        )
-        == 3
-    )
-    del run["tuning"]
-    assert comparison.run_comparison("model", archive=LocalRunArchive(tmp_path)) == run
+    archive = LocalRunArchive(tmp_path)
+    assert comparison.run_comparison("model", archive=archive) is run
+    assert len(calls) == 1
+    assert calls[0]["archive"] is archive
+    assert "experiment" not in run and "paired_runs" not in run
+    assert "selection" not in run.get("tuning", {})
 
 
 def test_summary_winners_divergence():
@@ -805,6 +818,9 @@ def test_requests_preserve_options_and_record_rotation(monkeypatch, tmp_path):
             ),
         }
     )
+    from rapid_mlx.community_bench import local_runner
+
+    monkeypatch.setattr(local_runner, "run_local", measure)
     monkeypatch.setattr(comparison, "measure_configuration", measure)
     result = comparison.run_comparison(
         "model",
@@ -951,3 +967,59 @@ def test_cli_reports_insufficient_neighbors(monkeypatch, tmp_path, capsys):
     output = capsys.readouterr()
     assert "Only 2 applicable configurations exist; requested 16" in output.out
     assert "about 48×" in output.err
+
+
+@pytest.mark.parametrize(
+    "task", ["image_generation", "video_generation", "audio", "text_generation"]
+)
+def test_default_cli_without_applicable_knobs_keeps_legacy_process(
+    monkeypatch, tmp_path, capsys, task
+):
+    import os
+
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+    from rapid_mlx.community_bench.workspace import LocalRunArchive
+
+    run = sample()
+    run.pop("experiment")
+    if task == "text_generation":
+        # Real registry decisions for an M3 text cell with no eligible knobs.
+        context = tuning.TuningContext(
+            tuning.HardwareProfile("applegpu_g15d", 15, "Ultra", 60, 274877906944),
+            "0.32.4",
+            "26.5.2",
+            tuning.ModelProfile(),
+        )
+        run["tuning"]["context"] = json.loads(json.dumps(tuning.dump(context)))
+        run["tuning"]["overrides"] = {}
+        assert not list(comparison.candidate_values(run["tuning"]["context"]))
+    else:
+        del run["tuning"]
+    run["workload"]["task_type"] = task
+    calls = []
+    parent = os.getpid()
+
+    def legacy(alias, **kwargs):
+        assert os.getpid() == parent
+        calls.append(kwargs)
+        return run
+
+    monkeypatch.setattr(cli, "run_local", legacy)
+    monkeypatch.setattr(
+        cli.LocalRunArchive, "default", lambda: LocalRunArchive(tmp_path)
+    )
+    monkeypatch.setattr(
+        comparison,
+        "measure_configuration",
+        lambda *a, **kw: pytest.fail(
+            "legacy default must not start comparison workers"
+        ),
+    )
+    monkeypatch.setattr(cli, "summarize_measurements", lambda run: [])
+    args = build_parser().parse_args(["benchmark", "run", "model", "--json"])
+    assert args.configs == 2
+    assert cli._benchmark_command(args) == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out) == run
+    assert len(calls) == 1 and "paired_runs" not in run

@@ -41,11 +41,7 @@ def test_benchmark_run_configures_logging(monkeypatch, capsys, env, flag, expect
 
         monkeypatch.setattr(cli, "run_local", run_local)
         args = SimpleNamespace(
-            benchmark_action="run",
-            configs=1,
-            benchmark_model="X",
-            json=True,
-            log_level=flag,
+            benchmark_action="run", benchmark_model="X", json=True, log_level=flag
         )
         assert cli.benchmark_command(args) == 0
         assert root.level == expected

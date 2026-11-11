@@ -209,6 +209,7 @@ def run_comparison(
     archive=None,
     acceleration: AccelerationRequest | None = None,
     salt: int | None = None,
+    current_runner=None,
     **kwargs,
 ) -> dict:
     from itertools import islice
@@ -216,6 +217,7 @@ def run_comparison(
     from .local_runner import run_local
     from .workspace import LocalRunArchive
 
+    run_local = current_runner or run_local
     if not 1 <= configs <= 16:
         raise ValueError("--configs must be between 1 and 16")
     if configs == 1:
@@ -248,9 +250,9 @@ def run_comparison(
                 tuning_observation=True,
                 **kwargs,
             )
-        if "tuning" not in run:
-            # Non-text/fixed runtimes keep their existing single-run behavior.
-            return run
+        return record(run, arm, values)
+
+    def record(run, arm, values):
         run["tuning"]["selection"] = {
             "salt": salt,
             "changed_knobs": list(values),
@@ -270,7 +272,16 @@ def run_comparison(
         runs.append(run)
         return run
 
-    first: dict = measure("default", {})
+    # Discover applicability through the legacy measurement itself. No new
+    # process is needed for media, unsupported runtimes, or cells without a
+    # neighbor, and parent-process loader/preflight behavior remains intact.
+    first: dict = run_local(
+        alias,
+        archive=destination,
+        acceleration=request,
+        tuning_observation=True,
+        **kwargs,
+    )
     if "tuning" not in first:
         return first
     context = json.loads(json.dumps(first["tuning"]["context"]))
@@ -278,6 +289,9 @@ def run_comparison(
     for name, value in first["tuning"]["overrides"].items():
         context["knobs"][name]["value"] = value
     candidates = list(islice(candidate_values(context, salt=salt), configs - 1))
+    if not candidates:
+        return first
+    record(first, "default", {})
     arms = [("default", {}), *[(f"nearby-{i}", v) for i, v in enumerate(candidates, 1)]]
     for repetition in range(repetitions):
         offset = repetition % len(arms)

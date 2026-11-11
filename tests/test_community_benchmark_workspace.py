@@ -861,9 +861,7 @@ def test_cli_rejects_incompatible_image_before_server(
         _server, "serve", lambda *a, **kw: pytest.fail("server started")
     )
     monkeypatch.setattr(
-        sys,
-        "argv",
-        ["rapid-mlx", "benchmark", "run", "bonsai-image-4b-2bit", "--configs", "1"],
+        sys, "argv", ["rapid-mlx", "benchmark", "run", "bonsai-image-4b-2bit"]
     )
     with pytest.raises(SystemExit) as excinfo:
         top_cli.main()
@@ -1762,7 +1760,6 @@ def test_unknown_run_model_returns_structured_unsaved_cli_error(
     )
     args = SimpleNamespace(
         benchmark_action="run",
-        configs=1,
         benchmark_model="missing",
         inherit_process_group=False,
         json=True,
@@ -2635,7 +2632,6 @@ def test_cli_run_reports_unsafe_inherit_process_group_topology(
     )
     args = SimpleNamespace(
         benchmark_action="run",
-        configs=1,
         benchmark_model="example-image",
         inherit_process_group=True,
         json=True,
@@ -4406,7 +4402,6 @@ def test_cli_run_prints_local_only_confirmation(
     monkeypatch.setattr(community_cli, "run_local", lambda alias, **kwargs: text_run)
     args = SimpleNamespace(
         benchmark_action="run",
-        configs=1,
         benchmark_model="example-text",
         inherit_process_group=False,
         json=False,
@@ -4511,7 +4506,6 @@ def test_cli_failure_json_includes_saved_run_payload(
     )
     args = SimpleNamespace(
         benchmark_action="run",
-        configs=1,
         benchmark_model="example-text",
         inherit_process_group=False,
         json=True,
@@ -4552,7 +4546,6 @@ def test_cli_failure_text_reports_archive_state(
     )
     args = SimpleNamespace(
         benchmark_action="run",
-        configs=1,
         benchmark_model="example-text",
         inherit_process_group=False,
         json=False,
@@ -6350,7 +6343,6 @@ def test_cli_run_streams_progress_to_stderr_only_in_text_mode(
     monkeypatch.setattr(community_cli, "run_local", fake_run_local)
     args = SimpleNamespace(
         benchmark_action="run",
-        configs=1,
         benchmark_model="example-text",
         inherit_process_group=False,
         json=False,
@@ -7515,7 +7507,7 @@ def test_draft_checkpoint_guard_uses_executed_identity(
     with pytest.raises(DraftModelNotServableError, match="draft checkpoint"):
         plan_for_alias(alias)
     args = build_parser().parse_args(
-        ["benchmark", "run", "--configs", "1", alias, "--baseline", "--json"]
+        ["benchmark", "run", alias, "--baseline", "--json"]
     )
     assert community_cli.benchmark_command(args) == 1
     download.assert_not_called()

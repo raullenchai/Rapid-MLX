@@ -205,9 +205,14 @@ configuration with its nearest neighbor on this machine. `--configs N` selects
 1–16 configurations (default 2); `--configs 1` retains the original single-run
 behavior. `--repetitions` defaults to 3 interleaved fresh loads per configuration
 and accepts 3–10. Before loading, the CLI reports the expected runtime: N ×
-repetitions times a single run, approximately 6× by default. Every load uses a fresh supervised interpreter so import-time kernel choices
-follow the configuration. It uses the same registered prompt cases, warmups and five measured rounds per case.
-Non-text and fixed runtimes without tuning observations retain their single run.
+repetitions times a single run, approximately 6× by default when neighbors apply.
+The first measurement uses the legacy in-process runner. Only when its tuning
+observations identify a valid neighbor do subsequent measurements use fresh
+supervised interpreters, so import-time kernel choices follow the configuration.
+Every measurement uses the same registered prompt cases, warmups and five
+measured rounds per case.
+Non-text runtimes, runtimes without tuning observations, and text cells with no
+applicable neighbor return that first legacy run without workers or repetitions.
 
 The starting cell comes from `tuning.dump(ctx)`, including environment and user
 profile choices. Effective explicit/clamped MTP depth is included. Neighbors

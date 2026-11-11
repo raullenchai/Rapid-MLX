@@ -600,11 +600,12 @@ def _benchmark_command(args) -> int:
                         comparison_options.update(
                             configs=configs,
                             repetitions=getattr(args, "repetitions", 3),
+                            current_runner=run_local,
                         )
-                        print(
-                            f"Comparing up to {configs} configurations × {comparison_options['repetitions']} repetitions: about {configs * comparison_options['repetitions']}× a single-configuration run. Fewer applicable neighbors may reduce this.",
-                            file=sys.stderr,
-                        )
+                        if progress_sink is not None:
+                            progress_sink(
+                                f"If tuning neighbors apply: up to {configs} configurations × {comparison_options['repetitions']} repetitions: about {configs * comparison_options['repetitions']}× a single-configuration run. If no tuning neighbor applies, the usual single run is used."
+                            )
                     value = runner(
                         args.benchmark_model,
                         archive=archive,

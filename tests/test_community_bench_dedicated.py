@@ -484,9 +484,7 @@ def test_cli_json_dedicated_run(fake_dedicated, monkeypatch, capsys):
     from rapid_mlx.community_bench import cli
 
     monkeypatch.setattr(cli.LocalRunArchive, "default", lambda: fake_dedicated.archive)
-    args = build_parser().parse_args(
-        ["benchmark", "run", "--configs", "1", "example", "--json"]
-    )
+    args = build_parser().parse_args(["benchmark", "run", "example", "--json"])
     assert cli.benchmark_command(args) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["outcome"]["status"] == "completed"
