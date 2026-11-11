@@ -321,8 +321,15 @@ def arm_statistics(runs: list[dict]) -> dict:
         arm = run["experiment"]["arm_id"]
         for case in run["workload"]["cases"]:
             samples = [
-                m for m in run["measurements"] if m["case_id"] == case["case_id"]
+                m
+                for m in run["measurements"]
+                if m["case_id"] == case["case_id"]
+                and m["decode_duration_ms"] > 0
+                and m["output_tokens"] > 1
             ]
+            if not samples:
+                # No decode-rate evidence: count it as a missing repetition.
+                continue
             rates = [
                 (m["output_tokens"] - 1) * 1000 / m["decode_duration_ms"]
                 for m in samples
@@ -341,7 +348,7 @@ def arm_statistics(runs: list[dict]) -> dict:
 
 def speed_winners(runs: list[dict], *, min_repetitions: int = 3) -> list[str]:
     stats = arm_statistics(runs)
-    default = stats["default"]
+    default = stats.get("default", {})
     winners = []
     for arm, cases in stats.items():
         if arm == "default" or cases.keys() != default.keys():
@@ -381,18 +388,19 @@ def summary_lines(runs: list[dict]) -> list[str]:
                 f"{('current' if arm == 'default' else arm):<12} {case:<19} {statistics.median(rates):7.2f} [{min(r[2] for r in rows):.2f}, {max(r[3] for r in rows):.2f}]  {statistics.median(r[1] for r in rows):9.2f} {len(rows):7}    {equality}"
             )
     stats = arm_statistics(runs)
+    default = stats.get("default", {})
     for arm, cases in stats.items():
-        if arm != "default":
+        if arm != "default" and cases.keys() == default.keys():
             gains = [
                 100
                 * (
                     statistics.median(r[0] for r in rows)
-                    / statistics.median(r[0] for r in stats["default"][case])
+                    / statistics.median(r[0] for r in default[case])
                     - 1
                 )
                 for case, rows in cases.items()
             ]
-            if min(gains) > 0:
+            if gains and min(gains) > 0:
                 lines.append(
                     f"Nearby config {arm} was faster by {min(gains):.1f}% or more across cases on this machine (local observation; submit to help tune defaults)."
                 )

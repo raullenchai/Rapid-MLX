@@ -1169,3 +1169,25 @@ def test_default_cli_without_applicable_knobs_keeps_legacy_process(
     output = capsys.readouterr()
     assert json.loads(output.out) == run
     assert len(calls) == 1 and "paired_runs" not in run
+
+
+def test_summary_tolerates_zero_duration_measurements():
+    runs = paired()
+    # One candidate repetition has no decode-rate evidence at all, which leaves
+    # it below the repetition floor instead of raising ZeroDivisionError.
+    for m in runs[1]["measurements"]:
+        m["decode_duration_ms"] = 0
+    # A single unusable sample inside an otherwise valid run is ignored.
+    runs[3]["measurements"][0]["decode_duration_ms"] = 0
+    lines = comparison.summary_lines(runs)
+    assert lines[-1].endswith("none")
+    assert comparison.arm_statistics(runs)["mtp-3"]
+
+    # Without usable default evidence there is nothing to compare against.
+    for run in runs[::2]:
+        for m in run["measurements"]:
+            m["decode_duration_ms"] = 0
+    assert "default" not in comparison.arm_statistics(runs)
+    lines = comparison.summary_lines(runs)
+    assert not any(line.startswith("Nearby config") for line in lines)
+    assert lines[-1].endswith("none")
