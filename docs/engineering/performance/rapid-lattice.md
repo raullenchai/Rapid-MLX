@@ -9,6 +9,17 @@ See [singleton qualification evidence](2026-11-09-m3-singleton-backbone.md) for 
 | `qwen35_fused_gdn_decode` | `False` (boolean) | Existing GDN classes and loader `allow_dense` distinction; projected geometry, cache/sharding checks and full parity probe stay local | Universal hardware; hidden 2048 on legacy routes, positive integer hidden widths on existing dense opt-in routes |
 | `gdn_in_proj_fusion` | `False` (boolean) | Existing installation routes, compatible projection formats and projection/layer parity; split retention stays caller-owned | Universal hardware; enabled where installation was already attempted |
 | `gdn_in_proj_max_rows` | `0` (nonnegative integer) | Installed fusion, qualified dtype; capped by the local eight-row probe envelope | Universal hardware; 8 |
+| `metal_cache_floor_bytes` | 2 GiB (positive integer) | Metal free-cache limit at engine setup | Universal hardware; 2 GiB |
+| `metal_cache_cap_bytes` | 32 GiB (positive integer) | Metal free-cache limit at engine setup | Universal hardware; 32 GiB |
+| `metal_cache_divisor` | 4 (positive integer) | Metal free-cache limit = soft allocation limit divided by this, then floored/capped and clamped to the soft limit | Universal hardware; 4 |
+| `memory_pressure_margin` | 0.05 (number 0–1) | Engine-core eviction threshold: added to `gpu_memory_utilization` | Universal hardware; 0.05 |
+| `memory_pressure_ceiling` | 0.99 (number in (0, 1]) | Upper bound on utilization plus margin | Universal hardware; 0.99 |
+| `memory_pressure_fallback_bytes` | 200 GiB (positive integer) | Device size when Metal reports none, and threshold when probing fails | Universal hardware; 200 GiB |
+| `memory_check_interval` | 16 (positive integer) | Busy-step memory check cadence | Universal hardware; 16 |
+
+Memory knobs resolve once per process at engine setup into a frozen policy;
+any resolution failure keeps the constants above. The engine loop never
+resolves them per step.
 
 The eager hook retains its import-time `RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH`
 falsey opt-out as an outer master gate. Lattice candidate overrides are captured

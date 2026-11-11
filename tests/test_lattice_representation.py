@@ -58,6 +58,13 @@ def test_builtin_resolution_snapshot(monkeypatch):
     selected = set()
     count = 0
     migrated_knobs = {
+        "metal_cache_floor_bytes",
+        "metal_cache_cap_bytes",
+        "metal_cache_divisor",
+        "memory_pressure_margin",
+        "memory_pressure_ceiling",
+        "memory_pressure_fallback_bytes",
+        "memory_check_interval",
         "qsa_stage1_min_query",
         "qsa_indexed_splitk_min_kv",
         "qsa_block_sparse_min_kv",
@@ -167,7 +174,20 @@ def test_existing_validator_domains():
         pass
 
     values.extend((TupleValue((1, 1)), ListValue([2, 4])))
+    # New memory domains have dedicated validation coverage. This oracle
+    # continues to characterize only the pre-extension registry.
+    memory_knobs = {
+        "metal_cache_floor_bytes",
+        "metal_cache_cap_bytes",
+        "metal_cache_divisor",
+        "memory_pressure_margin",
+        "memory_pressure_ceiling",
+        "memory_pressure_fallback_bytes",
+        "memory_check_interval",
+    }
     for name, knob in lattice.KNOBS.items():
+        if name in memory_knobs:
+            continue
         for value in values:
             assert knob.valid(value) == legacy_valid(knob.default, value), (name, value)
 
