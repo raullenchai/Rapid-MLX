@@ -126,6 +126,9 @@ def main() -> None:
         model_path=str(args.model_path),
         model_config=ModelConfig.qwen_image_21(),
     )
+    from rapid_mlx.image.engine import _preserve_qwen21_precision
+
+    _preserve_qwen21_precision(model)
     if args.materialize_model:
         mx.eval(model.parameters())
     _memory("model_loaded")

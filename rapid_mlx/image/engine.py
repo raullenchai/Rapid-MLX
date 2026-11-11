@@ -40,6 +40,7 @@ at server boot would stall startup on a multi-gigabyte download.
 from __future__ import annotations
 
 import gc
+import inspect
 import io
 import math
 import os
@@ -121,6 +122,52 @@ def _bounded_generation_cache():
                     mx.clear_cache()
                 except Exception:
                     pass
+
+
+def _generate_backend_image(model, **kwargs):
+    """Keep mflux 0.20's alpha-dropping reference loader during a render.
+
+    The caller holds the process generation lock. Restore the loader even on
+    cancellation; no other Rapid image generation can observe this override.
+    """
+    if not type(model).__module__.startswith("mflux.") or not (
+        kwargs.get("image_paths") or kwargs.get("image_path")
+    ):
+        return model.generate_image(**kwargs)
+    from mflux.utils.image_util import ImageUtil
+
+    original = ImageUtil.load_image
+    if "composite_alpha" not in inspect.signature(original).parameters:
+        return model.generate_image(**kwargs)
+
+    def load_image(image_or_path, composite_alpha=False):
+        return original(image_or_path, composite_alpha=composite_alpha)
+
+    ImageUtil.load_image = staticmethod(load_image)
+    try:
+        return model.generate_image(**kwargs)
+    finally:
+        ImageUtil.load_image = staticmethod(original)
+
+
+def _preserve_qwen21_precision(model) -> None:
+    """Keep the pre-0.21 attention path and dense projection rounding."""
+    transformer = getattr(model, "transformer", None)
+    if transformer is None:
+        return
+    if hasattr(transformer, "use_packed_projections"):
+        transformer.use_packed_projections = False
+    for block in getattr(transformer, "transformer_blocks", ()):
+        if hasattr(block.attn, "use_fused_prologue"):
+            block.attn.use_fused_prologue = False
+
+
+def _preserve_vae_decode(vae) -> None:
+    """Select the full-image path when mflux exposes its decode-mode API."""
+    if hasattr(vae, "decode_mode"):
+        # Flux2VAE exposes the constant directly; Z-Image uses the same value
+        # from VAEBlockDecoder. Neither has a decode selector in mflux 0.23.
+        vae.decode_mode = getattr(vae, "DECODE_LEGACY", "legacy")
 
 
 class ImageRuntimeError(RuntimeError):
@@ -553,27 +600,39 @@ class ImageGenerationEngine:
         if self.family == "flux2-klein":
             from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
 
-            return Flux2Klein(
+            model = Flux2Klein(
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.flux2_klein_4b(),
             )
+            # mflux 0.24 defaults to bf16 strip decoding. Keep our full-image
+            # decode, including the previous dtype and GroupNorm behavior.
+            _preserve_vae_decode(model.vae)
+            return model
         if self.family == "z-image":
             from mflux.models.z_image.variants.z_image import ZImage
 
-            return ZImage(
+            model = ZImage(
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.z_image_turbo(),
+                float32=True,  # Preserve the pre-0.22 transformer precision.
             )
+            _preserve_vae_decode(model.vae)
+            return model
         if self.family == "qwen-image-edit":
             from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
 
-            return QwenImageEdit(quantize=self._quantize, model_path=model_path)
+            model = QwenImageEdit(quantize=self._quantize, model_path=model_path)
+            # mflux 0.22 restored a bias that 0.20 never used in generation.
+            model.transformer.norm_out.linear.bias = None
+            return model
         if self.family == "qwen-image":
             from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 
-            return QwenImage(quantize=self._quantize, model_path=model_path)
+            model = QwenImage(quantize=self._quantize, model_path=model_path)
+            model.transformer.norm_out.linear.bias = None
+            return model
         if self.family == "qwen-image-2.1":
             from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 
@@ -629,9 +688,11 @@ class ImageGenerationEngine:
             if self.family == "flux-schnell"
             else ModelConfig.dev()
         )
-        return Flux1(
+        model = Flux1(
             quantize=self._quantize, model_path=model_path, model_config=config
         )
+        model.transformer.norm_out.linear.bias = None
+        return model
 
     def _build_qwen21_turbo(self, model_cls, model_path):
         """Load the official Turbo checkpoint through the Qwen-Image 2.1 path.
@@ -726,11 +787,13 @@ class ImageGenerationEngine:
             )
 
             model_path = self._model_path_for_mflux()
-            return Flux2KleinEdit(
+            model = Flux2KleinEdit(
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.flux2_klein_4b(),
             )
+            _preserve_vae_decode(model.vae)
+            return model
         raise ImageRequestError(f"{self.family} does not support image editing.")
 
     def _verify_weights_complete(self) -> None:
@@ -1089,6 +1152,8 @@ class ImageGenerationEngine:
                     self._build_edit_model() if for_edit else self._build_model()
                 )
                 self._loaded_mode = desired_mode
+                if self.family == "qwen-image-2.1":
+                    _preserve_qwen21_precision(self._model)
             except ImageRuntimeError:
                 raise
             except Exception as exc:  # noqa: BLE001 — surface a clean API error
@@ -1408,7 +1473,8 @@ class ImageGenerationEngine:
                     # emits pure noise (a valid, correctly-sized PNG of static).
                     # Passing ``None`` lets mflux size the target to match the
                     # conditioning, exactly like its edit CLI.
-                    result = model.generate_image(
+                    result = _generate_backend_image(
+                        model,
                         image_paths=image_paths,
                         height=None,
                         width=None,
@@ -1433,7 +1499,8 @@ class ImageGenerationEngine:
                         )
                     resolved_width = width if width is not None else inferred_width
                     resolved_height = height if height is not None else inferred_height
-                    result = model.generate_image(
+                    result = _generate_backend_image(
+                        model,
                         image_path=input_paths[0],
                         image_strength=0.4,
                         height=resolved_height,
@@ -1447,7 +1514,8 @@ class ImageGenerationEngine:
                     # primary reference image (including aspect ratio). The
                     # route deliberately selects that behavior; explicit
                     # dimensions remain available to direct engine callers.
-                    result = model.generate_image(
+                    result = _generate_backend_image(
+                        model,
                         image_paths=image_paths,
                         height=height,
                         width=width,
@@ -1457,7 +1525,8 @@ class ImageGenerationEngine:
                     )
                 else:
                     if self.family == "hidream-o1-dev":
-                        result = model.generate_image(
+                        result = _generate_backend_image(
+                            model,
                             height=height,
                             width=width,
                             seed=seed,
@@ -1465,7 +1534,8 @@ class ImageGenerationEngine:
                             num_inference_steps=num_inference_steps,
                         )
                     else:
-                        result = model.generate_image(
+                        result = _generate_backend_image(
+                            model,
                             height=height,
                             width=width,
                             **self._gen_kwargs(

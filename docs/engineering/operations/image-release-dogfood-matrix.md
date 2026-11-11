@@ -106,3 +106,43 @@ Verdict: PASS/BLOCKED, with issue link for every failure or waiver
 Keep raw logs and generated images as release artifacts when practical. Do not
 commit model weights, machine-specific cache paths, credentials, or raw chat
 transcripts.
+
+
+## Image runtime dependency compatibility
+
+The Python package accepts mflux `>=0.23.0,<0.25` on Darwin and Pillow
+`>=12.3.0,<14`. A stable Gradio install can select mflux 0.23 and Pillow 12.3;
+the default install selects mflux 0.24 and Pillow 13. Desktop keeps its separate
+hashed pins at mflux 0.24.0 and Pillow 13.0.0 for the image-decoding security fix.
+
+The published 0.23.0 and 0.24.0 wheels were compared for every adapted API:
+
+| API | 0.23.0 → 0.24.0 | Rapid-MLX compatibility policy |
+| --- | --- | --- |
+| FLUX.2 and Z-Image VAE | Full-image decode → new decode selector with low-memory default | Select legacy decode only when the selector exists; keep Bonsai's existing tiling. |
+| Bonsai's inherited FLUX.2 metadata | Direct ComputePrecision metadata → helper with VAE metadata | Initialize `ComputePrecision(None)` in both; constructor and policy API are unchanged. |
+| Z-Image constructor | `float32` and `compute_precision` unchanged | Pass `float32=True` to retain the previous transformer precision. |
+| Reference image loader | `composite_alpha=True` unchanged | Detect the keyword, temporarily default it to false during locked generation, and restore on success or error. |
+| Qwen 2.1 attention and projections | `use_fused_prologue` and `use_packed_projections` unchanged | Disable each flag when present to retain composed attention and separate projection rounding. |
+| FLUX.1 / original Qwen output normalization | AdaLayerNorm linear bias unchanged | Clear the loaded bias per instance, preserving the prior bias-free output layer. |
+| Bonsai Qwen3 encoder / FLUX.2 VAE constructor | Optional encoder `dtype` / VAE decoder channels added | Existing positional arguments and default decoder remain compatible. |
+| HiDream PNG conversion | Pillow 13 removes explicit `Image.fromarray` mode conversion | Infer RGB from the existing three-channel uint8 array. |
+
+`tests/test_mflux_api_contract.py` binds adapter calls against installed wheel
+signatures without loading weights and mocks both VAE shapes, inherited Bonsai
+metadata, optimization flags, and reference-loader restoration. These checks do
+not replace the real-weight candidate matrix above.
+
+Resolve the two dependency paths on Apple Silicon / Python 3.12 without
+installing model weights:
+
+```sh
+MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile pyproject.toml \
+  --python-platform aarch64-apple-darwin --python-version 3.12
+MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile pyproject.toml --extra chat \
+  --prerelease disallow --python-platform aarch64-apple-darwin --python-version 3.12
+```
+
+The deployment target matches the MLX wheel floor. Explicit stable-only
+resolution exercises the Gradio 6.31 / Pillow <13 fallback; a compatible Gradio
+prerelease may instead allow mflux 0.24 / Pillow 13.

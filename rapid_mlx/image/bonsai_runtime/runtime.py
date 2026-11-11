@@ -10,6 +10,7 @@ from typing import Any, cast
 import mlx.core as mx
 import mlx.nn as nn
 from mflux.callbacks.callback_registry import CallbackRegistry
+from mflux.models.common.compute_precision import ComputePrecision
 from mflux.models.common.config.model_config import ModelConfig
 from mflux.models.common.tokenizer import LanguageTokenizer, TokenizerLoader
 from mflux.models.common.vae.tiling_config import TilingConfig
@@ -248,6 +249,8 @@ class BonsaiImage(Flux2Klein):
         self._root = Path(model_path).expanduser().resolve()
         _validate_checkpoint(self._root)
         self.model_config = ModelConfig.flux2_klein_4b()
+        # Flux2Klein.generate_image now records this policy in image metadata.
+        self.compute_precision = ComputePrecision(None)
         self.callbacks = CallbackRegistry()
         self.prompt_cache: dict[str, tuple[mx.array, mx.array]] = {}
         self.tiling_config = _TiledFlux2VAE._bonsai_tiling
@@ -260,6 +263,8 @@ class BonsaiImage(Flux2Klein):
             self.model_config.text_encoder_overrides,
         )
         self.vae = _TiledFlux2VAE()
+        if hasattr(self.vae, "DECODE_LEGACY"):
+            self.vae.decode_mode = self.vae.DECODE_LEGACY
         vae_weights = WeightLoader.load(
             weight_definition=_VAEWeightDefinition,
             model_path=str(self._root),
