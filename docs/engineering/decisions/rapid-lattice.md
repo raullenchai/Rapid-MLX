@@ -28,7 +28,8 @@ value, source (`capability`, `env`, `local`, `overlay:<id>`, `builtin:<id>`, or
 plus both loaded profile versions. It excludes device names, model paths,
 serials, prompts, accounts and raw environment values.
 
-A lattice profile cell matches only its explicitly declared hardware set. There is no
+Omitting `hardware` makes a cell universal, including unknown/unclassified devices.
+When present, `hardware` must be a nonempty explicit selector list. There is no
 runtime nearest-neighbor distance or implicit borrowing, including within a
 generation/tier. Each hardware selector names a GPU generation and tier and may
 restrict cores/memory to inclusive ranges. Selectors within the list are ORed;
@@ -91,8 +92,26 @@ Both use schema version 1:
 Ranges include their endpoints; equal endpoints mean exact match. Memory is in
 bytes. Tiers are `base`, `Pro`, `Max`, `Ultra`. Software uses version specifiers;
 unknown installed versions fail pinned constraints. Optional model selectors
-are `family`, six-element `geometry`, `quant_mode`, and `attention_kinds`;
-workload selectors are exact `mode`, `width`, `batch`. IDs and profile versions
+are `family`, `geometry`, `quant_mode`, and `attention_kinds`. Geometry accepts
+the existing six-element array or an object constraining any subset of
+`hidden_size`, `intermediate_size`, `num_experts`, `top_k`, `bits`, `group_size`
+to positive integers. For example, `{"hidden_size": 2048, "num_experts": 256,
+"top_k": 8}` ignores intermediate size and quantization. A missing constrained
+fact fails closed; omitted facts impose no restriction. An empty object imposes
+no geometry restriction. Full arrays retain exact matching.
+Workload selectors are exact `mode`, `width`, `batch`, plus optional
+`flattened_rows: [min, max]` (inclusive nonnegative bounds). Callers supply actual
+flattened rows separately from sequence width; missing row facts fail closed.
+Universal and specific cells have equal priority: conflicting values in one
+profile return the knob default without consulting the lower profile.
+
+The structural contract is `proto/model-runtime/v1/lattice-profile.schema.json`,
+synced into the wheel with `scripts/sync_model_catalog_schemas.py`. Runtime
+validation additionally checks version specifiers, ordered ranges and duplicate
+IDs. Version 1 is retained because this profile format is unreleased; published
+identity contracts are unchanged. Knobs declare validators explicitly (boolean,
+integer range, enum, or the existing forward-cost curve validator), independently
+of their defaults. Existing accepted values are unchanged. IDs and profile versions
 are short identifiers. Unknown document keys/unsupported schemas reject the
 whole document. Unknown cell/selector keys, unknown knobs/capabilities,
 wrong-type/out-of-range values and duplicate IDs reject cells with a debug

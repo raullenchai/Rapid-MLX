@@ -51,6 +51,7 @@
             "mode": {"enum": ["plain", "mtp"]},
             "width": {"type": "integer", "minimum": 1, "maximum": 1024},
             "batch": {"type": "integer", "minimum": 1, "maximum": 1024},
+            "flattened_rows": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
             "has_mtp_head": {"type": "boolean"},
             "knobs": {
               "type": "object", "maxProperties": 128, "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},

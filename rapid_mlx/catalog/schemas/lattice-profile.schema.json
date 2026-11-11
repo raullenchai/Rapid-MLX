@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rapid-mlx.org/proto/model-runtime/v1/lattice-profile.schema.json",
+  "title": "Rapid Lattice profile (unreleased v1)",
+  "description": "Structural validation. The runtime also validates software specifiers, ordered ranges, duplicate cell IDs, and registered knob values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_version",
+    "generated_at",
+    "cells"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "profile_version": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_.-]{1,128}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/cell"
+      },
+      "minItems": 0
+    }
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "knobs",
+        "provenance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_.-]{1,128}$"
+        },
+        "hardware": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "gpu_generation",
+              "tier"
+            ],
+            "properties": {
+              "gpu_generation": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "tier": {
+                "enum": [
+                  "base",
+                  "Pro",
+                  "Max",
+                  "Ultra"
+                ]
+              },
+              "gpu_cores": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "memory_size": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "software": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mlx": {
+              "type": "string",
+              "minLength": 1
+            },
+            "macos": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rapid_mlx": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "family": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]{1,128}$"
+            },
+            "geometry": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "minItems": 6,
+                  "maxItems": 6
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "hidden_size": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "intermediate_size": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "num_experts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "top_k": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "bits": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "group_size": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "quant_mode": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]{1,128}$"
+            },
+            "attention_kinds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_.-]{1,128}$"
+              },
+              "minItems": 0
+            }
+          }
+        },
+        "workload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_.-]{1,128}$"
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "batch": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "flattened_rows": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        "knobs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mtp_gdn_fusion": {
+              "type": "boolean"
+            },
+            "qwen35_affine4_bank_views": {
+              "type": "boolean"
+            },
+            "qwen35_residual_norm": {
+              "type": "boolean"
+            },
+            "affine8_attention": {
+              "type": "boolean"
+            },
+            "qsa_stage1": {
+              "type": "boolean"
+            },
+            "qsa_indexed_splitk": {
+              "type": "boolean"
+            },
+            "lane_tensor_units": {
+              "type": "boolean"
+            },
+            "lane_simd_probe": {
+              "type": "boolean"
+            },
+            "mtp_max_depth": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            "mtp_prefill_block_size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "qwen35_affine4_rows": {
+              "enum": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  4
+                ]
+              ]
+            },
+            "mtp_forward_costs_ms": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 6,
+              "oneOf": [
+                {
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "prefixItems": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                {
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "prefixItems": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                {
+                  "minItems": 5,
+                  "maxItems": 5,
+                  "prefixItems": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                {
+                  "minItems": 6,
+                  "maxItems": 6,
+                  "prefixItems": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "minProperties": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "affine8_attention"
+            ]
+          },
+          "minItems": 0
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "evidence"
+          ],
+          "properties": {
+            "gpu_cores": {},
+            "memory_size": {},
+            "date": {},
+            "commit": {},
+            "plain_tps": {},
+            "mtp_tps": {},
+            "repetitions": {},
+            "plain_arms_tps": {},
+            "decision": {},
+            "plain_ranges_tps": {},
+            "mtp_ranges_tps": {},
+            "quality": {},
+            "hardware_scope": {},
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

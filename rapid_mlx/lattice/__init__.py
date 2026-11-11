@@ -42,47 +42,76 @@ def _expert(c):
     )
 
 
+def boolean(value):
+    return type(value) is bool
+
+
+def int_range(minimum, maximum=None):
+    return lambda value: (
+        type(value) is int
+        and value >= minimum
+        and (maximum is None or value <= maximum)
+    )
+
+
+def enum_values(*choices):
+    """Match enum values strictly; JSON arrays may represent tuple choices."""
+
+    def valid(value):
+        if isinstance(value, (tuple, list)):
+            value = tuple(value)
+        return any(
+            type(value) is type(choice)
+            and (
+                len(value) == len(choice)
+                and all(type(v) is type(c) and v == c for v, c in zip(value, choice))
+                if isinstance(choice, tuple)
+                else value == choice
+            )
+            for choice in choices
+        )
+
+    return valid
+
+
+def forward_costs(value):
+    return (
+        isinstance(value, (tuple, list))
+        and 3 <= len(value) <= 6
+        and all(type(v) in (int, float) and abs(v) <= sys.float_info.max for v in value)
+        and all(v > 0 for v in value[:-1])
+        and value[-1] >= 0
+    )
+
+
 @dataclass(frozen=True)
 class Knob:
     scope: Callable[[LatticeContext], bool]
     requirement: Callable[[LatticeContext], str | None]
+    validator: Callable[[object], bool]
     env: str | None = None
     default: object = False
     profile_requirement: bool = False
     candidates: tuple[object, ...] = ()
 
     def valid(self, value):
-        if self.default == ():
-            return (
-                isinstance(value, (tuple, list))
-                and 3 <= len(value) <= 6
-                and all(
-                    type(v) in (int, float) and abs(v) <= sys.float_info.max
-                    for v in value
-                )
-                and all(v > 0 for v in value[:-1])
-                and value[-1] >= 0
-            )
-        if type(self.default) is int:
-            if self.default == 0:
-                return type(value) is int and value >= 0
-            return type(value) is int and 1 <= value <= 4
-        if type(self.default) is bool:
-            return type(value) is bool
-        return (
-            isinstance(value, (tuple, list))
-            and len(value) == 2
-            and all(type(v) is int for v in value)
-            and tuple(value) in ((1, 1), (2, 4))
-        )
+        return self.validator(value)
 
 
 def _knob(
-    name, scope, env=None, default=False, profile_requirement=False, candidates=()
+    name,
+    scope,
+    env=None,
+    default=False,
+    profile_requirement=False,
+    candidates=(),
+    *,
+    validator=boolean,
 ):
     return Knob(
         scope,
         lambda c: requirement_reason(name, c),
+        validator,
         env,
         default,
         profile_requirement,
@@ -99,17 +128,20 @@ KNOBS = {
         "mtp_prefill_block_size",
         lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,
         default=0,
+        validator=int_range(0),
     ),
     "mtp_forward_costs_ms": _knob(
         "mtp_forward_costs_ms",
         lambda c: c.mode == "mtp" and c.batch == 1 and c.width == 1,
         default=(),
+        validator=forward_costs,
     ),
     "mtp_max_depth": _knob(
         "mtp_max_depth",
         lambda c: c.mode == "mtp" and c.batch == 1,
         "RAPID_MLX_MTP_MAX_DEPTH",
         default=1,
+        validator=int_range(1, 4),
         candidates=(1, 2, 3, 4),
     ),
     "qwen35_affine4_bank_views": _knob(
@@ -126,6 +158,7 @@ KNOBS = {
         "qwen35_affine4_rows",
         lambda c: _expert(c) and 1 <= c.width <= 9,
         default=(1, 1),
+        validator=enum_values((1, 1), (2, 4)),
         candidates=((1, 1), (2, 4)),
     ),
     "affine8_attention": _knob(
@@ -150,6 +183,7 @@ KNOBS = {
             if c.hardware.gpu_generation is not None and c.hardware.gpu_generation >= 15
             else None
         ),
+        validator=boolean,
         default=True,
     ),
 }
