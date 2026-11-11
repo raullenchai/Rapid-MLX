@@ -227,7 +227,7 @@ def planning_context(alias: str, request: AccelerationRequest) -> dict | None:
     import mlx.core as mx
 
     mode = "mtp" if launch.scheduler_kwargs.get("spec_decode") == "mtp" else "plain"
-    context = json.loads(
+    context: dict = json.loads(
         json.dumps(
             tuning.dump(
                 tuning.runtime_context(
@@ -290,7 +290,7 @@ def run_comparison(
         if progress is not None:
             progress(message)
 
-    context = planning_context(alias, request)
+    context = planning_context(alias, request) or {}
     candidates = (
         list(islice(candidate_values(context, salt=salt), configs - 1))
         if context
@@ -320,7 +320,7 @@ def run_comparison(
         for rep in range(actual_repetitions)
         for index in (range(count) if rep % 2 == 0 else reversed(range(count)))
     ]
-    manifest = {
+    manifest: dict[str, Any] = {
         "group_id": group,
         "status": "running",
         "plan": {

@@ -10,6 +10,7 @@ import signal
 import statistics
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -590,7 +591,7 @@ def _benchmark_command(args) -> int:
                         event_sink = _tagged_event_to_stderr
                     else:
                         progress_sink = None
-                    runner = run_local
+                    runner: Callable[..., dict[str, Any]] = run_local
                     comparison_options: dict = {}
                     configs = getattr(args, "configs", 1)
                     if configs > 1:
