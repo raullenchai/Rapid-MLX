@@ -369,6 +369,16 @@
                 }
               ]
             },
+            "qwen35_fused_gdn_decode": {
+              "type": "boolean"
+            },
+            "gdn_in_proj_fusion": {
+              "type": "boolean"
+            },
+            "gdn_in_proj_max_rows": {
+              "type": "integer",
+              "minimum": 0
+            },
             "affine8_attention_min_kv": {
               "type": "integer",
               "minimum": 0

@@ -70,6 +70,9 @@ def test_builtin_resolution_snapshot(monkeypatch):
         "affine8_attention_min_kv",
         "qwen35_eager_layer_dispatch",
         "qsa_block_sparse_min_query",
+        "qwen35_fused_gdn_decode",
+        "gdn_in_proj_fusion",
+        "gdn_in_proj_max_rows",
     }
     for ctx in builtin_contexts():
         decisions = {}
