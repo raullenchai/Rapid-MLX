@@ -2327,15 +2327,18 @@ def _add_benchmark_parser(
         help="Measure with every acceleration off (the original Community Benchmark protocol)",
     )
     community_run.add_argument(
-        "--sweep",
-        action="store_true",
-        help="Interleave the default and registered MTP depth candidates locally",
+        "--configs",
+        type=int,
+        default=2,
+        choices=range(1, 17),
+        help="Configurations to compare: your current config plus nearest neighbors (default: 2; 1 runs only your current config)",
     )
     community_run.add_argument(
-        "--sweep-reps",
+        "--repetitions",
         type=int,
         default=3,
-        help="Fresh runner repetitions per sweep arm (default: 3, range: 1..10)",
+        choices=range(3, 11),
+        help="Interleaved fresh-load repetitions per configuration (default: 3; range: 3..10; applies when --configs > 1)",
     )
     acceleration = community_run.add_argument_group(
         "acceleration (same flags and meaning as `rapid-mlx serve`)"

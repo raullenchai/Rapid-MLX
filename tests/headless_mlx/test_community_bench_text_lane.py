@@ -1017,11 +1017,11 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
 
     if tuning_observation:
         (tmp_path / "config.json").write_text("{}")
-        from rapid_mlx.community_bench import sweep
-        from tests.test_tuning_sweep import sample
+        from rapid_mlx.community_bench import comparison
+        from tests.test_tuning_comparison import sample
 
         monkeypatch.setattr(
-            sweep, "capture_tuning", lambda *args, **kwargs: sample()["tuning"]
+            comparison, "capture_tuning", lambda *args, **kwargs: sample()["tuning"]
         )
 
     run = local_runner.run_local(

@@ -274,7 +274,9 @@ def test_serve_parity(acceleration_probes, alias, flags):
     )
 
     parser = build_parser()
-    request = request_from_args(parser.parse_args(["benchmark", "run", alias, *flags]))
+    request = request_from_args(
+        parser.parse_args(["benchmark", "run", "--configs", "1", alias, *flags])
+    )
     args = build_serve_args(alias, request)
     direct = parser.parse_args(["serve", alias, *flags])
     direct.model = args.model
@@ -701,7 +703,9 @@ def test_cli_acceleration_summary_and_json(monkeypatch, capsys):
     monkeypatch.setattr(cli, "preflight_benchmark_acceleration", lambda *args: None)
     monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     monkeypatch.setattr(cli, "summarize_measurements", lambda run: [])
-    args = SimpleNamespace(benchmark_action="run", benchmark_model="x", json=False)
+    args = SimpleNamespace(
+        benchmark_action="run", configs=1, benchmark_model="x", json=False
+    )
     assert cli.benchmark_command(args) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[1].startswith("Acceleration: no accelerations")
@@ -763,7 +767,9 @@ def test_removed_benchmark_flags_rejected():
     parser = build_parser()
     for flag in removed:
         with pytest.raises(SystemExit):
-            parser.parse_args(["benchmark", "run", "model", flag, "1"])
+            parser.parse_args(
+                ["benchmark", "run", "--configs", "1", "model", flag, "1"]
+            )
 
 
 def test_sidecar_snapshot_subfolders_have_distinct_identities(tmp_path):
@@ -1233,7 +1239,9 @@ def test_cli_default_run_skips_early_acceleration_preflight(monkeypatch, capsys)
 
     monkeypatch.setattr(cli, "preflight_benchmark_acceleration", unexpected_preflight)
     monkeypatch.setattr(cli, "run_local", runner)
-    args = build_parser().parse_args(["benchmark", "run", "qwen3.8-27b-4bit"])
+    args = build_parser().parse_args(
+        ["benchmark", "run", "--configs", "1", "qwen3.8-27b-4bit"]
+    )
     assert cli.benchmark_command(args) == 1
     assert "runner reached" in capsys.readouterr().err
 
@@ -1258,7 +1266,15 @@ def test_cli_plan_failure_defers_to_runner(monkeypatch, capsys, error_type):
     monkeypatch.setattr(cli, "plan_for_alias", failed_plan)
     monkeypatch.setattr(cli, "run_local", runner)
     args = build_parser().parse_args(
-        ["benchmark", "run", "unknown", "--speculative-config", '{"method":"suffix"}']
+        [
+            "benchmark",
+            "run",
+            "--configs",
+            "1",
+            "unknown",
+            "--speculative-config",
+            '{"method":"suffix"}',
+        ]
     )
     assert cli.benchmark_command(args) == 1
     assert "runner reached" in capsys.readouterr().err

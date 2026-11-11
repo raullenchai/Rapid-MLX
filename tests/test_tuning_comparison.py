@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Offline sweep execution, privacy and profile distillation contracts."""
+"""Offline comparison execution, privacy and profile distillation contracts."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ import pytest
 
 from rapid_mlx import __version__, tuning
 from rapid_mlx.catalog import rcj_digest
-from rapid_mlx.community_bench import sweep
-from rapid_mlx.community_bench.acceleration import AccelerationRequest
+from rapid_mlx.community_bench import comparison
 from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
 from rapid_mlx.community_bench.run_builder import execution_config_digest
 from scripts import tuning_distill
@@ -242,27 +241,25 @@ def test_schema_optional_and_identifier_free():
     validator.validate(run)
 
 
-def test_candidates_come_from_registry(monkeypatch):
+def test_candidates_come_from_registry():
     context = sample()["tuning"]["context"]
-    request = AccelerationRequest(
-        overrides={
-            "prefill_step_size": 512,
-            "speculative_config": json.dumps({"method": "mtp", "model": "draft"}),
-        }
+    candidates = list(comparison.candidate_values(context))
+    assert candidates[0] == {"mtp_max_depth": 2}
+    assert {"qwen35_affine4_bank_views": False} in candidates
+    assert {"qwen35_affine4_rows": (2, 4)} in candidates
+    distances = [len(c) for c in candidates]
+    assert distances == sorted(distances)
+    singles = [c for c in candidates if len(c) == 1]
+    assert list(comparison.candidate_values(context, salt=1))[0] == next(
+        c for c in singles if "qwen35_affine4_bank_views" in c
     )
-    arms = sweep.candidate_requests(context, request)
-    assert [a for a, _ in arms] == ["mtp-off", "mtp-1", "mtp-2", "mtp-3", "mtp-4"]
-    assert json.loads(arms[2][1].overrides["speculative_config"]) == dict(
-        method="mtp", model="draft", num_speculative_tokens=2
+    assert not any(
+        "lane_simd_probe" in c or "lane_tensor_units" in c for c in candidates
     )
-    assert all(r.overrides["prefill_step_size"] == 512 for _, r in arms)
-    context["has_mtp_head"] = False
-    assert not sweep.candidate_requests(context, request)
 
 
 @pytest.mark.parametrize("repetitions", [3, 7])
-def test_run_sweep_interleaves_and_archives(monkeypatch, tmp_path, repetitions):
-    from rapid_mlx.community_bench import local_runner
+def test_run_comparison_interleaves_and_archives(monkeypatch, tmp_path, repetitions):
     from rapid_mlx.community_bench.workspace import LocalRunArchive
 
     observed = []
@@ -272,59 +269,74 @@ def test_run_sweep_interleaves_and_archives(monkeypatch, tmp_path, repetitions):
         observed.append(kwargs["acceleration"])
         return sample()
 
-    monkeypatch.setattr(local_runner, "run_local", run_local)
+    monkeypatch.setattr(comparison, "measure_configuration", run_local)
     archive = LocalRunArchive(tmp_path)
-    result = sweep.run_sweep("model", repetitions=repetitions, archive=archive)
-    runs = result["sweep"]
-    count = 6 * repetitions
+    result = comparison.run_comparison(
+        "model", configs=4, salt=0, repetitions=repetitions, archive=archive
+    )
+    runs = result["configurations"]
+    count = 4 * repetitions
     assert len(runs) == count
     order = [r["experiment"]["arm_id"] for r in runs]
-    assert order[:6] == ["default", "mtp-off", "mtp-1", "mtp-2", "mtp-3", "mtp-4"]
-    assert order[6:12] == ["mtp-off", "mtp-1", "mtp-2", "mtp-3", "mtp-4", "default"]
-    if repetitions == 7:
-        assert order[-6:] == order[:6]
+    assert order[:4] == ["default", "nearby-1", "nearby-2", "nearby-3"]
+    assert order[4:8] == ["nearby-1", "nearby-2", "nearby-3", "default"]
+    assert runs[0]["paired_runs"] == runs[1:]
+    assert len(runs[0]["paired_runs"]) == count - 1
     assert len({r["experiment"]["group_id"] for r in runs}) == 1
     assert [r["experiment"]["sequence_index"] for r in runs] == list(
         range(1, count + 1)
     )
     assert len(archive.list()) == count
-    assert "none" in sweep.summary_lines(runs)[-1]
+    assert "none" in comparison.summary_lines(runs)[-1]
 
 
 @pytest.mark.parametrize(
     "repetitions,acceleration",
-    [(0, None), (11, None), (3, AccelerationRequest(baseline=True))],
+    [(0, None), (2, None), (11, None)],
 )
-def test_sweep_rejects_invalid_options(repetitions, acceleration):
+def test_comparison_rejects_invalid_options(repetitions, acceleration):
     with pytest.raises(ValueError):
-        sweep.run_sweep("model", repetitions=repetitions, acceleration=acceleration)
+        comparison.run_comparison(
+            "model", repetitions=repetitions, acceleration=acceleration
+        )
 
 
-def test_sweep_unsupported_and_no_candidates(monkeypatch, tmp_path):
-    from rapid_mlx.community_bench import local_runner
+def test_comparison_unsupported_and_no_candidates(monkeypatch, tmp_path):
     from rapid_mlx.community_bench.workspace import LocalRunArchive
 
     run = sample()
     run["tuning"]["context"]["has_mtp_head"] = False
-    monkeypatch.setattr(local_runner, "run_local", lambda *a, **kw: copy.deepcopy(run))
+    for decision in run["tuning"]["context"]["knobs"].values():
+        decision["source"] = "capability"
+    monkeypatch.setattr(
+        comparison, "measure_configuration", lambda *a, **kw: copy.deepcopy(run)
+    )
     assert (
-        len(sweep.run_sweep("model", archive=LocalRunArchive(tmp_path))["sweep"]) == 3
+        len(
+            comparison.run_comparison("model", archive=LocalRunArchive(tmp_path))[
+                "configurations"
+            ]
+        )
+        == 3
     )
     del run["tuning"]
-    with pytest.raises(ValueError, match="native text"):
-        sweep.run_sweep("model", archive=LocalRunArchive(tmp_path))
+    assert comparison.run_comparison("model", archive=LocalRunArchive(tmp_path)) == run
 
 
 def test_summary_winners_divergence():
     runs = paired()
-    assert "mtp-3" in sweep.summary_lines(runs)[-1]
+    assert "mtp-3" in comparison.summary_lines(runs)[-1]
     runs[1]["tuning"]["outputs"]["pp512-tg128"][0] = "sha256:" + "2" * 64
-    assert any("diverged" in line for line in sweep.summary_lines(runs))
+    assert any("diverged" in line for line in comparison.summary_lines(runs))
 
 
 def test_distiller_cli(tmp_path, capsys):
-    file = tmp_path / "sweep.json"
-    file.write_text(json.dumps({"sweep": paired()}))
+    file = tmp_path / "comparison.json"
+    file.write_text(
+        json.dumps(
+            {"configurations": paired(), "measured_configs": 2, "requested_configs": 2}
+        )
+    )
     assert tuning_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
     assert json.loads(capsys.readouterr().out)["entries"]
     file.write_text(json.dumps(sample()))
@@ -332,7 +344,7 @@ def test_distiller_cli(tmp_path, capsys):
     assert not json.loads(capsys.readouterr().out)["entries"]
 
 
-def test_cli_sweep_entry(monkeypatch, tmp_path, capsys):
+def test_cli_comparison_entry(monkeypatch, tmp_path, capsys):
     from rapid_mlx.cli_parser import build_parser
     from rapid_mlx.community_bench import cli
     from rapid_mlx.community_bench.workspace import LocalRunArchive
@@ -344,15 +356,20 @@ def test_cli_sweep_entry(monkeypatch, tmp_path, capsys):
 
     def run(*a, **kw):
         seen.update(kw)
-        return {"sweep": paired()}
+        return {
+            "configurations": paired(),
+            "measured_configs": 2,
+            "requested_configs": 2,
+        }
 
-    monkeypatch.setattr(sweep, "run_sweep", run)
+    monkeypatch.setattr(comparison, "run_comparison", run)
     args = build_parser().parse_args(
-        ["benchmark", "run", "model", "--sweep", "--sweep-reps", "2"]
+        ["benchmark", "run", "model", "--configs", "4", "--repetitions", "3"]
     )
     assert cli._benchmark_command(args) == 0
-    assert seen["repetitions"] == 2
-    assert "Local observation" in capsys.readouterr().out
+    assert seen["repetitions"] == 3
+    assert seen["configs"] == 4
+    assert "local observation" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -391,14 +408,14 @@ def test_capture_tuning_is_json_and_identifier_free(
             num_experts=256 if experts else 0,
             hidden_size=2048,
         )
-    monkeypatch.setattr(sweep, "_expert_quantization", lambda _: quant)
-    monkeypatch.setattr(sweep, "resolve_max_depth", lambda *a, **kw: 4)
+    monkeypatch.setattr(comparison, "_expert_quantization", lambda _: quant)
+    monkeypatch.setattr(comparison, "resolve_max_depth", lambda *a, **kw: 4)
     result = SimpleNamespace(
         short=SimpleNamespace(rounds_raw=[SimpleNamespace(output_digest=DIGEST)]),
         long=SimpleNamespace(rounds_raw=[SimpleNamespace(output_digest=DIGEST)]),
     )
     spec = {"method": mode, "max_draft_tokens": 4}
-    block = sweep.capture_tuning(
+    block = comparison.capture_tuning(
         SimpleNamespace(language_model=model), {"speculative_decoding": spec}, result
     )
     assert block["overrides"] == ({"mtp_max_depth": 3} if mode == "mtp" else {})
@@ -465,8 +482,10 @@ def test_preview_preserves_the_optional_tuning_block():
 def test_candidates_respect_the_model_depth_contract():
     context = sample()["tuning"]["context"]
     context["model"]["family"] = "qwen4_exp"
-    arms = sweep.candidate_requests(context, AccelerationRequest())
-    assert [name for name, _ in arms] == ["mtp-off", "mtp-1", "mtp-2"]
+    context["knobs"]["mtp_max_depth"]["value"] = 2
+    candidates = list(comparison.candidate_values(context))
+    assert {"mtp_max_depth": 1} in candidates
+    assert not any(c.get("mtp_max_depth", 0) > 2 for c in candidates)
 
 
 def test_distiller_requires_stable_distinct_configurations():
@@ -528,7 +547,7 @@ def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
         json.dumps(
             dict(
                 schema_version=1,
-                profile_version="sweep.1",
+                profile_version="comparison.1",
                 generated_at=NOW.isoformat(),
                 entries=[entry],
             )
@@ -548,7 +567,7 @@ def test_distilled_entry_loads_and_resolves_only_its_explicit_cell(
     )
     decision = tuning.resolve("mtp_max_depth", ctx, environ={})
     assert decision == tuning.Decision(
-        3, "overlay:" + entry["id"], profile_version="sweep.1"
+        3, "overlay:" + entry["id"], profile_version="comparison.1"
     )
     for changed in (
         replace(ctx, hardware=replace(ctx.hardware, gpu_cores=79)),
@@ -596,3 +615,339 @@ def test_schema_preserves_full_v2_profile_sources_and_versions():
         )
         with pytest.raises(ValueError):
             BenchmarkRunValidator().validate(bad)
+
+
+def test_comparison_environment_restores_even_after_failure(monkeypatch):
+    import os
+
+    key = "RAPID_MLX_BENCHMARK_KNOBS"
+    monkeypatch.setenv(key, "previous")
+    with (
+        pytest.raises(RuntimeError),
+        comparison.configuration_environment({"mtp_max_depth": 2}),
+    ):
+        assert json.loads(os.environ[key]) == {"mtp_max_depth": 2}
+        raise RuntimeError("cancelled")
+    assert os.environ[key] == "previous"
+    with comparison.configuration_environment({}):
+        assert key not in os.environ
+    assert os.environ[key] == "previous"
+
+
+@pytest.mark.parametrize(
+    "raw", ['{"mtp_max_depth":2}', "null", "[]", "{", '{"mtp_max_depth":99}']
+)
+def test_registered_benchmark_overrides_obey_capabilities(raw):
+    context = sample()["tuning"]["context"]
+    ctx = tuning.TuningContext(
+        tuning.HardwareProfile(**context["hardware"]),
+        context["mlx"],
+        context["macos"],
+        tuning.ModelProfile(**context["model"]),
+        mode="mtp",
+        has_mtp_head=True,
+    )
+    env = {"RAPID_MLX_BENCHMARK_KNOBS": raw, "RAPID_MLX_MTP_MAX_DEPTH": "1"}
+    decision = tuning.resolve("mtp_max_depth", ctx, environ=env)
+    assert decision.value == (2 if raw == '{"mtp_max_depth":2}' else 1)
+    assert decision.source == ("benchmark" if decision.value == 2 else "env")
+    from dataclasses import replace
+
+    assert (
+        tuning.resolve(
+            "mtp_max_depth", replace(ctx, has_mtp_head=False), environ=env
+        ).source
+        == "capability"
+    )
+
+
+def test_single_configuration_preserves_original_runner(monkeypatch, tmp_path):
+    from rapid_mlx.community_bench import local_runner
+    from rapid_mlx.community_bench.workspace import LocalRunArchive
+
+    expected = sample()
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(local_runner, "run_local", run)
+    assert (
+        comparison.run_comparison("model", configs=1, archive=LocalRunArchive(tmp_path))
+        is expected
+    )
+    assert len(calls) == 1 and "tuning_observation" not in calls[0]
+    for configs in (0, 17):
+        with pytest.raises(ValueError, match="configs"):
+            comparison.run_comparison("model", configs=configs)
+
+
+def test_neighbor_boundaries_and_rotation():
+    context = sample()["tuning"]["context"]
+    context["knobs"]["mtp_max_depth"]["value"] = 1
+    candidates = list(comparison.candidate_values(context))
+    assert candidates[0] == {"mtp_max_depth": 2}
+    context["knobs"]["mtp_max_depth"]["value"] = 4
+    assert list(comparison.candidate_values(context))[0] == {"mtp_max_depth": 3}
+    choices = {
+        next(iter(next(comparison.candidate_values(context, salt=salt))))
+        for salt in range(3)
+    }
+    assert choices == {
+        "mtp_max_depth",
+        "qwen35_affine4_bank_views",
+        "qwen35_affine4_rows",
+    }
+    context["knobs"]["mtp_max_depth"]["value"] = 99
+    assert all("mtp_max_depth" not in c for c in comparison.candidate_values(context))
+    context["mode"] = "plain"
+    candidates = list(comparison.candidate_values(context))
+    assert all("mtp_max_depth" not in c for c in candidates)
+    context["knobs"]["qwen35_residual_norm"]["source"] = "default"
+    assert any(
+        "qwen35_residual_norm" in c for c in comparison.candidate_values(context)
+    )
+
+
+def test_distiller_accepts_boolean_neighbor_and_bundled_submission(tmp_path, capsys):
+    runs = paired()
+    for run in runs[1::2]:
+        run["tuning"]["overrides"]["mtp_max_depth"] = 1
+        run["tuning"]["context"]["knobs"]["qwen35_affine4_bank_views"].update(
+            value=False, source="benchmark"
+        )
+    assert (
+        tuning_distill.distill(runs, as_of=NOW)["entries"][0]["knobs"][
+            "qwen35_affine4_bank_views"
+        ]
+        is False
+    )
+    first = runs[0]
+    first["paired_runs"] = runs[1:]
+    file = tmp_path / "paired.json"
+    file.write_text(json.dumps(first))
+    assert tuning_distill.main([str(file), "--as-of", NOW.isoformat()]) == 0
+    assert json.loads(capsys.readouterr().out)["entries"]
+
+
+def test_preview_projects_all_paired_runs_and_rejects_nested_bundles():
+    from rapid_mlx.community_bench.atomic_upload import preview_run
+
+    first, second = sample(), sample()
+    second["model"]["components"][0]["source"]["local_path"] = "/private/local/model"
+    first["paired_runs"] = [second]
+    from rapid_mlx.community_bench.publication import project_run_for_publication
+
+    projected, hidden = project_run_for_publication(first)
+    preview = preview_run(projected, install_id="a" * 12)
+    wire = json.loads(preview["payload_json"])
+    assert len(wire["paired_runs"]) == 1
+    assert (
+        "local_path" not in wire["paired_runs"][0]["model"]["components"][0]["source"]
+    )
+    assert any(
+        f["path"].startswith("paired_runs[0].")
+        for f in [fact.as_dict() for fact in hidden]
+    )
+    assert (
+        second["model"]["components"][0]["source"]["local_path"]
+        == "/private/local/model"
+    )
+    second["paired_runs"] = [sample()]
+    with pytest.raises(ValueError):
+        BenchmarkRunValidator().validate(first)
+
+
+def test_cli_configs_one_and_default_help(monkeypatch, tmp_path, capsys):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+    from rapid_mlx.community_bench.workspace import LocalRunArchive
+
+    parser = build_parser()
+    assert parser.parse_args(["benchmark", "run", "model"]).configs == 2
+    seen = []
+    monkeypatch.setattr(
+        cli.LocalRunArchive, "default", lambda: LocalRunArchive(tmp_path)
+    )
+    monkeypatch.setattr(cli, "run_local", lambda *a, **kw: seen.append(kw) or sample())
+    args = parser.parse_args(["benchmark", "run", "model", "--configs", "1"])
+    assert cli._benchmark_command(args) == 0
+    assert len(seen) == 1 and "tuning_observation" not in seen[0]
+    assert "Comparing" not in capsys.readouterr().err
+
+
+def test_requests_preserve_options_and_record_rotation(monkeypatch, tmp_path):
+    import os
+
+    from rapid_mlx.community_bench.acceleration import AccelerationRequest
+    from rapid_mlx.community_bench.workspace import LocalRunArchive
+
+    requests = []
+
+    def measure(*args, **kwargs):
+        request = kwargs["acceleration"]
+        requests.append(request)
+        values = json.loads(os.environ.get("RAPID_MLX_BENCHMARK_KNOBS", "{}"))
+        run = sample()
+        for name, value in values.items():
+            run["tuning"]["context"]["knobs"][name].update(
+                value=value, source="benchmark"
+            )
+        run["tuning"]["overrides"]["mtp_max_depth"] = values.get("mtp_max_depth", 3)
+        return run
+
+    request = AccelerationRequest(
+        overrides={
+            "prefill_step_size": 512,
+            "speculative_config": json.dumps(
+                {"method": "mtp", "model": "draft", "num_speculative_tokens": 3}
+            ),
+        }
+    )
+    monkeypatch.setattr(comparison, "measure_configuration", measure)
+    result = comparison.run_comparison(
+        "model",
+        configs=2,
+        salt=0,
+        archive=LocalRunArchive(tmp_path),
+        acceleration=request,
+    )
+    assert result["measured_configs"] == 2
+    for run in result["configurations"]:
+        choice = run["tuning"]["selection"]
+        assert choice["salt"] == 0
+        assert choice["changed_knobs"] == (
+            [] if run["experiment"]["arm_id"] == "default" else ["mtp_max_depth"]
+        )
+    for candidate in requests:
+        assert candidate.overrides["prefill_step_size"] == 512
+        assert json.loads(candidate.overrides["speculative_config"])["model"] == "draft"
+    assert (
+        json.loads(requests[1].overrides["speculative_config"])[
+            "num_speculative_tokens"
+        ]
+        == 2
+    )
+    assert "RAPID_MLX_BENCHMARK_KNOBS" not in os.environ
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_configuration_worker_forwards_and_closes(monkeypatch, failed):
+    from rapid_mlx.community_bench import local_runner
+
+    messages = []
+    sender = SimpleNamespace(
+        send=messages.append, close=lambda: messages.append("closed")
+    )
+    monkeypatch.setattr(local_runner, "_enter_worker_lifetime", lambda *a, **kw: None)
+
+    def run(*args, **kwargs):
+        kwargs["progress"]("loading")
+        kwargs["events"]({"kind": "ready"})
+        if failed:
+            raise RuntimeError("recorded failure")
+        return sample()
+
+    monkeypatch.setattr(local_runner, "run_local", run)
+    comparison._configuration_worker("model", {}, sender, object())
+    assert messages[:2] == [("progress", "loading"), ("event", {"kind": "ready"})]
+    assert messages[-2][0] == "ok"
+    assert ("failure" in messages[-2][1]) is failed
+    assert messages[-1] == "closed"
+
+
+@pytest.mark.parametrize("sinks", [False, True])
+def test_measure_configuration_uses_supervised_fresh_worker(monkeypatch, sinks):
+    from rapid_mlx.community_bench import local_runner
+
+    progress, events = [], []
+    expected = sample()
+
+    def run(target, args, **kwargs):
+        assert target is comparison._configuration_worker
+        assert args[0] == "model"
+        assert args[1]["tuning_observation"]
+        kwargs["on_message"]("progress", "loading")
+        kwargs["on_message"]("event", {"kind": "ready"})
+        return expected
+
+    monkeypatch.setattr(local_runner, "_run_detached_worker", run)
+    assert (
+        comparison.measure_configuration(
+            "model",
+            tuning_observation=True,
+            progress=progress.append if sinks else None,
+            events=events.append if sinks else None,
+        )
+        is expected
+    )
+    assert progress == (["loading"] if sinks else [])
+    assert events == ([{"kind": "ready"}] if sinks else [])
+
+
+def _message_worker(sender, lifeline):
+    from rapid_mlx.community_bench.local_runner import _enter_worker_lifetime
+
+    _enter_worker_lifetime(lifeline, sender=sender)
+    sender.send(("progress", "loading"))
+    sender.send(("event", {"kind": "ready"}))
+    sender.send(("ok", "complete"))
+    sender.close()
+
+
+def test_real_supervisor_forwards_worker_messages():
+    from rapid_mlx.community_bench.local_runner import _run_detached_worker
+
+    messages = []
+    assert (
+        _run_detached_worker(
+            _message_worker,
+            (),
+            timeout_s=30,
+            phase="headless configuration",
+            on_message=lambda kind, value: messages.append((kind, value)),
+        )
+        == "complete"
+    )
+    assert messages == [("progress", "loading"), ("event", {"kind": "ready"})]
+
+
+def test_measure_configuration_retains_failed_archive_state(monkeypatch):
+    from rapid_mlx.community_bench import local_runner
+
+    run = sample()
+    monkeypatch.setattr(
+        local_runner,
+        "_run_detached_worker",
+        lambda *a, **kw: {
+            "failure": {"message": "measured failure", "run": run, "saved": True}
+        },
+    )
+    with pytest.raises(local_runner.LocalBenchmarkError) as exc:
+        comparison.measure_configuration("model")
+    assert exc.value.run == run and exc.value.saved is True
+
+
+def test_cli_reports_insufficient_neighbors(monkeypatch, tmp_path, capsys):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+    from rapid_mlx.community_bench.workspace import LocalRunArchive
+
+    monkeypatch.setattr(
+        cli.LocalRunArchive, "default", lambda: LocalRunArchive(tmp_path)
+    )
+    monkeypatch.setattr(
+        comparison,
+        "run_comparison",
+        lambda *a, **kw: {
+            "configurations": paired(),
+            "requested_configs": 16,
+            "measured_configs": 2,
+        },
+    )
+    args = build_parser().parse_args(["benchmark", "run", "model", "--configs", "16"])
+    assert cli._benchmark_command(args) == 0
+    output = capsys.readouterr()
+    assert "Only 2 applicable configurations exist; requested 16" in output.out
+    assert "about 48×" in output.err

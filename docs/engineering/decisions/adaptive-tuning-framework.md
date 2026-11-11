@@ -198,52 +198,61 @@ Follow-ups:
 - Unify existing chip fact parsers; acceleration-flag mapping; runtime adaptation.
 
 Further kernel migrations need their own evidence.
-## Absorbing community sweeps
+## Absorbing community results
 
-`rapid-mlx benchmark run qwen3.6-35b-4bit --sweep` measures the serving
-configuration as `default`, then MTP off and the registry's depth candidates
-1 through 4 when an installed head is available. Serve options supply the common configuration. `--sweep-reps` defaults to three fresh runner loads
-per arm and accepts 1–10 for smoke checks. Each load retains the registered
-protocol's warmups and five measured rounds per prompt case. Arm order rotates
-between repetitions. Models with no applicable candidates retain a default-only
-observation.
+`rapid-mlx benchmark run qwen3.6-35b-4bit` compares your current resolved
+configuration with its nearest neighbor on this machine. `--configs N` selects
+1–16 configurations (default 2); `--configs 1` retains the original single-run
+behavior. `--repetitions` defaults to 3 interleaved fresh loads per configuration
+and accepts 3–10. Before loading, the CLI reports the expected runtime: N ×
+repetitions times a single run, approximately 6× by default. Every load uses a fresh supervised interpreter so import-time kernel choices
+follow the configuration. It uses the same registered prompt cases, warmups and five measured rounds per case.
+Non-text and fixed runtimes without tuning observations retain their single run.
 
-Each atomic run has the existing `experiment` pairing fields and an optional
-`tuning` block containing identifier-free `dump(ctx)` facts, profile versions and decisions
-(including each decision's source and profile version), effective depth
-overrides after policy and checkpoint clamping, and SHA-256 output-token ID
-digests by case and round. The record carries digests for output comparisons. A greedy
-difference is recorded in the local summary. It leaves the measured result
-available for inspection. The table reports per-load median throughput and TTFT,
-and the full measured throughput range. A local speed winner requires at least
-three independent loads per arm, >=2% gain in each case and non-overlapping full
-ranges against default. Selection remains a local observation.
+The starting cell comes from `tuning.dump(ctx)`, including environment and user
+profile choices. Effective explicit/clamped MTP depth is included. Neighbors
+use only knobs in scope whose capability requirements pass: integer values move
+one declared step, booleans flip, and enums move to adjacent registry values.
+Boundaries use the available side. All one-knob neighbors precede two-knob
+combinations. A random salt rotates the first eligible knob, spreading default
+A/B measurements across knobs; the salt and changed knob names are recorded.
+If fewer configurations exist than requested, the CLI reports the measured count.
+`RAPID_MLX_BENCHMARK_KNOBS` temporarily transports registered candidate values
+to each fresh worker, restores the previous environment afterward, and cannot
+bypass scope or capability gates. It does not change the selected runtime.
 
-`python -m scripts.tuning_distill sweep.json` accepts the JSON document from
-`benchmark run --sweep --json`, or individual archived run JSON files. It groups
-exact hardware, runtime versions/revision, primary checkpoint, model facts and
-registered workload within each experiment session. It requires AC power,
-nominal thermal state, normal memory pressure and low-power mode off before
-and after every load. Unknown conditions cannot qualify a measurement. Results
-must match the selected Rapid-MLX version and be within `--max-age-days` (30 by
-default), measured relative to `--as-of` or the current UTC time. Use
-`--rapid-version` to review an explicitly selected historical runtime.
+Each atomic run carries `experiment` pairing fields and optional `tuning`:
+identifier-free context, profile versions, knob values and sources, effective
+depth overrides, selection metadata, and SHA-256 output-token digests by case
+and round. The table compares throughput, TTFT, full measured throughput spread,
+and output equality against your current configuration. Divergence is recorded,
+not failed. A plain-language speed comparison remains a local observation;
+it invites submission to help tune defaults and never changes local defaults.
 
-Output digests must be stable and equal across every measured round of each
-case and every load. MTP divergence can instead carry a structured `quality`
-note in the tuning block, with `n >= 100`, a `questions_digest`, and `plain`
-and `default` comparisons each recording `abs(delta_pp) <= 3` and
-`paired_p >= 0.05`. The reviewer must inspect the underlying paired quality
-study. The distiller emits candidate profile entries using the #5760 entry
-shape, with exact core/memory ranges, pinned software, complete applicable
-knob combinations and scoped MTP workload selectors. Conflicting sessions
-require review. Retain the raw atomic runs alongside the candidate entry for
-the data-only PR, and review other-mode regression evidence before merging.
+The first archived run also carries optional `paired_runs` containing every
+other configuration and repetition. Its printed `benchmark share <run-id>`
+command shares the complete comparison through the existing preview and consent
+flow. `--preview --json` shows the exact projected payload. No upload happens
+during benchmarking, and old submissions without these optional fields remain
+valid. The board needs an ingestion-validator/storage follow-up to retain the
+new optional fields; this PR covers the client and offline processing.
 
-Each arm repetition remains an ordinary archived run. Use its printed
-`benchmark share <run-id> --preview --json` command to inspect the existing
-publication projection, then the existing consent flow to share it. The
-optional block is additive in the v1 archive schema, so older records remain
-valid. The deployed board requires an ingestion-validator and storage follow-up
-to allow and retain `tuning` and `experiment`; its current strict allowlist
-rejects these fields. This change includes client-side schema and offline processing only.
+`python -m scripts.tuning_distill comparison.json` reads `benchmark run --json`,
+the first archived run with paired evidence, or individual archived runs.
+It groups exact hardware, runtime versions/revision, primary checkpoint, model
+facts, fixed execution settings, mode and workload within each session. Gates
+remain: at least three independent repetitions, >=2% gain on every case with
+non-overlapping full ranges, AC power, nominal thermal state, normal memory
+pressure, low-power mode off before and after each load, and freshness within
+`--max-age-days` (default 30), relative to `--as-of` or current UTC time. Unknown
+conditions cannot qualify. `--rapid-version` selects a historical runtime.
+
+Output digests must be stable and equal for every measured round and load.
+Divergence may instead have a structured `quality` note with `n >= 100`, a
+`questions_digest`, and `plain` and `default` comparisons recording
+`abs(delta_pp) <= 3` and `paired_p >= 0.05`. Review the underlying study.
+The distiller emits candidate explicit-cell profile entries with exact hardware
+ranges, pinned software, complete applicable knob combinations and workload
+selectors; it never writes `builtin.json`. Conflicting sessions require review.
+Retain raw runs with candidate data-only PRs and review other-mode regression
+evidence. MTP determinism is separate work.

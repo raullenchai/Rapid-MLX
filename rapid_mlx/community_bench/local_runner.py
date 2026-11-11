@@ -640,6 +640,7 @@ def _run_detached_worker(
     *,
     timeout_s: float,
     phase: str,
+    on_message: Callable[[str, Any], None] | None = None,
 ) -> Any:
     """Supervise a detached worker behind a hard deadline and a lifeline.
 
@@ -663,13 +664,14 @@ def _run_detached_worker(
         while True:
             if not receiver.poll(max(0, deadline - time.monotonic())):
                 timed_out = True
-                raise TimeoutError(f"video artifact {phase} exceeded its hard deadline")
+                raise TimeoutError(f"{phase} exceeded its hard deadline")
             try:
                 status, payload = receiver.recv()
             except EOFError as exc:
-                raise RuntimeError(
-                    f"video artifact {phase} exited without a result"
-                ) from exc
+                raise RuntimeError(f"{phase} exited without a result") from exc
+            if status in {"progress", "event"} and on_message is not None:
+                on_message(status, payload)
+                continue
             if status != "detached":
                 break
             if payload == process.pid:
@@ -2225,7 +2227,7 @@ async def _text_measurements(
             ):
                 from pathlib import Path
 
-                from .sweep import capture_tuning
+                from .comparison import capture_tuning
 
                 checkpoint_config = None
                 if loaded_source:

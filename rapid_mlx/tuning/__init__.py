@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping
@@ -125,6 +126,7 @@ KNOBS = {
         "qwen35_affine4_rows",
         lambda c: _expert(c) and 1 <= c.width <= 9,
         default=(1, 1),
+        candidates=((1, 1), (2, 4)),
     ),
     "affine8_attention": _knob(
         "affine8_attention",
@@ -182,6 +184,14 @@ def resolve(
             "capability",
             reason or "outside knob scope",
         )
+    environment = os.environ if environ is None else environ
+    try:
+        values = json.loads(environment.get("RAPID_MLX_BENCHMARK_KNOBS", "{}"))
+        value = values.get(name) if isinstance(values, dict) else None
+        if knob.valid(value):
+            return Decision(value, "benchmark")
+    except (ValueError, TypeError):
+        pass
     override = (
         (os.environ if environ is None else environ).get(knob.env) if knob.env else None
     )

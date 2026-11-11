@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Distill local paired sweep evidence into reviewable profile entries."""
+"""Distill local paired comparison evidence into reviewable profile entries."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from rapid_mlx import __version__
 from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
-from rapid_mlx.community_bench.sweep import arm_statistics, speed_winners
+from rapid_mlx.community_bench.comparison import arm_statistics, speed_winners
 from rapid_mlx.tuning.profiles import runtime_context
 
 
@@ -36,6 +36,7 @@ def cell_key(run: dict) -> str:
             run["execution"]["runtime"],
             primary,
             run["workload"],
+            ctx["mode"],
             ctx["width"],
             ctx["batch"],
             run["execution"]["resources"],
@@ -190,10 +191,6 @@ def distill(
         accepted = []
         for arm in winners:
             evidence = [r for r in group if r["experiment"]["arm_id"] == arm]
-            ctx = evidence[0]["tuning"]["context"]
-            overrides = evidence[0]["tuning"]["overrides"]
-            if ctx["mode"] != "mtp" or "mtp_max_depth" not in overrides:
-                continue
             if not quality_passes(evidence, defaults):
                 continue
             candidate_config = effective_configuration(evidence[0])
@@ -261,11 +258,11 @@ def distill(
             },
             "knobs": knobs,
             "provenance": {
-                "evidence": "community-sweep:" + session,
+                "evidence": "community-comparison:" + session,
                 "hardware_scope": "Measured exact core and memory cell; review workload and model generalization before merging.",
                 "date": run["completed_at"][:10],
                 "repetitions": {"default": len(defaults), arm: len(evidence)},
-                "decision": "Paired local sweep passed freshness, conditions, output/quality and speed gates.",
+                "decision": "Paired local comparison passed freshness, conditions, output/quality and speed gates.",
                 "quality": [r["tuning"].get("quality") for r in evidence],
                 "mtp_tps": {
                     name: {
@@ -309,7 +306,9 @@ def main(argv=None) -> int:
     runs = []
     for path in args.files:
         document = json.loads(path.read_text())
-        runs.extend(document.get("sweep", [document]))
+        runs.extend(
+            document.get("configurations", [document, *document.get("paired_runs", [])])
+        )
     result = distill(
         runs,
         as_of=args.as_of or datetime.now(timezone.utc),

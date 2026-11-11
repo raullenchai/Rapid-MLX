@@ -591,12 +591,20 @@ def _benchmark_command(args) -> int:
                     else:
                         progress_sink = None
                     runner = run_local
-                    sweep_options = {}
-                    if getattr(args, "sweep", False):
-                        from .sweep import run_sweep
+                    comparison_options: dict = {}
+                    configs = getattr(args, "configs", 2)
+                    if configs > 1:
+                        from .comparison import run_comparison
 
-                        runner = run_sweep
-                        sweep_options["repetitions"] = args.sweep_reps
+                        runner = run_comparison
+                        comparison_options.update(
+                            configs=configs,
+                            repetitions=getattr(args, "repetitions", 3),
+                        )
+                        print(
+                            f"Comparing up to {configs} configurations × {comparison_options['repetitions']} repetitions: about {configs * comparison_options['repetitions']}× a single-configuration run. Fewer applicable neighbors may reduce this.",
+                            file=sys.stderr,
+                        )
                     value = runner(
                         args.benchmark_model,
                         archive=archive,
@@ -606,7 +614,7 @@ def _benchmark_command(args) -> int:
                         progress=progress_sink,
                         events=event_sink,
                         acceleration=acceleration,
-                        **sweep_options,
+                        **comparison_options,
                     )
                 finally:
                     if main_thread:
@@ -749,15 +757,20 @@ def _benchmark_command(args) -> int:
                 )
         else:
             print("Upload cancelled. Nothing was sent.")
-    elif "sweep" in value:
-        from .sweep import summary_lines
+    elif "configurations" in value:
+        from .comparison import summary_lines
 
-        for line in summary_lines(value["sweep"]):
-            print(line)
-        for run in value["sweep"]:
+        if value["measured_configs"] < value["requested_configs"]:
             print(
-                f"Share arm {run['experiment']['arm_id']}: rapid-mlx benchmark share {run['run_id']}"
+                f"Only {value['measured_configs']} applicable configurations exist; requested {value['requested_configs']}."
             )
+        for line in summary_lines(value["configurations"]):
+            print(line)
+        run = value["configurations"][0]
+        print(
+            f"Share all paired configurations: rapid-mlx benchmark share {run['run_id']}"
+        )
+        print("Nothing was uploaded.")
     else:  # run
         print(f"Saved local result {value['run_id']}")
         task = value.get("execution", {}).get("task", {})
