@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+
+- **Benchmark is now a regular Desktop tab**: measure models on this Mac and, if you choose, publish results to the Community Benchmark. Nothing runs until you start a benchmark.
+
 ### Deprecated model names
 
 The following 44 curated short names are deprecated and hidden from model discovery.

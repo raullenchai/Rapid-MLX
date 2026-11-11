@@ -252,7 +252,6 @@ struct LocalizationTests {
         let manager = FileManager.default
         var urls = [
             source.appendingPathComponent("UI/CommunityBenchmarkView.swift"),
-            source.appendingPathComponent("UI/CommunityBenchmarkFeatureConfig.swift"),
             source.appendingPathComponent("UI/CUASection.swift"),
             source.appendingPathComponent("UI/ComputerUseView.swift"),
             source.appendingPathComponent("UI/VideoView.swift")

@@ -151,8 +151,11 @@ relaunch_persona
                 capture(text, r"\bstatic let defaultEnabled\s*=\s*(true|false)\b"),
             )
 
-        for path in ("Server/AutoStartDecision.swift", "Server/ServerResidency.swift"):
-            text = source(path)
+        for path, preference in (
+            ("Server/AutoStartDecision.swift", "AutoStartPreference"),
+            ("Server/ServerResidency.swift", "ModelSwitchConfirmationPreference"),
+        ):
+            text = capture(source(path), r"enum " + preference + r"\s*\{([\s\S]*?)^\}")
             record(
                 constant(text, "storageKey"),
                 "bool",
@@ -295,10 +298,15 @@ relaunch_persona
             self.assertIn('"' + key + '"', source(path), path)
             record(key, kind, value)
 
+        # Retain the obsolete preference in isolation seeds so older app
+        # binaries remain isolated too. Current Desktop ignores this key.
+        legacy_key = "Rapid.experimental.communityBenchmarkEnabled"
+        self.assertEqual(seeds[legacy_key], ("bool", "false"))
+        source_keys = expected_keys - {legacy_key}
         self.assertEqual(
-            set(defaults), expected_keys, "every seed needs a source default"
+            set(defaults), source_keys, "every active seed needs a source default"
         )
-        for key in sorted(expected_keys):
+        for key in sorted(source_keys):
             with self.subTest(key=key):
                 self.assertEqual(seeds[key], defaults[key])
 

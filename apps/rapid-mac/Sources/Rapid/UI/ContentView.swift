@@ -166,8 +166,6 @@ struct ContentView: View {
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
     @AppStorage(ComputerUseFeatureConfig.enabledKey)
     private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
-    @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
-    private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
     @AppStorage(ShareComputeFeatureConfig.enabledKey)
     private var shareComputeEnabled = ShareComputeFeatureConfig.defaultEnabled
     /// Window-level conversation search, opened from the toolbar.
@@ -435,10 +433,6 @@ struct ContentView: View {
             section = Self.sectionAfterComputerUseGateChange(
                 current: section,
                 enabled: state.computerUseEnabled
-            )
-            section = Self.sectionAfterBenchmarkGateChange(
-                current: section,
-                enabled: state.benchmarkEnabled
             )
             section = Self.sectionAfterShareComputeGateChange(
                 current: section,
@@ -729,7 +723,6 @@ struct ContentView: View {
                     onFocusLocalSearch: { localSearch.focusRequest += 1 },
                     videoGenerationEnabled: videoGenerationEnabled,
                     computerUseEnabled: computerUseEnabled,
-                    benchmarkEnabled: communityBenchmarkEnabled,
                     shareComputeEnabled: shareComputeEnabled,
                     shareComputeActive: shareCompute.state.isActive,
                     cuaViewModel: cuaServer.viewModel,
@@ -1444,62 +1437,53 @@ struct ContentView: View {
                 onReadinessAction: performReadinessAction
             )
         case .benchmark:
-            if communityBenchmarkEnabled {
-                CommunityBenchmarkView(
-                    catalog: catalogEntries,
-                    preferredAliases: Self.communityBenchmarkPreferredAliases(
-                        selectedChatAlias: alias, servingAlias: server.servingAlias,
-                        lastServedAlias: ServerManager.lastServedAlias()
-                    ),
-                    binary: server.binaryPath,
-                    prepareServer: {
-                        try await server.prepareForCommunityBenchmark()
-                    },
-                    releaseServer: { reservation in
-                        server.finishCommunityBenchmark(
-                            reservation,
-                            restoringWith: { restoredAlias in
-                                let entry = catalogEntries.first {
-                                    $0.alias == restoredAlias
-                                }
-                                let hint = entry.map {
-                                    ServerManager.CatalogEntryHint(
-                                        entry: $0,
-                                        generation: catalogGeneration
-                                    )
-                                }
-                                return await server.ensureServing(
-                                    alias: restoredAlias,
-                                    hfPath: entry?.hfRepo,
-                                    estimatedMemoryGB: nil,
-                                    replacementGroup: .assistant,
-                                    catalogEntryHint: hint
+            CommunityBenchmarkView(
+                catalog: catalogEntries,
+                preferredAliases: Self.communityBenchmarkPreferredAliases(
+                    selectedChatAlias: alias, servingAlias: server.servingAlias,
+                    lastServedAlias: ServerManager.lastServedAlias()
+                ),
+                binary: server.binaryPath,
+                prepareServer: {
+                    try await server.prepareForCommunityBenchmark()
+                },
+                releaseServer: { reservation in
+                    server.finishCommunityBenchmark(
+                        reservation,
+                        restoringWith: { restoredAlias in
+                            let entry = catalogEntries.first {
+                                $0.alias == restoredAlias
+                            }
+                            let hint = entry.map {
+                                ServerManager.CatalogEntryHint(
+                                    entry: $0,
+                                    generation: catalogGeneration
                                 )
                             }
-                        )
-                    },
-                    retainServerDuringDeferredReap: {
-                        server.retainCommunityBenchmarkDuringDeferredReap($0)
-                    },
-                    // The public atomic feed identifies models by Hugging Face
-                    // repo id; the rest of the app speaks product aliases, so
-                    // the catalogue does the translation. Captured by value:
-                    // the adapter is Sendable and must not reach back into
-                    // view state from a background request.
-                    directory: CommunityBenchmarkAPIDirectory(
-                        aliasForRepoID: { [entries = catalogEntries] repoID in
-                            entries.first { $0.hfRepo == repoID }?.alias ?? repoID
+                            return await server.ensureServing(
+                                alias: restoredAlias,
+                                hfPath: entry?.hfRepo,
+                                estimatedMemoryGB: nil,
+                                replacementGroup: .assistant,
+                                catalogEntryHint: hint
+                            )
                         }
                     )
+                },
+                retainServerDuringDeferredReap: {
+                    server.retainCommunityBenchmarkDuringDeferredReap($0)
+                },
+                // The public atomic feed identifies models by Hugging Face
+                // repo id; the rest of the app speaks product aliases, so
+                // the catalogue does the translation. Captured by value:
+                // the adapter is Sendable and must not reach back into
+                // view state from a background request.
+                directory: CommunityBenchmarkAPIDirectory(
+                    aliasForRepoID: { [entries = catalogEntries] repoID in
+                        entries.first { $0.hfRepo == repoID }?.alias ?? repoID
+                    }
                 )
-            } else {
-                // Flag flipped off while this tab was selected. Show the
-                // default surface until the experimentalDestinationState
-                // onChange routes back to Chat — same fallback the Video and
-                // Computer Use branches use. Not recursive: `mainArea`
-                // switches on `server.state`, not `section`.
-                mainArea
-            }
+            )
         case .shareCompute:
             if shareComputeEnabled {
                 ShareComputeView(
@@ -1754,13 +1738,6 @@ struct ContentView: View {
         !enabled && current == .computerUse ? .chat : current
     }
 
-    static func sectionAfterBenchmarkGateChange(
-        current: SidebarSection,
-        enabled: Bool
-    ) -> SidebarSection {
-        !enabled && current == .benchmark ? .chat : current
-    }
-
     static func sectionAfterShareComputeGateChange(
         current: SidebarSection,
         enabled: Bool
@@ -1772,7 +1749,6 @@ struct ContentView: View {
         let localSearchEnabled: Bool
         let videoEnabled: Bool
         let computerUseEnabled: Bool
-        let benchmarkEnabled: Bool
         let shareComputeEnabled: Bool
     }
 
@@ -1781,7 +1757,6 @@ struct ContentView: View {
             localSearchEnabled: localSearchEnabled,
             videoEnabled: videoGenerationEnabled,
             computerUseEnabled: computerUseEnabled,
-            benchmarkEnabled: communityBenchmarkEnabled,
             shareComputeEnabled: shareComputeEnabled
         )
     }
