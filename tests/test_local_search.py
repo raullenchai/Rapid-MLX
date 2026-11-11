@@ -1687,7 +1687,9 @@ def test_text_embedding_budget_keyword_tail_and_small_semantic(tmp_path):
         assert "tailneedle" in hit["snippet"] and hit["page"] is None
         assert sum(r["path"] == str(path) for r in results) == 1
         results = (await search.search("orchard", 20, None))["results"]
-        assert [r["path"] for r in results] == [str(small), str(path)]
+        # Only the small file clears the cross-file similarity background;
+        # the weaker large-file neighbour is no longer admitted by positivity.
+        assert [r["path"] for r in results] == [str(small)]
         assert results[0]["matched"] == ["semantic"]
         assert search.store._matrix.dtype == np.float32
         assert len(search.store.vectors) == MAX_EMBEDDED_CHUNKS_PER_FILE + 1
@@ -3232,14 +3234,14 @@ def test_media_index_routes_kinds_and_keyword_fallback(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("count", [1, 19, 20, 29, 30, 120])
+@pytest.mark.parametrize("count", [1, 2, 3, 19, 20, 29, 30, 120])
 def test_semantic_gate_uses_index_background_and_rank_cap(count):
     from rapid_mlx.local_search.search import semantic_ranking
 
     rows = {i: {"path": str(i)} for i in range(count)}
     scores = [(i, 0.7) for i in range(count)]
     assert semantic_ranking(scores, rows, 0.6) == list(range(min(count, 3)))
-    assert semantic_ranking(scores, rows, 0.8) == list(range(min(count, 3)))
+    assert semantic_ranking(scores, rows, 0.8) == []
     assert semantic_ranking(scores, rows, 0.7) == list(range(min(count, 3)))
     assert semantic_ranking([(0, 0.0)], rows, 0.0) == []
     assert semantic_ranking([], {}, 0.0) == []
@@ -3258,7 +3260,7 @@ def test_query_outlier_rescue_and_repeated_chunks_do_not_change_null():
     # A smooth, modest high score is not a significant rare outlier.
     assert semantic_ranking([(i, 0.2 + i / 1000) for i in range(101)], rows, 0.9) == []
     # Summation roundoff must not manufacture variance in a uniform pool.
-    assert semantic_ranking([(i, 0.2) for i in range(101)], rows, 0.9) == [0, 1, 2]
+    assert semantic_ranking([(i, 0.2) for i in range(101)], rows, 0.9) == []
 
 
 def test_background_matches_cross_file_pairs_and_invalidates(tmp_path):
@@ -3343,8 +3345,8 @@ def test_semantic_gate_float32_boundary_and_one_file():
 
     rows = {0: {"path": "one"}}
     assert semantic_ranking([(0, float(np.float32(0.9)))], rows, 0.9) == [0]
-    assert semantic_ranking([(0, 0.899)], rows, 0.9) == [0]
-    assert semantic_ranking([(0, 0.1)], rows, 0.0) == [0]
+    assert semantic_ranking([(0, 0.899)], rows, 0.9) == []
+    assert semantic_ranking([(0, 0.1)], rows, 0.0) == []
 
 
 @pytest.mark.parametrize("strong_kind", ["image", "text"])
@@ -5479,12 +5481,12 @@ def test_degenerate_semantic_neighbours(count):
     from rapid_mlx.local_search.search import SEMANTIC_FALLBACK_FILES, semantic_ranking
 
     rows = {n: {"path": f"file-{n}"} for n in range(count)}
-    assert semantic_ranking([(n, 0.8) for n in range(count)], rows, 1.0) == list(
+    assert semantic_ranking([(n, 0.8) for n in range(count)], rows, 0.7) == list(
         range(min(count, SEMANTIC_FALLBACK_FILES))
     )
     if count < 4:
         assert semantic_ranking(
-            [(n, 0.8 - 0.01 * n) for n in range(count)], rows, 1.0
+            [(n, 0.8 - 0.01 * n) for n in range(count)], rows, 0.7
         ) == list(range(count))
 
 
@@ -10400,3 +10402,103 @@ def test_full_chunk_text_on_closest_fallback(tmp_path, monkeypatch, grouped):
             await search.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+@pytest.mark.parametrize("match", ["unrelated", "semantic", "keyword"])
+def test_tiny_folder_relevance_controls_grounding(tmp_path, monkeypatch, count, match):
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.local_search.grounding import ABSTENTION, prepare_grounding
+    from tests.test_local_search_grounding import body, client_with
+    from tests.test_response_cache_route import _CountingEngine
+
+    async def scenario():
+        root = folder(tmp_path)
+        contents = {
+            "atlas.txt": "What is the launch code for Project Atlas?\nThe launch code is ORCHID-42.",
+            "handbook.txt": "Staff can request office supplies from reception.",
+            "faq.txt": "Lunch is served at noon in the cafeteria.",
+        }
+        for name, text in list(contents.items())[:count]:
+            (root / name).write_text(text)
+        search = engine(tmp_path)
+        try:
+            fid = (await search.add_folder(str(root)))[0]["id"]
+            await search.wait_idle()
+            # FakeEmbedder gives these texts identical vectors: one file has
+            # no cross-file pairs (background 0), two/three have background 1.
+            rows = search.store.search_rows([fid])
+            assert search.store.semantic_background(rows)["text"] == (
+                0.0 if count == 1 else 1.0
+            )
+            monkeypatch.setattr(
+                search.store._store,
+                "semantic_scores",
+                lambda _, rows: sorted(
+                    (
+                        (
+                            i,
+                            1.0
+                            if match == "semantic" and row["path"].endswith("atlas.txt")
+                            else 0.2,
+                        )
+                        for i, row in rows.items()
+                    ),
+                    key=lambda item: -item[1],
+                ),
+            )
+            question = (
+                "What is the launch code for Project Atlas?"
+                if match == "keyword"
+                else (
+                    "Which secret authorizes liftoff?"
+                    if match == "semantic"
+                    else "What is the capital of France?"
+                )
+            )
+            request = ChatCompletionRequest(
+                **body(
+                    messages=[{"role": "user", "content": question}],
+                    local_search={"folder_ids": [fid]},
+                )
+            )
+            prepared = await prepare_grounding(request, search)
+            metadata = prepared._local_search_metadata
+            assert metadata.mode == "hybrid"
+            if match == "unrelated":
+                assert metadata.status == "no_matches"
+                assert metadata.sources == []
+                # Exercise the real HTTP abstention with these retrieval results.
+                client = client_with(_CountingEngine(), search)
+                monkeypatch.setattr(
+                    "rapid_mlx.routes.chat.get_engine",
+                    lambda *a, **kw: pytest.fail("abstention must not run inference"),
+                )
+                response = client.post(
+                    "/v1/chat/completions", json=request.model_dump()
+                )
+                assert response.status_code == 200, response.text
+                assert response.json()["choices"][0]["message"]["content"] == ABSTENTION
+            else:
+                assert metadata.status == "grounded"
+                assert [s.title for s in metadata.sources] == ["atlas.txt"]
+                assert metadata.sources[0].text == contents["atlas.txt"]
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("background", [0.0, -0.1, float("nan"), float("inf")])
+@pytest.mark.parametrize("count", [1, 2, 3, 12])
+def test_degenerate_semantic_background_uses_minimum_similarity(background, count):
+    from rapid_mlx.local_search.search import (
+        SEMANTIC_MIN_SIMILARITY,
+        semantic_ranking,
+    )
+
+    rows = {i: {"path": str(i)} for i in range(count)}
+    assert semantic_ranking([(i, 0.2) for i in rows], rows, background) == []
+    assert semantic_ranking(
+        [(i, SEMANTIC_MIN_SIMILARITY) for i in rows], rows, background
+    ) == list(range(min(count, 3)))
