@@ -1736,6 +1736,64 @@
           },
           {
            "choices": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": 2,
+           "dest": "configs",
+           "help": "Configurations to compare: your current config plus nearest neighbors (default: 2; 1 runs only your current config)",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--configs"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "choices": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": 3,
+           "dest": "repetitions",
+           "help": "Interleaved fresh-load repetitions per configuration (default: 3; range: 3..10; applies when --configs > 1)",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--repetitions"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "choices": [
             "bf16",
             "int8",
             "int4"
@@ -1965,6 +2023,8 @@
             "json",
             "log_level",
             "baseline",
+            "configs",
+            "repetitions",
             "progress",
             "inherit_process_group"
            ],
