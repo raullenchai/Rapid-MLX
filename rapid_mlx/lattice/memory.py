@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from functools import lru_cache
+from typing import Any
 
 from . import resolve, runtime_context
 
@@ -65,12 +66,11 @@ def memory_policy() -> MemoryPolicy:
     """
     try:
         context = runtime_context({})
-        return MemoryPolicy(
-            **{
-                field.name: resolve(field.name, context).value
-                for field in fields(MemoryPolicy)
-            }
-        )
+        values: dict[str, Any] = {
+            field.name: resolve(field.name, context).value
+            for field in fields(MemoryPolicy)
+        }
+        return MemoryPolicy(**values)
     except Exception as exc:
         logger.debug("Lattice memory policy resolution failed; using defaults: %s", exc)
         return MemoryPolicy()
