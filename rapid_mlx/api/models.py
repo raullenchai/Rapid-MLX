@@ -28,7 +28,7 @@ from pydantic import (
     model_validator,
 )
 
-from ..image.loras import ImageLoras
+from .image_loras import ImageLoras
 from .sampler_compat import apply_sampler_compat, parse_sequence_breakers
 
 # =============================================================================

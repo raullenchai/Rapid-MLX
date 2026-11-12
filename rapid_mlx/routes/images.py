@@ -23,8 +23,8 @@ from fastapi import (
 from pydantic import ValidationError
 from starlette.responses import JSONResponse
 
+from ..api.image_loras import LORA_ADAPTER, LORA_FAMILIES
 from ..api.models import ImageGenerationRequest, parse_image_size
-from ..image.loras import LORA_ADAPTER, LORA_FAMILIES, list_loras
 from ..middleware.auth import verify_api_key, verify_api_key_for_scope
 from ._async_utils import run_to_completion
 
@@ -498,6 +498,8 @@ async def create_image(
 @router.get("/v1/images/loras")
 async def image_loras():
     """List the server's name-only LoRA library."""
+    from ..image.loras import list_loras
+
     return {"object": "list", "data": list_loras()}
 
 

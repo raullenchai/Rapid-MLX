@@ -16,6 +16,7 @@ import threading
 from collections.abc import Callable
 from typing import ParamSpec, TypeVar
 
+from ..api.image_loras import ImageLoras
 from ..image.engine import (
     ImageGenerationCancelled,
     ImageGenerationEngine,
@@ -23,7 +24,6 @@ from ..image.engine import (
     ImageRuntimeError,
     _detect_family,
 )
-from ..image.loras import ImageLoras
 
 __all__ = [
     "ImageEngine",
