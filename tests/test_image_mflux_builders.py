@@ -5,7 +5,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from rapid_mlx.image.engine import ImageGenerationEngine, _preserve_vae_decode
+from rapid_mlx.image.engine import (
+    ImageGenerationEngine,
+    ImageRuntimeError,
+    _preserve_vae_decode,
+)
 
 
 @pytest.mark.parametrize("decode_api", ["constant", "fallback", "absent"])
@@ -141,3 +145,30 @@ def test_image_mflux_builder_kwargs_and_compatibility(
         assert model.transformer.norm_out.linear.bias is original_bias
     else:
         assert model.transformer.norm_out.linear.bias is None
+
+
+def test_qwen_multireference_edit_requires_new_runtime(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "mflux.models.common.config.model_config",
+        SimpleNamespace(ModelConfig=SimpleNamespace()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        SimpleNamespace(QwenImage21=object()),
+    )
+    # Block the optional edit import even if a newer mflux is installed.
+    monkeypatch.setitem(
+        sys.modules, "mflux.models.qwen21.variants.edit.qwen_image_21_edit", None
+    )
+    engine = ImageGenerationEngine("Qwen/Qwen-Image-2.1")
+    monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: None)
+
+    with pytest.raises(
+        ImageRuntimeError,
+        match=r"Multi-reference Qwen edits require mflux 0\.24\.",
+    ) as exc_info:
+        engine._build_model(for_edit=True)
+
+    assert isinstance(exc_info.value.__cause__, ImportError)

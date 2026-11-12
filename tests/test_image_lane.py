@@ -552,6 +552,16 @@ def test_flux2_adapter_advertises_both_operations():
     assert engine.default_edit_steps == 4
 
 
+def test_adapter_delegates_max_reference_images(monkeypatch):
+    engine = ImageEngine("flux3-klein")
+    backend = types.SimpleNamespace(max_reference_images=7)
+    monkeypatch.setattr(engine, "_engine", backend)
+
+    assert engine.max_reference_images == 7
+    backend.max_reference_images = 3
+    assert engine.max_reference_images == 3
+
+
 def test_flux2_adapter_residency_can_preload_edit_variant(monkeypatch):
     engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
     modes = []
@@ -1184,6 +1194,34 @@ def test_edit_rejects_oversized_image(client, monkeypatch):
         data={"prompt": "x"},
     )
     assert resp.status_code == 413
+
+
+@pytest.mark.parametrize("over_limit", [False, True])
+def test_edit_enforces_individual_upload_limit(client, monkeypatch, over_limit):
+    from rapid_mlx.routes import images
+
+    engine = _FakeImageEngine(is_edit=True)
+    _patch_engine(monkeypatch, engine)
+    payload = _png_upload_bytes()
+    monkeypatch.setattr(images, "_MAX_EDIT_IMAGE_BYTES", len(payload) - over_limit)
+
+    resp = client.post(
+        "/v1/images/edits",
+        files={"image": ("in.png", payload, "image/png")},
+        data={"prompt": "x"},
+    )
+
+    if over_limit:
+        assert resp.status_code == 413
+        assert resp.json()["error"] == {
+            "message": "image exceeds 0 MB limit",
+            "type": "invalid_request_error",
+            "param": "image",
+        }
+        assert engine.image_paths_seen == []
+    else:
+        assert resp.status_code == 200
+        assert len(engine.image_paths_seen) == 1
 
 
 def test_edit_rejects_excessive_pixel_dimensions(client, monkeypatch):

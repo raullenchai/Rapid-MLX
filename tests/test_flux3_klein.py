@@ -61,7 +61,8 @@ def test_existing_reference_limits(alias):
 
 @pytest.mark.parametrize("editing", [False, True])
 @pytest.mark.parametrize("base", [False, True])
-def test_flux3_runtime_construction(monkeypatch, editing, base):
+@pytest.mark.parametrize("missing_config", [False, True])
+def test_flux3_runtime_construction(monkeypatch, editing, base, missing_config):
     calls = []
 
     def fake_model(**kwargs):
@@ -84,10 +85,24 @@ def test_flux3_runtime_construction(monkeypatch, editing, base):
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
+    if missing_config:
+        delattr(
+            modules["mflux.models.common.config.model_config"].ModelConfig,
+            "flux3_image_klein_base" if base else "flux3_image_klein",
+        )
     engine = ImageGenerationEngine("flux3-klein" + ("-base" if base else ""))
     monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: None)
     monkeypatch.setattr(image_engine, "_preserve_vae_decode", lambda _: None)
-    (engine._build_edit_model if editing else engine._build_model)()
+    build = engine._build_edit_model if editing else engine._build_model
+    if missing_config:
+        with pytest.raises(
+            image_engine.ImageRuntimeError,
+            match=r"FLUX 3 Klein requires mflux 0\.23 or later\.",
+        ):
+            build()
+        assert calls == []
+        return
+    build()
     assert calls == [
         {
             "quantize": 4,
@@ -121,6 +136,32 @@ def test_qwen_reference_limit_from_installed_constant(monkeypatch, tmp_path):
     with pytest.raises(ImageRequestError, match="7 reference"):
         engine.validate_request(prompt="edit", image_paths=["a"] * 8)
     source.unlink()
+    assert image_engine._qwen21_max_references() == 1
+
+
+@pytest.mark.parametrize(
+    "runtime_source",
+    [
+        "OTHER_CONSTANT = 7\n",
+        "MAX_REFERENCES = 0\n",
+        "MAX_REFERENCES = -1\n",
+        "MAX_REFERENCES = None\n",
+        'MAX_REFERENCES = "7"\n',
+    ],
+)
+def test_qwen_reference_limit_defaults_for_missing_or_invalid_constant(
+    monkeypatch, tmp_path, runtime_source
+):
+    from importlib import metadata
+
+    source = tmp_path / "edit.py"
+    source.write_text(runtime_source)
+    monkeypatch.setattr(
+        metadata,
+        "distribution",
+        lambda _: types.SimpleNamespace(locate_file=lambda _: source),
+    )
+
     assert image_engine._qwen21_max_references() == 1
 
 
