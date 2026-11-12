@@ -182,6 +182,12 @@ private enum OnboardingModelAccessibility {
     }
 }
 
+enum OnboardingSizeLane {
+    static func isCompact(_ sizeText: String) -> Bool {
+        !sizeText.isEmpty && sizeText.count <= 18
+    }
+}
+
 // MARK: - Recommended starter
 
 /// The starter card. The only row that carries prose, attribute pills and a
@@ -207,17 +213,24 @@ struct QuickstartRecommendedCard: View {
                         Text(choice.displayName)
                             .scaledSystemFont(15, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
+                            .layoutPriority(1)
                         OnboardingBadge(text: String(localized: "START HERE"), tone: .ink)
                         if isCached {
                             OnboardingBadge(text: String(localized: "ON THIS MAC"), tone: .ready)
                         }
                         Spacer(minLength: 8)
-                        if !sizeText.isEmpty {
+                        if OnboardingSizeLane.isCompact(sizeText) {
                             Text(sizeText)
                                 .scaledSystemFont(12, design: .monospaced)
                                 .foregroundStyle(RapidTheme.textSecondary)
                                 .fixedSize()
                         }
+                    }
+                    if !sizeText.isEmpty && !OnboardingSizeLane.isCompact(sizeText) {
+                        Text(sizeText)
+                            .scaledSystemFont(12, design: .monospaced)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Text(choice.blurb)
                         .scaledSystemFont(13)
@@ -293,17 +306,24 @@ struct QuickstartLowMemoryCard: View {
                         Text(choice.displayName)
                             .scaledSystemFont(14, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
+                            .layoutPriority(1)
                         OnboardingBadge(text: String(localized: "LOWEST MEMORY"), tone: .ready)
                         if isCached {
                             OnboardingBadge(text: String(localized: "ON THIS MAC"), tone: .ready)
                         }
                         Spacer(minLength: 8)
-                        if !sizeText.isEmpty {
+                        if OnboardingSizeLane.isCompact(sizeText) {
                             Text(sizeText)
                                 .scaledSystemFont(12, design: .monospaced)
                                 .foregroundStyle(RapidTheme.textSecondary)
                                 .fixedSize()
                         }
+                    }
+                    if !sizeText.isEmpty && !OnboardingSizeLane.isCompact(sizeText) {
+                        Text(sizeText)
+                            .scaledSystemFont(12, design: .monospaced)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Text(choice.blurb)
                         .scaledSystemFont(12)
@@ -361,9 +381,16 @@ struct QuickstartCompactCard: View {
                             .scaledSystemFont(14, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
                             .lineLimit(1)
+                            .layoutPriority(1)
                         if isCached {
                             OnboardingBadge(text: String(localized: "ON THIS MAC"), tone: .ready)
                         }
+                    }
+                    if !sizeText.isEmpty && !OnboardingSizeLane.isCompact(sizeText) {
+                        Text(sizeText)
+                            .scaledSystemFont(12, design: .monospaced)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if let secondaryText, !secondaryText.isEmpty {
                         Text(secondaryText)
@@ -379,7 +406,7 @@ struct QuickstartCompactCard: View {
                     }
                 }
                 Spacer(minLength: 8)
-                if !sizeText.isEmpty {
+                if OnboardingSizeLane.isCompact(sizeText) {
                     Text(sizeText)
                         .scaledSystemFont(12, design: .monospaced)
                         .foregroundStyle(RapidTheme.textSecondary)
