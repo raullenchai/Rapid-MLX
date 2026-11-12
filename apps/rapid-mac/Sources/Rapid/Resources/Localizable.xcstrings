@@ -10513,6 +10513,16 @@
         }
       }
     },
+    "%lld/%lld references" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld/%2$lld 张参考图"
+          }
+        }
+      }
+    },
     "%lld× seen · %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11429,6 +11439,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "清除对话系统提示词"
+          }
+        }
+      }
+    },
+    "Clear references" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除参考图"
           }
         }
       }
@@ -15955,6 +15975,16 @@
         }
       }
     },
+    "This model accepts up to %lld reference images." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型最多接受 %lld 张参考图。"
+          }
+        }
+      }
+    },
     "This model doesn't support photos. Choose a vision-capable model to add one." : {
       "localizations" : {
         "zh-Hans" : {
@@ -18621,6 +18651,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加模型以继续"
+          }
+        }
+      }
+    },
+    "Add reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加参考图"
           }
         }
       }

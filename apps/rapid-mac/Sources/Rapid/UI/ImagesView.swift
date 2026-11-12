@@ -732,9 +732,11 @@ struct ImagesView: View {
             if viewModel.maxReferenceImages > 1 || !viewModel.additionalReferences.isEmpty {
                 Text("\(1 + viewModel.additionalReferences.count)/\(viewModel.maxReferenceImages) references")
                 Button("Add reference") { chooseEditImage(addingReference: true) }
+                    .accessibilityIdentifier("Images.Edit.AddReference")
                     .disabled(viewModel.isGenerating || viewModel.additionalReferences.count + 1 >= viewModel.maxReferenceImages)
                 if !viewModel.additionalReferences.isEmpty {
                     Button("Clear references") { viewModel.additionalReferences = [] }
+                        .accessibilityIdentifier("Images.Edit.ClearReferences")
                         .disabled(viewModel.isGenerating)
                 }
             }
