@@ -119,6 +119,7 @@ ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
 # (debug verbosity, version-check disable, etc.).
 ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
+        "RAPID_MLX_LORA_DIR",  # image LoRA library directory; no routing
         "RAPID_MLX_STEP_WORKGROUP",  # opt out of macOS step scheduling hint; no routing
         # Opt-in fused affine-4 MoE expert kernels for Qwen3.6 MoE; picks a
         # kernel implementation for the same model, never a model or route.

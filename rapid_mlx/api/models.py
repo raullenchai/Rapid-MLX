@@ -28,6 +28,7 @@ from pydantic import (
     model_validator,
 )
 
+from .image_loras import ImageLoras
 from .sampler_compat import apply_sampler_compat, parse_sequence_breakers
 
 # =============================================================================
@@ -3650,6 +3651,7 @@ class ImageGenerationRequest(BaseModel):
     OpenAI clients that omit them get the family's fast defaults.
     """
 
+    loras: ImageLoras | None = None
     model: str = ""
     prompt: str = Field(..., min_length=1)
     # Cap ``n`` so one call can't serialize an unbounded number of full renders

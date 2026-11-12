@@ -16,6 +16,7 @@ import threading
 from collections.abc import Callable
 from typing import ParamSpec, TypeVar
 
+from ..api.image_loras import ImageLoras
 from ..image.engine import (
     ImageGenerationCancelled,
     ImageGenerationEngine,
@@ -248,6 +249,7 @@ class ImageEngine:
         self._engine._ensure_loaded(  # noqa: SLF001
             for_edit=bool(kwargs.get("image_paths")),
             reference_count=len(kwargs.get("image_paths") or []),
+            loras=kwargs.get("loras"),
         )
         self._emit_model_served()
         return self._engine.generate_with_performance(**kwargs)
@@ -263,6 +265,7 @@ class ImageEngine:
         guidance: float | None = None,
         negative_prompt: str | None = None,
         image_paths: list[str] | None = None,
+        loras: ImageLoras | None = None,
     ) -> bytes:
         """Generate one image; returns PNG bytes. Raises ``ImageRuntimeError``."""
         return run_on_image_worker(
@@ -275,6 +278,7 @@ class ImageEngine:
             guidance=guidance,
             negative_prompt=negative_prompt,
             image_paths=image_paths,
+            loras=loras,
         )
 
     def _generate(
@@ -288,6 +292,7 @@ class ImageEngine:
         guidance: float | None,
         negative_prompt: str | None,
         image_paths: list[str] | None,
+        loras: ImageLoras | None,
     ) -> bytes:
         # Validate before preloading to avoid downloading invalid requests' weights.
         self._engine.validate_request(
@@ -298,9 +303,12 @@ class ImageEngine:
             guidance=guidance,
             negative_prompt=negative_prompt,
             image_paths=image_paths,
+            loras=loras,
         )
         self._engine._ensure_loaded(
-            for_edit=bool(image_paths), reference_count=len(image_paths or [])
+            for_edit=bool(image_paths),
+            reference_count=len(image_paths or []),
+            loras=loras,
         )  # noqa: SLF001
         self._emit_model_served()
         return self._engine.generate(
@@ -312,6 +320,7 @@ class ImageEngine:
             guidance=guidance,
             negative_prompt=negative_prompt,
             image_paths=image_paths,
+            loras=loras,
         )
 
     def generate_warmup(self) -> None:
@@ -321,3 +330,4 @@ class ImageEngine:
         """Release the backing model reference (mflux holds no async resources)."""
         self._engine._model = None  # noqa: SLF001 — internal drop for restart hygiene
         self._engine._loaded_mode = None  # noqa: SLF001
+        self._engine._lora_key = ()  # noqa: SLF001
