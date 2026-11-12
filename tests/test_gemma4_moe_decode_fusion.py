@@ -35,7 +35,13 @@ def test_registration_and_schema_parity(monkeypatch, tmp_path):
     )
     assert paths[0].read_bytes() == paths[1].read_bytes()
     assert f'"{NAME}"' in paths[0].read_text()
-    assert all(NAME not in cell["knobs"] for cell in lattice.builtin_profile().cells)
+    cells = [c for c in lattice.builtin_profile().cells if NAME in c["knobs"]]
+    # Enabled only on measured generation/tier cells; unknown hardware stays off.
+    assert {c["id"]: c["knobs"][NAME] for c in cells} == {
+        "gemma4-moe-decode-15-ultra": True,
+        "gemma4-moe-decode-16-pro": True,
+        "gemma4-moe-decode-17-max": True,
+    }
     ctx = lattice.runtime_context({}, model=lattice.ModelProfile(NAME + "_install"))
     monkeypatch.setattr(lattice, "overlay_profile", lambda: defaults.Profile())
     monkeypatch.delenv("RAPID_MLX_GEMMA4_MOE_DECODE_FUSION", raising=False)
