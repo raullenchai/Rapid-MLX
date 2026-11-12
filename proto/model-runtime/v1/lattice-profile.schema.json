@@ -248,6 +248,9 @@
             "moe_decode_fusion": {
               "type": "boolean"
             },
+            "gemma4_moe_decode_fusion": {
+              "type": "boolean"
+            },
             "moe_gate_up_fusion": {
               "type": "boolean"
             },

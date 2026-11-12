@@ -1943,6 +1943,15 @@ class MLXMultimodalLM:
 
                 install_dense_decode_fusion(self.model, spec_decode=self.spec_decode)
 
+            # After dense fusion: the compiled single-token layer path wraps
+            # whichever decoder call that installer left in place.
+            if config_model_type in {"gemma4", "gemma4_text"}:
+                from ..patches.gemma4_moe_decode_fusion import (
+                    install_gemma4_moe_decode_fusion,
+                )
+
+                install_gemma4_moe_decode_fusion(self.model, config_model_type)
+
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
             # Gemma 3 / 3n VL variants are the canonical case:

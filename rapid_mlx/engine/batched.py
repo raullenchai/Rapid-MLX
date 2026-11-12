@@ -2457,6 +2457,18 @@ class BatchedEngine(BaseEngine):
                 spec_decode=getattr(self._scheduler_config, "spec_decode", "none"),
             ).result()
 
+            # Opt-in Gemma 4 decode fusion (Lattice knob). After dense fusion
+            # so the compiled single-token layer path wraps its decoder call.
+            model_type = getattr(self._model, "model_type", None)
+            if model_type in {"gemma4", "gemma4_text"}:
+                from ..patches.gemma4_moe_decode_fusion import (
+                    install_gemma4_moe_decode_fusion,
+                )
+
+                self._model_load_executor.submit(  # type: ignore[attr-defined]
+                    install_gemma4_moe_decode_fusion, self._model, model_type
+                ).result()
+
         # Capture persistence identity from the exact immutable snapshot
         # selected by the loader before this engine is published through
         # ServerConfig and concurrent cache load/save tasks can observe it.

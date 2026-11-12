@@ -259,6 +259,11 @@ KNOBS = {
         "moe_decode_fusion",
         lambda c: c.model.family == "moe_decode_fusion_install",
     ),
+    "gemma4_moe_decode_fusion": _knob(
+        "gemma4_moe_decode_fusion",
+        lambda c: c.model.family == "gemma4_moe_decode_fusion_install",
+        "RAPID_MLX_GEMMA4_MOE_DECODE_FUSION",
+    ),
     "moe_gate_up_fusion": _knob(
         "moe_gate_up_fusion",
         lambda c: c.model.family == "moe_gate_up_fusion_install",
