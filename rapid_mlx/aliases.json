@@ -2397,6 +2397,32 @@
     "suffix_decoding_tier": "unknown",
     "min_memory_gb": 24
   },
+  "flux3-klein": {
+    "hf_path": "black-forest-labs/flux-3-image-klein",
+    "revision": "09561231f44e41381c461caf53d5452005a60ac9",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 24
+  },
+  "flux3-klein-base": {
+    "hf_path": "black-forest-labs/flux-3-image-klein-base",
+    "revision": "a83ce283b1daa2f3d782645ae7b06c8e73af1b41",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 24
+  },
   "flux2-klein-4b": {
     "hf_path": "Runpod/FLUX.2-klein-4B-mflux-4bit",
     "revision": "7ee1b3aa8178a1240050490072196a57da2bf2a9",

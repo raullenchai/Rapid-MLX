@@ -206,6 +206,10 @@ class ImageEngine:
         return self._engine.family
 
     @property
+    def max_reference_images(self) -> int:
+        return self._engine.max_reference_images
+
+    @property
     def default_steps(self) -> int:
         """Per-family default denoise steps when the request pins none."""
         return self._engine.default_steps
@@ -242,7 +246,8 @@ class ImageEngine:
         # Validate before preloading to avoid downloading invalid requests' weights.
         self._engine.validate_request(**kwargs)
         self._engine._ensure_loaded(  # noqa: SLF001
-            for_edit=bool(kwargs.get("image_paths"))
+            for_edit=bool(kwargs.get("image_paths")),
+            reference_count=len(kwargs.get("image_paths") or []),
         )
         self._emit_model_served()
         return self._engine.generate_with_performance(**kwargs)
@@ -294,7 +299,9 @@ class ImageEngine:
             negative_prompt=negative_prompt,
             image_paths=image_paths,
         )
-        self._engine._ensure_loaded(for_edit=bool(image_paths))  # noqa: SLF001
+        self._engine._ensure_loaded(
+            for_edit=bool(image_paths), reference_count=len(image_paths or [])
+        )  # noqa: SLF001
         self._emit_model_served()
         return self._engine.generate(
             prompt=prompt,

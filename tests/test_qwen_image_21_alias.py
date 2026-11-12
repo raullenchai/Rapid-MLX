@@ -117,8 +117,10 @@ def test_cold_load_uses_pinned_snapshot(monkeypatch):
     assert calls == [(REPO, {"revision": REVISION})]
 
 
-@pytest.mark.parametrize("for_edit", [False, True])
-def test_load_constructs_qwen21_and_registers_memory_policy(monkeypatch, for_edit):
+@pytest.mark.parametrize("for_edit,reference_count", [(False, 0), (True, 1), (True, 3)])
+def test_load_constructs_qwen21_and_registers_memory_policy(
+    monkeypatch, for_edit, reference_count
+):
     class FakeCallbacks:
         def __init__(self):
             self.registered = []
@@ -130,6 +132,9 @@ def test_load_constructs_qwen21_and_registers_memory_policy(monkeypatch, for_edi
         def __init__(self, **kwargs):
             self.constructor_kwargs = kwargs
             self.callbacks = FakeCallbacks()
+
+    class FakeQwenImage21Edit(FakeQwenImage21):
+        pass
 
     class FakeMemorySaver:
         def __init__(self, **kwargs):
@@ -162,6 +167,10 @@ def test_load_constructs_qwen21_and_registers_memory_policy(monkeypatch, for_edi
         QwenImage21=FakeQwenImage21,
     )
     install_module(
+        "mflux.models.qwen21.variants.edit.qwen_image_21_edit",
+        QwenImage21Edit=FakeQwenImage21Edit,
+    )
+    install_module(
         "mflux.callbacks.instances.memory_saver", MemorySaver=FakeMemorySaver
     )
     install_module(
@@ -172,9 +181,11 @@ def test_load_constructs_qwen21_and_registers_memory_policy(monkeypatch, for_edi
     monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: "/pinned/model")
     monkeypatch.setattr(engine, "_ensure_runtime_assets", lambda: None)
     monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
-    model = engine._ensure_loaded(for_edit=for_edit)  # noqa: SLF001
+    model = engine._ensure_loaded(for_edit=for_edit, reference_count=reference_count)  # noqa: SLF001
 
-    assert isinstance(model, FakeQwenImage21)
+    assert type(model) is (
+        FakeQwenImage21Edit if reference_count > 1 else FakeQwenImage21
+    )
     assert model.constructor_kwargs == {
         "quantize": 8,
         "model_path": "/pinned/model",
@@ -330,8 +341,8 @@ def test_img2img_passes_one_path_and_strength(monkeypatch, tmp_path):
     assert call["image_strength"] == 0.4
     assert call["width"] == 1456 and call["height"] == 720
     assert "image_paths" not in call
-    with pytest.raises(ImageRuntimeError, match="one input image"):
-        engine.generate(prompt="x", image_paths=[str(path), str(path)])
+    with pytest.raises(ImageRuntimeError, match="reference images"):
+        engine.generate(prompt="x", image_paths=[str(path)] * 11)
 
 
 def test_new_prompt_reloads_evicted_encoder(monkeypatch):

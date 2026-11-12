@@ -13,6 +13,9 @@ terms before commercial use:
 * ``flux2-klein``      — text→image + image edit (``FLUX.2-klein-4B``),
   4B/4-step, the fast default: ~3 s @ 512² / ~10 s @ 1024² on an M3 Ultra,
   ~4 GB at 4-bit
+* ``flux3-klein``      — generation + 1–10-reference editing; distilled 16-step
+  and Base 50-step variants. FLUX Kommunity License v1.0; gated HF access,
+  non-commercial use plus commercial output for qualifying users <US$5M revenue.
 * ``z-image``          — text→image (``Z-Image-Turbo``), 6B/8-step, the quality
   option (SOTA open-source photorealism), ~5.5 GB at 4-bit
 * ``flux-schnell``     — text→image (``black-forest-labs/FLUX.1-schnell``), 12B
@@ -278,6 +281,10 @@ def _detect_family(model_name: str) -> str:
         return "sd35-large"
     if "stable-diffusion-xl" in name or "sdxl" in name:
         return "sdxl-base"
+    if "klein" in name and any(
+        token in name for token in ("flux3", "flux.3", "flux-3")
+    ):
+        return "flux3-klein"
     # Klein first — its repos ("FLUX.2-klein-4B-mflux-4bit") also contain
     # "flux", so the distinctive "klein" / "flux2" token must win before the
     # generic FLUX.1 checks below.
@@ -295,7 +302,7 @@ def _detect_family(model_name: str) -> str:
         return "flux-dev"
     raise ImageRuntimeError(
         f"Unsupported image model '{model_name}'. Supported families: "
-        "flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
+        "flux3-klein, flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
         "hidream-o1-dev, sdxl-base, bonsai-image, sd35-large."
     )
 
@@ -304,12 +311,13 @@ def _detect_family(model_name: str) -> str:
 # FLUX.2 Klein omits it (Flux1 / Qwen-Image / Z-Image all accept it), and
 # passing an unknown kwarg raises — so the engine drops it for these.
 _NO_NEGATIVE_PROMPT_FAMILIES = frozenset(
-    {"flux2-klein", "hidream-o1-dev", "bonsai-image"}
+    {"flux2-klein", "flux3-klein", "hidream-o1-dev", "bonsai-image"}
 )
 
 # Per-family default denoise steps when the request pins none. Distilled/turbo
 # models converge in a handful of steps; a non-distilled model needs many more.
 _DEFAULT_STEPS_BY_FAMILY = {
+    "flux3-klein": 16,
     "flux2-klein": 4,  # distilled turbo
     "z-image": 8,  # turbo, but 8 is the sweet spot for its quality
     "flux-schnell": 4,  # distilled
@@ -327,12 +335,62 @@ _DEFAULT_STEPS_BY_FAMILY = {
 def default_steps_for_model(model_name: str) -> int:
     """Public catalog view of the same family default used at generation."""
     family = _detect_family(model_name)
+    if family == "flux3-klein" and "base" in model_name.casefold():
+        return 50
     if family == "qwen-image-2.1" and is_qwen_image_21_turbo(model_name):
         # Distilled checkpoint: its published schedule has eight sigma nodes.
         from .qwen21_turbo import TURBO_STEPS
 
         return TURBO_STEPS
     return _DEFAULT_STEPS_BY_FAMILY.get(family, 4)
+
+
+def _qwen21_max_references() -> int:
+    """Read the installed runtime's limit without importing MLX in the catalog."""
+    import ast
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        source = distribution("mflux").locate_file(
+            "mflux/models/qwen21/variants/edit/qwen_image_21_edit.py"
+        )
+        tree = ast.parse(source.read_text())
+    except (PackageNotFoundError, OSError, SyntaxError):
+        return 1  # Older runtimes provide single-reference img2img only.
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "MAX_REFERENCES"
+            for target in node.targets
+        ):
+            value = ast.literal_eval(node.value)
+            if isinstance(value, int) and value > 0:
+                return value
+    return 1
+
+
+def max_reference_images_for_model(model_name: str) -> int:
+    family = _detect_family(model_name)
+    if family == "flux3-klein":
+        return 10
+    if family == "qwen-image-2.1" and not is_qwen_image_21_turbo(model_name):
+        return _qwen21_max_references()
+    return 1 if family in {"flux2-klein", "qwen-image-edit"} else 0
+
+
+def image_license_info(model_name: str) -> dict:
+    if _detect_family(model_name) != "flux3-klein":
+        return {}
+    return {
+        "license": "FLUX Kommunity License v1.0",
+        "license_url": "https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/main/LICENSE.md",
+        "requires_hf_login": True,
+        "license_notice": (
+            "Non-commercial use; commercial output generation for qualifying users "
+            "with less than US$5M gross annualized revenue, including affiliates, "
+            "subject to the license terms. Accept the repository terms on Hugging "
+            "Face and run `hf auth login`; Rapid-MLX does not accept terms for you."
+        ),
+    }
 
 
 def _looks_like_prequantized(model_name: str) -> bool:
@@ -373,6 +431,7 @@ class ImageGenerationEngine:
             self.family
             in {
                 "flux2-klein",
+                "flux3-klein",
                 "qwen-image-edit",
                 "qwen-image-2.1",
             }
@@ -381,6 +440,8 @@ class ImageGenerationEngine:
         # Kept for compatibility with callers that distinguish exclusive edit
         # checkpoints. FLUX.2 supports both operations, so it is not edit-only.
         self.is_edit = self.family == "qwen-image-edit"
+        self._qwen21_references = False
+        self.max_reference_images = max_reference_images_for_model(model_name)
         self.default_steps = default_steps_for_model(model_name)
         self.default_edit_steps = (
             40
@@ -396,6 +457,11 @@ class ImageGenerationEngine:
             if self.family == "flux2-klein"
             else 4.0
         )
+        if self.family == "flux3-klein":
+            self.default_edit_steps = self.default_steps
+            self.default_edit_guidance = (
+                3.5 if "base" in model_name.casefold() else None
+            )
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
         self._prequantized = self.family in {
             "hidream-o1-dev",
@@ -505,7 +571,10 @@ class ImageGenerationEngine:
         ourselves at the exact verified commit rather than let mflux resolve
         and download whatever ``main`` currently points to.
         """
-        if not self._packaged_checkpoint and self.family != "qwen-image-2.1":
+        if not self._packaged_checkpoint and self.family not in {
+            "qwen-image-2.1",
+            "flux3-klein",
+        }:
             return None
         from .._download_gate import (
             IMAGE_MODEL_DATA_FILES,
@@ -540,7 +609,7 @@ class ImageGenerationEngine:
         self._verify_weights_complete()
         return downloaded
 
-    def _build_model(self):
+    def _build_model(self, *, for_edit: bool = False):
         """Instantiate the backing mflux model (import-lazy)."""
         if self.family == "bonsai-image":
             from .bonsai_runtime import BONSAI_IMAGE_REPO, BonsaiImage
@@ -593,10 +662,12 @@ class ImageGenerationEngine:
                 on_step=self._report_native_step,
             )
 
+        if self.family == "flux3-klein":
+            return self._build_flux3_model(for_edit=for_edit)
+
         from mflux.models.common.config.model_config import ModelConfig
 
         model_path = self._model_path_for_mflux()
-
         if self.family == "flux2-klein":
             from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
 
@@ -635,6 +706,17 @@ class ImageGenerationEngine:
             return model
         if self.family == "qwen-image-2.1":
             from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
+
+            if for_edit:
+                try:
+                    from mflux.models.qwen21.variants.edit.qwen_image_21_edit import (
+                        QwenImage21Edit,
+                    )
+                except ImportError as exc:
+                    raise ImageRuntimeError(
+                        "Multi-reference Qwen edits require mflux 0.24."
+                    ) from exc
+                QwenImage21 = QwenImage21Edit
 
             # The Turbo and low-memory builds briefly patch mflux's
             # process-global weight definition. Serialize every Qwen-Image 2.1
@@ -776,9 +858,39 @@ class ImageGenerationEngine:
                 f"HiDream-O1 prompts are limited to {MAX_PROMPT_TOKENS} tokens."
             )
 
+    def _build_flux3_model(self, *, for_edit: bool):
+        try:
+            from mflux.models.common.config.model_config import ModelConfig
+            from mflux.models.flux3.variants.edit.flux3_klein_edit import Flux3KleinEdit
+            from mflux.models.flux3.variants.txt2img.flux3_klein import Flux3Klein
+        except ImportError as exc:
+            raise ImageRuntimeError(
+                "FLUX 3 Klein requires mflux 0.23 or later."
+            ) from exc
+        config_factory = getattr(
+            ModelConfig,
+            "flux3_image_klein_base"
+            if "base" in self.model_name.casefold()
+            else "flux3_image_klein",
+            None,
+        )
+        if config_factory is None:
+            raise ImageRuntimeError("FLUX 3 Klein requires mflux 0.23 or later.")
+        model = (Flux3KleinEdit if for_edit else Flux3Klein)(
+            quantize=self._quantize,
+            model_path=self._model_path_for_mflux(),
+            model_config=config_factory(),
+        )
+        _preserve_vae_decode(model.vae)
+        return model
+
     def _build_edit_model(self):
         """Instantiate the edit variant for a model that accepts input images."""
+        if self.family == "flux3-klein":
+            return self._build_flux3_model(for_edit=True)
         if self.family in {"qwen-image-edit", "qwen-image-2.1"}:
+            if self._qwen21_references:
+                return self._build_model(for_edit=True)
             return self._build_model()
         if self.family == "flux2-klein":
             from mflux.models.common.config.model_config import ModelConfig
@@ -1129,15 +1241,16 @@ class ImageGenerationEngine:
             return None
         return header if isinstance(header, dict) else None
 
-    def _ensure_loaded(self, *, for_edit: bool | None = None):
+    def _ensure_loaded(self, *, for_edit: bool | None = None, reference_count: int = 0):
         if for_edit is None:
             for_edit = self.is_edit
+        self._qwen21_references = (
+            self.family == "qwen-image-2.1" and reference_count > 1
+        )
         desired_mode = "edit" if for_edit else "generation"
-        if (
-            self._model is not None
-            and self._loaded_mode not in (None, desired_mode)
-            and self.family != "qwen-image-2.1"
-        ):
+        if self.family == "qwen-image-2.1":
+            desired_mode = "references" if self._qwen21_references else "generation"
+        if self._model is not None and self._loaded_mode not in (None, desired_mode):
             self._model = None
             self._loaded_mode = None
             _release_allocator_cache()
@@ -1250,12 +1363,29 @@ class ImageGenerationEngine:
         input_paths = image_paths or []
         editing = bool(input_paths)
         if (
-            self.family == "qwen-image-2.1"
+            editing
             and self.supports_editing
-            and editing
-            and len(input_paths) != 1
+            and len(input_paths) > self.max_reference_images
         ):
-            raise ImageRequestError("Qwen-Image 2.1 img2img accepts one input image.")
+            raise ImageRequestError(
+                f"{self.family} accepts at most {self.max_reference_images} reference images."
+            )
+        if self.family == "flux3-klein":
+            if any(
+                value is not None and (value <= 0 or value % 16)
+                for value in (width, height)
+            ):
+                raise ImageRequestError(
+                    "FLUX 3 Klein dimensions must be positive multiples of 16."
+                )
+            if negative_prompt is not None:
+                raise ImageRequestError(
+                    "FLUX 3 Klein does not support negative_prompt."
+                )
+            if "base" not in self.model_name.casefold() and guidance is not None:
+                raise ImageRequestError(
+                    "FLUX 3 Klein distilled does not support guidance; omit guidance."
+                )
         if not editing and not self.supports_generation:
             raise ImageRequestError(
                 "qwen-image-edit requires at least one input image (image_paths)."
@@ -1457,7 +1587,9 @@ class ImageGenerationEngine:
                     self._validate_hidream_prompt_tokens(prompt)
                     if self._is_cancelled():
                         raise ImageGenerationCancelled("Generation cancelled.")
-                model = self._ensure_loaded(for_edit=editing)
+                model = self._ensure_loaded(
+                    for_edit=editing, reference_count=len(input_paths)
+                )
                 # Honor a cancel that landed during the warm-up load before we
                 # commit to the denoise loop.
                 if self._is_cancelled():
@@ -1478,6 +1610,16 @@ class ImageGenerationEngine:
                         image_paths=image_paths,
                         height=None,
                         width=None,
+                        **self._gen_kwargs(
+                            seed, prompt, num_inference_steps, guidance, negative_prompt
+                        ),
+                    )
+                elif editing and self._qwen21_references:
+                    result = _generate_backend_image(
+                        model,
+                        image_paths=input_paths,
+                        height=height,
+                        width=width,
                         **self._gen_kwargs(
                             seed, prompt, num_inference_steps, guidance, negative_prompt
                         ),
@@ -1575,6 +1717,12 @@ class ImageGenerationEngine:
             "prompt": prompt,
             "num_inference_steps": num_inference_steps,
         }
+        if (
+            guidance is None
+            and self.family == "flux3-klein"
+            and "base" in self.model_name.casefold()
+        ):
+            guidance = 3.5
         if guidance is not None:
             kwargs["guidance"] = guidance
         if negative_prompt is not None and self.supports_negative_prompt:

@@ -563,8 +563,10 @@ class _ImageBackend:
 
         ImageGenerationEngine("sdxl-base").validate_request(**kwargs)
 
-    def _ensure_loaded(self, *, for_edit: bool | None = None) -> object:
-        del for_edit
+    def _ensure_loaded(
+        self, *, for_edit: bool | None = None, reference_count: int = 0
+    ) -> object:
+        del for_edit, reference_count
         if self.fail:
             raise RuntimeError("load failed")
         self.loads += 1

@@ -23,6 +23,8 @@ extension ModelDisplayName {
     }
 
     nonisolated static let imageNames: [String: String] = [
+        "flux3-klein": "FLUX 3 Klein",
+        "flux3-klein-base": "FLUX 3 Klein Base",
         "flux2-klein-4b": "FLUX.2 Klein · 4B",
         "mflux-community/flux2-klein-4b-mflux-bf16": "FLUX.2 Klein · 4B · BF16",
         "bonsai-image-4b-2bit": "Bonsai Image · 4B · 2-bit",

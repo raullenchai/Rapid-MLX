@@ -12,6 +12,7 @@ struct ImageModelParityTests {
         .deletingLastPathComponent() // repo root
 
     private static let aliasFamily: [String: String] = [
+        "flux3-klein": "flux3-klein",
         "flux2-klein-4b": "flux2-klein",
         "bonsai-image-4b-2bit": "bonsai-image",
         "flux-schnell": "flux-schnell",
@@ -26,7 +27,7 @@ struct ImageModelParityTests {
     ]
 
     // rapid_mlx/image/qwen21_turbo.py defines the fixed TURBO_STEPS schedule.
-    private static let literalSteps = ["qwen-image-2.1-turbo": 8]
+    private static let literalSteps = ["qwen-image-2.1-turbo": 8, "flux3-klein-base": 50]
 
     private static func imageAliases() throws -> Set<String> {
         let data = try Data(contentsOf: repoRoot.appendingPathComponent("rapid_mlx/aliases.json"))

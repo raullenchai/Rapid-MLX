@@ -199,6 +199,9 @@ final class ImageGenViewModel {
 
     /// Engine family defaults, including the Qwen-Image 2.1 compatibility alias.
     nonisolated static func seedSteps(for alias: String) -> Int {
+        if alias.localizedCaseInsensitiveContains("flux3-klein") {
+            return alias.localizedCaseInsensitiveContains("base") ? 50 : 16
+        }
         // The distilled Qwen-Image 2.1 Turbo checkpoint runs its eight-step schedule.
         if alias.localizedCaseInsensitiveContains("qwen-image-2.1-turbo") { return 8 }
         if alias.lowercased() == "qwen-image"
@@ -224,7 +227,71 @@ final class ImageGenViewModel {
     }
 
     // MARK: - Edit
-    var editSource: GeneratedImage?
+    private(set) var additionalReferences: [GeneratedImage] = []
+    private(set) var pendingReferenceImports = 0
+    private var editSessionID = UUID()
+    var maxReferenceImages: Int {
+        max(1, min(10, imageModels.first { $0.alias == selectedAlias }?.maxReferenceImages ?? 1))
+    }
+    func addReference(_ image: GeneratedImage) {
+        guard isEditing,
+              additionalReferences.count + pendingReferenceImports + 1 < maxReferenceImages else { return }
+        additionalReferences.append(image)
+    }
+    func clearReferences() {
+        editSessionID = UUID()
+        additionalReferences = []
+    }
+
+    /// Reserve the whole selection before scheduling work so submission cannot
+    /// race the first import. A session change invalidates both results and errors.
+    @discardableResult
+    func importEditImages(
+        at urls: [URL], addingReference: Bool = false,
+        loadPNG: @escaping @MainActor (URL) async throws -> Data = {
+            try await EditImageImporter.pngData(from: $0)
+        }
+    ) -> Task<Void, Never>? {
+        guard !urls.isEmpty, !isGenerating else { return nil }
+        if addingReference {
+            guard isEditing else { return nil }
+            guard urls.count + additionalReferences.count + pendingReferenceImports + 1 <= maxReferenceImages else {
+                errorMessage = String(localized: "This model accepts up to \(maxReferenceImages) reference images.")
+                return nil
+            }
+        } else {
+            // Replacing the source also invalidates an earlier source import.
+            editSessionID = UUID()
+        }
+        let sessionID = editSessionID
+        pendingReferenceImports += urls.count
+        return Task { [self] in
+            defer { pendingReferenceImports -= urls.count }
+            for url in urls {
+                guard editSessionID == sessionID, !Task.isCancelled else { return }
+                do {
+                    let png = try await loadPNG(url)
+                    guard editSessionID == sessionID, !Task.isCancelled else { return }
+                    let image = GeneratedImage(
+                        pngData: png, prompt: url.deletingPathExtension().lastPathComponent, isEdit: false
+                    )
+                    if addingReference {
+                        guard isEditing, additionalReferences.count + 1 < maxReferenceImages else { return }
+                        additionalReferences.append(image)
+                    } else {
+                        beginEdit(image)
+                    }
+                } catch {
+                    guard editSessionID == sessionID, !Task.isCancelled else { return }
+                    errorMessage = String(localized: "Couldn't import the image: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    var editSource: GeneratedImage? {
+        didSet { editSessionID = UUID() }
+    }
     var isEditing: Bool { editSource != nil }
     private var previousGenerationAlias: String?
 
@@ -255,6 +322,8 @@ final class ImageGenViewModel {
 
     var canSubmit: Bool {
         !isGenerating
+            && pendingReferenceImports == 0
+            && (!isEditing || additionalReferences.count + 1 <= maxReferenceImages)
             && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedAlias.isEmpty
             && selectableModels.contains { $0.alias == selectedAlias }
@@ -399,6 +468,7 @@ final class ImageGenViewModel {
 
     private func runEdit(source: GeneratedImage, target: RequestTarget) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let references = additionalReferences.map(\.pngData)
         guard !trimmed.isEmpty else { return }
         await withRequest {
             guard await self.server.ensureServing(
@@ -416,7 +486,7 @@ final class ImageGenViewModel {
             let poll = self.startPolling(model: target.alias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.edit(
-                imagePNG: source.pngData, prompt: trimmed, model: target.alias,
+                imagePNG: source.pngData, additionalImages: references, prompt: trimmed, model: target.alias,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
             if !self.cancelling, !Task.isCancelled,
@@ -429,6 +499,7 @@ final class ImageGenViewModel {
                 // Continue from the newest result so iterative edits never
                 // accidentally reapply to the original source.
                 self.editSource = first
+                self.clearReferences()
                 self.onProductValueDelivered(.editedImage)
             }
             self.prompt = ""
@@ -464,6 +535,7 @@ final class ImageGenViewModel {
 
     func beginEdit(_ image: GeneratedImage) {
         if !isEditing { previousGenerationAlias = selectedAlias }
+        clearReferences()
         editSource = image
         activeID = image.id
         prompt = ""
@@ -475,6 +547,7 @@ final class ImageGenViewModel {
 
     func cancelEdit() {
         editSource = nil
+        clearReferences()
         prompt = ""
         if let previousGenerationAlias,
            generationModels.contains(where: { $0.alias == previousGenerationAlias }) {

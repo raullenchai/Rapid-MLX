@@ -101,7 +101,7 @@ rapid_mlx/routes/anthropic.py 5
 rapid_mlx/routes/audio.py 6
 rapid_mlx/routes/chat.py 35
 rapid_mlx/routes/completions.py 1
-rapid_mlx/routes/images.py 4
+rapid_mlx/routes/images.py 2
 rapid_mlx/routes/responses.py 10
 rapid_mlx/routes/video.py 2
 rapid_mlx/runtime/diffusion_lane.py 3

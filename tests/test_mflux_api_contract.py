@@ -448,3 +448,86 @@ def test_reference_loader_without_composite_option_is_left_alone(monkeypatch):
 
     Model.__module__ = "mflux.models.fake"
     assert _generate_backend_image(Model(), image_path="input.png") == "rendered"
+
+
+@pytest.mark.parametrize(
+    "alias,editing",
+    [
+        ("flux3-klein", False),
+        ("flux3-klein", True),
+        ("flux3-klein-base", False),
+        ("flux3-klein-base", True),
+        ("Qwen/Qwen-Image-2.1", True),
+    ],
+)
+def test_new_reference_backends_bind_installed_signatures(
+    monkeypatch, mflux_source, alias, editing
+):
+    qwen = "Qwen" in alias
+    if qwen:
+        module_name = "mflux.models.qwen21.variants.edit.qwen_image_21_edit"
+        constructor = _signature(
+            mflux_source, module_name, "QwenImage21Edit", "__init__"
+        )
+        generate = _signature(
+            mflux_source, module_name, "QwenImage21Edit", "generate_image"
+        )
+    else:
+        constructor = _signature(
+            mflux_source,
+            "mflux.models.flux3.variants.flux3_klein_core",
+            "_Flux3KleinCore",
+            "__init__",
+        )
+        module_name = "mflux.models.flux3.variants." + (
+            "edit.flux3_klein_edit" if editing else "txt2img.flux3_klein"
+        )
+        generate = _signature(
+            mflux_source,
+            module_name,
+            "Flux3KleinEdit" if editing else "Flux3Klein",
+            "generate_image",
+        )
+    calls = []
+
+    class Model:
+        def __init__(self, **kwargs):
+            constructor.bind(self, **kwargs)
+            self.vae = SimpleNamespace()
+
+        def generate_image(self, **kwargs):
+            generate.bind(self, **kwargs)
+            calls.append(kwargs)
+            return SimpleNamespace(image=Image.new("RGB", (8, 8)))
+
+    _module(
+        monkeypatch,
+        "mflux.models.common.config.model_config",
+        ModelConfig=SimpleNamespace(
+            flux3_image_klein=lambda: object(),
+            flux3_image_klein_base=lambda: object(),
+            qwen_image_21=lambda: object(),
+        ),
+    )
+    for module, class_name in (
+        ("mflux.models.flux3.variants.txt2img.flux3_klein", "Flux3Klein"),
+        ("mflux.models.flux3.variants.edit.flux3_klein_edit", "Flux3KleinEdit"),
+        ("mflux.models.qwen21.variants.txt2img.qwen_image_21", "QwenImage21"),
+        ("mflux.models.qwen21.variants.edit.qwen_image_21_edit", "QwenImage21Edit"),
+    ):
+        _module(monkeypatch, module, **{class_name: Model})
+    engine = ImageGenerationEngine(alias)
+    monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: "/local/checkpoint")
+    engine._qwen21_references = qwen
+    model = engine._build_edit_model() if editing else engine._build_model()
+    monkeypatch.setattr(engine, "_ensure_loaded", lambda **_: model)
+    engine.generate(
+        prompt="combine",
+        width=512,
+        height=512,
+        num_inference_steps=engine.default_steps,
+        image_paths=["a.png", "b.png", "c.png"] if editing else None,
+    )
+    assert len(calls) == 1
+    if editing:
+        assert calls[0]["image_paths"] == ["a.png", "b.png", "c.png"]

@@ -729,6 +729,24 @@ struct ImagesView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
+            if viewModel.maxReferenceImages > 1 || !viewModel.additionalReferences.isEmpty {
+                Text("\(1 + viewModel.additionalReferences.count)/\(viewModel.maxReferenceImages) references")
+                Button("Add reference") { chooseEditImage(addingReference: true) }
+                    .accessibilityIdentifier("Images.Edit.AddReference")
+                    .disabled(viewModel.isGenerating || viewModel.pendingReferenceImports > 0
+                              || viewModel.additionalReferences.count + 1 >= viewModel.maxReferenceImages)
+                if !viewModel.additionalReferences.isEmpty {
+                    Button("Clear references") { viewModel.clearReferences() }
+                        .accessibilityIdentifier("Images.Edit.ClearReferences")
+                        .disabled(viewModel.isGenerating)
+                }
+            }
+            if viewModel.pendingReferenceImports > 0 {
+                ProgressView().controlSize(.small)
+                Text("Importing references…")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+            }
             Spacer(minLength: 8)
             Button { viewModel.cancelEdit() } label: {
                 Image(systemName: "xmark")
@@ -748,7 +766,7 @@ struct ImagesView: View {
     }
 
     private var importButton: some View {
-        Button(action: chooseEditImage) {
+        Button(action: { chooseEditImage() }) {
             Image(systemName: "photo.badge.plus")
                 .accessibilityHidden(true)
                 .font(.system(size: 12, weight: .medium))
@@ -1016,7 +1034,7 @@ struct ImagesView: View {
         }
     }
 
-    private func chooseEditImage() {
+    private func chooseEditImage(addingReference: Bool = false) {
         // The native NSOpenPanel's file browser publishes no accessibility
         // identifiers, so a golden flow cannot reach it: neither a
         // pid-targeted CGEvent nor a HID session tap opens its "Go to Folder"
@@ -1034,32 +1052,19 @@ struct ImagesView: View {
            let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_IMPORT_PATH"],
            !simulated.isEmpty,
            FileManager.default.fileExists(atPath: simulated) {
-            importEditImage(at: URL(fileURLWithPath: simulated))
+            viewModel.importEditImages(at: [URL(fileURLWithPath: simulated)], addingReference: addingReference)
             return
         }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = addingReference && viewModel.maxReferenceImages > 1
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        importEditImage(at: url)
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        viewModel.importEditImages(at: urls, addingReference: addingReference)
     }
 
-    private func importEditImage(at url: URL) {
-        Task {
-            do {
-                let png = try await EditImageImporter.pngData(from: url)
-                viewModel.beginEdit(GeneratedImage(
-                    pngData: png,
-                    prompt: url.deletingPathExtension().lastPathComponent,
-                    isEdit: false
-                ))
-            } catch {
-                viewModel.errorMessage = String(localized: "Couldn't import the image: \(error.localizedDescription)")
-            }
-        }
-    }
 }
 
 enum ImportedEditImageError: LocalizedError {

@@ -27,6 +27,8 @@
     "abenzerps/K2-Horizon-7B-MLX-4bit": 5084583460,
     "abenzerps/Spark-X2.6-4B-MLX-4bit": 2330273898,
     "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized": 16378940179,
+    "black-forest-labs/flux-3-image-klein": 20320000000,
+    "black-forest-labs/flux-3-image-klein-base": 20320000000,
     "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx": 21098225260,
     "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4": 14261049583,
     "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8": 16640011867,

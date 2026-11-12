@@ -2737,6 +2737,7 @@ class ModelInfo(BaseModel):
     baseline contract is unchanged either way.
     """
 
+    max_reference_images: int | None = None
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))

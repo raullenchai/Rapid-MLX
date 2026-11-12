@@ -611,13 +611,14 @@ def _generate_edit_one(
         if guidance is not None
         else getattr(img_engine, "default_edit_guidance", 4.0),
         negative_prompt=negative_prompt,
-        image_paths=[image_path],
+        image_paths=[image_path] if isinstance(image_path, str) else image_path,
     )
 
 
 @router.post("/v1/images/edits")
 async def edit_image(
-    image: UploadFile = File(...),
+    image: list[UploadFile] | None = File(None),
+    image_array: list[UploadFile] | None = File(None, alias="image[]"),
     prompt: str = Form(...),
     model: str = Form(""),
     n: int = Form(1),
@@ -671,6 +672,15 @@ async def edit_image(
                 }
             },
         )
+
+    uploads = (image or []) + (image_array or [])
+    limit = min(10, getattr(img_engine, "max_reference_images", 1))
+    _reject(not uploads, "image requires at least one reference image", "image")
+    _reject(
+        len(uploads) > limit,
+        f"This model accepts at most {limit} reference images",
+        "image",
+    )
 
     if not prompt or not prompt.strip():
         raise HTTPException(
@@ -758,37 +768,39 @@ async def edit_image(
     # Bounded, streaming read: abort as soon as the cumulative size exceeds the
     # cap rather than materializing the whole (possibly huge) upload first —
     # otherwise an unauthenticated oversized multipart request exhausts memory.
-    raw = bytearray()
-    while True:
-        chunk = await image.read(1024 * 1024)
-        if not chunk:
-            break
-        raw.extend(chunk)
-        if len(raw) > _MAX_EDIT_IMAGE_BYTES:
+    raw_images: list[bytes] = []
+    for upload in uploads:
+        raw = bytearray()
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if len(raw) > _MAX_EDIT_IMAGE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "error": {
+                            "message": f"image exceeds "
+                            f"{_MAX_EDIT_IMAGE_BYTES // (1024 * 1024)} MB limit",
+                            "type": "invalid_request_error",
+                            "param": "image",
+                        }
+                    },
+                )
+        if not raw:
             raise HTTPException(
-                status_code=413,
+                status_code=400,
                 detail={
                     "error": {
-                        "message": f"image exceeds "
-                        f"{_MAX_EDIT_IMAGE_BYTES // (1024 * 1024)} MB limit",
+                        "message": "image file is empty",
                         "type": "invalid_request_error",
                         "param": "image",
                     }
                 },
             )
-    if not raw:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": {
-                    "message": "image file is empty",
-                    "type": "invalid_request_error",
-                    "param": "image",
-                }
-            },
-        )
-    raw = bytes(raw)
-    _validate_edit_image(raw)
+        raw_images.append(bytes(raw))
+        _validate_edit_image(raw_images[-1])
 
     # A fixed suffix — never the attacker-controlled upload filename, whose
     # length/bytes could otherwise raise an uncaught OSError from the temp-file
@@ -796,16 +808,17 @@ async def edit_image(
     base_seed = seed if seed is not None else secrets.randbelow(2**31)
     data = []
     cancelled = False
-    # One temp file for the whole request; the process lock in the img_engine keeps
-    # generations serial, so a shared init image is safe across the n renders.
+    # One temp file per reference; the process lock keeps generations serial,
+    # so the same references are safe across the n renders.
     # Creation + write live inside the try so a partial-write / close failure
-    # can't leak the file — ``tmp_path`` is captured before the write, and the
+    # can't leak files — each path is captured before the write, and the
     # finally unlinks whatever path was created on every exit.
-    tmp_path: str | None = None
+    tmp_paths: list[str] = []
     try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
-            tmp.write(raw)
+        for raw_image in raw_images:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_paths.append(tmp.name)
+                tmp.write(raw_image)
         for index in range(n):
             try:
                 png_bytes = await run_to_completion(
@@ -816,7 +829,7 @@ async def edit_image(
                     (base_seed + index) & 0x7FFFFFFF,
                     guidance,
                     negative_prompt,
-                    tmp_path,
+                    tmp_paths,
                 )
             except ImageGenerationCancelled:
                 # A mid-render cancel is a success, not a 500: return whatever
@@ -849,7 +862,7 @@ async def edit_image(
                 ) from exc
             data.append({"b64_json": base64.b64encode(png_bytes).decode("ascii")})
     finally:
-        if tmp_path is not None:
+        for tmp_path in tmp_paths:
             try:
                 os.unlink(tmp_path)
             except OSError as exc:
