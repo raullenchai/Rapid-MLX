@@ -468,8 +468,9 @@ def test_runtime_load_helpers_apply_the_fixed_quantization(
 
 
 @pytest.mark.requires_mlx
+@pytest.mark.parametrize("legacy_decode_api", [False, True])
 def test_runtime_constructor_and_prompt_cache_lifecycle(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, legacy_decode_api: bool
 ) -> None:
     pytest.importorskip("mflux")
     from rapid_mlx.image.bonsai_runtime import runtime
@@ -495,8 +496,9 @@ def test_runtime_constructor_and_prompt_cache_lifecycle(
     class FakeVAE:
         _bonsai_tiling = "tiling"
 
-        def __new__(cls):
-            return "vae"
+    if legacy_decode_api:
+        FakeVAE.DECODE_LEGACY = object()
+        FakeVAE.decode_mode = "tiled"
 
     monkeypatch.setattr(runtime, "_TiledFlux2VAE", FakeVAE)
     monkeypatch.setattr(runtime.WeightLoader, "load", lambda **_kwargs: vae_weights)
@@ -510,7 +512,11 @@ def test_runtime_constructor_and_prompt_cache_lifecycle(
     model = runtime.BonsaiImage(tmp_path)
     assert model.callbacks is callbacks
     assert model.text_encoder is encoder
-    assert model.vae == "vae"
+    assert isinstance(model.vae, FakeVAE)
+    if legacy_decode_api:
+        assert model.vae.decode_mode is FakeVAE.DECODE_LEGACY
+    else:
+        assert not hasattr(model.vae, "decode_mode")
     assert model.transformer is transformer
     assert model.bits == 2
     assert applied[0] == tmp_path.resolve()
