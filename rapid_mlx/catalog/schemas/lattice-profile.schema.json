@@ -206,6 +206,36 @@
             "mtp_gdn_fusion": {
               "type": "boolean"
             },
+            "metal_cache_floor_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "metal_cache_cap_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "metal_cache_divisor": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "memory_pressure_margin": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "memory_pressure_ceiling": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "memory_pressure_fallback_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "memory_check_interval": {
+              "type": "integer",
+              "minimum": 1
+            },
             "dense_decode_fusion": {
               "type": "boolean"
             },

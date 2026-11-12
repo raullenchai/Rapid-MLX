@@ -120,6 +120,48 @@ def _knob(
 
 
 KNOBS = {
+    "metal_cache_floor_bytes": _knob(
+        "metal_cache_floor_bytes",
+        lambda c: True,
+        default=2 * 1024**3,
+        validator=int_range(1),
+    ),
+    "metal_cache_cap_bytes": _knob(
+        "metal_cache_cap_bytes",
+        lambda c: True,
+        default=32 * 1024**3,
+        validator=int_range(1),
+    ),
+    "metal_cache_divisor": _knob(
+        "metal_cache_divisor",
+        lambda c: True,
+        default=4,
+        validator=int_range(1),
+    ),
+    "memory_pressure_margin": _knob(
+        "memory_pressure_margin",
+        lambda c: True,
+        default=0.05,
+        validator=lambda value: type(value) in (int, float) and 0 <= value <= 1,
+    ),
+    "memory_pressure_ceiling": _knob(
+        "memory_pressure_ceiling",
+        lambda c: True,
+        default=0.99,
+        validator=lambda value: type(value) in (int, float) and 0 < value <= 1,
+    ),
+    "memory_pressure_fallback_bytes": _knob(
+        "memory_pressure_fallback_bytes",
+        lambda c: True,
+        default=200 * 1024**3,
+        validator=int_range(1),
+    ),
+    "memory_check_interval": _knob(
+        "memory_check_interval",
+        lambda c: True,
+        default=16,
+        validator=int_range(1),
+    ),
     "qwen35_fused_gdn_decode": _knob(
         "qwen35_fused_gdn_decode",
         lambda c: (

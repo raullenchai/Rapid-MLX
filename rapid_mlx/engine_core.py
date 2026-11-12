@@ -28,6 +28,7 @@ import mlx.core as mx
 
 from ._env import env_truthy
 from .engine_startup_errors import startup_failure_boundary
+from .lattice.memory import memory_policy
 from .model_registry import get_registry
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .request import (
@@ -792,26 +793,16 @@ class EngineCore:
         # Uses Metal's max recommended working set when available, falling back to
         # device memory. Applies a 5% gap above the soft limit (capped at 99%).
         _gpu_mem_util = self.config.gpu_memory_utilization
-        try:
-            _device_info = mx.device_info()
-            _max_recommended = _device_info.get(
-                "max_recommended_working_set_size",
-                _device_info.get("memory_size", 0),
-            )
-            _device_mem = (
-                _max_recommended if _max_recommended > 0 else 200 * 1024 * 1024 * 1024
-            )
-            _memory_pressure_threshold = int(
-                _device_mem * min(_gpu_mem_util + 0.05, 0.99)
-            )
-        except Exception:
-            _memory_pressure_threshold = 200 * 1024 * 1024 * 1024
+        _memory_policy = memory_policy()
+        _memory_pressure_threshold = _memory_policy.pressure_threshold(
+            _gpu_mem_util, lambda: mx.device_info()
+        )
         # Check every 16 steps (was 64). Sustained-load Metal errors
         # correlate with creeping memory pressure; catching it 4× sooner
         # gives mx.clear_cache() a chance to defuse before the next
         # large allocation pushes us into a Metal-side OOM, which currently
         # propagates as an uncatchable abort (see GitHub #353 / mlx-lm#1015).
-        _memory_check_interval = 16
+        _memory_check_interval = _memory_policy.memory_check_interval
         # Consecutive step() failures — once we hit the cap we sleep longer
         # between retries so a permanently-broken Metal state (e.g. real OOM
         # we can't recover from) stops flooding the log at 10 Hz. Resets

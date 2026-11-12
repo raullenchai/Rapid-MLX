@@ -675,6 +675,31 @@
       }
     },
     {
+      "id": "metal-cache-policy",
+      "knobs": {
+        "metal_cache_floor_bytes": 2147483648,
+        "metal_cache_cap_bytes": 34359738368,
+        "metal_cache_divisor": 4
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/engine/batched.py original Metal free-cache policy",
+        "hardware_scope": "Universal legacy constants on every device."
+      }
+    },
+    {
+      "id": "memory-pressure-policy",
+      "knobs": {
+        "memory_pressure_margin": 0.05,
+        "memory_pressure_ceiling": 0.99,
+        "memory_pressure_fallback_bytes": 214748364800,
+        "memory_check_interval": 16
+      },
+      "provenance": {
+        "evidence": "rapid_mlx/engine_core.py original memory-pressure policy",
+        "hardware_scope": "Universal legacy constants on every device."
+      }
+    },
+    {
       "id": "dense-decode-fusion-enrollment",
       "model": {
         "family": "dense_decode_fusion_install"

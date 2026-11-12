@@ -839,11 +839,9 @@ def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
     Clamp to soft_limit to preserve MLX's implicit cache ≤ memory invariant on
     pathologically tiny devices.
     """
-    cache = max(
-        2 * 1024 * 1024 * 1024,
-        min(32 * 1024 * 1024 * 1024, soft_limit_bytes // 4),
-    )
-    return min(cache, soft_limit_bytes) if soft_limit_bytes > 0 else cache
+    from ..lattice.memory import memory_policy
+
+    return memory_policy().metal_cache_limit(soft_limit_bytes)
 
 
 # Check for guided generation availability
