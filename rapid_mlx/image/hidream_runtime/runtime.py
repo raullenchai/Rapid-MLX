@@ -460,4 +460,4 @@ class HiDreamO1(nn.Module):
         image = (patches + 1) / 2
         rgb = _unpatchify(np.asarray(image[0].astype(mx.float32)), height, width)
         pixels = np.clip(rgb.transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
-        return SimpleNamespace(image=Image.fromarray(pixels, mode="RGB"))
+        return SimpleNamespace(image=Image.fromarray(pixels))

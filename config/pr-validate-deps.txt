@@ -42,5 +42,5 @@ openai-harmony>=0.0.8,<0.1
 llguidance>=1.7.6,<2
 jinja2
 aiohttp>=3.9.0
-pillow>=10.0.0,<13
+pillow>=12.3.0,<13
 opencv-python>=4.8.0,<5

@@ -1,5 +1,3 @@
-# Desktop CPython 3.12 / macOS 14 arm64 index dependency closure.
-# Regeneration and review: docs/engineering/operations/sidecar-dependencies.md
 annotated-doc==0.0.5 \
     --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101 \
     --hash=sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb
@@ -1090,9 +1088,9 @@ mcp==1.30.0 \
 mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
     --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba
-mflux==0.20.0 \
-    --hash=sha256:5d60a278d67289be0da2e4ba0e8dcf938dd3c676a01c9064f64e3fb10e30767d \
-    --hash=sha256:8fec3407bbc821cfba9cebd8ae55e35450b9429ec9b5445c9557aaeb78087de0
+mflux==0.23.0 \
+    --hash=sha256:059dbcac2f921cd29df148fb8e765b55ab3dcbe94428b782c36862578942c0b0 \
+    --hash=sha256:cefddbcb7d98fab4f4ddc1e2b706d8f616547f32c9829fdc065c3edd3db86b9a
 miniaudio==1.71 \
     --hash=sha256:06222d80b057ca4beccb6f97a134c2c2bf646ef7890e1759cfc09db7eecec44d \
     --hash=sha256:12bc33e7e61072b4b541c14e10ef76119d5643e6bbb98e2dec0c0738889438fb \

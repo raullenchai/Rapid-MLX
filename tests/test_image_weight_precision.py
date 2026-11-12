@@ -166,7 +166,7 @@ def test_bf16_repo_directly_triggers_32gb_admission_warning(monkeypatch, capsys)
 def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
     engine = ImageGenerationEngine(FLUX2_KLEIN_BF16_REPO)
     constructor_kwargs = {}
-    built_model = object()
+    built_model = SimpleNamespace(vae=SimpleNamespace(DECODE_LEGACY="legacy"))
 
     def _build_flux2_klein(**kwargs):
         constructor_kwargs.update(kwargs)
