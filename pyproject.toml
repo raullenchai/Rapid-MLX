@@ -177,8 +177,8 @@ dependencies = [
     "opencv-python>=4.8.0,<5",
     "torch>=2.10.0,<3",
     "torchvision>=0.18.0,<0.30",
-    "pillow>=12.3.0,<14",
-    "mflux>=0.23.0,<0.25; platform_system == 'Darwin'",
+    "pillow>=12.3.0,<13",
+    "mflux>=0.23.0,<0.24; platform_system == 'Darwin'",
     "sentencepiece>=0.2.0,<0.3; platform_system == 'Darwin'",
     # Video-generation runtime (LTX-2.3 / Wan).
     # imageio[ffmpeg] brings a self-contained ffmpeg wheel — no system ffmpeg.
@@ -209,7 +209,7 @@ vision = [
     "torchvision>=0.18.0,<0.30",
     # rapid_mlx imports PIL directly on vision paths (mllm.py, benchmark.py
     # image mode); mlx-vlm requires it too — listed for explicitness.
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
 ]
 # DFlash speculative decoding for Qwen3.5/3.6 dense 8-bit models
 # (issue #264). Adds ~1-4 GB at runtime (drafter weights) and depends on
@@ -238,7 +238,7 @@ mtp = [
     # Required by the explicit native-MTP backend. Keep this exact pin aligned
     # with the signed Desktop sidecar and the vision/DFlash extras.
     "mlx-vlm==0.7.2",
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
 ]
 # Embedding endpoint
 embeddings = [
@@ -257,7 +257,7 @@ clef = [
     "torchvision>=0.26.0; platform_system == 'Darwin'",
     "accelerate>=1.4.0",
     "transformers>=5.10.2,!=5.13.0,<5.16",
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
 ]
 # HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
 # Off the hot path — only maintainers who seed models.rapidmlx.com need
@@ -283,7 +283,7 @@ all = [
     "opencv-python>=4.8.0,<5",
     "torch>=2.10.0,<3",
     "torchvision>=0.18.0,<0.30",
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
     # chat
     "gradio>=4.0.0",
     "pytz>=2024.1",
@@ -350,7 +350,7 @@ test = [
     # [test] so pr_validate can rebuild a venv that actually runs
     # ``pytest tests/`` without hand-installed local extras.
     "aiohttp>=3.9.0",
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
     "mlx-vlm==0.7.2; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Powers the property-based invariant suite in tests/property/ — encodes
@@ -437,7 +437,7 @@ ci-linux = [
     "llguidance>=1.7.6,<2",
     "jinja2",
     "aiohttp>=3.9.0",
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
     # Mirrors the base runtime dependency for CPU video-decoding contracts.
     "opencv-python>=4.8.0,<5",
 ]
@@ -471,7 +471,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",
     "aiohttp>=3.9.0",
-    "pillow>=12.3.0,<14",
+    "pillow>=12.3.0,<13",
     "mlx-vlm==0.7.2; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Mirror of the [test] entry — keep `dev` a strict superset of `test`
@@ -575,7 +575,7 @@ video = [
     "mlx-video-with-audio==0.1.36; platform_system == 'Darwin'",
     "mlx-arsenal==0.12.1; platform_system == 'Darwin'",
     "imageio[ffmpeg]>=2.34.0,<3; platform_system == 'Darwin'",
-    "pillow>=12.3.0,<14; platform_system == 'Darwin'",
+    "pillow>=12.3.0,<13; platform_system == 'Darwin'",
     "sentencepiece>=0.2.0,<0.3; platform_system == 'Darwin'",
 ]
 # Image-generation runtime. Already part of the base install on macOS; kept as
@@ -588,13 +588,13 @@ image = [
     # image-lane API changes remain deliberate.
     # Model-weight licenses are
     # independent of this runtime and documented per family.
-    "mflux>=0.23.0,<0.25; platform_system == 'Darwin'",
+    "mflux>=0.23.0,<0.24; platform_system == 'Darwin'",
     # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
     # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
     "mlx-vlm==0.7.2; platform_system == 'Darwin'",
     # The vendored SDXL backend needs Pillow for PNG encoding. Keep this direct
     # for SDXL and SD3.5. SD3.5's local T5 tokenizer also needs sentencepiece.
-    "pillow>=12.3.0,<14; platform_system == 'Darwin'",
+    "pillow>=12.3.0,<13; platform_system == 'Darwin'",
     "sentencepiece>=0.2.0,<0.3; platform_system == 'Darwin'",
 ]
 

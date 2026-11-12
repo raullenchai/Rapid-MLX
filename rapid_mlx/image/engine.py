@@ -605,8 +605,8 @@ class ImageGenerationEngine:
                 model_path=model_path,
                 model_config=ModelConfig.flux2_klein_4b(),
             )
-            # mflux 0.24 defaults to bf16 strip decoding. Keep our full-image
-            # decode, including the previous dtype and GroupNorm behavior.
+            # Preserve full-image decode when a VAE exposes a decode selector,
+            # including the previous dtype and GroupNorm behavior.
             _preserve_vae_decode(model.vae)
             return model
         if self.family == "z-image":

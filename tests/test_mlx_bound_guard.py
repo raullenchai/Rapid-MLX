@@ -168,8 +168,8 @@ def test_image_extra_tracks_mlx_032_compatible_mflux_line():
     assert Version("0.32.0") not in core_specs[0].specifier
     assert Version("0.33.0") not in core_specs[0].specifier
     assert Version("0.23.0") in image_specs[0].specifier
-    assert Version("0.24.0") in image_specs[0].specifier
-    assert Version("0.24.9") in image_specs[0].specifier
+    assert Version("0.24.0") not in image_specs[0].specifier
+    assert Version("0.24.9") not in image_specs[0].specifier
     assert Version("0.22.9") not in image_specs[0].specifier
     assert Version("0.18.1") not in image_specs[0].specifier
     assert Version("0.20.0") not in image_specs[0].specifier

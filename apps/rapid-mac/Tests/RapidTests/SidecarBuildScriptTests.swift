@@ -128,7 +128,7 @@ struct SidecarBuildScriptTests {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(constraints.contains("mflux==0.20.0"),
+        #expect(constraints.contains("mflux==0.23.0"),
                 "The image runtime must never float within a range in signed builds.")
         #expect(!script.contains("mflux still pulls torch at import time"),
                 "mflux ships unpatched with torch; the torch-deferral patch is gone.")

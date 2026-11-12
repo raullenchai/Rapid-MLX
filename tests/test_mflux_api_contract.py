@@ -156,7 +156,11 @@ def _module(monkeypatch, name, **members):
     monkeypatch.setitem(sys.modules, name, module)
 
 
-@pytest.mark.parametrize("decode_selector", [False, True], ids=["mflux023", "mflux024"])
+@pytest.mark.parametrize(
+    "decode_selector",
+    [False, True],
+    ids=["without_decode_selector", "with_decode_selector"],
+)
 @pytest.mark.parametrize("repo,module_name,class_name,editing", MODELS)
 def test_image_adapter_binds_installed_mflux_signatures(
     monkeypatch, mflux_source, repo, module_name, class_name, editing, decode_selector
@@ -256,7 +260,11 @@ def test_mflux_imports_still_exist(mflux_source):
                     ), (path, node.module)
 
 
-@pytest.mark.parametrize("decode_selector", [False, True], ids=["mflux023", "mflux024"])
+@pytest.mark.parametrize(
+    "decode_selector",
+    [False, True],
+    ids=["without_decode_selector", "with_decode_selector"],
+)
 def test_bonsai_initializes_inherited_generation_policy(mflux_source, decode_selector):
     """Bonsai bypasses Flux2Initializer; inherited metadata needs its policy."""
     source = Path(__file__).parents[1] / "rapid_mlx/image/bonsai_runtime/runtime.py"

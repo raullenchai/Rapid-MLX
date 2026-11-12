@@ -38,7 +38,7 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
         "transformers==5.15.1",
         "mlx-vlm==0.7.2",
         "mlx-audio==0.5.3",
-        "mflux==0.24.0",
+        "mflux==0.23.0",
         "sentencepiece==0.2.2",
         "mlx-video-with-audio==0.1.36",
         "mlx-arsenal==0.12.1",
@@ -53,7 +53,7 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
         "matplotlib==3.11.2",
         "imageio==2.38.0",
         "imageio-ffmpeg==0.6.0",
-        "pillow==13.0.0",
+        "pillow==12.3.0",
     ]
 
 
@@ -259,7 +259,7 @@ def test_sidecar_source_installs_cannot_resolve_outside_hash_lock():
     assert "$TENSORFOLD_RUNTIME_SPEC" in source
 
 
-def test_image_dependency_ranges_allow_chat_fallback_and_secure_desktop(constraints):
+def test_image_dependency_ranges_exclude_pillow_13_and_mflux_024(constraints):
     import tomllib
 
     from packaging.requirements import Requirement
@@ -272,17 +272,17 @@ def test_image_dependency_ranges_allow_chat_fallback_and_secure_desktop(constrai
         for raw in group:
             requirement = Requirement(raw)
             if requirement.name == "mflux":
-                for version in ("0.23.0", "0.23.9", "0.24.0", "0.24.9"):
+                for version in ("0.23.0", "0.23.9"):
                     assert version in requirement.specifier
-                for version in ("0.22.0", "0.22.9", "0.25.0"):
+                for version in ("0.22.0", "0.22.9", "0.24.0", "0.24.9", "0.25.0"):
                     assert version not in requirement.specifier
                 assert requirement.marker.evaluate({"platform_system": "Darwin"})
                 assert not requirement.marker.evaluate({"platform_system": "Linux"})
             elif requirement.name == "pillow":
-                for version in ("12.3.0", "12.9.0", "13.0.0", "13.9.0"):
+                for version in ("12.3.0", "12.9.0"):
                     assert version in requirement.specifier
-                for version in ("12.2.0", "14.0.0"):
+                for version in ("12.2.0", "13.0.0", "13.9.0", "14.0.0"):
                     assert version not in requirement.specifier
     pins = constraints.emit_constraints().splitlines()
-    assert "mflux==0.24.0" in pins
-    assert "pillow==13.0.0" in pins
+    assert "mflux==0.23.0" in pins
+    assert "pillow==12.3.0" in pins
