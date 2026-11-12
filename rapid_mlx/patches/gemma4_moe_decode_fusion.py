@@ -155,7 +155,7 @@ def _compile_layers(model, mx) -> int:
     previous = [(layer, type(layer)) for layer in layers]
     try:
         for layer in layers:
-            base = type(layer)
+            base: Any = type(layer)
             dtype = layer.pre_feedforward_layernorm.weight.dtype
             if dtype not in (mx.float16, mx.bfloat16):
                 raise ValueError("unsupported dtype")
