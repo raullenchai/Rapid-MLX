@@ -54,6 +54,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .._mlx_cache_limit import bounded_cache_limit
+from .loras import LORA_FAMILIES, ImageLoras, LoraKey, resolve_loras
 from .precision import (
     is_packaged_bf16_model,
     is_qwen_image_21_full_q4,
@@ -497,6 +498,8 @@ class ImageGenerationEngine:
         # one stays resident at a time so switching modes does not duplicate
         # the checkpoint in unified memory.
         self._loaded_mode: str | None = None
+        # mflux merges adapters at construction; identity includes file changes.
+        self._lora_key: LoraKey = ()
         self._lock = _PROCESS_GENERATION_LOCK
         # Live denoise progress (single-flight under ``_lock``, so one snapshot
         # is unambiguous). ``request_cancel`` flips ``_cancel``; the reporter
@@ -609,6 +612,28 @@ class ImageGenerationEngine:
         self._verify_weights_complete()
         return downloaded
 
+    def _lora_kwargs(self) -> dict:
+        if not self._lora_key:
+            return {}
+        return {
+            "lora_paths": [path for path, _, _ in self._lora_key],
+            "lora_scales": [scale for _, _, scale in self._lora_key],
+            # Baking folds the delta into quantized weights and drops the part
+            # below their rounding step (~21% on a 4-bit Z-Image); the unbaked
+            # adapter keeps the full update at the same denoise speed.
+            "bake_lora": False,
+        }
+
+    def _resolve_loras(self, loras: ImageLoras | None) -> LoraKey:
+        if loras and self.family not in LORA_FAMILIES:
+            raise ImageRequestError(
+                f"Model '{self.model_name}' does not support image LoRAs."
+            )
+        try:
+            return resolve_loras(loras)
+        except ValueError as exc:
+            raise ImageRequestError(str(exc)) from exc
+
     def _build_model(self, *, for_edit: bool = False):
         """Instantiate the backing mflux model (import-lazy)."""
         if self.family == "bonsai-image":
@@ -672,6 +697,7 @@ class ImageGenerationEngine:
             from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
 
             model = Flux2Klein(
+                **self._lora_kwargs(),
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.flux2_klein_4b(),
@@ -684,6 +710,7 @@ class ImageGenerationEngine:
             from mflux.models.z_image.variants.z_image import ZImage
 
             model = ZImage(
+                **self._lora_kwargs(),
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.z_image_turbo(),
@@ -694,14 +721,18 @@ class ImageGenerationEngine:
         if self.family == "qwen-image-edit":
             from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
 
-            model = QwenImageEdit(quantize=self._quantize, model_path=model_path)
+            model = QwenImageEdit(
+                **self._lora_kwargs(), quantize=self._quantize, model_path=model_path
+            )
             # mflux 0.22 restored a bias that 0.20 never used in generation.
             model.transformer.norm_out.linear.bias = None
             return model
         if self.family == "qwen-image":
             from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 
-            model = QwenImage(quantize=self._quantize, model_path=model_path)
+            model = QwenImage(
+                **self._lora_kwargs(), quantize=self._quantize, model_path=model_path
+            )
             model.transformer.norm_out.linear.bias = None
             return model
         if self.family == "qwen-image-2.1":
@@ -728,6 +759,7 @@ class ImageGenerationEngine:
                     return self._build_qwen21_turbo(QwenImage21, model_path)
                 if not self._qwen21_full_q4:
                     return QwenImage21(
+                        **self._lora_kwargs(),
                         quantize=self._quantize,
                         model_path=model_path,
                         model_config=ModelConfig.qwen_image_21(),
@@ -754,6 +786,7 @@ class ImageGenerationEngine:
                 Qwen21WeightDefinition.get_components = staticmethod(full_q4_components)
                 try:
                     return QwenImage21(
+                        **self._lora_kwargs(),
                         quantize=self._quantize,
                         model_path=model_path,
                         model_config=ModelConfig.qwen_image_21(),
@@ -771,7 +804,10 @@ class ImageGenerationEngine:
             else ModelConfig.dev()
         )
         model = Flux1(
-            quantize=self._quantize, model_path=model_path, model_config=config
+            **self._lora_kwargs(),
+            quantize=self._quantize,
+            model_path=model_path,
+            model_config=config,
         )
         model.transformer.norm_out.linear.bias = None
         return model
@@ -802,6 +838,7 @@ class ImageGenerationEngine:
         Qwen21WeightDefinition.get_components = staticmethod(turbo_components)
         try:
             return model_cls(
+                **self._lora_kwargs(),
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.qwen_image_21(),
@@ -877,6 +914,7 @@ class ImageGenerationEngine:
         if config_factory is None:
             raise ImageRuntimeError("FLUX 3 Klein requires mflux 0.23 or later.")
         model = (Flux3KleinEdit if for_edit else Flux3Klein)(
+            **self._lora_kwargs(),
             quantize=self._quantize,
             model_path=self._model_path_for_mflux(),
             model_config=config_factory(),
@@ -900,6 +938,7 @@ class ImageGenerationEngine:
 
             model_path = self._model_path_for_mflux()
             model = Flux2KleinEdit(
+                **self._lora_kwargs(),
                 quantize=self._quantize,
                 model_path=model_path,
                 model_config=ModelConfig.flux2_klein_4b(),
@@ -1241,7 +1280,14 @@ class ImageGenerationEngine:
             return None
         return header if isinstance(header, dict) else None
 
-    def _ensure_loaded(self, *, for_edit: bool | None = None, reference_count: int = 0):
+    def _ensure_loaded(
+        self,
+        *,
+        for_edit: bool | None = None,
+        reference_count: int = 0,
+        loras: ImageLoras | None = None,
+    ):
+        lora_key = self._resolve_loras(loras)
         if for_edit is None:
             for_edit = self.is_edit
         self._qwen21_references = (
@@ -1250,11 +1296,14 @@ class ImageGenerationEngine:
         desired_mode = "edit" if for_edit else "generation"
         if self.family == "qwen-image-2.1":
             desired_mode = "references" if self._qwen21_references else "generation"
-        if self._model is not None and self._loaded_mode not in (None, desired_mode):
+        if self._model is not None and (
+            self._loaded_mode not in (None, desired_mode) or self._lora_key != lora_key
+        ):
             self._model = None
             self._loaded_mode = None
             _release_allocator_cache()
         if self._model is None:
+            self._lora_key = lora_key
             from .. import model_downloads
 
             model_downloads.require_local(self.model_name)
@@ -1358,8 +1407,10 @@ class ImageGenerationEngine:
         guidance: float | None = None,
         negative_prompt: str | None = None,
         image_paths: list[str] | None = None,
+        loras: ImageLoras | None = None,
     ) -> None:
         """Validate before lazy loading; accept the unused seed for call parity."""
+        self._resolve_loras(loras)
         input_paths = image_paths or []
         editing = bool(input_paths)
         if (
@@ -1527,6 +1578,7 @@ class ImageGenerationEngine:
         guidance: float | None = None,
         negative_prompt: str | None = None,
         image_paths: list[str] | None = None,
+        loras: ImageLoras | None = None,
     ) -> bytes:
         """Generate one image and return it as PNG bytes.
 
@@ -1542,6 +1594,7 @@ class ImageGenerationEngine:
             guidance=guidance,
             negative_prompt=negative_prompt,
             image_paths=image_paths,
+            loras=loras,
         )
         input_paths = image_paths or []
         editing = bool(input_paths)
@@ -1588,7 +1641,7 @@ class ImageGenerationEngine:
                     if self._is_cancelled():
                         raise ImageGenerationCancelled("Generation cancelled.")
                 model = self._ensure_loaded(
-                    for_edit=editing, reference_count=len(input_paths)
+                    for_edit=editing, reference_count=len(input_paths), loras=loras
                 )
                 # Honor a cancel that landed during the warm-up load before we
                 # commit to the denoise loop.

@@ -20,9 +20,11 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from pydantic import ValidationError
 from starlette.responses import JSONResponse
 
 from ..api.models import ImageGenerationRequest, parse_image_size
+from ..image.loras import LORA_ADAPTER, LORA_FAMILIES, list_loras
 from ..middleware.auth import verify_api_key, verify_api_key_for_scope
 from ._async_utils import run_to_completion
 
@@ -275,6 +277,8 @@ def _generate_one(
         guidance=request.guidance,
         negative_prompt=request.negative_prompt,
     )
+    if request.loras:
+        kwargs["loras"] = request.loras
     generate_with_performance = getattr(img_engine, "generate_with_performance", None)
     if callable(generate_with_performance):
         return generate_with_performance(**kwargs)
@@ -355,6 +359,12 @@ async def create_image(
         caller_client=caller_client,
     )
     telemetry_model = engine_telemetry_id(img_engine)
+    _reject(
+        bool(request.loras)
+        and getattr(img_engine, "family", None) not in LORA_FAMILIES,
+        f"Model '{getattr(img_engine, 'model_name', request.model)}' does not support image LoRAs.",
+        "loras",
+    )
 
     # When the selected resident engine is an instruction-edit model,
     # text-to-image generation is the wrong endpoint. Point the caller to
@@ -485,6 +495,12 @@ async def create_image(
     return response
 
 
+@router.get("/v1/images/loras")
+async def image_loras():
+    """List the server's name-only LoRA library."""
+    return {"object": "list", "data": list_loras()}
+
+
 @router.get("/v1/images/progress")
 async def image_progress(model: str = ""):
     """Live denoise progress for the single in-flight render.
@@ -589,7 +605,7 @@ def _validate_edit_image(raw: bytes) -> None:
 
 
 def _generate_edit_one(
-    img_engine, prompt, steps, seed, guidance, negative_prompt, image_path
+    img_engine, prompt, steps, seed, guidance, negative_prompt, image_path, loras=None
 ) -> bytes:
     """Blocking single instruction-edit render — runs off the event loop.
 
@@ -600,6 +616,7 @@ def _generate_edit_one(
     accepted for OpenAI compatibility but deliberately not honored.
     """
     return img_engine.generate(
+        **({"loras": loras} if loras else {}),
         prompt=prompt,
         width=None,
         height=None,
@@ -628,6 +645,7 @@ async def edit_image(
     steps: int | None = Form(None),
     guidance: float | None = Form(None),
     negative_prompt: str | None = Form(None),
+    loras: str | None = Form(None),
 ):
     """Instruction-edit an input image (OpenAI ``/v1/images/edits`` compatible).
 
@@ -644,8 +662,20 @@ async def edit_image(
         ImageRuntimeError,
     )
 
+    parsed_loras = None
+    if loras is not None:
+        try:
+            parsed_loras = LORA_ADAPTER.validate_json(loras)
+        except ValidationError as exc:
+            reasons = "; ".join(error["msg"] for error in exc.errors())
+            _reject(True, f"Invalid loras: {reasons}", "loras")
     img_engine = _image_engine(model)
     telemetry_model = engine_telemetry_id(img_engine)
+    _reject(
+        bool(parsed_loras) and getattr(img_engine, "family", None) not in LORA_FAMILIES,
+        f"Model '{getattr(img_engine, 'model_name', model)}' does not support image LoRAs.",
+        "loras",
+    )
 
     # /v1/images/edits requires the edit family; a txt2img server points the
     # caller at /v1/images/generations instead of silently ignoring the image.
@@ -830,6 +860,7 @@ async def edit_image(
                     guidance,
                     negative_prompt,
                     tmp_paths,
+                    parsed_loras,
                 )
             except ImageGenerationCancelled:
                 # A mid-render cancel is a success, not a 500: return whatever

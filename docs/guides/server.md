@@ -182,6 +182,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/audio/voices` | GET | List available TTS voices — see the [Audio Guide](audio.md) |
 | `/v1/images/generations` | POST | Image generation |
 | `/v1/images/edits` | POST | Image editing |
+| `/v1/images/loras` | GET | List user image LoRAs |
 | `/v1/images/progress` | GET | Denoise progress of the in-flight image render (`step / total`) |
 | `/v1/images/cancel` | POST | Stop the in-flight image render at the next denoise step |
 | `/v1/videos` | POST / GET | Start a video-generation job / list jobs — see the [Video Generation Guide](video-generation.md) |
@@ -235,6 +236,45 @@ image lane downloads and loads the model before counting tokens. Operational
 image failures still return HTTP 500 with `type: "image_generation_error"` and
 `code: "image_generation_failed"`. Cancellation returns HTTP 200 with
 `cancelled: true` and any images already completed.
+
+### User image LoRAs
+
+Place compatible `.safetensors` adapters directly in `~/.rapid-mlx/loras/`,
+or set `RAPID_MLX_LORA_DIR` to another library directory. Subdirectories are
+not searched. `GET /v1/images/loras` lists available names and file sizes;
+a missing library returns an empty list. The filename stem is the name:
+`portrait.safetensors` becomes `portrait`. Clients supply names only; paths,
+traversal names, and symlinks escaping the library are rejected.
+
+For `/v1/images/generations`, add `"loras": [{"name": "portrait", "scale": 0.8}]`
+to the JSON body. Scale defaults to `1.0`; at most four unique names are
+allowed, with finite scales between `-2.0` and `2.0`. Omit `loras` or send `[]`
+to use the plain model. LoRAs must match the selected model's architecture.
+Supported families are FLUX.2/3 Klein (generation and edits), FLUX.1,
+Qwen Image / Image Edit / Image 2.1 (including Turbo generation), and Z-Image.
+Unsupported families return HTTP 400 naming the model.
+
+```bash
+curl http://localhost:8000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"flux2-klein-4b","prompt":"a portrait in a garden","loras":[{"name":"portrait","scale":0.8}]}'
+```
+
+For multipart `/v1/images/edits`, pass the same list as a JSON string:
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -F model=flux2-klein-4b -F 'prompt=make this a watercolor portrait' \
+  -F image=@input.png -F 'loras=[{"name":"portrait","scale":0.8}]'
+```
+
+Many style and character LoRAs only take effect when the prompt contains
+their trigger phrase; check the adapter's model card.
+
+Changing adapters, scales, or adapter file modification times reloads the image
+model. Returning to a plain request also reloads it; only one variant stays
+resident. Repeating the same adapter selection reuses the model. These API
+options are server-side; Desktop selection is a follow-up.
 
 ### Cache persistence and diagnostics
 

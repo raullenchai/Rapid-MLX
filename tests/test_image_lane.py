@@ -604,7 +604,9 @@ def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
     monkeypatch.setattr(
         engine._engine,
         "_ensure_loaded",
-        lambda *, for_edit=None, reference_count=0: loaded_modes.append(for_edit),
+        lambda *, for_edit=None, reference_count=0, loras=None: loaded_modes.append(
+            for_edit
+        ),
     )
     monkeypatch.setattr(engine._engine, "performance_snapshot", lambda: expected)
     monkeypatch.setattr(
@@ -1647,7 +1649,7 @@ def test_image_adapter_emits_model_served_before_backend_failure(
         original_validate(**kwargs)
         events.append("validated")
 
-    def load(*, for_edit, reference_count=0):
+    def load(*, for_edit, reference_count=0, loras=None):
         assert for_edit is editing
         events.append("loaded")
 
