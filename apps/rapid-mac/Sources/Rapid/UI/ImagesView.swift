@@ -733,12 +733,19 @@ struct ImagesView: View {
                 Text("\(1 + viewModel.additionalReferences.count)/\(viewModel.maxReferenceImages) references")
                 Button("Add reference") { chooseEditImage(addingReference: true) }
                     .accessibilityIdentifier("Images.Edit.AddReference")
-                    .disabled(viewModel.isGenerating || viewModel.additionalReferences.count + 1 >= viewModel.maxReferenceImages)
+                    .disabled(viewModel.isGenerating || viewModel.pendingReferenceImports > 0
+                              || viewModel.additionalReferences.count + 1 >= viewModel.maxReferenceImages)
                 if !viewModel.additionalReferences.isEmpty {
-                    Button("Clear references") { viewModel.additionalReferences = [] }
+                    Button("Clear references") { viewModel.clearReferences() }
                         .accessibilityIdentifier("Images.Edit.ClearReferences")
                         .disabled(viewModel.isGenerating)
                 }
+            }
+            if viewModel.pendingReferenceImports > 0 {
+                ProgressView().controlSize(.small)
+                Text("Importing references…")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
             }
             Spacer(minLength: 8)
             Button { viewModel.cancelEdit() } label: {
@@ -1045,7 +1052,7 @@ struct ImagesView: View {
            let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_IMPORT_PATH"],
            !simulated.isEmpty,
            FileManager.default.fileExists(atPath: simulated) {
-            Task { await importEditReference(at: URL(fileURLWithPath: simulated), addingReference: addingReference) }
+            viewModel.importEditImages(at: [URL(fileURLWithPath: simulated)], addingReference: addingReference)
             return
         }
         let panel = NSOpenPanel()
@@ -1055,31 +1062,7 @@ struct ImagesView: View {
         panel.canChooseFiles = true
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
-        if addingReference && urls.count + 1 + viewModel.additionalReferences.count > viewModel.maxReferenceImages {
-            viewModel.errorMessage = String(localized: "This model accepts up to \(viewModel.maxReferenceImages) reference images.")
-            return
-        }
-        Task {
-            for url in urls {
-                await importEditReference(at: url, addingReference: addingReference)
-            }
-        }
-    }
-
-    private func importEditReference(at url: URL, addingReference: Bool = false) async {
-        do {
-            let png = try await EditImageImporter.pngData(from: url)
-            let image = GeneratedImage(
-                pngData: png, prompt: url.deletingPathExtension().lastPathComponent, isEdit: false
-            )
-            if addingReference {
-                viewModel.addReference(image)
-            } else {
-                viewModel.beginEdit(image)
-            }
-        } catch {
-            viewModel.errorMessage = String(localized: "Couldn't import the image: \(error.localizedDescription)")
-        }
+        viewModel.importEditImages(at: urls, addingReference: addingReference)
     }
 
 }

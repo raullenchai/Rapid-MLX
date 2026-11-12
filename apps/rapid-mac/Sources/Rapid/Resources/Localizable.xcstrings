@@ -18665,6 +18665,16 @@
         }
       }
     },
+    "Importing references…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在导入参考图…"
+          }
+        }
+      }
+    },
     "Add reference image" : {
       "localizations" : {
         "zh-Hans" : {

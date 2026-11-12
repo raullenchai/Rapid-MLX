@@ -1093,7 +1093,7 @@ struct LocalizationTests {
             ("UI/ImagesView.swift", #"Generate"#, "Generate", "生成"),
             ("UI/ImagesView.swift", #"Load the model first"#, "Load the model first", "请先加载模型"),
             ("UI/ImagesView.swift", #"Couldn't save the image: \(error.localizedDescription)"#, "Couldn't save the image: %@", "无法保存图像：%@"),
-            ("UI/ImagesView.swift", #"Couldn't import the image: \(error.localizedDescription)"#, "Couldn't import the image: %@", "无法导入图像：%@"),
+            ("Images/ImageGenViewModel.swift", #"Couldn't import the image: \(error.localizedDescription)"#, "Couldn't import the image: %@", "无法导入图像：%@"),
             ("UI/ImagesView.swift", #"Choose an image smaller than \(DownloadProgress.formatBytes(Int64(ImageClient.maxEditImageBytes)))."#, "Choose an image smaller than %@.", "请选择小于 %@ 的图像。"),
             ("UI/ImagesView.swift", #"Choose an image no larger than 8192 px or 40 megapixels."#, "Choose an image no larger than 8192 px or 40 megapixels.", "请选择尺寸不超过 8192 像素且总像素不超过 4000 万的图像。"),
             ("UI/ImagesView.swift", #"Choose a PNG or JPEG image."#, "Choose a PNG or JPEG image.", "请选择 PNG 或 JPEG 图像。"),
