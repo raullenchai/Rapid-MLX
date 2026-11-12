@@ -650,3 +650,88 @@ def test_shared_loader_quantization_failure_is_typed(tmp_path, monkeypatch):
 
     assert isinstance(raised.value.__cause__, ValueError)
     assert serve_error_class(raised.value) == "quantization_mismatch"
+
+
+# The text engine enrolls the opt-in Gemma 4 decode fusion after dense fusion.
+@pytest.mark.parametrize("model_type", ["gemma4", "qwen3_5"])
+def test_text_engine_installs_after_dense_fusion(monkeypatch, model_type):
+    pytest.importorskip("mlx.core")
+    import asyncio
+
+    from rapid_mlx import engine_core
+    from rapid_mlx.engine import batched
+    from rapid_mlx.runtime import cache
+    from rapid_mlx.utils import tokenizer
+
+    class BoundaryError(RuntimeError):
+        pass
+
+    model = SimpleNamespace(model_type=model_type)
+    order = []
+
+    async def start(**kwargs):
+        raise BoundaryError()
+
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(
+        tokenizer, "load_model_with_fallback", lambda *a, **kw: (model, object(), "/m")
+    )
+    monkeypatch.setattr(cache, "pin_prefix_cache_identity", lambda *a, **kw: None)
+    for name in (
+        "rapid_mlx.moe_fusion.fuse_gate_up",
+        "rapid_mlx.qwen35_moe_router.install_qwen35_moe_router",
+        "rapid_mlx.patches.qwen35_affine4.install_qwen35_affine4",
+        "rapid_mlx.patches.moe_decode_fusion.install_moe_decode_fusion",
+        "rapid_mlx.kernels.lane_matmul.install_lane_matmul",
+        "rapid_mlx.gdn_in_proj_fusion.fuse_gdn_in_proj",
+        "rapid_mlx.qwen35_fused_gdn_decode.install_qwen35_fused_gdn_decode",
+    ):
+        monkeypatch.setattr(name, lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "rapid_mlx.dense_decode_fusion.install_dense_decode_fusion",
+        lambda *a, **kw: order.append("dense"),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.patches.gemma4_moe_decode_fusion.install_gemma4_moe_decode_fusion",
+        lambda m, t: order.append(("gemma4", m is model, t)),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.execution_reference.freeze_load_receipt",
+        lambda *a, **kw: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        engine_core,
+        "AsyncEngineCore",
+        lambda **kw: SimpleNamespace(
+            engine=SimpleNamespace(scheduler=SimpleNamespace(), start=start)
+        ),
+    )
+    engine = object.__new__(batched.BatchedEngine)
+    engine._model_name = "gemma"
+    engine._trust_remote_code = False
+    engine._scheduler_config = SimpleNamespace(spec_decode="none")
+    engine._model_load_executor = None
+    for name in (
+        "_profile_name",
+        "_stream_interval",
+        "_gpu_memory_utilization",
+        "_tool_logits_processor_factory",
+        "_force_hybrid",
+        "_no_hybrid",
+        "_force_spec_decode",
+        "_no_spec_decode",
+    ):
+        setattr(engine, name, None)
+    engine._install_resolved_metal_budget = lambda: None
+    engine._run_metal_admission_preflight = lambda: None
+    engine._bind_prompt_host_cache = lambda engine: None
+    try:
+        with pytest.raises(BoundaryError):
+            asyncio.run(engine._start_llm())
+    finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)
+    expected = ["dense"] + (
+        [("gemma4", True, "gemma4")] if model_type == "gemma4" else []
+    )
+    assert order == expected
