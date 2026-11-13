@@ -111,8 +111,9 @@ def test_tool_reconstructor_rejects_duplicate_name():
 
 def test_tool_reconstructor_rejects_first_delta_without_id():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="id on first appearance"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(name="f"))
+    assert "id on first appearance" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_first_delta_without_name():
