@@ -1753,9 +1753,10 @@ _CALCULATE_PARAMETERS = {
     "type": "object",
     "properties": {
         "expressions": {
-            "type": "string",
-            "minLength": 2,
-            "maxLength": 16_384,
+            "type": "object",
+            "additionalProperties": {"type": "string", "maxLength": 512},
+            "minProperties": 1,
+            "maxProperties": 16,
         }
     },
     "required": ["expressions"],
@@ -1765,7 +1766,7 @@ _CALCULATE_SPEC = ToolSpec(
     name=_BUILTIN_CALCULATE,
     description=(
         "Calculate up to 16 deterministic arithmetic expressions in one call. "
-        "Pass expressions as a JSON string mapping short result labels to "
+        "Pass expressions as an object mapping short result labels to "
         'arithmetic strings, for example {"total":"12+8"}. Use this for '
         "every total, average, difference, percentage, or other arithmetic."
     ),
@@ -1777,9 +1778,17 @@ _BATCH_READ_ONLY_PARAMETERS = {
     "type": "object",
     "properties": {
         "calls": {
-            "type": "string",
-            "minLength": 2,
-            "maxLength": 65_536,
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object"},
+                },
+                "required": ["name", "arguments"],
+            },
         }
     },
     "required": ["calls"],
@@ -1788,14 +1797,32 @@ _BATCH_READ_ONLY_PARAMETERS = {
 _BATCH_READ_ONLY_SPEC = ToolSpec(
     name=_BUILTIN_BATCH_READ_ONLY,
     description=(
-        "Run up to 8 independent read-only tools in one step. Pass calls as a "
-        "JSON string containing an array of objects with name and arguments "
+        "Run up to 8 independent read-only tools in one step. Pass calls as an "
+        "array of objects with name and arguments "
         "fields. Prefer this when several files or sources must be inspected; "
         "every nested tool must already be declared read-only."
     ),
     parameters_json=json.dumps(_BATCH_READ_ONLY_PARAMETERS),
     risk=ToolRisk.READ_ONLY,
 )
+
+
+def _decode_builtin_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Accept legacy JSON strings while retaining the helper payload bounds."""
+
+    if name == _BUILTIN_CALCULATE:
+        key, limit = "expressions", 16_384
+    elif name == _BUILTIN_BATCH_READ_ONLY:
+        key, limit = "calls", 65_536
+    else:
+        return arguments
+    value = arguments[key]
+    encoded = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if not 2 <= len(encoded) <= limit:
+        raise ValueError("helper argument exceeds its supported length")
+    if isinstance(value, str):
+        value = json.loads(value)
+    return {**arguments, key: value}
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -2261,10 +2288,10 @@ class MCPToolRegistry:
 
     async def _execute_calculator(self, call: AgentToolCall) -> AgentToolResult:
         try:
+            arguments = _decode_builtin_arguments(call.name, call.arguments)
             validator_type = validators.validator_for(_CALCULATE_SPEC.parameters)
-            validator_type(_CALCULATE_SPEC.parameters).validate(call.arguments)
-            encoded_expressions = cast(str, call.arguments["expressions"])
-            expressions = json.loads(encoded_expressions)
+            validator_type(_CALCULATE_SPEC.parameters).validate(arguments)
+            expressions = arguments["expressions"]
             if not isinstance(expressions, dict) or not 1 <= len(expressions) <= 16:
                 raise ValueError("expressions must be a bounded object")
             if not all(
@@ -2307,16 +2334,19 @@ class MCPToolRegistry:
         }
         nested_calls: list[AgentToolCall] = []
         try:
+            arguments = _decode_builtin_arguments(call.name, call.arguments)
             validator_type = validators.validator_for(_BATCH_READ_ONLY_SPEC.parameters)
-            validator_type(_BATCH_READ_ONLY_SPEC.parameters).validate(call.arguments)
-            encoded_calls = cast(str, call.arguments["calls"])
-            calls = json.loads(encoded_calls)
+            validator_type(_BATCH_READ_ONLY_SPEC.parameters).validate(arguments)
+            calls = arguments["calls"]
             if not isinstance(calls, list) or not 1 <= len(calls) <= 8:
                 raise ValueError("calls must be a bounded array")
             for index, item in enumerate(calls):
                 spec = available[item["name"]]
+                nested_arguments = _decode_builtin_arguments(
+                    spec.name, item["arguments"]
+                )
                 validator = validators.validator_for(spec.parameters)
-                validator(spec.parameters).validate(item["arguments"])
+                validator(spec.parameters).validate(nested_arguments)
                 nested_calls.append(
                     AgentToolCall(
                         id=f"{call.id}-{index}",
