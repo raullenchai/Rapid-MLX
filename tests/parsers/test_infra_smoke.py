@@ -192,8 +192,9 @@ def test_batch_deltas_handles_empty():
 
 
 def test_batch_deltas_rejects_zero_interval():
-    with pytest.raises(AssertionError, match=">= 1"):
+    with pytest.raises(AssertionError) as exc_info:
         batch_deltas_with_stream_interval(["x"], 0)
+    assert ">= 1" in str(exc_info.value)
 
 
 # ----- Harmony marker allow-list -----------------------------------------
