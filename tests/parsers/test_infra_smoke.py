@@ -253,7 +253,8 @@ def test_assert_no_marker_leak_catches_each_marker(marker):
 # ----- Reconstructor None-handling (codex K2) ---------------------------
 
 
-def test_tool_reconstructor_rejects_malformed_tool_calls():
+@pytest.mark.parametrize("bad", ["not-a-list", {"index": 0}, 42, b"bytes"])
+def test_tool_reconstructor_rejects_malformed_tool_calls(bad):
     """``tool_calls`` must be a list when present — string / dict / int /
     bytes all rejected. Renamed from ``rejects_null_tool_calls`` (codex
     raised in re-review): the prior name claimed null coverage, but the
@@ -261,11 +262,10 @@ def test_tool_reconstructor_rejects_malformed_tool_calls():
     to "key absent" (so JSON deltas that explicitly serialize the field
     as ``None`` round-trip cleanly). Only non-list types are rejected.
     """
-    for bad in ("not-a-list", {"index": 0}, 42, b"bytes"):
-        rec = StreamingToolReconstructor()
-        with pytest.raises(AssertionError) as exc_info:
-            rec.append_delta({"content": "ok", "tool_calls": bad})
-        assert "malformed 'tool_calls'" in str(exc_info.value)
+    rec = StreamingToolReconstructor()
+    with pytest.raises(AssertionError) as exc_info:
+        rec.append_delta({"content": "ok", "tool_calls": bad})
+    assert "malformed 'tool_calls'" in str(exc_info.value)
 
 
 def test_tool_reconstructor_accepts_explicit_null_tool_calls():
