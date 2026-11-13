@@ -155,8 +155,9 @@ def test_tool_reconstructor_rejects_two_tools_per_delta_by_default():
             {"index": 1, "id": "b", "function": {"name": "f2"}},
         ]
     }
-    with pytest.raises(AssertionError, match="only one tool call per delta"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(delta)
+    assert "only one tool call per delta" in str(exc_info.value)
 
 
 def test_tool_reconstructor_allows_two_tools_when_opted_in():
