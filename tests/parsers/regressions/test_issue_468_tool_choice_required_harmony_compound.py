@@ -224,18 +224,31 @@ def test_harmony_router_compound_analysis_then_commentary(case: _Case, router):
         f"reasoning missing {case.expected_reasoning_marker!r} for "
         f"case={case.id}; got reasoning={result['reasoning']!r}"
     )
-    for tool_marker in (
-        case.expected_function_name,
-        case.expected_args_marker,
-        "commentary",
-        " to=functions.",
-    ):
-        assert tool_marker not in reasoning, (
-            f"Tool metadata marker {tool_marker!r} leaked into reasoning "
-            f"for case={case.id}; got reasoning={result['reasoning']!r}. "
-            "Channel partition contract violated — tool-call tokens "
-            "should not appear in the reasoning channel."
-        )
+    
+    assert case.expected_function_name not in reasoning, (
+        f"Tool metadata marker {case.expected_function_name!r} leaked into reasoning "
+        f"for case={case.id}; got reasoning={result['reasoning']!r}. "
+        "Channel partition contract violated — tool-call tokens "
+        "should not appear in the reasoning channel."
+    )
+    assert case.expected_args_marker not in reasoning, (
+        f"Tool metadata marker {case.expected_args_marker!r} leaked into reasoning "
+        f"for case={case.id}; got reasoning={result['reasoning']!r}. "
+        "Channel partition contract violated — tool-call tokens "
+        "should not appear in the reasoning channel."
+    )
+    assert "commentary" not in reasoning, (
+        f"Tool metadata marker 'commentary' leaked into reasoning "
+        f"for case={case.id}; got reasoning={result['reasoning']!r}. "
+        "Channel partition contract violated — tool-call tokens "
+        "should not appear in the reasoning channel."
+    )
+    assert " to=functions." not in reasoning, (
+        f"Tool metadata marker ' to=functions.' leaked into reasoning "
+        f"for case={case.id}; got reasoning={result['reasoning']!r}. "
+        "Channel partition contract violated — tool-call tokens "
+        "should not appear in the reasoning channel."
+    )
 
     # Tool call has both name and args (permissive shape — text-blob or
     # structured dict OK; same contract as #455 round-1 BLOCKING-1 fix).
