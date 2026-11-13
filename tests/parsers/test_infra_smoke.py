@@ -118,8 +118,9 @@ def test_tool_reconstructor_rejects_first_delta_without_id():
 
 def test_tool_reconstructor_rejects_first_delta_without_name():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="function.name on first"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(id="call_1"))
+    assert "function.name on first" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_bad_type():
