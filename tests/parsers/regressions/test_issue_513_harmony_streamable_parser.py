@@ -837,36 +837,23 @@ def test_compat_gate_rejects_non_int_encode_result():
         harmony_constrain=200003,
     )
 
-    class _BatchEncodingShape:
-        def __iter__(self):
-            return iter(("input_ids", "attention_mask"))
+    class _BaseTokenizer:
+        def decode(self, ids): return ""
+        def get_vocab(self): return {}
 
-    class _BatchEncodingTokenizer:
+    class _BatchEncodingTokenizer(_BaseTokenizer):
         name_or_path = "mlx-community/gpt-oss-BATCH-ENCODING-VARIANT"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
         def encode(self, text, add_special_tokens=False):
-            return _BatchEncodingShape()
+            class _Batch:
+                def __iter__(self): return iter(("input_ids", "attention_mask"))
+            return _Batch()
 
-    assert is_openai_harmony_compatible(tm, _BatchEncodingTokenizer()) is False
-
-    class _StringTokenIdsTokenizer:
+    class _StringTokenIdsTokenizer(_BaseTokenizer):
         name_or_path = "mlx-community/gpt-oss-STRING-IDS-VARIANT"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
         def encode(self, text, add_special_tokens=False):
             return ("Hello", "world")
 
+    assert is_openai_harmony_compatible(tm, _BatchEncodingTokenizer()) is False
     assert is_openai_harmony_compatible(tm, _StringTokenIdsTokenizer()) is False
 
 
