@@ -287,7 +287,8 @@ def test_tool_reconstructor_rejects_null_function():
         rec.append_delta({"tool_calls": [{"index": 0, "id": "x", "function": None}]})
     assert "malformed 'function'" in str(exc_info.value)
 
-def test_tool_reconstructor_rejects_non_string_arguments():
+@pytest.mark.parametrize("bad", [0, False, ["arg"], {"a": 1}, b"bytes"])
+def test_tool_reconstructor_rejects_non_string_arguments(bad):
     """raised in Codex re-review: ``arguments`` was previously coerced via
     ``function.get("arguments") or ""``, silently swallowing ``None`` /
     ``0`` / ``False``. Strict typing now requires the field to be absent
@@ -295,13 +296,12 @@ def test_tool_reconstructor_rejects_non_string_arguments():
     """
     rec = StreamingToolReconstructor()
     rec.append_delta(_tool_delta(id="call_1", name="get_weather"))
-    for bad in (0, False, ["arg"], {"a": 1}, b"bytes"):
-        with pytest.raises(AssertionError) as exc_info:
-            rec.append_delta(
-                {
-                    "tool_calls": [
-                        {"index": 0, "function": {"arguments": bad}},
-                    ]
-                }
-            )
-        assert "malformed 'arguments'" in str(exc_info.value)
+    with pytest.raises(AssertionError) as exc_info:
+        rec.append_delta(
+            {
+                "tool_calls": [
+                    {"index": 0, "function": {"arguments": bad}},
+                ]
+            }
+        )
+    assert "malformed 'arguments'" in str(exc_info.value)
