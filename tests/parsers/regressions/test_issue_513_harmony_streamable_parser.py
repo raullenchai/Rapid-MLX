@@ -711,9 +711,8 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
     for name in rejected_names:
 
         class _Fake(_CompatTokenizerBase):
-            pass
+            name_or_path = name
 
-        _Fake.name_or_path = name
         assert is_openai_harmony_compatible(tm, _Fake()) is False, (
             f"tail-substring identity {name!r} must be rejected"
         )
@@ -738,9 +737,8 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
     for name in accepted_names:
 
         class _Real(_CompatTokenizerBase):
-            pass
+            name_or_path = name
 
-        _Real.name_or_path = name
         assert is_openai_harmony_compatible(tm, _Real()) is True, (
             f"canonical identity {name!r} must pass"
         )
