@@ -1056,16 +1056,31 @@ def test_compat_gate_caches_per_tokenizer_identity():
 # ----- finalize() safer-default pins ----------------------------------
 
 
-def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Comentário cortado antes de <|call|>
+        (
+            "<|channel|>commentary "
+            "to=functions.get_weather <|constrain|>json<|message|>"
+            '{"city":"NYC"}'
+        ),
+        # Corpo cortado mid-JSON
+        (
+            "<|channel|>commentary "
+            "to=functions.get_weather <|constrain|>json<|message|>"
+            '{"city":"NY'
+        ),
+        # Corpo completamente vazio
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>",
+    ],
+)
+def test_finalize_drops_truncated_or_empty_commentary(router, encoding, text):
     """Codex round-6 BLOCKING resolution (PR #515): finalize() adopts
     the vLLM / SGLang safer-default — a commentary message cut off
-    before ``<|call|>`` must NEVER be surfaced as a tool call.
+    before ``<|call|>``, mid-JSON, or with an empty body must NEVER
+    be surfaced as a tool call.
     """
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NYC"}'  # NO <|call|>
-    )
     tokens = _encode(encoding, text)
     router.reset()
     routed_during_stream = []
@@ -1077,40 +1092,8 @@ def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
 
     assert all(ev.channel != Channel.TOOL_CALL for ev in routed_during_stream)
     assert drained is None, (
-        f"truncated commentary must NEVER surface as a tool call; got {drained!r} "
-        f"(stream events: {len(routed_during_stream)})"
+        f"truncated or empty commentary must NEVER surface as a tool call; got {drained!r}"
     )
-
-
-def test_finalize_drops_mid_json_truncation(router, encoding):
-    """A commentary message whose body was cut off mid-JSON must also
-    be dropped — same safer-default rule as the canonical truncation
-    test.
-    """
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NY'
-    )
-    tokens = _encode(encoding, text)
-    router.reset()
-    for tid in tokens:
-        router.feed(tid)
-    drained = router.finalize()
-
-    assert drained is None
-
-
-def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
-    """A commentary message with no body whatsoever must be dropped."""
-    text = "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>"
-    tokens = _encode(encoding, text)
-    router.reset()
-    for tid in tokens:
-        router.feed(tid)
-    drained = router.finalize()
-
-    assert drained is None
 
 
 def test_finalize_does_not_double_emit_completed_final(router, encoding):
