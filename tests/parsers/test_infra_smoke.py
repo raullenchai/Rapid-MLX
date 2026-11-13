@@ -263,8 +263,9 @@ def test_tool_reconstructor_rejects_malformed_tool_calls():
     """
     for bad in ("not-a-list", {"index": 0}, 42, b"bytes"):
         rec = StreamingToolReconstructor()
-        with pytest.raises(AssertionError, match="malformed 'tool_calls'"):
+        with pytest.raises(AssertionError) as exc_info:
             rec.append_delta({"content": "ok", "tool_calls": bad})
+        assert "malformed 'tool_calls'" in str(exc_info.value)
 
 
 def test_tool_reconstructor_accepts_explicit_null_tool_calls():
