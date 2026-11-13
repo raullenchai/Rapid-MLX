@@ -283,9 +283,9 @@ def test_tool_reconstructor_accepts_explicit_null_tool_calls():
 
 def test_tool_reconstructor_rejects_null_function():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="malformed 'function'"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta({"tool_calls": [{"index": 0, "id": "x", "function": None}]})
-
+    assert "malformed 'function'" in str(exc_info.value)
 
 def test_tool_reconstructor_rejects_non_string_arguments():
     """raised in Codex re-review: ``arguments`` was previously coerced via
