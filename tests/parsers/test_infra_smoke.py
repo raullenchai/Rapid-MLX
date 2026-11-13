@@ -134,8 +134,9 @@ def test_tool_reconstructor_rejects_bad_type():
 
 def test_tool_reconstructor_rejects_empty_delta():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="content or tool_calls"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta({})
+    assert "content or tool_calls" in str(exc_info.value)
 
 
 def test_tool_reconstructor_accepts_pure_content():
