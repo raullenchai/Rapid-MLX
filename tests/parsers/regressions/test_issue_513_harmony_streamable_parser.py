@@ -251,59 +251,24 @@ def test_structured_payload_preserves_body_with_harmony_sentinels(router, encodi
     BLOCKING (PR #515): a tool call whose JSON arguments contain a
     literal harmony sentinel substring (``{"text":"<|call|>"}``,
     ``{"x":"<|message|>"}`` etc.) MUST be surfaced intact via the
-    structured ``{"name", "arguments"}`` payload. The previous
-    wire-text round-trip lost these calls — the downstream regex
-    parser anchored on the embedded sentinel and truncated the JSON,
-    silently dropping a legitimate tool invocation.
-
-    Bytes-faithful structured passthrough eliminates the failure mode
-    by construction: arguments are the verbatim concatenated body
-    text the parser surfaced, no marker handling required.
+    structured ``{"name", "arguments"}`` payload.
     """
-    # Encode the structural prefix / suffix with allowed_special="all"
-    # so harmony markers round-trip as single token IDs, but encode the
-    # body with allowed_special="none" so literal harmony-marker text
-    # INSIDE the JSON body remains plain body bytes — matches how a
-    # real gpt-oss model would tokenize a tool call whose JSON value
-    # happens to contain a marker substring (the model's tokenizer
-    # would not promote inside-JSON text to special-token IDs).
     prefix_ids = encoding.encode(
         "<|channel|>commentary to=functions.echo <|constrain|>json<|message|>",
         allowed_special="all",
     )
     suffix_ids = encoding.encode("<|call|>", allowed_special="all")
 
-    # ``disallowed_special=()`` tells the harmony encoder to treat
-    # marker-shaped substrings inside the body as plain text bytes
-    # (default behavior raises to prevent accidental special-token
-    # injection). That's exactly the production model behavior we
-    # want to simulate: the model's tokenizer would surface these
-    # bytes via normal body vocab IDs, not as the special marker.
     body_ids = encoding.encode(body, allowed_special="none", disallowed_special=())
     tokens = prefix_ids + body_ids + suffix_ids
     router.reset()
     result = router.feed_sequence(tokens)
 
-    assert result["tool_calls"] is not None, (
-        f"body {body!r}: tool call MUST surface (round-15 "
-        f"bytes-faithful refactor); got tool_calls=None"
-    )
-    assert len(result["tool_calls"]) == 1, (
-        f"body {body!r}: exactly one tool call expected; "
-        f"got {result['tool_calls']!r}"
-    )
+    assert result["tool_calls"] is not None
+    assert len(result["tool_calls"]) == 1
     tc = result["tool_calls"][0]
-    assert tc == {"name": "echo", "arguments": body}, (
-        f"body {body!r}: structured payload must preserve bytes; got {tc!r}"
-    )
-    # And the body must NOT leak into content (the abstain path
-    # in earlier revisions surfaced sentinel bodies via CONTENT
-    # to keep streaming visible; bytes-faithful passthrough makes
-    # that workaround obsolete).
-    assert result["content"] is None, (
-        f"body {body!r}: must NOT leak into content under "
-        f"bytes-faithful refactor; got {result['content']!r}"
-    )
+    assert tc == {"name": "echo", "arguments": body}
+    assert result["content"] is None
 
 
 def test_structured_payload_carries_truncated_recipient_namespace(router):
