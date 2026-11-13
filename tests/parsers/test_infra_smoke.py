@@ -41,8 +41,9 @@ def test_reasoning_reconstructor_accumulates_separately():
 
 def test_reasoning_reconstructor_rejects_both_populated():
     rec = StreamingReasoningReconstructor()
-    with pytest.raises(AssertionError, match="leaked"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(DeltaMessage(reasoning="r", content="c"))
+    assert "leaked" in str(exc_info.value)
 
 
 def test_reasoning_reconstructor_ignores_empty_role_only_delta():
