@@ -965,25 +965,18 @@ def test_compat_gate_caches_per_tokenizer_identity():
 
     class _CountingTokenizer:
         name_or_path = "mlx-community/gpt-oss-CACHE-PROBE-INVOCATION"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
+        def decode(self, ids): return ""
+        def get_vocab(self): return {}
         def encode(self, text, add_special_tokens=False):
             call_count["n"] += 1
             return [0]
 
     t = _CountingTokenizer()
-    result1 = is_openai_harmony_compatible(tm, t)
-    assert result1 is False
+    assert is_openai_harmony_compatible(tm, t) is False
     first_call_count = call_count["n"]
     assert first_call_count > 0
 
-    result2 = is_openai_harmony_compatible(tm, t)
-    assert result2 is False
+    assert is_openai_harmony_compatible(tm, t) is False
     assert call_count["n"] == first_call_count, (
         "compat gate must cache False results per identity"
     )
