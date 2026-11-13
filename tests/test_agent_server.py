@@ -3554,14 +3554,62 @@ async def test_registry_without_mcp_keeps_local_tools_and_internal_request_live(
 
 
 @pytest.mark.asyncio
-async def test_builtin_calculator_is_exact_and_rejects_code():
+@pytest.mark.parametrize("batch", [False, True])
+async def test_builtin_native_arguments_pass_chat_and_runtime_validation(batch):
+    from rapid_mlx.service.helpers import _validate_tool_call_params
+
+    arguments = {"expressions": {"result": "(17 * 23) + 4"}}
+    name = "rapid__calculate"
+    if batch:
+        arguments = {"calls": [{"name": name, "arguments": arguments}]}
+        name = "rapid__batch_read_only"
     registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    tools = registry.list_tools()
+    _validate_tool_call_params(
+        [{"function": {"name": name, "arguments": json.dumps(arguments)}}],
+        [
+            {"function": {"name": tool.name, "parameters": tool.parameters}}
+            for tool in tools
+        ],
+        enforce_required=True,
+    )
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[AgentToolCall(id="native", name=name, arguments=arguments)]
+        ),
+        AgentModelTurn(content="The result is 395."),
+    )
+    service = AgentServerService(registry=registry, chat_driver=driver)
+    try:
+        created = await service.create(
+            AgentRunCreateRequest(goal="Calculate (17 * 23) + 4."), model="model"
+        )
+        done = await wait_for_status(
+            service, created.id, AgentRunStatus.COMPLETED, AgentRunStatus.FAILED
+        )
+        assert done.status is AgentRunStatus.COMPLETED
+        assert done.tool_rounds == 1
+        observations = [m for m in driver.requests[1][1] if m["role"] == "tool"]
+        # The adapter appends synthesis guidance after the tool's JSON result.
+        payload, _ = json.JSONDecoder().raw_decode(observations[-1]["content"])
+        if batch:
+            payload = json.loads(payload["results"][0]["content"])
+        assert payload == {"result": "395"}
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_builtin_calculator_is_exact_and_rejects_code(legacy):
+    registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    encode = json.dumps if legacy else lambda value: value
     result = await registry.execute(
         AgentToolCall(
             id="calc",
             name="rapid__calculate",
             arguments={
-                "expressions": json.dumps(
+                "expressions": encode(
                     {
                         "total": "12.30 + 7.70",
                         "average": "(12.30 + 7.70) / 2",
@@ -3577,9 +3625,7 @@ async def test_builtin_calculator_is_exact_and_rejects_code():
         AgentToolCall(
             id="unsafe",
             name="rapid__calculate",
-            arguments={
-                "expressions": json.dumps({"x": "__import__('os').system('id')"})
-            },
+            arguments={"expressions": encode({"x": "__import__('os').system('id')"})},
         )
     )
     assert rejected.is_error is True
@@ -3599,11 +3645,89 @@ async def test_builtin_calculator_is_exact_and_rejects_code():
         AgentToolCall(
             id="wrong-value-type",
             name="rapid__calculate",
-            arguments={"expressions": json.dumps({"x": 1})},
+            arguments={"expressions": encode({"x": 1})},
         )
     )
     assert wrong_value_type.is_error is True
     assert wrong_value_type.executed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    ("name", "key", "value"),
+    [
+        ("rapid__calculate", "expressions", {}),
+        ("rapid__calculate", "expressions", []),
+        ("rapid__calculate", "expressions", None),
+        ("rapid__calculate", "expressions", {"x": True}),
+        ("rapid__calculate", "expressions", {"x": "1" * 513}),
+        ("rapid__calculate", "expressions", {str(i): "1" for i in range(17)}),
+        ("rapid__calculate", "expressions", {"x" * 16_384: "1"}),
+        ("rapid__batch_read_only", "calls", []),
+        ("rapid__batch_read_only", "calls", {}),
+        ("rapid__batch_read_only", "calls", None),
+        ("rapid__batch_read_only", "calls", [None]),
+        ("rapid__batch_read_only", "calls", [{}]),
+        ("rapid__batch_read_only", "calls", [{"name": "files__read_file"}]),
+        (
+            "rapid__batch_read_only",
+            "calls",
+            [{"name": "files__read_file", "arguments": []}],
+        ),
+        (
+            "rapid__batch_read_only",
+            "calls",
+            [{"name": "files__read_file", "arguments": {"path": "x"}}] * 9,
+        ),
+        (
+            "rapid__batch_read_only",
+            "calls",
+            [{"name": "files__read_file", "arguments": {"path": "x" * 65_536}}],
+        ),
+        (
+            "rapid__batch_read_only",
+            "calls",
+            [{"name": "undeclared__read", "arguments": {}}],
+        ),
+        (
+            "rapid__batch_read_only",
+            "calls",
+            [{"name": "rapid__batch_read_only", "arguments": {"calls": []}}],
+        ),
+        (
+            "rapid__batch_read_only",
+            "calls",
+            [{"name": "files__read_file", "arguments": {"path": 1}}],
+        ),
+    ],
+)
+async def test_builtin_helpers_reject_invalid_arguments_before_execution(
+    legacy, name, key, value
+):
+    executed = []
+
+    class ObservedRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [*super().list_tools(), READ]
+
+        async def execute(self, call):
+            if call.name == READ.name:
+                executed.append(call)
+                return AgentToolResult(call_id=call.id, content="unexpected")
+            return await super().execute(call)
+
+    registry = ObservedRegistry(manager=None, executor=None, pinned=True)
+    result = await registry.execute(
+        AgentToolCall(
+            id="invalid",
+            name=name,
+            arguments={key: json.dumps(value) if legacy else value},
+        )
+    )
+    assert result.is_error is True
+    assert result.executed is False
+    assert executed == []
 
 
 def test_builtin_arithmetic_covers_supported_grammar_and_bounds():
@@ -3627,22 +3751,24 @@ def test_builtin_arithmetic_covers_supported_grammar_and_bounds():
 
 
 @pytest.mark.asyncio
-async def test_builtin_batch_runs_only_read_only_tools():
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_builtin_batch_runs_only_read_only_tools(legacy):
     registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    encode = json.dumps if legacy else lambda value: value
     completed = await registry.execute(
         AgentToolCall(
             id="batch",
             name="rapid__batch_read_only",
             arguments={
-                "calls": json.dumps(
+                "calls": encode(
                     [
                         {
                             "name": "rapid__calculate",
-                            "arguments": {"expressions": json.dumps({"a": "2 + 3"})},
+                            "arguments": {"expressions": encode({"a": "2 + 3"})},
                         },
                         {
                             "name": "rapid__calculate",
-                            "arguments": {"expressions": json.dumps({"b": "8 / 4"})},
+                            "arguments": {"expressions": encode({"b": "8 / 4"})},
                         },
                     ]
                 )
@@ -3682,7 +3808,7 @@ async def test_builtin_batch_runs_only_read_only_tools():
             id="batch-side-effect",
             name="rapid__batch_read_only",
             arguments={
-                "calls": json.dumps(
+                "calls": encode(
                     [
                         {
                             "name": "rapid__calculate",
