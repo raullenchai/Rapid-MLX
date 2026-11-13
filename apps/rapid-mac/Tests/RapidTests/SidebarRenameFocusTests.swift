@@ -171,7 +171,7 @@ struct SidebarRenameFocusTests {
         let stripped = CapabilityChipRenderGateSourceGuardTests
             .stripCommentsAndWhitespace(try sidebarSource())
         #expect(
-            stripped.contains("SidebarRow(isSelected:isActive){cancelRename()onSelectConversation(conv.id)}"),
+            stripped.contains("SidebarRow(isSelected:isActive){cancelRename()onSelectConversation(conv.id)showCompactChats=false}"),
             "Opening another conversation must resolve a pending rename — otherwise a row that never took focus stays in edit mode forever."
         )
         #expect(

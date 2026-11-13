@@ -11263,6 +11263,16 @@
         }
       }
     },
+    "Chats" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天"
+          }
+        }
+      }
+    },
     "Chatting with %@" : {
       "localizations" : {
         "zh-Hans" : {

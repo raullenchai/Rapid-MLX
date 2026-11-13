@@ -171,6 +171,8 @@ struct SidebarView: View {
     /// section builder) so the roll-over is an observable state change.
     @State private var referenceDate = Date()
 
+    @State private var showCompactChats = false
+
     /// The conversation a context-menu "Delete" has staged for removal, shown
     /// in the confirmation dialog. Deleting a conversation is irreversible
     /// (``ConversationStore.save`` atomically overwrites the on-disk store —
@@ -381,25 +383,7 @@ struct SidebarView: View {
             // Folders can exist before any conversation does (create one, then
             // file into it), so an empty history no longer means an empty rail.
             if !chat.conversations.isEmpty || !chat.folders.isEmpty {
-                // Date-grouped history (#1470), titled with the shared
-                // SectionHeader so the groups match the refreshed visual
-                // system (#1460) instead of the PR's original inline caption.
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 1) {
-                        folderSectionsList
-                        ForEach(historySections, id: \.title) { section in
-                            SectionHeader(section.title)
-                                .padding(.horizontal, RapidTheme.Space.sm)
-                                .padding(.top, RapidTheme.Space.lg)
-                                .padding(.bottom, RapidTheme.Space.xs)
-                            ForEach(section.conversations) { conv in
-                                conversationRow(conv)
-                            }
-                        }
-                        archivedSection
-                    }
-                }
-                .scrollIndicators(.never)
+                conversationHistory
             }
 
             Spacer(minLength: 0)
@@ -415,6 +399,45 @@ struct SidebarView: View {
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.vertical, RapidTheme.Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// One history layout for both the full column and the compact popover.
+    private var conversationHistory: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 1) {
+                folderSectionsList
+                ForEach(historySections, id: \.title) { section in
+                    SectionHeader(section.title)
+                        .padding(.horizontal, RapidTheme.Space.sm)
+                        .padding(.top, RapidTheme.Space.lg)
+                        .padding(.bottom, RapidTheme.Space.xs)
+                    ForEach(section.conversations) { conv in
+                        conversationRow(conv)
+                    }
+                }
+                archivedSection
+            }
+        }
+        .scrollIndicators(.never)
+    }
+
+    private var compactChatsPopover: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            Text("Chats")
+                .font(RapidFont.bodyEmphasis)
+                .padding(.horizontal, RapidTheme.Space.sm)
+            if chat.conversations.isEmpty && chat.folders.isEmpty {
+                Text("No conversations yet")
+                    .font(RapidFont.body)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                conversationHistory
+            }
+        }
+        .padding(RapidTheme.Space.sm)
+        .frame(width: 320, height: 420)
+        .accessibilityIdentifier("Sidebar.Compact.Chats.Popover")
     }
 
     var body: some View {
@@ -612,17 +635,8 @@ struct SidebarView: View {
 
     /// The navigation at narrow widths: Paper's 64pt icon rail.
     ///
-    /// Same destinations, same selection binding, same accessibility
-    /// identifiers as ``fullColumn`` — a narrow window loses the labels and
-    /// the conversation history, not the ability to go anywhere. Every icon
-    /// keeps its name as its accessibility label and its help tag, so the
-    /// rail is no less navigable by keyboard or VoiceOver than the full
-    /// column is.
-    ///
-    /// History is dropped rather than squeezed: a conversation title has
-    /// nothing meaningful to show in 40pt, and the search command (⌘K, still
-    /// mounted in the toolbar above) is the better way to reach one at this
-    /// width.
+    /// Destinations keep their accessibility labels and help tags. History
+    /// opens in a popover so conversation titles remain readable at this width.
     ///
     /// Metrics are Paper's: 18pt of vertical padding, an 18pt gap, a 36pt
     /// brand tile, a 40pt hairline, and 40pt icon slots.
@@ -641,6 +655,20 @@ struct SidebarView: View {
                 action: onNewChat
             )
             .accessibilityIdentifier("Sidebar.NewChat")
+            compactItem(
+                title: String(localized: "Chats"),
+                systemImage: "bubble.left.and.bubble.right",
+                isSelected: showCompactChats,
+                action: { showCompactChats.toggle() }
+            )
+            .accessibilityIdentifier("Sidebar.Compact.Chats")
+            .popover(isPresented: $showCompactChats, arrowEdge: .trailing) {
+                compactChatsPopover
+            }
+            .onChange(of: showCompactChats) { _, isPresented in
+                if !isPresented { cancelRename() }
+            }
+            .onDisappear { showCompactChats = false }
             compactItem(
                 title: String(localized: "Images"),
                 systemImage: "photo",
@@ -1508,6 +1536,7 @@ struct SidebarView: View {
                     // editor never took focus at all.
                     cancelRename()
                     onSelectConversation(conv.id)
+                    showCompactChats = false
                 } content: {
                     // History rows carry no icon but keep the same leading
                     // inset as the nav rows above, so titles and nav labels

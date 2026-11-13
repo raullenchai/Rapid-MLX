@@ -1062,6 +1062,7 @@ struct LocalizationTests {
         // Keep the source literal and the compiler-derived catalog key separate:
         // interpolations must remain localizable before they become plain String.
         let contracts: [(path: String, literal: String, key: String, zh: String)] = [
+            ("UI/SidebarView.swift", #"Chats"#, "Chats", "聊天"),
             ("UI/ImagesView.swift", #"Draw anything"#, "Draw anything", "随心绘制"),
             ("UI/ImagesView.swift", #"Describe what you want to see, then press Generate."#, "Describe what you want to see, then press Generate.", "描述你想看到的画面，然后点击生成。"),
             ("UI/ImagesView.swift", #"Create images locally, then keep generating offline."#, "Create images locally, then keep generating offline.", "在本地生成图像，离线也能继续创作。"),
