@@ -658,7 +658,31 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
 
 
-def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        # Rejeitados (tail-substring fakes ou não allowlisted)
+        ("my-not-gpt-oss/whatever", False),
+        ("foo/bar-gpt-oss-malicious", False),
+        ("my-not-gpt-oss-20b", False),
+        ("notgpt-oss-fake", False),
+        ("some-user/gpt-oss-remapped", False),
+        ("evil-org/gpt-oss-20b", False),
+        ("anonymous/gpt-oss", False),
+        # Aceitos (canonical names)
+        ("openai/gpt-oss-20b", True),
+        ("openai/gpt-oss-20b-mxfp4-q8", True),
+        ("mlx-community/gpt-oss-20b-MXFP4-Q8", True),
+        ("unsloth/gpt-oss-20b-MLX-8bit", True),
+        ("gpt-oss-20b-mxfp4-q8", True),
+        ("gpt-oss", True),
+        ("/models/gpt-oss-20b", True),
+        ("~/lmstudio-models/gpt-oss-20b", True),
+        ("./gpt-oss-20b-quantized", True),
+        ("../models/gpt-oss-20b", True),
+    ],
+)
+def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake(name, expected):
     """Codex round-11 / round-12 / round-13 BLOCKING (PR #515): the
     tokenizer-identity allowlist used naive ``in`` substring matching,
     so an identity like ``my-not-gpt-oss/whatever`` (or
@@ -695,55 +719,12 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         def encode(self, text, add_special_tokens=False):
             return enc.encode(text, allowed_special="none")
 
-    rejected_names = (
-        "my-not-gpt-oss/whatever",
-        "foo/bar-gpt-oss-malicious",
-        "my-not-gpt-oss-20b",
-        "notgpt-oss-fake",
-        "some-user/gpt-oss-remapped",
-        # ``evil-org/gpt-oss-20b`` is the canonical spoof case — a third-party
-        # org happens to use the same bare repo name as OpenAI's. A matcher
-        # that accepts any ``*/gpt-oss-20b`` would false-accept this. Kept
-        # verbatim (no alias suffix) so the spoof shape stays representative
-        # — adding the canonical alias suffix would only test a stricter
-        # variant that's already covered by the matcher.
-        "evil-org/gpt-oss-20b",
-        "anonymous/gpt-oss",
+    class _CustomTokenizer(_CompatTokenizerBase):
+        name_or_path = name
+
+    assert is_openai_harmony_compatible(tm, _CustomTokenizer()) is expected, (
+        f"identity {name!r} expectation mismatch (expected {expected})"
     )
-    for name in rejected_names:
-
-        class _Fake(_CompatTokenizerBase):
-            name_or_path = name
-
-        assert is_openai_harmony_compatible(tm, _Fake()) is False, (
-            f"tail-substring identity {name!r} must be rejected"
-        )
-
-    accepted_names = (
-        # OpenAI's canonical bare repo id — kept verbatim so the matcher
-        # is tested against the real upstream shape, not just the rapid-mlx
-        # alias form.
-        "openai/gpt-oss-20b",
-        # rapid-mlx alias post-rename — separately covered so an alias
-        # match doesn't shadow the bare repo match above.
-        "openai/gpt-oss-20b-mxfp4-q8",
-        "mlx-community/gpt-oss-20b-MXFP4-Q8",
-        "unsloth/gpt-oss-20b-MLX-8bit",
-        "gpt-oss-20b-mxfp4-q8",
-        "gpt-oss",
-        "/models/gpt-oss-20b",
-        "~/lmstudio-models/gpt-oss-20b",
-        "./gpt-oss-20b-quantized",
-        "../models/gpt-oss-20b",
-    )
-    for name in accepted_names:
-
-        class _Real(_CompatTokenizerBase):
-            name_or_path = name
-
-        assert is_openai_harmony_compatible(tm, _Real()) is True, (
-            f"canonical identity {name!r} must pass"
-        )
 
 
 def test_compat_gate_accepts_hf_cache_snapshot_path():
