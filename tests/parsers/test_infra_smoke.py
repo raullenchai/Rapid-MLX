@@ -245,8 +245,9 @@ def test_assert_no_marker_leak_accepts_clean_content():
 
 @pytest.mark.parametrize("marker", HARMONY_LEAK_MARKERS)
 def test_assert_no_marker_leak_catches_each_marker(marker):
-    with pytest.raises(AssertionError, match="leaked"):
+    with pytest.raises(AssertionError) as exc_info:
         assert_no_harmony_marker_leak(f"prefix {marker} suffix")
+    assert "leaked" in str(exc_info.value)
 
 
 # ----- Reconstructor None-handling (codex K2) ---------------------------
