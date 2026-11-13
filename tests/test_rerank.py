@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import types
@@ -2320,3 +2321,56 @@ def test_local_jina_positive_checked_load(tmp_path, monkeypatch):
     monkeypatch.setattr(mlx_lm.utils, "load_model", load)
     monkeypatch.setattr(mlx_lm.utils, "load_tokenizer", load_tokenizer)
     assert _load_jina(str(tmp_path)) == (model, tokenizer)
+
+
+@pytest.mark.parametrize(
+    "query,documents,path,offset,codepoint",
+    [
+        ("\ud800", ["ok"], "query", 0, "D800"),
+        ("ok", ["ok", "\ud800"], "documents[1]", 0, "D800"),
+        ("ok", [{"text": "ok"}, {"text": "abc\udfff"}], "documents[1]", 3, "DFFF"),
+    ],
+)
+def test_rerank_lone_surrogate_returns_400(
+    rerank_client, query, documents, path, offset, codepoint
+):
+    engine = _StubEngine([0.1, 0.9])
+    original_score = engine.score
+
+    def score(query, documents, **kwargs):
+        for text in [query, *documents]:
+            text.encode("utf-8")
+        return original_score(query, documents, **kwargs)
+
+    engine.score = mock.Mock(side_effect=score)
+    _configure(rerank_client.cfg, engine)
+    response = rerank_client.client.post(
+        "/v1/rerank",
+        content=json.dumps({"query": query, "documents": documents}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["message"] == (
+        f"Invalid unicode in {path}: lone surrogate "
+        f"codepoint U+{codepoint} at offset {offset} "
+        "(surrogates must appear as paired high/low to encode an astral codepoint)."
+    )
+    engine.score.assert_not_called()
+
+
+@pytest.mark.parametrize("text", ["normal", "café", "😀"])
+@pytest.mark.parametrize("object_documents", [False, True])
+def test_rerank_valid_unicode(rerank_client, text, object_documents):
+    engine = _StubEngine([0.1, 0.9])
+    _configure(rerank_client.cfg, engine)
+    documents = [{"text": "ok"}, {"text": text}] if object_documents else ["ok", text]
+    response = rerank_client.client.post(
+        "/v1/rerank",
+        content=json.dumps({"query": text, "documents": documents}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert [item["index"] for item in response.json()["results"]] == [1, 0]
+    assert engine.calls == [(text, ["ok", text], None)]
