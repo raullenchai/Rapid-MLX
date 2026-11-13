@@ -32,6 +32,7 @@ a grep-based code reviewer.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -638,3 +639,85 @@ def test_embedding_cli_passes_input_cap_to_loader(monkeypatch):
         SimpleNamespace(embedding_model="stub-embed", embedding_max_inputs=12), loader
     )
     assert loader.call_args.kwargs["max_inputs"] == 12
+
+
+@pytest.mark.parametrize(
+    "payload,index,offset,codepoint",
+    [
+        ("\ud800", 0, 0, "D800"),
+        (["ok", "\ud800 lone"], 1, 0, "D800"),
+        (["ok", "prefix\udfff"], 1, 6, "DFFF"),
+    ],
+)
+def test_embedding_lone_surrogate_returns_400(
+    monkeypatch, payload, index, offset, codepoint
+):
+    engine = MagicMock()
+    engine.count_tokens.side_effect = lambda texts: sum(
+        len(text.encode("utf-8")) for text in texts
+    )
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        response = client.post(
+            "/v1/embeddings",
+            content=json.dumps({"model": "stub-embed", "input": payload}),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert error["message"] == (
+            f"Invalid unicode in input[{index}]: lone surrogate "
+            f"codepoint U+{codepoint} at offset {offset} "
+            "(surrogates must appear as paired high/low to encode an astral codepoint)."
+        )
+        assert not engine.mock_calls
+    finally:
+        restore()
+
+
+@pytest.mark.parametrize(
+    "payload,texts,token_batches",
+    [
+        ("hello", ["hello"], None),
+        (["hello", "café"], ["hello", "café"], None),
+        ("😀", ["😀"], None),
+        (["ok", "😀"], ["ok", "😀"], None),
+        ([1, 2, 3], None, [[1, 2, 3]]),
+        ([[1, 2], [3]], None, [[1, 2], [3]]),
+    ],
+)
+def test_embedding_valid_unicode_and_token_ids(
+    monkeypatch, payload, texts, token_batches
+):
+    engine = MagicMock()
+    engine.count_tokens.side_effect = lambda items: sum(
+        len(text.encode("utf-8")) for text in items
+    )
+    vectors = [[0.5]] * len(texts if texts is not None else token_batches)
+    engine.embed.return_value = vectors
+    engine.embed_tokens.return_value = vectors
+    client, restore = _build_embed_app(
+        monkeypatch, engine, embedding_model_locked="stub-embed"
+    )
+    try:
+        # json.dumps emits emoji as a properly paired \ud83d\ude00 on the wire.
+        response = client.post(
+            "/v1/embeddings",
+            content=json.dumps({"model": "stub-embed", "input": payload}),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert [item["embedding"] for item in response.json()["data"]] == vectors
+        if texts is not None:
+            engine.count_tokens.assert_called_once_with(texts)
+            engine.embed.assert_called_once_with(texts)
+            engine.embed_tokens.assert_not_called()
+        else:
+            engine.embed_tokens.assert_called_once_with(token_batches)
+            engine.count_tokens.assert_not_called()
+            engine.embed.assert_not_called()
+    finally:
+        restore()

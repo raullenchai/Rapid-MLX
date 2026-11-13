@@ -79,7 +79,10 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
             None,
         )
 
-    from ..service.helpers import _resolve_request_alias_or_default
+    from ..service.helpers import (
+        _find_lone_surrogate,
+        _resolve_request_alias_or_default,
+    )
 
     model_name = _resolve_request_alias_or_default(
         request.model, cfg.rerank_model_locked
@@ -102,6 +105,21 @@ async def create_rerank(request: RerankRequest, raw_request: Request) -> RerankR
         )
 
     documents = [doc if isinstance(doc, str) else doc.text for doc in request.documents]
+    for path, text in [
+        ("query", request.query),
+        *((f"documents[{i}]", doc) for i, doc in enumerate(documents)),
+    ]:
+        offset = _find_lone_surrogate(text)
+        if offset is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid unicode in {path}: lone surrogate "
+                    f"codepoint U+{ord(text[offset]):04X} at offset "
+                    f"{offset} (surrogates must appear as paired "
+                    "high/low to encode an astral codepoint)."
+                ),
+            )
     rerank_engine = cfg.rerank_engine
     limit = cfg.rerank_max_documents
     if limit > 0 and len(documents) > limit:

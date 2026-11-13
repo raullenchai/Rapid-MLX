@@ -145,7 +145,10 @@ async def create_embeddings(
         # miss). The wire ``model`` echoed back stays the locked id so
         # the response shape matches ``/v1/models`` for cache-key
         # consistency on the client side.
-        from ..service.helpers import _resolve_request_alias_or_default
+        from ..service.helpers import (
+            _find_lone_surrogate,
+            _resolve_request_alias_or_default,
+        )
 
         resolved = _resolve_request_alias_or_default(
             request.model, cfg.embedding_model_locked
@@ -211,6 +214,20 @@ async def create_embeddings(
                 status_code=400,
                 detail=("input must be str, list[str], list[int], or list[list[int]]"),
             )
+
+        if texts is not None:
+            for i, text in enumerate(texts):
+                offset = _find_lone_surrogate(text)
+                if offset is not None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Invalid unicode in input[{i}]: lone surrogate "
+                            f"codepoint U+{ord(text[offset]):04X} at offset "
+                            f"{offset} (surrogates must appear as paired "
+                            "high/low to encode an astral codepoint)."
+                        ),
+                    )
 
         # Reject empty token sequences. ``[[]]`` would produce a
         # zero-width tensor; ``[[1, 2], []]`` produces a row whose
