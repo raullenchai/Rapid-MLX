@@ -127,8 +127,9 @@ def test_tool_reconstructor_rejects_bad_type():
     rec = StreamingToolReconstructor()
     delta = _tool_delta(id="call_1", name="f")
     delta["tool_calls"][0]["type"] = "something_else"
-    with pytest.raises(AssertionError, match="type='function'"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(delta)
+    assert "type='function'" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_empty_delta():
