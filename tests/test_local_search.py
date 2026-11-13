@@ -3772,6 +3772,7 @@ def test_vision_flag_default_and_text_media_rejection_on_http(monkeypatch):
 
     from rapid_mlx.config import get_config
     from rapid_mlx.routes import embeddings
+    from rapid_mlx.service.helpers import _find_lone_surrogate
 
     module = cpu_embedding_module(monkeypatch)
     engine = module.EmbeddingEngine("mlx-community/embeddinggemma-2-4bit")
@@ -3806,7 +3807,10 @@ def test_vision_flag_default_and_text_media_rejection_on_http(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "rapid_mlx.service.helpers",
-        SimpleNamespace(_resolve_request_alias_or_default=lambda name, locked: locked),
+        SimpleNamespace(
+            _find_lone_surrogate=_find_lone_surrogate,
+            _resolve_request_alias_or_default=lambda name, locked: locked,
+        ),
     )
     app = FastAPI()
     install_exception_handlers(app)
