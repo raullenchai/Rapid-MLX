@@ -778,9 +778,7 @@ def test_compat_gate_accepts_hf_cache_snapshot_path():
 def test_compat_cache_key_segregates_by_tokenizer_instance():
     """Codex round-11/12 BLOCKING (PR #515): two distinct tokenizer
     instances with the same name + marker IDs but a remapped body
-    vocab must NOT share a cached decision (id-reuse hazard). The
-    ``WeakKeyDictionary`` keyed on the tokenizer instance segregates
-    naturally.
+    vocab must NOT share a cached decision (id-reuse hazard).
     """
     from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -796,36 +794,22 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
         harmony_constrain=200003,
     )
 
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
-
-    class _RealHarmony:
+    class _BaseTokenizer:
         name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
+        def decode(self, ids): return ""
+        def get_vocab(self): return {}
 
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
+    class _RealHarmony(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
-            return enc.encode(text, allowed_special="none")
+            return openai_harmony.load_harmony_encoding(
+                openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+            ).encode(text, allowed_special="none")
 
-    assert is_openai_harmony_compatible(tm, _RealHarmony()) is True
-
-    class _RemappedBody:
-        name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
+    class _RemappedBody(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
             return [99001, 99002]
 
+    assert is_openai_harmony_compatible(tm, _RealHarmony()) is True
     assert is_openai_harmony_compatible(tm, _RemappedBody()) is False, (
         "cache must segregate by tokenizer instance; "
         "remapped tokenizer shared instance #1's stale True decision"
