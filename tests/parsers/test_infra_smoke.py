@@ -296,7 +296,7 @@ def test_tool_reconstructor_rejects_non_string_arguments():
     rec = StreamingToolReconstructor()
     rec.append_delta(_tool_delta(id="call_1", name="get_weather"))
     for bad in (0, False, ["arg"], {"a": 1}, b"bytes"):
-        with pytest.raises(AssertionError, match="malformed 'arguments'"):
+        with pytest.raises(AssertionError) as exc_info:
             rec.append_delta(
                 {
                     "tool_calls": [
@@ -304,3 +304,4 @@ def test_tool_reconstructor_rejects_non_string_arguments():
                     ]
                 }
             )
+        assert "malformed 'arguments'" in str(exc_info.value)
