@@ -533,7 +533,20 @@ def test_compat_gate_rejects_unknown_tokenizer_identity():
     assert is_openai_harmony_compatible(tm, _NotGptOssTokenizer()) is False
 
 
-def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        # Nomes aceitos (quant/suffix variants)
+        ("mlx-community/gpt-oss-20b-MXFP4-Q8", True),
+        ("openai/gpt-oss-120b", True),
+        ("mlx-community/GPT-OSS-20b", True),  # case-insensitive
+        # Nomes rejeitados
+        ("mistralai/Mistral-7B-Instruct-v0.3", False),
+        ("Qwen/Qwen3-0.6B", False),
+        ("", False),  # missing name
+    ],
+)
+def test_compat_gate_accepts_gpt_oss_quant_suffix_variants(name, expected):
     """Codex round-2 BLOCKING (PR #515): the identity allowlist must
     tolerate the org-prefix + quant-suffix renames the mlx-community
     publishes (``mlx-community/gpt-oss-20b-MXFP4-Q8``,
@@ -574,23 +587,9 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
         def get_vocab(self):
             return {}
 
-    for name in (
-        "mlx-community/gpt-oss-20b-MXFP4-Q8",
-        "openai/gpt-oss-120b",
-        "mlx-community/GPT-OSS-20b",  # case-insensitive
-    ):
-        assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is True, (
-            f"identity {name!r} must be accepted"
-        )
-
-    for name in (
-        "mistralai/Mistral-7B-Instruct-v0.3",
-        "Qwen/Qwen3-0.6B",
-        "",  # missing name
-    ):
-        assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is False, (
-            f"identity {name!r} must be rejected"
-        )
+    assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is expected, (
+        f"identity {name!r} expectation mismatch (expected {expected})"
+    )
 
 
 def test_compat_gate_rejects_tokenizer_without_encode():
