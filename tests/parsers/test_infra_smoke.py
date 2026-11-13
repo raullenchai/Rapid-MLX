@@ -104,8 +104,9 @@ def test_tool_reconstructor_rejects_duplicate_id():
 def test_tool_reconstructor_rejects_duplicate_name():
     rec = StreamingToolReconstructor()
     rec.append_delta(_tool_delta(id="call_1", name="f"))
-    with pytest.raises(AssertionError, match="function.name only once"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(name="f", args="x"))
+    assert "function.name only once" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_first_delta_without_id():
