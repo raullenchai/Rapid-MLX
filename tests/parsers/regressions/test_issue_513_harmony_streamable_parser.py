@@ -234,7 +234,19 @@ def test_issue_468_compound_analysis_commentary_final_separates(router, encoding
 # ----- Round-15 architectural refactor — sentinel-in-body passthrough --
 
 
-def test_structured_payload_preserves_body_with_harmony_sentinels(router, encoding):
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"text":"use <|call|>"}',
+        '{"text":"<|message|>injected"}',
+        '{"x":"<|channel|>commentary"}',
+        '{"y":"<|end|>"}',
+        '{"z":"<|return|>"}',
+        '{"a":"<|start|>"}',
+        '{"b":"<|constrain|>json"}',
+    ],
+)
+def test_structured_payload_preserves_body_with_harmony_sentinels(router, encoding, body):
     """Round-15 refactor closure for codex round-12 / round-14
     BLOCKING (PR #515): a tool call whose JSON arguments contain a
     literal harmony sentinel substring (``{"text":"<|call|>"}``,
@@ -248,15 +260,6 @@ def test_structured_payload_preserves_body_with_harmony_sentinels(router, encodi
     by construction: arguments are the verbatim concatenated body
     text the parser surfaced, no marker handling required.
     """
-    sentinel_bearing_bodies = (
-        '{"text":"use <|call|>"}',
-        '{"text":"<|message|>injected"}',
-        '{"x":"<|channel|>commentary"}',
-        '{"y":"<|end|>"}',
-        '{"z":"<|return|>"}',
-        '{"a":"<|start|>"}',
-        '{"b":"<|constrain|>json"}',
-    )
     # Encode the structural prefix / suffix with allowed_special="all"
     # so harmony markers round-trip as single token IDs, but encode the
     # body with allowed_special="none" so literal harmony-marker text
@@ -269,38 +272,38 @@ def test_structured_payload_preserves_body_with_harmony_sentinels(router, encodi
         allowed_special="all",
     )
     suffix_ids = encoding.encode("<|call|>", allowed_special="all")
-    for body in sentinel_bearing_bodies:
-        # ``disallowed_special=()`` tells the harmony encoder to treat
-        # marker-shaped substrings inside the body as plain text bytes
-        # (default behavior raises to prevent accidental special-token
-        # injection). That's exactly the production model behavior we
-        # want to simulate: the model's tokenizer would surface these
-        # bytes via normal body vocab IDs, not as the special marker.
-        body_ids = encoding.encode(body, allowed_special="none", disallowed_special=())
-        tokens = prefix_ids + body_ids + suffix_ids
-        router.reset()
-        result = router.feed_sequence(tokens)
 
-        assert result["tool_calls"] is not None, (
-            f"body {body!r}: tool call MUST surface (round-15 "
-            f"bytes-faithful refactor); got tool_calls=None"
-        )
-        assert len(result["tool_calls"]) == 1, (
-            f"body {body!r}: exactly one tool call expected; "
-            f"got {result['tool_calls']!r}"
-        )
-        tc = result["tool_calls"][0]
-        assert tc == {"name": "echo", "arguments": body}, (
-            f"body {body!r}: structured payload must preserve bytes; got {tc!r}"
-        )
-        # And the body must NOT leak into content (the abstain path
-        # in earlier revisions surfaced sentinel bodies via CONTENT
-        # to keep streaming visible; bytes-faithful passthrough makes
-        # that workaround obsolete).
-        assert result["content"] is None, (
-            f"body {body!r}: must NOT leak into content under "
-            f"bytes-faithful refactor; got {result['content']!r}"
-        )
+    # ``disallowed_special=()`` tells the harmony encoder to treat
+    # marker-shaped substrings inside the body as plain text bytes
+    # (default behavior raises to prevent accidental special-token
+    # injection). That's exactly the production model behavior we
+    # want to simulate: the model's tokenizer would surface these
+    # bytes via normal body vocab IDs, not as the special marker.
+    body_ids = encoding.encode(body, allowed_special="none", disallowed_special=())
+    tokens = prefix_ids + body_ids + suffix_ids
+    router.reset()
+    result = router.feed_sequence(tokens)
+
+    assert result["tool_calls"] is not None, (
+        f"body {body!r}: tool call MUST surface (round-15 "
+        f"bytes-faithful refactor); got tool_calls=None"
+    )
+    assert len(result["tool_calls"]) == 1, (
+        f"body {body!r}: exactly one tool call expected; "
+        f"got {result['tool_calls']!r}"
+    )
+    tc = result["tool_calls"][0]
+    assert tc == {"name": "echo", "arguments": body}, (
+        f"body {body!r}: structured payload must preserve bytes; got {tc!r}"
+    )
+    # And the body must NOT leak into content (the abstain path
+    # in earlier revisions surfaced sentinel bodies via CONTENT
+    # to keep streaming visible; bytes-faithful passthrough makes
+    # that workaround obsolete).
+    assert result["content"] is None, (
+        f"body {body!r}: must NOT leak into content under "
+        f"bytes-faithful refactor; got {result['content']!r}"
+    )
 
 
 def test_structured_payload_carries_truncated_recipient_namespace(router):
