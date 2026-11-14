@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request-local prompt scoring; no vocabulary distributions survive prefill."""
 
-import unicodedata
-from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -81,47 +79,6 @@ def prefill_prompt_logprobs(model: Any, tokens: list[int], result: PromptLogprob
     return state.cache
 
 
-def _normalized_alignment_text(text):
-    """Normalize characters and whitespace while retaining source end offsets."""
-    chars, ends = [], []
-    for i, char in enumerate(text):
-        for normalized in unicodedata.normalize("NFKD", char):
-            if normalized.isspace():
-                normalized = " "
-                if chars and chars[-1] == " ":
-                    ends[-1] = i + 1
-                    continue
-            chars.append(normalized)
-            ends.append(i + 1)
-    return "".join(chars), ends
-
-
-def _align_decoded_ends(prompt, decoded, ends):
-    """Map decoded boundaries to submitted characters, including normalization.
-
-    If the tokenizer changes content beyond Unicode/whitespace normalization,
-    exact alignment is unavailable. Use proportional character boundaries as a
-    coarse partition, preserving order and all submitted text; these offsets
-    cannot identify the original token spans in that case.
-    """
-    if prompt == decoded:
-        return ends
-    original, original_ends = _normalized_alignment_text(prompt)
-    normalized, decoded_ends = _normalized_alignment_text(decoded)
-    if original != normalized:
-        return [round(end * len(prompt) / max(1, len(decoded))) for end in ends]
-    aligned = []
-    for end in ends:
-        count = bisect_right(decoded_ends, end)
-        position = original_ends[count - 1] if count else 0
-        # A decomposed character can span multiple decoded tokens. Assign the
-        # submitted character only once its full normalized spelling is seen.
-        if 0 < count < len(original_ends) and original_ends[count] == position:
-            position -= 1
-        aligned.append(position)
-    return aligned
-
-
 def _incremental_ends(prompt, tokenizer, ids, special):
     """Decode incrementally, bounding the naive decoder's retained context."""
     from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
@@ -160,26 +117,18 @@ def _incremental_ends(prompt, tokenizer, ids, special):
                 previous = len(detok.text.rstrip("\ufffd"))
         ends.append(position)
     detok.finalize()
-    return _align_decoded_ends(prompt, "".join(pieces), ends)
+    if "".join(pieces) != prompt:
+        raise ValueError("Tokenizer cannot align prompt token offsets exactly.")
+    return ends
 
 
-def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
-    """Partition the submitted prompt over the actual scored input IDs.
+def prompt_token_spans(prompt: str, tokenizer: Any, ids: list[int]):
+    """Find faithful spans for scored IDs, or reject unavailable alignment.
 
-    The completions scheduler uses encode(prompt) with default special-token
-    insertion. Keep those BOS/EOS scores as zero-width entries at their sequence
-    positions: echo must reproduce the client's prompt, not decoded BOS/EOS
-    spellings. A literal special token in the prompt still occupies its span
-    (the tokenizer's insertion mask distinguishes it from added tokens).
+    Use the tokenizer's source offsets when available. Without them the
+    incremental decoded pieces must reproduce the submitted prompt exactly.
+    Inserted special tokens retain zero-width spans at their sequence positions.
     """
-    ids = result.token_ids
-    if not ids:
-        return {
-            "tokens": [],
-            "token_logprobs": [],
-            "top_logprobs": [],
-            "text_offset": [],
-        }
     base = getattr(tokenizer, "_tokenizer", tokenizer)
     offsets = None
     special = None
@@ -231,6 +180,27 @@ def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
         starts.append(position)
         position = position if added else min(len(prompt), max(position, ends[i]))
         ends[i] = position
+    return starts, ends
+
+
+def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
+    """Partition the submitted prompt over the actual scored input IDs.
+
+    The completions scheduler uses encode(prompt) with default special-token
+    insertion. Keep those BOS/EOS scores as zero-width entries at their sequence
+    positions: echo must reproduce the client's prompt, not decoded BOS/EOS
+    spellings. A literal special token in the prompt still occupies its span
+    (the tokenizer's insertion mask distinguishes it from added tokens).
+    """
+    ids = result.token_ids
+    if not ids:
+        return {
+            "tokens": [],
+            "token_logprobs": [],
+            "top_logprobs": [],
+            "text_offset": [],
+        }
+    starts, ends = prompt_token_spans(prompt, tokenizer, ids)
     return {
         "tokens": [prompt[a:b] for a, b in zip(starts, ends)],
         "token_logprobs": result.logprobs,

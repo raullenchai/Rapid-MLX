@@ -523,6 +523,34 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 ),
             )
 
+        if request.echo and _want_logprobs:
+            from ..prompt_logprobs import prompt_token_spans
+
+            # Validate every list entry before committing any SSE headers or
+            # starting generation, including a failure after a valid prompt.
+            def validate_prompt_offsets():
+                for prompt in prompts:
+                    prompt_token_spans(
+                        prompt, engine.tokenizer, engine.tokenizer.encode(prompt)
+                    )
+
+            try:
+                await asyncio.to_thread(validate_prompt_offsets)
+            except ValueError as exc:
+                from rapid_mlx.telemetry.inference import (
+                    emit_capability_rejected,
+                    model_type_token,
+                )
+
+                emit_capability_rejected(
+                    "logprobs_unsupported",
+                    model_type=model_type_token(engine),
+                    model=_served_telemetry_id,
+                    caller_agent=_caller_agent,
+                    caller_client=_caller_client,
+                )
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         if request.stream:
             # C-01 force-abort: holder list the engine populates with
             # the admitted scheduler request id; the disconnect_guard

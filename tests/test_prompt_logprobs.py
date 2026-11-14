@@ -716,6 +716,10 @@ def test_decoded_top_token_collisions_keep_maximum():
 
     tokenizer = Tokenizer()
     tokenizer.decode = lambda ids: "\ufffd"
+    tokenizer._tokenizer = lambda text, **kwargs: {
+        "input_ids": [97],
+        "offset_mapping": [(0, 1)],
+    }
     scores = PromptLogprobs(
         2, token_ids=[97], logprobs=[None], top_logprobs=[{1: -0.5, 2: -3.0}]
     )
@@ -854,14 +858,15 @@ def test_abort_during_scoring_chunk_prevents_next_forward(
 
 
 @pytest.mark.parametrize(
-    "prompt,decoded,expected",
+    "prompt,decoded",
     [
-        ("a  b c", ["a", "a b", "a b c"], ["a", "  b", " c"]),
-        ("éb", ["e", "e\u0301", "e\u0301b"], ["", "é", "b"]),
-        ("é  ﬁ c", ["e\u0301", "e\u0301 fi", "e\u0301 fi c"], ["é", "  ﬁ", " c"]),
+        ("a  b c", ["a", "a b", "a b c"]),
+        ("éb", ["e", "e\u0301", "e\u0301b"]),
+        ("é  ﬁ c", ["e\u0301", "e\u0301 fi", "e\u0301 fi c"]),
+        ("a\u0301 b", ["a", "a ", "a b"]),
     ],
 )
-def test_normalizing_slow_tokenizer_offsets(prompt, decoded, expected):
+def test_normalizing_slow_tokenizer_offsets_rejected(prompt, decoded):
     from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
 
     class NormalizingTokenizer(Tokenizer):
@@ -869,12 +874,8 @@ def test_normalizing_slow_tokenizer_offsets(prompt, decoded, expected):
             return decoded[len(ids) - 1] if ids else ""
 
     scores = _wire_scores([1, 2, 3])
-    payload = legacy_prompt_logprobs(prompt, NormalizingTokenizer(), scores)
-    assert payload["tokens"] == expected
-    assert payload["text_offset"] == [
-        sum(map(len, expected[:i])) for i in range(len(expected))
-    ]
-    assert payload["token_logprobs"] == scores.logprobs
+    with pytest.raises(ValueError, match="cannot align prompt token offsets exactly"):
+        legacy_prompt_logprobs(prompt, NormalizingTokenizer(), scores)
 
 
 def test_unsupported_prompt_scoring_emits_caller_telemetry(patched_config, monkeypatch):
@@ -947,14 +948,13 @@ def test_malformed_offsets_fall_back_to_decoded_alignment():
     assert payload["text_offset"] == [0, 1]
 
 
-def test_unalignable_decoder_uses_coarse_partition():
+def test_unalignable_decoder_rejected():
     from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
 
     tokenizer = Tokenizer()
     tokenizer.decode = lambda ids: "x" * len(ids)
-    payload = legacy_prompt_logprobs("abcd", tokenizer, _wire_scores([1, 2]))
-    assert payload["tokens"] == ["ab", "cd"]
-    assert payload["text_offset"] == [0, 2]
+    with pytest.raises(ValueError, match="cannot align prompt token offsets exactly"):
+        legacy_prompt_logprobs("abcd", tokenizer, _wire_scores([1, 2]))
 
 
 def test_base_engine_does_not_claim_prompt_scoring():
@@ -1090,3 +1090,66 @@ def test_echo_without_scoring_keeps_text(patched_config, monkeypatch, stream):
         assert response.text.count("data: [DONE]") == 1
     else:
         assert response.json()["choices"][0]["text"] == "aZ"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("as_list", [False, True])
+@pytest.mark.parametrize("max_tokens", [0, 1])
+@pytest.mark.parametrize("prompt", ["a  b", "a\u0301 b"])
+def test_unalignable_prompt_rejected_before_generation(
+    patched_config, monkeypatch, stream, as_list, max_tokens, prompt
+):
+    from rapid_mlx.telemetry import inference
+
+    emit = MagicMock()
+    monkeypatch.setattr(inference, "emit_capability_rejected", emit)
+    client, engine = _build_completions_app(patched_config, monkeypatch)
+    engine.supports_prompt_logprobs = True
+    engine.tokenizer = Tokenizer()
+    engine.tokenizer.decode = lambda ids: (
+        "".join(chr(i) for i in ids).replace("\u0301", "").replace("  ", " ")
+    )
+    response = client.post(
+        "/v1/completions",
+        headers={"User-Agent": "codex", "X-Rapid-Client": "cli"},
+        json={
+            "model": "stub-model",
+            "prompt": ["faithful", prompt] if as_list else prompt,
+            "echo": True,
+            "logprobs": 0,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "cannot align prompt token offsets exactly" in response.json()["detail"]
+    assert response.headers["content-type"] == "application/json"
+    engine.stream_generate.assert_not_called()
+    engine.generate.assert_not_called()
+    emit.assert_called_once()
+    assert emit.call_args.args == ("logprobs_unsupported",)
+    assert emit.call_args.kwargs["caller_agent"] == "codex"
+    assert emit.call_args.kwargs["caller_client"] == "cli"
+
+
+@pytest.mark.parametrize(
+    "prompt,offsets,expected",
+    [
+        ("a  b", [(0, 1), (1, 3), (3, 4)], ["a", "  ", "b"]),
+        ("a\u0301 b", [(0, 2), (2, 3), (3, 4)], ["a\u0301", " ", "b"]),
+    ],
+)
+def test_normalizing_tokenizer_uses_exact_source_mapping(prompt, offsets, expected):
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    tokenizer = Tokenizer()
+    tokenizer.decode = lambda ids: "a b"
+    tokenizer._tokenizer = lambda text, **kwargs: {
+        "input_ids": [1, 2, 3],
+        "offset_mapping": offsets,
+    }
+    scores = _wire_scores([1, 2, 3])
+    payload = legacy_prompt_logprobs(prompt, tokenizer, scores)
+    assert payload["tokens"] == expected
+    assert payload["text_offset"] == [0, offsets[0][1], offsets[1][1]]
+    assert payload["token_logprobs"] == scores.logprobs
