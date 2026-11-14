@@ -91,7 +91,14 @@ def test_probe_and_wait_causes(
 @pytest.mark.parametrize(
     "stage,expected", [("health", "model_not_loaded"), ("models", "http_error")]
 )
-def test_503_depends_on_probe_stage(monkeypatch, stage, expected):
+@pytest.mark.parametrize("wait", [False, True])
+def test_503_depends_on_probe_stage(monkeypatch, stage, expected, wait):
+    clock = [0.0]
+    monkeypatch.setattr(setup.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        setup.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+
     def open_url(request, **_kwargs):
         if stage == "health" or not isinstance(request, str):
             raise urllib.error.HTTPError("private", 503, "secret", {}, None)
@@ -103,10 +110,24 @@ def test_503_depends_on_probe_stage(monkeypatch, stage, expected):
         setup, "track_agent_configure_failed", lambda *v: emitted.append(v)
     )
     monkeypatch.setattr(server_discovery, "server_for_url", lambda *_: None)
-    with pytest.raises(RuntimeError):
-        setup.wait_for_server(
-            "http://localhost:8000/v1", "default", agent="claude-code", timeout=0
-        )
+    with pytest.raises(setup.ServerReadinessError) as caught:
+        if wait:
+            # Health 503 means loading; only an exhausted readiness wait
+            # changes that probe cause to startup_timeout.
+            setup.wait_for_server(
+                "http://localhost:8000/v1", "default", agent="claude-code", timeout=1
+            )
+        else:
+            setup.verify_server(
+                "http://localhost:8000/v1", "default", agent="claude-code"
+            )
+    if wait:
+        assert clock[0] == 1
+        if stage == "health":
+            expected = "startup_timeout"
+    else:
+        assert clock[0] == 0
+    assert caught.value.cause == expected
     assert emitted == [("server_not_ready", "claude-code", expected)]
 
 
