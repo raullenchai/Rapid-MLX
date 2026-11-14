@@ -184,6 +184,9 @@ class Request:
     # For BatchGenerator integration
     batch_uid: int | None = None  # UID assigned by BatchGenerator
 
+    # Private scoring progress across scheduler steps; never shared as a prefix.
+    _prompt_scoring_state: Any | None = field(default=None, init=False, repr=False)
+
     # Prefix cache fields
     prompt_cache: list[Any] | None = None  # Cached KV state from prefix cache
     # KV state extracted at completion, retained until cache publication/cleanup.

@@ -7080,7 +7080,14 @@ class Scheduler:
         processing = getattr(bg, "_currently_processing", ()) if bg else ()
         prompt_batch = getattr(bg, "_prompt_batch", None) if bg else None
         prior_tokens = getattr(prompt_batch, "tokens", ()) if prompt_batch else ()
-        largest = 0
+        largest = max(
+            (
+                len(r.prompt_token_ids)
+                for r in getattr(self, "waiting", ())
+                if r.sampling_params.prompt_logprobs is not None
+            ),
+            default=0,
+        )
         for index, item in enumerate(processing):
             try:
                 already_cached = (
@@ -7234,7 +7241,9 @@ class Scheduler:
         if samples is not None:
             samples.append(elapsed / tokens)
 
-    def _bound_prefill_chunk_for_decode(self, selected: int) -> int:
+    def _bound_prefill_chunk_for_decode(
+        self, selected: int, *, extra_rows: int = 0
+    ) -> int:
         """Cap the next prompt chunk so a decoding neighbour is not stalled.
 
         ``selected`` is the chunk the memory policy would dispatch. While a
@@ -7260,6 +7269,7 @@ class Scheduler:
         if queued:
             slots = max(0, int(getattr(bg, "prefill_batch_size", 1)) - rows)
             rows += min(len(queued), slots)
+        rows += extra_rows
         if decoding <= 0 or rows <= 0:
             if getattr(self, "_decode_stall_chunk_size", None) is not None:
                 logger.info("[decode_stall] prefill chunk bound released")
@@ -8907,6 +8917,7 @@ class Scheduler:
             )
         else:
             request.prompt_cache = None
+            request._prompt_scoring_state = None
             request.cached_tokens = 0
             request.remaining_tokens = prompt
             logger.info(
@@ -9458,6 +9469,7 @@ class Scheduler:
             request.set_finished(RequestStatus.FINISHED_CANCELLED)
             # Release cache references so Metal buffers can be freed
             request.prompt_cache = None
+            request._prompt_scoring_state = None
             request._extracted_cache = None
         if self.block_aware_cache is not None:
             # A cancelled request stores nothing, so nothing owns the block
@@ -10271,6 +10283,13 @@ class Scheduler:
             List of requests that were scheduled
         """
         scheduled = []
+        scoring_budget = (
+            self._bound_prefill_chunk_for_decode(
+                self._select_adaptive_prefill_size(), extra_rows=1
+            )
+            if any(r.sampling_params.prompt_logprobs is not None for r in self.waiting)
+            else 0
+        )
 
         # The current vendored MTP verifier owns one request-local generator
         # and explicitly supports B=1. Keep later requests in the ordinary
@@ -10395,11 +10414,31 @@ class Scheduler:
                 tokens_to_process = request.prompt_token_ids
             scoring = request.sampling_params.prompt_logprobs
             if scoring is not None:
-                from .prompt_logprobs import prefill_prompt_logprobs
+                from .prompt_logprobs import PromptScoringState
 
-                request.prompt_cache = prefill_prompt_logprobs(
-                    self.model, request.prompt_token_ids, scoring
-                )
+                state = request._prompt_scoring_state
+                if state is None:
+                    state = PromptScoringState.create(
+                        self.model, request.prompt_token_ids, scoring
+                    )
+                    request._prompt_scoring_state = state
+                while state.position < len(request.prompt_token_ids) - 1:
+                    with self._cancel_counter_lock:
+                        if request.request_id in self._pending_abort_ids:
+                            break
+                    if scoring_budget <= 0:
+                        # Ranked admission retains its uncommitted candidate;
+                        # FCFS must put the popped request back for next tick.
+                        if not shortest_tail:
+                            self.waiting.appendleft(request)
+                        self._step_request_id = None
+                        self._admitting_request_id = None
+                        return scheduled
+                    scoring_budget -= state.advance(
+                        self.model, request.prompt_token_ids, scoring_budget
+                    )
+                request.prompt_cache = state.cache
+                request._prompt_scoring_state = None
                 # Scoring runs synchronously on the executor, while aborts may
                 # arrive from the event loop during the model forward.
                 with self._cancel_counter_lock:
@@ -10416,6 +10455,7 @@ class Scheduler:
                     self._do_abort_request(request.request_id)
                 if cancelled or request.sampling_params.max_tokens == 0:
                     request.prompt_cache = None
+                    request._prompt_scoring_state = None
                     if request.sampling_params.max_tokens == 0:
                         scheduled.append(request)
                         self.total_prompt_tokens += request.num_prompt_tokens
@@ -10743,6 +10783,7 @@ class Scheduler:
                 # which under sustained traffic can accumulate hundreds of GB
                 # of wired memory (issue #442).
                 request.prompt_cache = None
+                request._prompt_scoring_state = None
                 self.running[request.request_id] = request
                 scheduled.append(request)
 
@@ -11573,6 +11614,7 @@ class Scheduler:
             # until the request object is GC'd (issue #442).
             if request is not None:
                 request.prompt_cache = None
+                request._prompt_scoring_state = None
                 request._extracted_cache = None
 
             # Remove from running
@@ -11652,6 +11694,7 @@ class Scheduler:
                 request._prefill_memory_sampled = False
                 request.set_finished(RequestStatus.FINISHED_ABORTED)
                 request.prompt_cache = None
+                request._prompt_scoring_state = None
                 request._extracted_cache = None
                 request._continuous_mtp_state = None
                 request.batch_uid = None
@@ -11695,6 +11738,7 @@ class Scheduler:
             request.status = RequestStatus.WAITING
             request.batch_uid = None
             request.prompt_cache = None
+            request._prompt_scoring_state = None
             request.cached_tokens = 0
             request.remaining_tokens = request.prompt_token_ids
 

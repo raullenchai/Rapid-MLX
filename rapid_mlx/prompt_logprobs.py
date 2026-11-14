@@ -16,41 +16,67 @@ class PromptLogprobs:
     top_logprobs: list[dict[int, float] | None] = field(default_factory=list)
 
 
-def prefill_prompt_logprobs(model: Any, tokens: list[int], result: PromptLogprobs):
-    """Score each token from its predecessor and return private KV for decode.
+@dataclass
+class PromptScoringState:
+    """Private KV and progress retained only until scoring ends or aborts."""
 
-    The final prompt token remains for the normal generation prefill. Chunk
-    boundaries include the following target token, so no score is lost there.
-    Evaluation before the next forward keeps lazy graphs bounded as well.
-    """
-    import mlx.core as mx
-    from mlx_lm.models.cache import make_prompt_cache
+    cache: Any
+    result: PromptLogprobs
+    position: int = 0
 
-    cache = make_prompt_cache(model)
-    result.token_ids = list(tokens)
-    result.logprobs = [None] if tokens else []
-    result.top_logprobs = [None] if tokens else []
-    for start in range(0, len(tokens) - 1, PROMPT_LOGPROBS_CHUNK_SIZE):
-        end = min(start + PROMPT_LOGPROBS_CHUNK_SIZE, len(tokens) - 1)
-        logits = model(mx.array([tokens[start:end]]), cache=cache)[0].astype(mx.float32)
+    @classmethod
+    def create(cls, model: Any, tokens: list[int], result: PromptLogprobs):
+        from mlx_lm.models.cache import make_prompt_cache
+
+        result.token_ids = list(tokens)
+        result.logprobs = [None] if tokens else []
+        result.top_logprobs = [None] if tokens else []
+        return cls(make_prompt_cache(model), result)
+
+    def advance(self, model: Any, tokens: list[int], token_budget: int) -> int:
+        """Score a bounded chunk, leaving the final prompt token for decode.
+
+        Include the following target at chunk boundaries. Materialize scores
+        and KV before returning so lazy graphs never span scheduler steps.
+        """
+        import mlx.core as mx
+
+        start = self.position
+        end = min(
+            start + min(PROMPT_LOGPROBS_CHUNK_SIZE, token_budget), len(tokens) - 1
+        )
+        if end <= start:
+            return 0
+        logits = model(mx.array([tokens[start:end]]), cache=self.cache)[0].astype(
+            mx.float32
+        )
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         targets = mx.array(tokens[start + 1 : end + 1])
         actual = mx.take_along_axis(logprobs, targets[:, None], axis=-1)[:, 0]
-        k = min(result.top_k, logprobs.shape[-1])
+        k = min(self.result.top_k, logprobs.shape[-1])
         if k:
             indices = mx.argpartition(logprobs, -k, axis=-1)[:, -k:]
             values = mx.take_along_axis(logprobs, indices, axis=-1)
-            mx.eval(actual, indices, values, [c.state for c in cache])
+            mx.eval(actual, indices, values, [c.state for c in self.cache])
             for ids, scores in zip(indices.tolist(), values.tolist()):
-                result.top_logprobs.append(
+                self.result.top_logprobs.append(
                     dict(sorted(zip(ids, scores), key=lambda item: -item[1]))
                 )
         else:
-            mx.eval(actual, [c.state for c in cache])
-            result.top_logprobs.extend({} for _ in range(end - start))
-        result.logprobs.extend(actual.tolist())
+            mx.eval(actual, [c.state for c in self.cache])
+            self.result.top_logprobs.extend({} for _ in range(end - start))
+        self.result.logprobs.extend(actual.tolist())
         del logits, logprobs, actual
-    return cache
+        self.position = end
+        return end - start
+
+
+def prefill_prompt_logprobs(model: Any, tokens: list[int], result: PromptLogprobs):
+    """Score synchronously for callers outside the scheduler."""
+    state = PromptScoringState.create(model, tokens, result)
+    while state.advance(model, tokens, PROMPT_LOGPROBS_CHUNK_SIZE):
+        pass
+    return state.cache
 
 
 def _incremental_ends(tokenizer, ids, special):
@@ -163,10 +189,16 @@ def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
         "tokens": [prompt[a:b] for a, b in zip(starts, ends)],
         "token_logprobs": result.logprobs,
         "top_logprobs": [
-            None
-            if top is None
-            else {tokenizer.decode([tid]): value for tid, value in top.items()}
+            None if top is None else _decoded_top_logprobs(tokenizer, top)
             for top in result.top_logprobs
         ],
         "text_offset": starts,
     }
+
+
+def _decoded_top_logprobs(tokenizer, top):
+    decoded = {}
+    for tid, value in top.items():
+        token = tokenizer.decode([tid])
+        decoded[token] = max(decoded.get(token, float("-inf")), value)
+    return decoded

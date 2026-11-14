@@ -459,15 +459,17 @@ def test_scoring_only_admission_liveness(monkeypatch, policy, path, abort):
     scheduler.add_request(request)
     calls = []
 
-    def score(model, tokens, result):
+    def score(cls, model, tokens, result):
         calls.append(list(tokens))
         # Fail promptly on the original infinite-selection bug.
         assert len(calls) == 1
         if abort:
             assert scheduler.abort_request(request.request_id)
-        return []
+        return SimpleNamespace(cache=[], position=len(tokens) - 1)
 
-    monkeypatch.setattr(prompt_logprobs, "prefill_prompt_logprobs", score)
+    monkeypatch.setattr(
+        prompt_logprobs.PromptScoringState, "create", classmethod(score)
+    )
     if path == "fallback":
         scheduler._fallback_from_unobservable_prompt_runtime()
     elif path == "forced":
@@ -639,3 +641,145 @@ def test_literal_special_token_retains_submitted_text(offsets_available):
     )
     assert payload["tokens"] == ["", "<s>", "a", ""]
     assert payload["text_offset"] == [0, 0, 3, 4]
+
+
+def test_decoded_top_token_collisions_keep_maximum():
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    tokenizer = Tokenizer()
+    tokenizer.decode = lambda ids: "\ufffd"
+    scores = PromptLogprobs(
+        2, token_ids=[97], logprobs=[None], top_logprobs=[{1: -0.5, 2: -3.0}]
+    )
+    assert legacy_prompt_logprobs("a", tokenizer, scores)["top_logprobs"] == [
+        {"\ufffd": -0.5}
+    ]
+
+
+@pytest.mark.parametrize("policy", ["fcfs", "shortest_validated_tail"])
+@pytest.mark.parametrize("abort", [False, True])
+@pytest.mark.parametrize("budget", [64, 256])
+def test_long_scoring_yields_to_decode_and_releases_state(
+    monkeypatch, policy, abort, budget
+):
+    import mlx_lm.models.cache as caches
+
+    from rapid_mlx.request import RequestStatus
+
+    monkeypatch.setattr(caches, "make_prompt_cache", lambda model: [])
+    from collections import deque
+
+    chunks = []
+
+    def model(tokens, cache):
+        chunks.append(tokens.shape[1])
+        return mx.zeros((1, tokens.shape[1], 128))
+
+    scheduler = Scheduler(
+        model=model,
+        tokenizer=Tokenizer(),
+        config=SchedulerConfig(
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            scheduling_policy=policy,
+            prefill_step_size=256,
+            decode_stall_target_ms=10 if budget == 64 else 0,
+        ),
+    )
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.insert.return_value = [1]
+    scheduler.batch_generator.next.return_value = ([], [])
+    monkeypatch.setattr(scheduler, "_ensure_batch_generator", lambda params: True)
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", lambda request: True)
+    monkeypatch.setattr(scheduler, "_shortest_tail_admission_capacity", lambda: 8)
+    monkeypatch.setattr(scheduler, "_request_is_generator_compatible", lambda r: True)
+    active = Request("active", "abc", SamplingParams(max_tokens=100))
+    scheduler.add_request(active)
+    scheduler._schedule_waiting()
+    scheduler.batch_generator.next.return_value = (
+        [],
+        [SimpleNamespace(uid=1, token=90, logprobs=None, finish_reason=None)],
+    )
+    request = Request(
+        "long",
+        "abc" * 400,
+        SamplingParams(max_tokens=0, prompt_logprobs=PromptLogprobs(2)),
+    )
+    scheduler.add_request(request)
+    scheduler.batch_generator._generation_batch = [object()]
+    scheduler.batch_generator._currently_processing = []
+    scheduler.batch_generator._unprocessed_sequences = []
+    scheduler._prefill_cost_samples = deque([0.001], maxlen=4)
+    output = scheduler.step()
+    assert len(chunks) > 0 and sum(chunks) == budget
+    assert output.outputs[0].new_token_ids == [90]
+    assert not request.is_finished()
+    assert request._prompt_scoring_state is not None
+    if abort:
+        assert scheduler.abort_request("long")
+        previous = list(chunks)
+        scheduler.step()
+        assert chunks == previous
+        assert request.status == RequestStatus.FINISHED_CANCELLED
+    else:
+        finished = []
+        for _ in range(20):
+            output = scheduler.step()
+            finished.extend(o for o in output.outputs if o.request_id == "long")
+            if request.is_finished():
+                break
+        assert request.status == RequestStatus.FINISHED_LENGTH_CAPPED
+        assert len(finished) == 1 and finished[0].finished
+        assert sum(chunks) == len(request.prompt_token_ids) - 1
+        assert len(request.sampling_params.prompt_logprobs.logprobs) == 1200
+        assert all(o.request_id != "long" for o in scheduler.step().outputs)
+    assert request._prompt_scoring_state is None
+    assert request.prompt_cache is None
+    assert request not in scheduler.waiting
+
+
+@pytest.mark.parametrize("policy", ["fcfs", "shortest_validated_tail"])
+@pytest.mark.parametrize("max_tokens", [0, 1])
+def test_abort_during_scoring_chunk_prevents_next_forward(
+    monkeypatch, policy, max_tokens
+):
+    import mlx_lm.models.cache as caches
+
+    from rapid_mlx.request import RequestStatus
+
+    monkeypatch.setattr(caches, "make_prompt_cache", lambda model: [])
+    calls = []
+
+    def model(tokens, cache):
+        calls.append(tokens.shape[1])
+        assert scheduler.abort_request("cancel")
+        return mx.zeros((1, tokens.shape[1], 128))
+
+    scheduler = Scheduler(
+        model=model,
+        tokenizer=Tokenizer(),
+        config=SchedulerConfig(
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            scheduling_policy=policy,
+            prefill_step_size=512,
+        ),
+    )
+    scheduler.batch_generator = MagicMock()
+    monkeypatch.setattr(scheduler, "_ensure_batch_generator", lambda params: True)
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", lambda request: True)
+    request = Request(
+        "cancel",
+        "abc" * 400,
+        SamplingParams(max_tokens=max_tokens, prompt_logprobs=PromptLogprobs(2)),
+    )
+    scheduler.add_request(request)
+    scheduler.step()
+    assert calls == [128]
+    assert request.status == RequestStatus.FINISHED_CANCELLED
+    assert request._prompt_scoring_state is None
+    assert request.prompt_cache is None
+    assert not scheduler.waiting and not scheduler.running
+    scheduler.step()
+    assert calls == [128]
+    scheduler.batch_generator.insert.assert_not_called()
