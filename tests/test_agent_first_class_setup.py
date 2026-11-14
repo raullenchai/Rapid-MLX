@@ -129,6 +129,8 @@ def test_claude_plan_is_side_effect_free_and_uses_bare_base(setup_paths):
     assert plan.after["permissions"] == {"allow": ["Read"]}
     assert plan.after["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:8000"
     assert plan.after["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
+    assert plan.after["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+    assert '"CLAUDE_CODE_AUTO_MODE_SERVER": "0"' in plan.diff()
     assert "ANTHROPIC_API_KEY" in plan.diff()
 
 

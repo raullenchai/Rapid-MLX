@@ -41,7 +41,7 @@ from subprocess import Popen
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from . import ADAPTERS, canonical_client, cline, continue_dev, cursor
+from . import ADAPTERS, canonical_client, claude_code, cline, continue_dev, cursor
 
 if TYPE_CHECKING:
     from rapid_mlx.agents.base import AgentProfile
@@ -309,13 +309,17 @@ def launch_command(args: argparse.Namespace) -> None:
         getattr(args, "remove", False)
         and not getattr(args, "isolated", False)
         and not getattr(args, "all", False)
-        and args.client in {"cline", "continue-dev", "cursor"}
+        and (
+            args.client in {"cline", "continue-dev", "cursor"}
+            or (args.client == "claude-code" and getattr(args, "legacy_config", False))
+        )
     ):
         if args.dry_run:
             print(f"[dry-run] Would remove Rapid-owned {args.client} settings.")
             return
         try:
             removed = {
+                "claude-code": claude_code.remove_config,
                 "cline": cline.remove_config,
                 "continue-dev": continue_dev.remove_config,
                 "cursor": cursor.remove_config,
