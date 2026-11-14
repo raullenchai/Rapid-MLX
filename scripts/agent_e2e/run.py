@@ -480,6 +480,8 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
         pattern = re.compile(
             r"Run shell commands?\? \(Y\)es/\(N\)o/(?:\(S\)kip all/)?"
             r"\(D\)on't ask again \[Yes\]:"
+            r"|Add command output to the chat\? "
+            r"\(Y\)es/\(N\)o/\(D\)on't ask again \[Yes\]:"
             r"|Create new file\? \(Y\)es/\(N\)o \[Yes\]:"
             r"|Would you like to see what's new in this version\? "
             r"\(Y\)es/\(N\)o \[Yes\]:"
@@ -549,7 +551,9 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
                 continue
             news = prompt.startswith("Would you like")
             os.write(master, b"n\r" if news else answer_keys)
-            if sink is not None and prompt.startswith("Run shell"):
+            if sink is not None and prompt.startswith(
+                ("Run shell", "Add command output")
+            ):
                 sink.write(b"\n[agent_e2e: permission prompt answered]\n")
                 sink.flush()
 

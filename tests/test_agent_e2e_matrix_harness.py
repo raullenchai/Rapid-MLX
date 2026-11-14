@@ -448,6 +448,7 @@ AIDER_SHELL_PLURAL = (
 )
 AIDER_SHELL_NO_SKIP = "Run shell command? (Y)es/(N)o/(D)on't ask again [Yes]:"
 AIDER_SHELL_PLURAL_NO_SKIP = "Run shell commands? (Y)es/(N)o/(D)on't ask again [Yes]:"
+AIDER_ADD_OUTPUT = "Add command output to the chat? (Y)es/(N)o/(D)on't ask again [Yes]:"
 
 
 def crush_modal(workspace, command="cat hello.txt nonce.txt"):
@@ -654,6 +655,7 @@ def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch, clock
         ("aider", AIDER_SHELL_PLURAL),
         ("aider", AIDER_SHELL_NO_SKIP),
         ("aider", AIDER_SHELL_PLURAL_NO_SKIP),
+        ("aider", AIDER_ADD_OUTPUT),
         ("crush", None),
     ],
 )
@@ -704,6 +706,13 @@ def test_permission_answers_split_reads_and_redraws_once(
         ("aider", AIDER_SHELL.replace("/(S)kip all", "/(A)ll/(S)kip all")),
         ("aider", AIDER_SHELL_NO_SKIP.replace("[Yes]", "[No]")),
         ("aider", AIDER_SHELL_NO_SKIP.removesuffix(":")),
+        ("aider", AIDER_ADD_OUTPUT.replace("/(D)", "/(S)kip all/(D)")),
+        ("aider", AIDER_ADD_OUTPUT.replace("/(D)", "/(A)ll/(D)")),
+        ("aider", AIDER_ADD_OUTPUT.replace("/(D)", "/(A)ll/(S)kip all/(D)")),
+        ("aider", AIDER_ADD_OUTPUT.replace("/(D)on't ask again", "")),
+        ("aider", AIDER_ADD_OUTPUT.replace("[Yes]", "[No]")),
+        ("aider", AIDER_ADD_OUTPUT.removesuffix(":")),
+        ("aider", AIDER_ADD_OUTPUT.replace("output", "outputs")),
         ("aider", "Allow access outside the project?"),
         ("aider", "Select login method"),
         ("crush", "Allow      Allow for Session      Deny"),
@@ -763,6 +772,26 @@ def test_aider_full_questions_and_redraws_are_answered_once(prompt, keys, monkey
     approve(redraw)
     approve(redraw)
     assert sent == [keys]
+
+
+def test_aider_add_output_once_per_command_group(monkeypatch):
+    sent = []
+    sink = io.BytesIO()
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("aider", 10, sink=sink)
+    output = ""
+    for shell_prompt in (AIDER_SHELL_PLURAL, AIDER_SHELL_NO_SKIP):
+        output += shell_prompt
+        approve(output)
+        output += "\r\ny\r\nRunning cat hello.txt\r\nhello\r\n"
+        output += "Running cat nonce.txt\r\nnonce\r\n" + AIDER_ADD_OUTPUT
+        approve(output)
+        approve(output)
+        output += "\r\n\x1b[2K" + AIDER_ADD_OUTPUT
+        approve(output)
+        output += "\r\ny\r\nAdded 4 lines of output to the chat.\r\n"
+    assert sent == [b"y\r"] * 4
+    assert sink.getvalue() == b"\n[agent_e2e: permission prompt answered]\n" * 4
 
 
 def test_terminal_timeout_never_passes_negative_wait_to_select(monkeypatch):

@@ -55,12 +55,15 @@ hook also answers these specific confirmations:
   also accepting plural `commands?` and the optional `(S)kip all/` before
   `(D)on't ask again` when there are multiple command groups.
   The runner sends `y` then Enter for that command block, without disabling
-  later confirmations or selecting skip all.
+  later confirmations or selecting skip all. It also sends `y` then Enter for
+  `Add command output to the chat? (Y)es/(N)o/(D)on't ask again [Yes]:`,
+  asked once per command group with output. In Aider v0.86.2 this question has
+  no `(S)kip all` or `(A)ll` option.
 
 The hook handles split reads and ANSI styling, deduplicates idle polls and
 repeated redraws of the same question, and continues waiting for the tool reply. It
 retains the existing Aider file-creation/news and Qwen tool-confirmation
-handling. Each answered Crush/Aider shell prompt adds a fixed
+handling. Each answered Crush/Aider shell or Aider add-output prompt adds a fixed
 `permission prompt answered` marker to the private transcript; that label
 appears in the row's `ugly_output` in `results.json` and the matrix's Ugly
 output column, including when the task succeeds. Unknown permission and login
