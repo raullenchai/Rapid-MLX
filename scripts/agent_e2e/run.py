@@ -478,7 +478,7 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
     """Answer known prompts in cumulative PTY output; leave unknown prompts alone."""
     if agent == "aider":
         pattern = re.compile(
-            r"Run shell commands?\? \(Y\)es/\(N\)o/\(S\)kip all/"
+            r"Run shell commands?\? \(Y\)es/\(N\)o/(?:\(S\)kip all/)?"
             r"\(D\)on't ask again \[Yes\]:"
             r"|Create new file\? \(Y\)es/\(N\)o \[Yes\]:"
             r"|Would you like to see what's new in this version\? "

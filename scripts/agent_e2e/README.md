@@ -51,9 +51,9 @@ hook also answers these specific confirmations:
   250 ms. A newer working state or different modal (including incomplete or
   unknown dialogs) cancels the pending answer. Identical redraws retain the
   original deadline and never trigger duplicate answers.
-- Aider: `Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
-  Also handles the plural form,
-  `Run shell commands? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
+- Aider: `Run shell command? (Y)es/(N)o/(D)on't ask again [Yes]:`,
+  also accepting plural `commands?` and the optional `(S)kip all/` before
+  `(D)on't ask again` when there are multiple command groups.
   The runner sends `y` then Enter for that command block, without disabling
   later confirmations or selecting skip all.
 
