@@ -361,6 +361,50 @@ class TestClaudeCode:
         assert data["env"]["ANTHROPIC_MODEL"] == "qwen3.5-9b-4bit"
         assert data["env"]["ANTHROPIC_API_KEY"] == ""
         assert data["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-noop"
+        assert data["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+
+    def test_legacy_remove_strips_owned_env_and_preserves_user_settings(
+        self, fake_home, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = {"permissions": {"allow": ["Read"]}, "env": {"CUSTOM": "keep"}}
+        path.write_text(json.dumps(original))
+        claude_code.write_or_patch_config(
+            "http://127.0.0.1:8000", "local-model", context_length=131072
+        )
+        before = path.read_bytes()
+        launch_cli.launch_command(
+            _make_args(
+                client="claude-code", remove=True, legacy_config=True, dry_run=True
+            )
+        )
+        assert path.read_bytes() == before
+        launch_cli.launch_command(
+            _make_args(client="claude-code", remove=True, legacy_config=True)
+        )
+        assert json.loads(path.read_text()) == original
+        assert any(
+            p.read_bytes() == before for p in path.parent.glob(path.name + ".bak.*")
+        )
+        assert not claude_code.remove_config()
+
+    def test_remove_missing_settings(self, fake_home):
+        assert not claude_code.remove_config()
+        assert not claude_code.current_config_path().exists()
+
+    @pytest.mark.parametrize("settings", [[], {"env": []}, {"env": None}, "[invalid"])
+    def test_legacy_remove_rejects_invalid_settings(self, fake_home, settings):
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        before = settings if isinstance(settings, str) else json.dumps(settings)
+        path.write_text(before)
+        with pytest.raises(SystemExit, match="1"):
+            launch_cli.launch_command(
+                _make_args(client="claude-code", remove=True, legacy_config=True)
+            )
+        assert path.read_text() == before
 
     def test_launch_writes_live_claude_context(self, fake_home, monkeypatch):
 

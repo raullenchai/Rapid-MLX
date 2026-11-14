@@ -120,6 +120,8 @@ def write_or_patch_config(
       so this is informational rather than enforced).
     * ``env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`` → the server-reported context
       limit when setup has one, avoiding a guessed fallback for local model ids.
+    * ``env.CLAUDE_CODE_AUTO_MODE_SERVER`` → ``"0"`` because the local server
+      does not provide server-side auto-mode safeguards.
 
     All other keys (``permissions``, ``apiKeyHelper``, ``mcp_servers``,
     custom shortcuts) round-trip untouched.
@@ -163,6 +165,8 @@ def patched_config(
     env["ANTHROPIC_API_KEY"] = ""
     env["ANTHROPIC_AUTH_TOKEN"] = api_key
     env["ANTHROPIC_MODEL"] = model
+    # The local server cannot perform server-side auto-mode checks.
+    env["CLAUDE_CODE_AUTO_MODE_SERVER"] = "0"
     # Claude Code cannot look up arbitrary local model ids in its bundled
     # catalog. Supplying the server-reported limit prevents its first-run
     # unknown-model warning from falling back to a guessed context window.
@@ -175,3 +179,27 @@ def patched_config(
     existing["env"] = env
 
     return existing
+
+
+def remove_config() -> bool:
+    """Strip the routing environment keys owned by the legacy setup."""
+    path = current_config_path()
+    assert path is not None  # current_config_path never returns None here
+    data = _common.load_json_lenient(path)
+    if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
+        raise ValueError("Claude Code settings and env must contain objects")
+    env = data.get("env", {})
+    owned = {
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_MODEL",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+        "CLAUDE_CODE_AUTO_MODE_SERVER",
+    }
+    if not owned.intersection(env):
+        return False
+    data["env"] = {key: value for key, value in env.items() if key not in owned}
+    _common.backup_existing(path)
+    _common.atomic_write_json(path, data)
+    return True

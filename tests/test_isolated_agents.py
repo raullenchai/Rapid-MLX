@@ -122,6 +122,25 @@ def test_codex_profile_and_claude_settings(private_home):
     assert claude["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7660"
 
 
+@pytest.mark.parametrize("context_length", [131072, None, True, False, 0, -1])
+def test_claude_settings_context_and_auto_mode(
+    private_home, monkeypatch, context_length
+):
+    monkeypatch.setattr(
+        "rapid_mlx.agents.context_budget.agent_context_budget",
+        lambda *_a, **_k: context_length,
+    )
+    isolated.configure("claude-code", "local-model", port=7660)
+    env = json.loads(
+        (isolated.connection_dir() / "agents/claude-code/settings.json").read_text()
+    )["env"]
+    assert env["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+    if type(context_length) is int and context_length > 0:
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == str(context_length)
+    else:
+        assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in env
+
+
 def test_claude_launch_overrides_stored_subscription_without_touching_it(private_home):
     # A saved login must not be read or rewritten by launch. The private
     # settings give the CLI a Bearer credential that takes precedence.

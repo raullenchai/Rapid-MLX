@@ -752,8 +752,17 @@ def configure(
                 "ANTHROPIC_API_KEY": "",
                 "ANTHROPIC_AUTH_TOKEN": key,
                 "ANTHROPIC_MODEL": model,
+                "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
             }
         }
+        # Local model ids are absent from Claude Code's catalog. Supply the
+        # server-reported limit so it does not guess the context window.
+        if (
+            isinstance(context_length, int)
+            and not isinstance(context_length, bool)
+            and context_length > 0
+        ):
+            settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_length)
         _private_write(root / "settings.json", json.dumps(settings, indent=2) + "\n")
     elif name == "aider":
         _private_write(

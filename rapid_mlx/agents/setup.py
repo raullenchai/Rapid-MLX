@@ -137,6 +137,7 @@ class SetupPlan:
                     "ANTHROPIC_BASE_URL",
                     "ANTHROPIC_MODEL",
                     "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+                    "CLAUDE_CODE_AUTO_MODE_SERVER",
                 }
                 for name in env:
                     if name not in visible_fields and env[name]:
