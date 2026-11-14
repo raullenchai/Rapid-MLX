@@ -8,6 +8,9 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from scripts.agent_e2e import run
 from scripts.agent_e2e.instrument.sitecustomize import _Tap
 from scripts.agent_e2e.run import (
     approval_handler,
@@ -139,23 +142,107 @@ def test_crush_prompt_uses_bracketed_paste(monkeypatch):
     assert sent == [b"\x1b[200~hello\x1b[201~", b"\r"]
 
 
-def test_crush_tool_approval_is_answered_once_per_modal(monkeypatch):
+AIDER_SHELL = "Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:"
+
+
+def crush_modal(workspace, command="cat hello.txt nonce.txt"):
+    return (
+        "Permission Required ╱╱╱││ Tool bash    ││ Path "
+        f"{workspace}    ││ Desc Read files ││ {command} ││ "
+        "Allow      Allow for Session      Deny ││ ←/→ choose • enter confirm"
+    )
+
+
+@pytest.mark.parametrize("agent", ["aider", "crush"])
+def test_permission_answers_split_reads_and_redraws_once(agent, tmp_path, monkeypatch):
+    sent = []
+    sink = io.BytesIO()
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approve = approval_handler(agent, 10, tmp_path, sink)
+    prompt = AIDER_SHELL if agent == "aider" else crush_modal(tmp_path)
+    prompt = "\x1b[32m" + prompt + "\x1b[0m"
+    # Real read_until passes cumulative output, including on idle polls.
+    approve(prompt[:30])
+    assert sent == []
+    approve(prompt)
+    approve(prompt)
+    approve(prompt + "\r\n   " + prompt)
+    approve(prompt + "\r\n   " + prompt)
+    keys = b"y\r" if agent == "aider" else b"\x1b[C\r"
+    assert sent == [keys]
+    assert sink.getvalue().count(b"permission prompt answered") == 1
+    next_prompt = (
+        "\r\ny\r\ncommand completed\n" + AIDER_SHELL
+        if agent == "aider"
+        else crush_modal(tmp_path, "cat hello.txt")
+    )
+    approve(prompt + "\r\n   " + prompt + next_prompt)
+    assert sent == [keys, keys]
+    assert sink.getvalue().count(b"permission prompt answered") == 2
+    transcript = tmp_path / "day-one.pty"
+    transcript.write_bytes(sink.getvalue())
+    assert output_issues(transcript, transcript) == ["permission prompt answered"]
+
+
+@pytest.mark.parametrize(
+    "agent,prompt",
+    [
+        ("aider", "Run shell command? [Yes]:"),
+        ("aider", "Allow access outside the project?"),
+        ("aider", "Select login method"),
+        ("crush", "Allow      Allow for Session      Deny"),
+        ("crush", "Permission Required Tool bash Path /elsewhere"),
+    ],
+)
+def test_unknown_permission_prompts_are_not_answered(
+    agent, prompt, tmp_path, monkeypatch
+):
     sent = []
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
-    monkeypatch.setattr("time.monotonic", lambda: 10.0)
-    approve = approval_handler("crush", 10)
-    approve("Allow      Allow for Session      Deny")
-    approve("Allow      Allow for Session      Deny")
-    assert sent == [b"\r"]
+    approval_handler(agent, 10, tmp_path)(prompt)
+    assert sent == []
 
 
-def test_aider_file_creation_is_confirmed_once(monkeypatch):
+@pytest.mark.parametrize("relative", ["..", "../project-other", "child"])
+def test_crush_requires_exact_test_workspace(relative, tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approval_handler("crush", 10, tmp_path)(crush_modal(tmp_path / relative))
+    assert sent == []
+    assert approval_handler("crush", 10) is None
+
+
+def test_permission_prompts_are_agent_specific(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approval_handler("aider", 10)(crush_modal(tmp_path))
+    approval_handler("crush", 10, tmp_path)(AIDER_SHELL)
+    assert sent == []
+
+
+@pytest.mark.parametrize(
+    "prompt,keys",
+    [
+        (
+            "Would you like to see what's new in this version? (Y)es/(N)o [Yes]:",
+            b"n\r",
+        ),
+        ("Create new file? (Y)es/(N)o [Yes]:", b"y\r"),
+    ],
+)
+def test_aider_full_questions_and_redraws_are_answered_once(prompt, keys, monkeypatch):
     sent = []
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
     approve = approval_handler("aider", 10)
-    approve("Create new file? (Y)es/(N)o [Yes]:")
-    approve("Create new file? (Y)es/(N)o [Yes]:")
-    assert sent == [b"y\r"]
+    approve(prompt.removesuffix(" [Yes]:"))
+    assert sent == []
+    approve(prompt)
+    approve(prompt)
+    assert sent == [keys]
+    redraw = prompt + "\r\n\x1b[2K" + prompt
+    approve(redraw)
+    approve(redraw)
+    assert sent == [keys]
 
 
 def test_terminal_timeout_never_passes_negative_wait_to_select(monkeypatch):
@@ -556,3 +643,113 @@ def test_pty_cleanup_signals_group_after_launcher_exits(monkeypatch):
         (12345, 0),
         (12345, signal.SIGKILL),
     ]
+
+
+@pytest.mark.parametrize("agent", ["aider", "crush"])
+def test_session_records_permissions_for_both_turns(agent, tmp_path, monkeypatch):
+    sent = []
+    proc = SimpleNamespace(poll=lambda: None, returncode=0)
+    monkeypatch.setattr(run, "open_terminal", lambda: (10, 11))
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(run.os, "close", lambda _fd: None)
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(run, "stop_terminal_process", lambda _proc: None)
+    monkeypatch.setattr(run, "handle_first_run_menus", lambda _agent, out, *args: out)
+    turns = []
+
+    def read_reply(_fd, _proc, _timeout, sink, stop_when=None, on_output=None):
+        if on_output is None:
+            return "Agent ready.", None
+        prompt = AIDER_SHELL if agent == "aider" else crush_modal(tmp_path)
+        on_output(prompt)
+        on_output(prompt)
+        # Model output arrives only after the confirmation has been answered.
+        assert sent[-1] == (b"y\r" if agent == "aider" else b"\x1b[C\r")
+        task = next(data for data in reversed(sent[:-1]) if b"hello.txt" in data)
+        content = task.decode().split("exactly ")[1].split()[0].rstrip(".")
+        (tmp_path / "hello.txt").write_text(content)
+        output = prompt + "\n" + (tmp_path / "nonce.txt").read_text()
+        assert stop_when(output)
+        turns.append(content)
+        return output, None
+
+    monkeypatch.setattr(run, "read_until", read_reply)
+    transcript = tmp_path / "day-one.pty"
+    result = run.session(
+        ["rapid-mlx", "launch", agent], {}, tmp_path, transcript, 1, False
+    )
+    assert result["tool_ok"] and result["second_ok"]
+    assert len(turns) == 2 and turns[1] == turns[0] + "-second"
+    assert transcript.read_bytes().count(b"permission prompt answered") == 2
+    assert output_issues(transcript) == ["permission prompt answered"]
+
+
+def test_read_loop_keeps_waiting_after_answering_permission(tmp_path, monkeypatch):
+    sent = []
+    sink = io.BytesIO()
+    # Include an idle poll and a split question, as in real PTY output.
+    chunks = iter(
+        [AIDER_SHELL[:25].encode(), AIDER_SHELL[25:].encode(), b"\ny\nreply", b""]
+    )
+    polls = iter([True, False, True, False, True, True])
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    monkeypatch.setattr(run.os, "read", lambda *_args: next(chunks))
+    monkeypatch.setattr(
+        run.select, "select", lambda *args: ([10] if next(polls) else [], [], [])
+    )
+    output, first = read_until(
+        10,
+        SimpleNamespace(poll=lambda: None),
+        1,
+        sink,
+        on_output=approval_handler("aider", 10, tmp_path, sink),
+    )
+    assert sent == [b"y\r"]
+    assert output == AIDER_SHELL + "\ny\nreply"
+    assert first is not None
+    assert b"permission prompt answered" in sink.getvalue()
+
+
+def test_crush_new_occurrence_after_working_state(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_modal(tmp_path)
+    approve(prompt)
+    # OSC progress establishes that the previous modal was dismissed, even
+    # when the next tool requests an identical command.
+    output = prompt + "\x1b]9;4;state=working:app=crush\x07" + prompt
+    approve(output)
+    approve(output)
+    assert sent == [b"\x1b[C\r", b"\x1b[C\r"]
+
+
+def test_crush_read_loop_handles_split_utf8_and_ansi(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    raw = ("\x1b[32m" + crush_modal(tmp_path) + "\x1b[0m").encode()
+    # Feed one byte per PTY read, splitting both ANSI escapes and box glyphs.
+    chunks = iter([bytes([byte]) for byte in raw] + [b"\xff\xe2", b""])
+    monkeypatch.setattr(run.os, "read", lambda *_args: next(chunks))
+    monkeypatch.setattr(run.select, "select", lambda *args: ([10], [], []))
+    output, _ = read_until(
+        10,
+        SimpleNamespace(poll=lambda: None),
+        1,
+        io.BytesIO(),
+        on_output=approval_handler("crush", 10, tmp_path),
+    )
+    assert output == raw.decode() + "\ufffd\ufffd"
+    assert sent == [b"\x1b[C\r"]
+
+
+def test_crush_does_not_combine_incomplete_or_other_tool_dialogs(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    other_tool = crush_modal(tmp_path).replace("Tool bash", "Tool read")
+    incomplete = "Permission Required ││ Tool bash ││ "
+    approve(incomplete + other_tool)
+    approve(incomplete + other_tool + crush_modal(tmp_path).split("←/→")[0])
+    assert sent == []
