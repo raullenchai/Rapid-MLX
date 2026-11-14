@@ -125,6 +125,9 @@ class SamplingParams:
     # only the answer after the reasoning close is searched.
     reasoning_stop_scope: Any | None = None
 
+    # Request-local scoring result, populated on the MLX worker during prefill.
+    prompt_logprobs: Any | None = None
+
     def __post_init__(self):
         if self.stop is None:
             self.stop = []

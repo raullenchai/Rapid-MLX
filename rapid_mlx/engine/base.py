@@ -193,6 +193,11 @@ class BaseEngine(ABC):
             stream_generate
         )
 
+    @property
+    def supports_prompt_logprobs(self) -> bool:
+        """Whether text prefill can score every prompt token."""
+        return False
+
     def generate_warmup(self) -> None:  # noqa: B027 — intentional no-op default
         """Run a minimal generation to compile Metal shaders.
 

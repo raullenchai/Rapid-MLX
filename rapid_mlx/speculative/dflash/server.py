@@ -1067,6 +1067,12 @@ def _build_app(
     # before the body is read — NOT as route dependencies here. Keeping them
     # here too would consult the rate limiter twice per request (halving the
     # effective limit) and would run only AFTER a slot was already reserved.
+    from ...routes.completions import install_unsupported_completions
+
+    install_unsupported_completions(
+        app, dependencies=[Depends(_verify_api_key_with_bearer_challenge)]
+    )
+
     @app.post("/v1/chat/completions")
     async def create_chat_completion(
         request: ChatCompletionRequest, http_request: Request

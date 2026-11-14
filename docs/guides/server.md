@@ -557,6 +557,14 @@ for chunk in stream:
 
 ### Completions
 
+On the standard text batching engine, `echo: true` with `logprobs: N`
+(`0`–`5`) returns prompt and generated token scores in legacy OpenAI format.
+The first prompt token has null `token_logprobs` and `top_logprobs` entries.
+Use `max_tokens: 0` to score only the prompt. Single prompts and prompt lists
+work with streaming and non-streaming responses. Prompt scoring recomputes
+prefill with private KV state instead of reusing or publishing prefix caches.
+Unsupported engines and speculative modes return HTTP 400 for this combination.
+
 ```bash
 POST /v1/completions
 ```

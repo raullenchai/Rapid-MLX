@@ -8,6 +8,8 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
+from functools import partial
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -82,6 +84,75 @@ def _engine_supports_completion_logprobs(engine) -> bool:
             return value if isinstance(value, bool) else False
         return capability if isinstance(capability, bool) else False
     return structural_support
+
+
+def _require_prompt_logprobs(engine):
+    if getattr(engine, "supports_prompt_logprobs", False) is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="echo with logprobs requires an engine supporting prompt logprobs; "
+            "this engine or decoding mode cannot score prompt tokens.",
+        )
+
+
+def install_unsupported_completions(app, *, dependencies=None):
+    """Give scoring clients a capability error on chat-only server modes."""
+    app.state.supports_prompt_logprobs = False
+
+    async def unsupported_completion(request: CompletionRequest):
+        if request.echo and request.logprobs is not None:
+            _require_prompt_logprobs(app.state)
+        raise HTTPException(
+            status_code=404, detail="Legacy completions are unavailable in this mode."
+        )
+
+    app.add_api_route(
+        "/v1/completions",
+        unsupported_completion,
+        methods=["POST"],
+        dependencies=dependencies or [],
+    )
+
+
+def _completion_engine_stream(engine, scoring, **kwargs):
+    if scoring is not None:
+        kwargs["_prompt_logprobs"] = scoring
+    return engine.stream_generate(**kwargs)
+
+
+async def _stream_completion_prompts(engine, prompts, request, **kwargs):
+    completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
+    created = int(time.time())
+    usage = None
+    for index, prompt in enumerate(prompts):
+        async with aclosing(
+            stream_completion(engine, prompt, request, **kwargs)
+        ) as stream:
+            async for event in stream:
+                if event.strip() == "data: [DONE]":
+                    continue
+                if not event.startswith("data: "):
+                    yield event
+                    continue
+                data = json.loads(event.removeprefix("data: "))
+                data["id"], data["created"] = completion_id, created
+                if data.get("usage") is not None and not data.get("choices"):
+                    if usage is None:
+                        usage = data
+                    else:
+                        for key in (
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "total_tokens",
+                        ):
+                            usage["usage"][key] += data["usage"][key]
+                    continue
+                for choice in data.get("choices", []):
+                    choice["index"] = index
+                yield f"data: {json.dumps(data)}\n\n"
+    if usage is not None:
+        yield f"data: {json.dumps(usage)}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 @router.post(
@@ -166,38 +237,6 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 "(OpenAI legacy spec)."
             ),
         )
-    # F-152 follow-up (codex r1 BLOCKING): legacy clients use
-    # ``echo:true + logprobs:N`` SPECIFICALLY to score prompt tokens
-    # (lm-evaluation-harness, ``openai.Completion.create`` with
-    # ``echo=True``). Producing logprobs arrays that cover only the
-    # generated tokens — with a leading prompt prefix in ``text`` —
-    # would mis-align the ``text_offset`` cursor against ``tokens``
-    # and silently corrupt every prompt-conditioned score. We don't
-    # replay the prompt through the sampler (no per-token
-    # distributions available without a dedicated prefill-with-
-    # logprobs path), so reject the combination with a clear 400
-    # instead of returning partial-but-wrong data. Either knob
-    # alone keeps working; only the combination is rejected.
-    if request.echo and request.logprobs is not None:
-        from rapid_mlx.telemetry.inference import emit_capability_rejected
-
-        emit_capability_rejected(
-            "logprobs_unsupported",
-            caller_agent=_caller_agent,
-            caller_client=_caller_client,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "`echo` combined with `logprobs` is not supported on "
-                "/v1/completions: Rapid-MLX does not replay the prompt "
-                "through the sampler, so we cannot return per-token "
-                "logprobs for the echoed prefix. Send `echo` and "
-                "`logprobs` in separate requests (the `echo` request "
-                "returns the prompt-prefixed text; the `logprobs` "
-                "request returns the generated-token distributions)."
-            ),
-        )
     # R10-H4 follow-up (codex r1 MED #4 / #5): ``response_format``
     # (json_object / json_schema) cleanup strips markdown fences and
     # the legacy "Just the JSON.\n…" preamble from the wire text. But
@@ -213,8 +252,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     #   (c) the streaming branch silently skips JSON cleanup when
     #       logprobs is requested (the pre-fix streaming branch).
     # None of those are spec-correct. Reject the combination with a 400
-    # so callers pick exactly one knob per request (mirrors how we
-    # already reject ``echo + logprobs`` above).
+    # so callers pick exactly one knob per request.
     if request.response_format is not None and request.logprobs is not None:
         rf_type = (
             getattr(request.response_format, "type", None)
@@ -338,7 +376,12 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # send one request per prompt rather than silently dropping
     # data. Single-prompt streaming (``prompt:"a"``) keeps working;
     # list-prompt non-streaming (``stream:false``) keeps working.
-    if request.stream and isinstance(request.prompt, list) and len(request.prompt) > 1:
+    if (
+        request.stream
+        and isinstance(request.prompt, list)
+        and len(request.prompt) > 1
+        and not (request.echo and request.logprobs is not None)
+    ):
         raise HTTPException(
             status_code=400,
             detail={
@@ -430,6 +473,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # disconnects after the first chunk instead of a controlled
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
+        if request.echo and _want_logprobs:
+            _require_prompt_logprobs(engine)
         if _want_logprobs and not _engine_supports_completion_logprobs(engine):
             from rapid_mlx.telemetry.inference import (
                 emit_capability_rejected,
@@ -463,10 +508,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             # runaway generation eating GPU after the client RST'd).
             _completion_rid_holder: list[str | None] = [None]
             _admitted_stream = await _preflight_stream(
-                stream_completion(
-                    engine,
-                    prompts[0],
-                    request,
+                (
+                    partial(stream_completion, engine, prompts[0], request)
+                    if len(prompts) == 1
+                    else partial(_stream_completion_prompts, engine, prompts, request)
+                )(
                     request_id_holder=_completion_rid_holder,
                     served_telemetry_id=_served_telemetry_id,
                     caller_agent=raw_request.headers.get("user-agent")
@@ -529,6 +575,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # (top of the route, covers both streaming + non-streaming).
 
         for i, prompt in enumerate(prompts):
+            scoring = None
+            if request.echo and want_logprobs:
+                from ..prompt_logprobs import PromptLogprobs
+
+                scoring = PromptLogprobs(top_k_logprobs)
             token_logprobs_list = []
             if want_logprobs:
                 # Accumulate streaming chunks; the engine emits one
@@ -539,7 +590,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 output = None
                 _accum_text_parts: list[str] = []
                 _stream_yielded = False
-                stream_iter = engine.stream_generate(
+                stream_iter = (
+                    engine.stream_generate
+                    if scoring is None
+                    else partial(_completion_engine_stream, engine, scoring)
+                )(
                     prompt=prompt,
                     max_tokens=_resolve_max_tokens(request.max_tokens),
                     temperature=_resolve_temperature(request.temperature),
@@ -662,8 +717,6 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
             # Build the legacy logprobs payload per OpenAI spec: four
             # parallel arrays keyed positionally per generated token.
-            # ``echo + logprobs`` is rejected upstream (see route
-            # entry) so ``offset`` always starts at 0 here.
             #
             # Codex r2 BLOCKING #3: ``text_offset`` is documented as
             # offsets into ``choices[0].text``. We compute offsets
@@ -680,10 +733,19 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             choice_logprobs = None
             if want_logprobs:
                 tokens_arr: list[str] = []
-                token_lps: list[float] = []
-                top_lps: list[dict[str, float]] = []
+                token_lps: list[float | None] = []
+                top_lps: list[dict[str, float] | None] = []
                 text_offset: list[int] = []
-                offset = 0  # echo+logprobs is rejected upstream
+                offset = 0
+                if scoring is not None:
+                    from ..prompt_logprobs import legacy_prompt_logprobs
+
+                    prefix = legacy_prompt_logprobs(prompt, engine.tokenizer, scoring)
+                    tokens_arr.extend(prefix["tokens"])
+                    token_lps.extend(prefix["token_logprobs"])
+                    top_lps.extend(prefix["top_logprobs"])
+                    text_offset.extend(prefix["text_offset"])
+                    offset = len(prompt)
                 for entry in token_logprobs_list:
                     tokens_arr.append(entry.token)
                     token_lps.append(entry.logprob)
@@ -860,7 +922,12 @@ async def stream_completion(
     # captured once so all chunks report the same start timestamp.
     completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
     created_ts = int(time.time())
-    if request.echo:
+    scoring = None
+    if request.echo and request.logprobs is not None:
+        from ..prompt_logprobs import PromptLogprobs
+
+        scoring = PromptLogprobs(request.logprobs)
+    if request.echo and scoring is None:
         echo_data = {
             "id": completion_id,
             "object": "text_completion",
@@ -885,7 +952,7 @@ async def stream_completion(
     want_logprobs = request.logprobs is not None
     top_k_logprobs = request.logprobs or 0
     effective_top_k = max(1, top_k_logprobs)  # see non-stream branch
-    text_offset_cursor = 0  # echo+logprobs is rejected upstream
+    text_offset_cursor = len(prompt) if scoring is not None else 0
 
     # D-SSE-USAGE: capture the engine-reported usage from the final
     # ``GenerationOutput`` so the dedicated trailing usage chunk (only
@@ -931,7 +998,11 @@ async def stream_completion(
 
     extended_kwargs["request_admitted_event"] = _stream_admission_event()
     _generation_stream = _telemetry_inference.emit_failed_on_stream_error(
-        engine.stream_generate(
+        (
+            engine.stream_generate
+            if scoring is None
+            else partial(_completion_engine_stream, engine, scoring)
+        )(
             prompt=prompt,
             max_tokens=_resolve_max_tokens(request.max_tokens),
             temperature=_resolve_temperature(request.temperature),
@@ -945,6 +1016,26 @@ async def stream_completion(
         caller_client=caller_client,
     )
     async for output in _admission_aware_stream(_generation_stream):
+        if scoring is not None:
+            from ..prompt_logprobs import legacy_prompt_logprobs
+
+            prefix = legacy_prompt_logprobs(prompt, engine.tokenizer, scoring)
+            echo_data = {
+                "id": completion_id,
+                "object": "text_completion",
+                "created": created_ts,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "text": prompt,
+                        "finish_reason": None,
+                        "logprobs": prefix,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(echo_data)}\n\n"
+            scoring = None
         if _json_mode:
             # Buffer the text and finish_reason; emit at stream end.
             _buffered_text += output.new_text or ""

@@ -1506,8 +1506,8 @@ class LegacyCompletionLogProbs(BaseModel):
     """
 
     tokens: list[str]
-    token_logprobs: list[float]
-    top_logprobs: list[dict[str, float]]
+    token_logprobs: list[float | None]
+    top_logprobs: list[dict[str, float] | None]
     text_offset: list[int]
 
 
@@ -2563,15 +2563,20 @@ class CompletionRequest(BaseModel):
             v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
         )
 
-    # R7-M3: shared ``>= 1`` gate on ``max_tokens`` — mirror of the
-    # chat surface. Pre-R7-M3 the legacy completions surface silently
-    # accepted ``max_tokens=-5`` (HTTP 200 with a single token)
-    # because no route-level gate ran; the schema layer now closes
-    # the bypass for every OpenAI-compat surface.
+    # Zero is reserved for prompt scoring; other requests keep the
+    # positive-token budget contract shared by the generation routes.
     @field_validator("max_tokens", mode="before")
     @classmethod
     def _validate_max_tokens(cls, v) -> int | None:
+        if not isinstance(v, bool) and isinstance(v, (int, float)) and v == 0:
+            return 0
         return _validate_positive_int(v, field_name="max_tokens")
+
+    @model_validator(mode="after")
+    def _validate_scoring_only(self):
+        if self.max_tokens == 0 and not (self.echo and self.logprobs is not None):
+            raise ValueError("max_tokens=0 requires echo=true with logprobs")
+        return self
 
     # ``_normalize_stop`` + ``_validate_timeout`` mirror the chat
     # surface so /v1/completions and /v1/chat/completions share one

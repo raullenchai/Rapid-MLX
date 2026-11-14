@@ -3568,6 +3568,16 @@ class BatchedEngine(BaseEngine):
             execution_host=capture_local_execution_host(output),
         )
 
+    @property
+    def supports_prompt_logprobs(self) -> bool:
+        return (
+            not self.is_mllm
+            and getattr(self._scheduler_config, "spec_decode", "none") == "none"
+            and not getattr(self, "_force_spec_decode", False)
+            and not getattr(self._scheduler_config, "enable_mtp", False)
+            and not getattr(self._scheduler_config, "enable_suffix_decoding", False)
+        )
+
     async def stream_generate(
         self,
         prompt: str | list[int],
@@ -3740,6 +3750,7 @@ class BatchedEngine(BaseEngine):
                 temperature=temperature,
                 top_p=top_p,
                 stop=stop or [],
+                prompt_logprobs=kwargs.pop("_prompt_logprobs", None),
                 **_sp_kwargs,
             )
 

@@ -318,7 +318,7 @@ class TestEchoLogprobsCombination:
     """Codex r1 BLOCKING: ``echo + logprobs`` must NOT return partial
     arrays (would mis-align ``text_offset`` against ``tokens`` and
     silently corrupt prompt-conditioned scores in lm-eval-harness).
-    Reject with 400 until we wire prompt-prefill-with-logprobs."""
+    Engines without prompt scoring must still reject with 400."""
 
     def test_echo_with_logprobs_rejected_with_400(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(patched_config, monkeypatch)
