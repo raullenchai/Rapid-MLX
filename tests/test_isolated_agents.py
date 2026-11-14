@@ -2374,6 +2374,7 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch, m
     config = yaml.safe_load((root / "aider.conf.yml").read_text())
     assert config == {
         "model-settings-file": str(root / "aider.model.settings.yml"),
+        "model-metadata-file": str(root / "aider.model.metadata.json"),
         "edit-format": "diff",
         "editor-edit-format": "editor-diff",
         "suggest-shell-commands": True,
@@ -2395,6 +2396,45 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch, m
     )
     assert "AIDER_OPENAI_API_BASE=http://127.0.0.1:7660/v1" in private_env
     assert user_config.read_bytes() == original
+
+
+@pytest.mark.parametrize("context_length", [131072, None, True, False, 0, -1, 1.5])
+def test_aider_model_metadata_is_private_and_removable(
+    private_home, monkeypatch, context_length
+):
+    project = private_home / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(
+        "rapid_mlx.agents.context_budget.agent_context_budget",
+        lambda *_a, **_k: context_length,
+    )
+    model = "qwen3.5-9b-4bit"
+    isolated.configure("aider", model, port=7660)
+    root = isolated.connection_dir() / "agents/aider"
+    config = yaml.safe_load((root / "aider.conf.yml").read_text())
+    metadata_path = root / "aider.model.metadata.json"
+    assert config["model-metadata-file"] == str(metadata_path)
+    expected = {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "litellm_provider": "openai",
+        "mode": "chat",
+    }
+    if type(context_length) is int and context_length > 0:
+        expected["max_input_tokens"] = context_length
+    assert json.loads(metadata_path.read_text()) == {f"openai/{model}": expected}
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert "show-model-warnings" not in config
+    before = metadata_path.read_bytes()
+    isolated.configure("aider", model, port=7660)
+    assert metadata_path.read_bytes() == before
+    # Reconfiguring must replace metadata for the previous selected model.
+    isolated.configure("aider", "other-model", port=7660)
+    assert json.loads(metadata_path.read_text()) == {"openai/other-model": expected}
+    assert isolated.remove("aider")
+    assert not root.exists()
 
 
 def test_aider_rejects_project_configuration_before_writing_state(

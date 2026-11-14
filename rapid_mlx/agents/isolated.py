@@ -781,6 +781,25 @@ def configure(
         # Unknown OpenAI-compatible models otherwise fall back to whole-file
         # edits, which can mistake fenced command output for another file.
         model_settings = root / "aider.model.settings.yml"
+        model_metadata = root / "aider.model.metadata.json"
+        metadata: dict[str, str | int] = {
+            "input_cost_per_token": 0,
+            "output_cost_per_token": 0,
+            "litellm_provider": "openai",
+            "mode": "chat",
+        }
+        if (
+            isinstance(context_length, int)
+            and not isinstance(context_length, bool)
+            and context_length > 0
+        ):
+            metadata["max_input_tokens"] = context_length
+        # Aider reads context/cost information separately from edit settings.
+        # No output limit is advertised here; leave it unspecified.
+        _private_write(
+            model_metadata,
+            json.dumps({f"openai/{model}": metadata}, indent=2) + "\n",
+        )
         _private_write(
             model_settings,
             json.dumps(
@@ -802,6 +821,7 @@ def configure(
             json.dumps(
                 {
                     "model-settings-file": str(model_settings),
+                    "model-metadata-file": str(model_metadata),
                     "edit-format": "diff",
                     "editor-edit-format": "editor-diff",
                     "suggest-shell-commands": True,
