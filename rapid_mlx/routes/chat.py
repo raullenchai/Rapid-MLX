@@ -81,6 +81,7 @@ from ..errors import BackpressureError
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..middleware.lan_inference import is_loopback_peer
 from ..parsing.prompt_owner import served_model_identity, split_buffered
+from ..prompt_token_reuse import RequestPromptTokens, run_prompt_work
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
@@ -5408,9 +5409,15 @@ async def _create_chat_completion_impl(
     # Capture the prompt-token count the context guard already paid for
     # (build_prompt + tokenize) so LINE①'s hard window check below reuses it
     # rather than re-rendering (#558 codex r4 #1).
-    _line1_prompt_tokens = enforce_context_length_for_messages(
+    request_prompt_tokens = RequestPromptTokens()
+    chat_kwargs["_prompt_tokens"] = request_prompt_tokens
+    _line1_prompt_tokens = await asyncio.to_thread(
+        run_prompt_work,
+        engine,
+        enforce_context_length_for_messages,
         engine,
         messages,
+        request_prompt_tokens=request_prompt_tokens,
         tools=request.tools,
         max_tokens=chat_kwargs.get("max_tokens"),
         enable_thinking=resolved_thinking,
@@ -5667,7 +5674,14 @@ async def _create_chat_completion_impl(
             _computed_key = make_cache_key(
                 model=_resolve_model_name(request.model),
                 prompt=messages,
-                sampling_kwargs=chat_kwargs,
+                # ``_prompt_tokens`` is a request-local tokenization memo; it
+                # never changes the output, and keying on it would make every
+                # request UNCACHEABLE.
+                sampling_kwargs={
+                    key: value
+                    for key, value in chat_kwargs.items()
+                    if key != "_prompt_tokens"
+                },
                 extra={
                     "response_format": (
                         _rf.model_dump() if hasattr(_rf, "model_dump") else _rf
@@ -6304,9 +6318,13 @@ async def _create_chat_completion_impl(
                     logger.info(
                         "prompt augmented for response_format: guided decoding failed at runtime"
                     )
-                    enforce_context_length_for_messages(
+                    await asyncio.to_thread(
+                        run_prompt_work,
+                        engine,
+                        enforce_context_length_for_messages,
                         engine,
                         messages,
+                        request_prompt_tokens=chat_kwargs.get("_prompt_tokens"),
                         max_tokens=chat_kwargs.get("max_tokens"),
                         enable_thinking=chat_kwargs.get("enable_thinking"),
                         chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
@@ -6547,9 +6565,13 @@ async def _create_chat_completion_impl(
             # it's a copy of ``chat_kwargs`` (see line above), but we
             # resolve from ``chat_kwargs`` for symmetry with the
             # initial gate at line ~2066.
-            _repair_fits = repair_messages_fit_context(
+            _repair_fits = await asyncio.to_thread(
+                run_prompt_work,
+                engine,
+                repair_messages_fit_context,
                 engine,
                 repair_messages,
+                request_prompt_tokens=chat_kwargs.get("_prompt_tokens"),
                 tools=None,
                 max_tokens=repair_kwargs.get("max_tokens"),
                 enable_thinking=chat_kwargs.get("enable_thinking"),
@@ -9291,9 +9313,13 @@ async def stream_chat_completion_guided(
                 logger.info(
                     "prompt augmented for response_format: guided decoding failed at runtime"
                 )
-                enforce_context_length_for_messages(
+                await asyncio.to_thread(
+                    run_prompt_work,
+                    engine,
+                    enforce_context_length_for_messages,
                     engine,
                     messages,
+                    request_prompt_tokens=kwargs.get("_prompt_tokens"),
                     max_tokens=kwargs.get("max_tokens"),
                     enable_thinking=kwargs.get("enable_thinking"),
                     chat_template_kwargs=kwargs.get("chat_template_kwargs"),

@@ -327,7 +327,7 @@ class GuidedGenerator:
     def _decode_constrained(
         self,
         grammar: str,
-        prompt: str,
+        prompt: str | list[int],
         max_tokens: int,
         temperature: float,
         should_abort: Callable[[], bool] | None = None,
@@ -430,7 +430,9 @@ class GuidedGenerator:
         vocab = lltok.vocab_size
         bitmask = allocate_token_bitmask(1, vocab)
 
-        prompt_ids = tokenizer.encode(prompt)
+        prompt_ids = (
+            list(prompt) if isinstance(prompt, list) else tokenizer.encode(prompt)
+        )
 
         # Empty-prompt guard. When ``encode`` yields ``[]`` (e.g. an empty
         # prompt string), indexing the last-token logits ``[:, -1, :]`` off a
@@ -537,7 +539,7 @@ class GuidedGenerator:
 
     def generate_json(
         self,
-        prompt: str,
+        prompt: str | list[int],
         json_schema: dict[str, Any],
         max_tokens: int = 256,
         temperature: float = 0.7,
@@ -624,7 +626,7 @@ class GuidedGenerator:
 
     def generate_json_object(
         self,
-        prompt: str,
+        prompt: str | list[int],
         max_tokens: int = 256,
         temperature: float = 0.7,
         should_abort: Callable[[], bool] | None = None,

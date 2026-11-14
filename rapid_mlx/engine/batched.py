@@ -41,8 +41,10 @@ from ..execution_host import capture_local_execution_host, prepare_execution_hos
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
 from ..prompt_token_reuse import (
+    RequestPromptTokens,
     added_token_markers,
     encode_sharing_head,
+    run_prompt_work,
 )
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
@@ -2827,6 +2829,7 @@ class BatchedEngine(BaseEngine):
         enable_thinking: bool | None,
         has_tools: bool,
         as_token_ids: bool,
+        prompt_tokens=None,
     ) -> tuple[str | list[int], tuple[int, ...] | None]:
         """Open Harmony's final channel when thinking is disabled.
 
@@ -2885,7 +2888,13 @@ class BatchedEngine(BaseEngine):
         bos = getattr(tokenizer, "bos_token", None)
         add_special_tokens = bos is None or not prompt.startswith(bos)
         try:
-            prompt_ids = list(encode(prompt, add_special_tokens=add_special_tokens))
+            prompt_ids = (
+                prompt_tokens.encode(
+                    tokenizer, prompt, add_special_tokens=add_special_tokens
+                )
+                if prompt_tokens is not None
+                else list(encode(prompt, add_special_tokens=add_special_tokens))
+            )
         except Exception:
             logger.debug(
                 "Harmony no-thinking prompt tokenization failed",
@@ -2902,6 +2911,13 @@ class BatchedEngine(BaseEngine):
             )
             return prompt, None
 
+        if prompt_tokens is not None:
+            prompt_tokens.remember(
+                tokenizer,
+                prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS),
+                [*prompt_ids, *suffix_ids],
+                add_special_tokens=add_special_tokens,
+            )
         if as_token_ids:
             return [*prompt_ids, *suffix_ids], suffix_ids
         return prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS), suffix_ids
@@ -2989,6 +3005,85 @@ class BatchedEngine(BaseEngine):
             return list(encode(prompt))
         return None
 
+    _MLLM_TEXT_IDS_PROBE = "Rapid-MLX text probe: 12 harbor tides.\n"
+
+    def _mllm_text_ids_match_processor(self) -> bool:
+        """Probe once whether text-only MLLM admission may take token IDs.
+
+        A pre-tokenized MLLM prompt skips processor preparation and carries no
+        attention mask or extra processor outputs. That is only equivalent when
+        this processor's text-only output is exactly ``input_ids`` (equal to the
+        reused encoding) plus at most an all-valid mask. Any other output (e.g.
+        ``token_type_ids``) keeps the processor path for every request.
+        """
+        cached = self.__dict__.get("_mllm_text_ids_probe_result")
+        if cached is not None:
+            return bool(cached)
+        result = False
+        try:
+            processor = getattr(self, "_processor", None)
+            config = getattr(getattr(self, "_model", None), "config", None)
+            if processor is not None and getattr(config, "model_type", None) != (
+                "lfm3_vl"
+            ):
+                from ..mllm_batch_generator import _attention_mask_is_droppable
+                from ..models.mlx_vlm_vendored.inputs import prepare_inputs
+
+                probe = self._MLLM_TEXT_IDS_PROBE
+                inputs = prepare_inputs(
+                    processor,
+                    images=None,
+                    prompts=probe,
+                    image_token_index=getattr(config, "image_token_index", None),
+                )
+                extra = {
+                    key
+                    for key, value in inputs.items()
+                    if key not in ("input_ids", "attention_mask") and value is not None
+                }
+                ids = inputs.get("input_ids")
+                ids = ids.tolist() if hasattr(ids, "tolist") else ids
+                expected = RequestPromptTokens().encode(
+                    self.tokenizer, probe, add_special_tokens=False
+                )
+                result = (
+                    not extra
+                    and _attention_mask_is_droppable(inputs.get("attention_mask"))
+                    and ids == [expected]
+                )
+        except Exception:
+            logger.debug(
+                "MLLM text-id probe failed; keeping processor path", exc_info=True
+            )
+            result = False
+        self.__dict__["_mllm_text_ids_probe_result"] = result
+        return result
+
+    def _request_prompt_ids(
+        self, prompt, tokens: RequestPromptTokens, *, mllm_step: bool | None = None
+    ) -> str | list[int]:
+        if not isinstance(prompt, str):
+            return list(prompt)
+        tokenizer = self.tokenizer
+        if mllm_step is None:
+            mllm_step = self._is_mllm and getattr(self, "_engine", None) is None
+        if mllm_step:
+            # The MLLM processor tokenizes with ``tokenizer(prompt, ...)``, not
+            # ``encode``. Only the standard fast-tokenizer contract makes the two
+            # provably identical; any other tokenizer keeps the processor path.
+            if (
+                not RequestPromptTokens._is_fast_tokenizer(tokenizer)
+                or not self._mllm_text_ids_match_processor()
+            ):
+                return prompt
+            return tokens.encode(tokenizer, prompt, add_special_tokens=False)
+
+        def encode():
+            cached = self.encode_prompt_text(prompt)
+            return cached if cached is not None else tokenizer.encode(prompt)
+
+        return tokens.encode(tokenizer, prompt, encode=encode)
+
     def build_prompt(
         self,
         messages: list[dict[str, Any]],
@@ -2996,6 +3091,7 @@ class BatchedEngine(BaseEngine):
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
         chat_template_kwargs: dict | None = None,
+        _prompt_tokens=None,
     ) -> str:
         """Render the chat prompt for ``messages`` + ``tools`` without starting
         generation.
@@ -3044,6 +3140,7 @@ class BatchedEngine(BaseEngine):
             enable_thinking=enable_thinking,
             has_tools=bool(template_tools),
             as_token_ids=False,
+            **({"prompt_tokens": _prompt_tokens} if _prompt_tokens is not None else {}),
         )
         return prepared
 
@@ -3355,6 +3452,8 @@ class BatchedEngine(BaseEngine):
                 admission_token, clear_context=owns_admission
             )
 
+        request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
+
         if self._select_mllm_request_path(images, videos, admission_token):
             mllm_scheduler = self._mllm_scheduler
             assert mllm_scheduler is not None
@@ -3394,6 +3493,15 @@ class BatchedEngine(BaseEngine):
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
+                if request_prompt_tokens is not None:
+                    prompt = await asyncio.to_thread(
+                        run_prompt_work,
+                        self,
+                        self._request_prompt_ids,
+                        prompt,
+                        request_prompt_tokens,
+                        mllm_step=True,
+                    )
                 output = await mllm_scheduler.generate(
                     prompt=prompt,
                     images=images,
@@ -3495,6 +3603,15 @@ class BatchedEngine(BaseEngine):
                     as_token_ids=False,
                 )
         try:
+            if request_prompt_tokens is not None:
+                prompt = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._request_prompt_ids,
+                    prompt,
+                    request_prompt_tokens,
+                    mllm_step=False,
+                )
             output = await self._engine.generate(
                 prompt=prompt,
                 sampling_params=sampling_params,
@@ -3638,6 +3755,8 @@ class BatchedEngine(BaseEngine):
             if owns_admission and not request_committed:
                 self.release_admission_reservation()
 
+        request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
+
         if self._select_mllm_request_path(images, videos, admission_token):
             mllm_scheduler = self._mllm_scheduler
             assert mllm_scheduler is not None
@@ -3660,6 +3779,15 @@ class BatchedEngine(BaseEngine):
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
+                if request_prompt_tokens is not None:
+                    prompt = await asyncio.to_thread(
+                        run_prompt_work,
+                        self,
+                        self._request_prompt_ids,
+                        prompt,
+                        request_prompt_tokens,
+                        mllm_step=True,
+                    )
                 request_id = await mllm_scheduler.add_request_async(
                     request_id=request_id,
                     prompt=prompt,
@@ -3757,6 +3885,15 @@ class BatchedEngine(BaseEngine):
                 suppressed_tokens_logits_processor,
                 dry_logits_processor,
             ) = _pop_lane_parity_processors(kwargs)
+            if request_prompt_tokens is not None:
+                prompt = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._request_prompt_ids,
+                    prompt,
+                    request_prompt_tokens,
+                    mllm_step=False,
+                )
             request_id = await self._engine.add_request(
                 request_id=request_id,
                 prompt=prompt,
@@ -3938,10 +4075,15 @@ class BatchedEngine(BaseEngine):
         # user explicitly opts in.
         requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
 
+        request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
+
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
 
-        prompt, shared_warm_boundary = self._render_chat_prompt(
+        prompt, shared_warm_boundary = await asyncio.to_thread(
+            run_prompt_work,
+            self,
+            self._render_chat_prompt,
             messages,
             template_tools,
             num_images=len(all_images),
@@ -3951,11 +4093,19 @@ class BatchedEngine(BaseEngine):
         output_router_seed = None
         if not shared_warm_boundary:
             assert isinstance(prompt, str)
-            prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
+            prompt, output_router_seed = await asyncio.to_thread(
+                run_prompt_work,
+                self,
+                self._prepare_harmony_no_thinking_prompt,
                 prompt,
                 enable_thinking=enable_thinking,
                 has_tools=bool(template_tools),
                 as_token_ids=True,
+                **(
+                    {"prompt_tokens": request_prompt_tokens}
+                    if request_prompt_tokens is not None
+                    else {}
+                ),
             )
         if output_router_seed is not None:
             kwargs["_output_router_seed_token_ids"] = output_router_seed
@@ -4011,19 +4161,35 @@ class BatchedEngine(BaseEngine):
             kwargs["exact_prefix_boundary"] = True
         elif self._needs_prefix_boundary_snapshot():
             if transient_message_start is None:
-                prefix_boundary = self._compute_prefix_boundary(
+                prefix_boundary = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._compute_prefix_boundary,
                     messages,
                     tools,
                     generation_prompt=prompt,
+                    **(
+                        {"request_prompt_tokens": request_prompt_tokens}
+                        if request_prompt_tokens is not None
+                        else {}
+                    ),
                     enable_thinking=enable_thinking,
                     chat_template_kwargs=chat_template_kwargs,
                 )
             else:
-                prefix_boundary = self._compute_prefix_boundary(
+                prefix_boundary = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._compute_prefix_boundary,
                     messages,
                     tools,
                     transient_message_start=transient_message_start,
                     generation_prompt=prompt,
+                    **(
+                        {"request_prompt_tokens": request_prompt_tokens}
+                        if request_prompt_tokens is not None
+                        else {}
+                    ),
                     enable_thinking=enable_thinking,
                     chat_template_kwargs=chat_template_kwargs,
                 )
@@ -4054,6 +4220,25 @@ class BatchedEngine(BaseEngine):
         if context is not None and context.template_contract != "unknown":
             kwargs["_on_prompt_prepared"] = capture
         self._align_owned_stop_scope(kwargs, context)
+
+        if request_prompt_tokens is not None and not all_images and not all_videos:
+            if getattr(self, "_mllm_dense_singleton_fastpath", False):
+                kwargs["_prompt_tokens"] = request_prompt_tokens
+            elif (
+                getattr(
+                    getattr(getattr(self, "_model", None), "config", None),
+                    "model_type",
+                    None,
+                )
+                != "lfm3_vl"
+            ):
+                prompt = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._request_prompt_ids,
+                    prompt,
+                    request_prompt_tokens,
+                )
 
         output = await self.generate(
             prompt=prompt,
@@ -4156,6 +4341,7 @@ class BatchedEngine(BaseEngine):
         *,
         transient_message_start: int | None = None,
         generation_prompt: str | list[int] | None = None,
+        request_prompt_tokens=None,
         enable_thinking: bool | None = None,
         chat_template_kwargs: dict | None = None,
     ) -> int:
@@ -4249,10 +4435,35 @@ class BatchedEngine(BaseEngine):
             real_text: str | None
             if isinstance(real_prompt, str):
                 real_text = real_prompt
-                encoded = self.encode_prompt_text(real_prompt)
-                real_tokens = (
-                    encoded if encoded is not None else tokenizer.encode(real_prompt)
-                )
+                if request_prompt_tokens is not None:
+                    encoded = self.encode_prompt_text(real_prompt)
+                    if encoded is not None:
+                        # Text scheduler: keep its exact (host-cached) encode.
+                        request_prompt_tokens.remember(
+                            self.tokenizer,
+                            real_prompt,
+                            encoded,
+                            add_special_tokens=True,
+                        )
+                    # Without a text scheduler this is ``tokenizer.encode`` with
+                    # default special tokens; the shared Rust encoding also
+                    # serves the MLLM admission's no-special-token IDs.
+                    real_tokens = (
+                        request_prompt_tokens.encode(self.tokenizer, real_prompt)
+                        if encoded is not None or tokenizer is self.tokenizer
+                        else request_prompt_tokens.encode(
+                            self.tokenizer,
+                            real_prompt,
+                            encode=lambda: tokenizer.encode(real_prompt),
+                        )
+                    )
+                else:
+                    encoded = self.encode_prompt_text(real_prompt)
+                    real_tokens = (
+                        encoded
+                        if encoded is not None
+                        else tokenizer.encode(real_prompt)
+                    )
             else:
                 real_text = None
                 real_tokens = list(real_prompt)
@@ -4872,10 +5083,15 @@ class BatchedEngine(BaseEngine):
         # default skip). See chat() comment for the codex r6 fix.
         requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
 
+        request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
+
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
 
-        prompt, shared_warm_boundary = self._render_chat_prompt(
+        prompt, shared_warm_boundary = await asyncio.to_thread(
+            run_prompt_work,
+            self,
+            self._render_chat_prompt,
             messages,
             template_tools,
             num_images=len(all_images),
@@ -4885,11 +5101,19 @@ class BatchedEngine(BaseEngine):
         output_router_seed = None
         if not shared_warm_boundary:
             assert isinstance(prompt, str)
-            prompt, output_router_seed = self._prepare_harmony_no_thinking_prompt(
+            prompt, output_router_seed = await asyncio.to_thread(
+                run_prompt_work,
+                self,
+                self._prepare_harmony_no_thinking_prompt,
                 prompt,
                 enable_thinking=enable_thinking,
                 has_tools=bool(template_tools),
                 as_token_ids=True,
+                **(
+                    {"prompt_tokens": request_prompt_tokens}
+                    if request_prompt_tokens is not None
+                    else {}
+                ),
             )
 
         # ``forced_assistant_prefix`` — see ``chat()`` for the rationale.
@@ -4921,19 +5145,35 @@ class BatchedEngine(BaseEngine):
             kwargs["exact_prefix_boundary"] = True
         elif self._needs_prefix_boundary_snapshot():
             if transient_message_start is None:
-                prefix_boundary = self._compute_prefix_boundary(
+                prefix_boundary = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._compute_prefix_boundary,
                     messages,
                     tools,
                     generation_prompt=prompt,
+                    **(
+                        {"request_prompt_tokens": request_prompt_tokens}
+                        if request_prompt_tokens is not None
+                        else {}
+                    ),
                     enable_thinking=enable_thinking,
                     chat_template_kwargs=chat_template_kwargs,
                 )
             else:
-                prefix_boundary = self._compute_prefix_boundary(
+                prefix_boundary = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._compute_prefix_boundary,
                     messages,
                     tools,
                     transient_message_start=transient_message_start,
                     generation_prompt=prompt,
+                    **(
+                        {"request_prompt_tokens": request_prompt_tokens}
+                        if request_prompt_tokens is not None
+                        else {}
+                    ),
                     enable_thinking=enable_thinking,
                     chat_template_kwargs=chat_template_kwargs,
                 )
@@ -4977,6 +5217,25 @@ class BatchedEngine(BaseEngine):
         if context is not None and context.template_contract != "unknown":
             kwargs["_on_prompt_prepared"] = capture
         self._align_owned_stop_scope(kwargs, context)
+
+        if request_prompt_tokens is not None and not all_images and not all_videos:
+            if getattr(self, "_mllm_dense_singleton_fastpath", False):
+                kwargs["_prompt_tokens"] = request_prompt_tokens
+            elif (
+                getattr(
+                    getattr(getattr(self, "_model", None), "config", None),
+                    "model_type",
+                    None,
+                )
+                != "lfm3_vl"
+            ):
+                prompt = await asyncio.to_thread(
+                    run_prompt_work,
+                    self,
+                    self._request_prompt_ids,
+                    prompt,
+                    request_prompt_tokens,
+                )
 
         if forced_assistant_prefix and kwargs.get("request_admitted_event") is None:
             kwargs["request_admitted_event"] = asyncio.Event()
@@ -5554,7 +5813,10 @@ class BatchedEngine(BaseEngine):
         # ``<|im_start|>system\\n...`` literal in the user prompt would
         # bypass the chat-template injection defence (codex r3 P1).
         tokenizer = self.tokenizer
-        prompt = shared_apply_chat_template(
+        prompt = await asyncio.to_thread(
+            run_prompt_work,
+            self,
+            shared_apply_chat_template,
             tokenizer,
             messages,
             tools=None,
@@ -5562,6 +5824,16 @@ class BatchedEngine(BaseEngine):
             model_name=getattr(self, "_model_name", "") or "",
             chat_template_kwargs=chat_template_kwargs,
         )
+
+        request_prompt_tokens = kwargs.get("_prompt_tokens")
+        if request_prompt_tokens is not None:
+            prompt = await asyncio.to_thread(
+                run_prompt_work,
+                self,
+                self._request_prompt_ids,
+                prompt,
+                request_prompt_tokens,
+            )
 
         request_id = kwargs.pop("request_id", None) or f"guided-{uuid.uuid4().hex}"
         request_id_holder = kwargs.pop("request_id_holder", None)
@@ -5695,18 +5967,28 @@ class BatchedEngine(BaseEngine):
             return await self.chat(messages=messages, max_tokens=max_tokens, **kwargs)
 
         # Tokenize for completion count
-        tokens = tokenizer.encode(result)
+        tokens = await asyncio.to_thread(
+            run_prompt_work, self, tokenizer.encode, result
+        )
         return GenerationOutput(
             text=result,
             tokens=tokens,
-            prompt_tokens=len(tokenizer.encode(prompt)),
+            prompt_tokens=(
+                len(prompt)
+                if isinstance(prompt, list)
+                else len(
+                    await asyncio.to_thread(
+                        run_prompt_work, self, tokenizer.encode, prompt
+                    )
+                )
+            ),
             completion_tokens=len(tokens),
             finish_reason="stop",
         )
 
     def _run_guided_generation(
         self,
-        prompt: str,
+        prompt: str | list[int],
         json_schema: dict[str, Any],
         max_tokens: int,
         temperature: float,

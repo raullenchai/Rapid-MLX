@@ -10,7 +10,8 @@ three probe variants, scheduler admission) before prefill could start.
 from __future__ import annotations
 
 import re
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -133,6 +134,9 @@ def _engine(tokenizer, *, scheduler: bool = True):
         else None
     )
     engine._apply_chat_template = _render
+    # Model an MLLM processor whose text-only output is exactly input_ids;
+    # the probe itself is covered by the dedicated tests below.
+    engine.__dict__["_mllm_text_ids_probe_result"] = True
     return engine
 
 
@@ -707,3 +711,1085 @@ def test_scheduler_still_exposes_the_shared_encoder():
         if isinstance(node, ast.FunctionDef)
     }
     assert methods.get("_encode_prompt_string") == ["self", "prompt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mllm", [False, True])
+async def test_custom_tokenizer_request_ids_preserve_legacy_contract(stream, mllm):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _SectionTokenizer()
+    tokenizer.bos_token = None
+    tokenizer.apply_chat_template = lambda messages, tokenize=True, **kw: (
+        tokenizer.encode(_render(messages, **kw), add_special_tokens=False)
+        if tokenize
+        else _render(messages, **kw)
+    )
+    engine = _engine(tokenizer, scheduler=False)
+    engine._is_mllm = mllm
+    engine._loaded = True
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    messages = _conversation()
+    rendered = _render(messages)
+    expected = tokenizer.encode(rendered, add_special_tokens=not mllm)
+    tokenizer.encoded_chars = 0
+    tokens = RequestPromptTokens()
+    assert helpers.enforce_context_length_for_messages(
+        engine,
+        messages,
+        request_prompt_tokens=tokens,
+    ) == len(expected)
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        return GenerationOutput(text="ok", new_text="ok", finished=True)
+
+    async def stream_generate(**kwargs):
+        yield await generate(**kwargs)
+
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    if stream:
+        _ = [out async for out in engine.stream_chat(messages, _prompt_tokens=tokens)]
+    else:
+        await engine.chat(messages, _prompt_tokens=tokens)
+    # A custom MLLM tokenizer keeps the processor's own ``tokenizer(...)`` call,
+    # which need not match ``encode`` (review P1); text lanes reuse exact IDs.
+    assert seen["prompt"] == (rendered if mllm else expected)
+    full_encodes = (
+        3 if mllm else 1
+    )  # Unknown special-token policy keeps its exact fallback.
+    assert len(rendered) <= tokenizer.encoded_chars < full_encodes * len(rendered) + 400
+    assert seen["prefix_boundary"] == _reference_boundary(messages, rendered)
+
+
+def _spy_backend_encodes(monkeypatch, tokenizer, spy):
+    """Count full encodes at the Rust backend, so the Python tokenizer hooks
+    stay the library's own and remain eligible for ID reuse.
+
+    ``spy(text, method, *args)`` must call the returned function with the same
+    arguments to perform the real backend encode.
+    """
+    real = tokenizer._tokenizer
+
+    def text_of(inputs):
+        return inputs[0] if isinstance(inputs, list) and len(inputs) == 1 else inputs
+
+    class Backend:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def __setattr__(self, name, value):
+            setattr(real, name, value)
+
+        def encode(self, sequence, *args, **kwargs):
+            return spy(sequence, "encode", sequence, *args, **kwargs)
+
+        def encode_batch(self, inputs, *args, **kwargs):
+            return spy(text_of(inputs), "encode_batch", inputs, *args, **kwargs)
+
+        def encode_batch_fast(self, inputs, *args, **kwargs):
+            return spy(text_of(inputs), "encode_batch_fast", inputs, *args, **kwargs)
+
+    monkeypatch.setattr(tokenizer, "_tokenizer", Backend())
+    return lambda _text, method, *args, **kwargs: getattr(real, method)(*args, **kwargs)
+
+
+def _fast_tokenizer(style="chatml", *, bos=False):
+    from tokenizers import Tokenizer, models, processors
+    from transformers import PreTrainedTokenizerFast
+
+    markers = {
+        "chatml": ("<|im_start|>", "<|im_end|>"),
+        "gemma": ("<start_of_turn>", "<end_of_turn>"),
+        "llama": ("<|start_header_id|>", "<|eot_id|>"),
+        "deepseek": ("<｜User｜>", "<｜end▁of▁sentence｜>"),
+    }[style]
+    special = ["<unk>", "<bos>", *markers, "<think>"]
+    chars = sorted(
+        set(
+            "tools and rules systemuserassistantlatest questionanswer0123456789_<>|/\\n界"
+        )
+    )
+    vocab = {piece: i for i, piece in enumerate([*special, *chars])}
+    backend = Tokenizer(models.BPE(vocab, [], unk_token="<unk>"))
+    if bos:
+        backend.post_processor = processors.TemplateProcessing(
+            single="<bos> $A",
+            special_tokens=[("<bos>", vocab["<bos>"])],
+        )
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="<unk>",
+        bos_token="<bos>",
+        additional_special_tokens=list(markers) + ["<think>"],
+    )
+    start, end = markers
+    tokenizer.chat_template = (
+        "{{ prompt_label | default('') }}{% if tools %}{{ tools | tojson }}{% endif %}"
+        "{% for m in messages %}"
+        + start
+        + "{{m['role']}}\n{{m['content']}}"
+        + end
+        + "\n"
+        "{% endfor %}{% if add_generation_prompt %}"
+        + start
+        + "assistant\n{% if enable_thinking is not defined or enable_thinking %}<think>\n{% endif %}"
+        "{% endif %}"
+    )
+    return tokenizer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mllm", [False, True])
+@pytest.mark.parametrize("style", ["chatml", "gemma", "llama", "deepseek"])
+@pytest.mark.parametrize("bos", [False, True])
+@pytest.mark.parametrize("thinking", [False, True])
+async def test_fast_chat_tokenizes_once_and_preserves_ids_and_boundary(
+    monkeypatch, stream, mllm, style, bos, thinking
+):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer(style, bos=bos)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._loaded = True
+    engine._is_mllm = mllm
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    del (
+        engine._apply_chat_template
+    )  # Exercise production rendering and kwargs handling.
+    engine._prompt_host_cache.enabled = False
+    messages = _conversation()
+    tools = (
+        [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+        if style in ("chatml", "gemma")
+        else None
+    )
+    template_kwargs = {
+        "enable_thinking": thinking,
+        "chat_template_kwargs": {"prompt_label": "rules\n"},
+    }
+    from rapid_mlx.api.tool_calling import convert_tools_for_template
+
+    rendered = engine._apply_chat_template(
+        messages,
+        convert_tools_for_template(tools) if tools else None,
+        **template_kwargs,
+    )
+    expected = tokenizer.encode(rendered, add_special_tokens=not mllm)
+    # Force the historical full-encode reference, with exactly the same BOS policy.
+    monkeypatch.setattr(tokenizer, "get_added_vocab", lambda: {})
+    boundary = engine._compute_prefix_boundary(
+        messages, tools, generation_prompt=rendered, **template_kwargs
+    )
+    monkeypatch.undo()
+    calls = []
+
+    def spy(text, *args, **kwargs):
+        calls.append(text)
+        return encode_plus(text, *args, **kwargs)
+
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
+    state = RequestPromptTokens()
+    helpers.enforce_context_length_for_messages(
+        engine,
+        messages,
+        tools=tools,
+        request_prompt_tokens=state,
+        **template_kwargs,
+    )
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        if isinstance(kwargs["prompt"], str):
+            # Emulate the legacy scheduler admission when the engine submits text.
+            seen["prompt"] = tokenizer.encode(
+                kwargs["prompt"], add_special_tokens=not mllm
+            )
+        return GenerationOutput(text="ok", new_text="ok", finished=True)
+
+    async def stream_generate(**kwargs):
+        yield await generate(**kwargs)
+
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    if stream:
+        _ = [
+            out
+            async for out in engine.stream_chat(
+                messages, tools=tools, _prompt_tokens=state, **template_kwargs
+            )
+        ]
+    else:
+        await engine.chat(
+            messages, tools=tools, _prompt_tokens=state, **template_kwargs
+        )
+    assert seen["prompt"] == expected
+    assert seen["prefix_boundary"] == boundary
+    assert calls.count(rendered) == 1
+    assert all(len(text) < len(rendered) // 2 for text in calls if text != rendered), [
+        (len(t), t[-80:]) for t in calls
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mllm", [False, True])
+@pytest.mark.parametrize("style", ["chatml", "gemma", "llama", "deepseek"])
+@pytest.mark.parametrize("bos", [False, True])
+async def test_engine_tokenizes_once_when_gate_text_differs(
+    monkeypatch, stream, mllm, style, bos
+):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer(style, bos=bos)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._loaded = True
+    engine._is_mllm = mllm
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    del (
+        engine._apply_chat_template
+    )  # Exercise production rendering and kwargs handling.
+    engine._prompt_host_cache.enabled = False
+    messages = _conversation()
+    tools = (
+        [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+        if style in ("chatml", "gemma")
+        else None
+    )
+    template_kwargs = {
+        "enable_thinking": False,
+        "chat_template_kwargs": {"prompt_label": "rules\n"},
+    }
+    from rapid_mlx.api.tool_calling import convert_tools_for_template
+
+    rendered = engine._apply_chat_template(
+        messages,
+        convert_tools_for_template(tools) if tools else None,
+        **template_kwargs,
+    )
+    expected = tokenizer.encode(rendered, add_special_tokens=not mllm)
+    # Force the historical full-encode reference, with exactly the same BOS policy.
+    monkeypatch.setattr(tokenizer, "get_added_vocab", lambda: {})
+    boundary = engine._compute_prefix_boundary(
+        messages, tools, generation_prompt=rendered, **template_kwargs
+    )
+    monkeypatch.undo()
+    calls = []
+
+    def spy(text, *args, **kwargs):
+        calls.append(text)
+        return encode_plus(text, *args, **kwargs)
+
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
+    # The MLLM gate renders with the tokenizer template, while the engine may
+    # render with the processor template; model the gate's IDs as unrelated
+    # text, so the engine's own boundary + admission must share one encode.
+    state = RequestPromptTokens()
+    state.encode(tokenizer, "gate text", add_special_tokens=False)
+    calls.clear()
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        if isinstance(kwargs["prompt"], str):
+            # Emulate the legacy scheduler admission when the engine submits text.
+            seen["prompt"] = tokenizer.encode(
+                kwargs["prompt"], add_special_tokens=not mllm
+            )
+        return GenerationOutput(text="ok", new_text="ok", finished=True)
+
+    async def stream_generate(**kwargs):
+        yield await generate(**kwargs)
+
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    if stream:
+        _ = [
+            out
+            async for out in engine.stream_chat(
+                messages, tools=tools, _prompt_tokens=state, **template_kwargs
+            )
+        ]
+    else:
+        await engine.chat(
+            messages, tools=tools, _prompt_tokens=state, **template_kwargs
+        )
+    assert seen["prompt"] == expected
+    assert seen["prefix_boundary"] == boundary
+    assert calls.count(rendered) == 1
+    assert all(len(text) < len(rendered) // 2 for text in calls if text != rendered), [
+        (len(t), t[-80:]) for t in calls
+    ]
+
+
+@pytest.mark.parametrize("api", ["openai", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mllm", [False, True])
+def test_http_chat_reuses_request_ids(monkeypatch, api, stream, mllm):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.chat import router as chat_router
+
+    engine = BatchedEngine("test-model")
+    engine._loaded = True
+    engine._is_mllm = mllm
+    engine._tokenizer = _fast_tokenizer()
+    engine.__dict__["_mllm_text_ids_probe_result"] = True  # Eligible processor.
+    engine.check_admission = lambda: None  # No scheduler in this CPU-only route test.
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    # The request-local IDs must work even when the process LRU retains nothing.
+    engine._prompt_host_cache.enabled = False
+    tokenizer = engine.tokenizer
+    calls = []
+    threads = []
+
+    def spy(text, *args, **kwargs):
+        import threading
+
+        calls.append(text)
+        threads.append(threading.get_ident())
+        return encode_plus(text, *args, **kwargs)
+
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
+    seen = {}
+
+    async def generate(**kwargs):
+        import threading
+
+        seen.update(kwargs)
+        seen["loop_thread"] = threading.get_ident()
+        return GenerationOutput(
+            text="ok",
+            raw_text="ok",
+            new_text="ok",
+            prompt_tokens=len(kwargs["prompt"]),
+            completion_tokens=1,
+            finished=True,
+            finish_reason="stop",
+        )
+
+    async def stream_generate(**kwargs):
+        yield await generate(**kwargs)
+
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = False
+    cfg.tool_call_parser = None
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(chat_router)
+    app.include_router(anthropic_router)
+    messages = _conversation()
+    payload = {
+        "model": "test-model",
+        "messages": messages,
+        "max_tokens": 8,
+        "stream": stream,
+    }
+    path = "/v1/chat/completions"
+    if api == "anthropic":
+        path = "/v1/messages"
+        payload["system"] = messages[0]["content"]
+        payload["messages"] = messages[1:]
+    try:
+        with TestClient(app) as client:
+            response = client.post(path, json=payload)
+        assert response.status_code == 200, response.text
+        assert isinstance(seen["prompt"], list)
+        full_calls = [
+            (text, thread) for text, thread in zip(calls, threads) if len(text) > 1000
+        ]
+        assert len(full_calls) == 1, [(len(text), text[-80:]) for text, _ in full_calls]
+        assert full_calls[0][1] != seen["loop_thread"]
+        assert seen["prefix_boundary"] > 0
+    finally:
+        reset_config()
+
+
+def test_request_reuses_both_bos_policies_without_reencoding(monkeypatch):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer(bos=True)
+    prompt = "<bos><|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n"
+    expected_count_ids = tokenizer.encode(prompt, add_special_tokens=False)
+    expected_model_ids = tokenizer.encode(prompt)
+    assert expected_count_ids != expected_model_ids
+    calls = []
+
+    def spy(text, *args, **kwargs):
+        calls.append(text)
+        return encode_plus(text, *args, **kwargs)
+
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
+    engine = _engine(tokenizer, scheduler=False)
+    state = RequestPromptTokens()
+    assert helpers.count_prompt_tokens(engine, prompt, prompt_tokens=state) == len(
+        expected_count_ids
+    )
+    assert engine._request_prompt_ids(prompt, state) == expected_model_ids
+    assert (
+        engine._request_prompt_ids(prompt, state, mllm_step=True) == expected_count_ids
+    )
+    assert calls == [prompt]
+
+
+@pytest.mark.asyncio
+async def test_harmony_request_reuses_initial_encode(monkeypatch):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+    from tests.test_engine_router_non_stream import _HARMONY_VOCAB, _FakeTokenizer
+
+    tokenizer = _FakeTokenizer(_HARMONY_VOCAB)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._loaded = True
+    engine._needs_prefix_boundary_snapshot = lambda: False
+    engine._apply_chat_template = lambda *a, **kw: "<|start|>assistant"
+    messages = [{"role": "user", "content": "hello"}]
+    old_prompt = engine.build_prompt(messages, enable_thinking=False)
+    expected = tokenizer.encode(old_prompt)
+    calls = []
+    encode = tokenizer.encode
+
+    def spy(text, **kwargs):
+        calls.append(text)
+        return encode(text, **kwargs)
+
+    monkeypatch.setattr(tokenizer, "encode", spy)
+    state = RequestPromptTokens()
+    assert helpers.enforce_context_length_for_messages(
+        engine,
+        messages,
+        enable_thinking=False,
+        request_prompt_tokens=state,
+    ) == len(expected)
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        return GenerationOutput(text="ok")
+
+    engine.generate = generate
+    await engine.chat(messages, enable_thinking=False, _prompt_tokens=state)
+    assert seen["prompt"] == expected
+    assert calls == ["<|start|>assistant"]
+
+
+def test_mllm_preparation_consumes_ids_without_tokenization():
+    import numpy as np
+
+    from tests.test_mllm_prompt_admission_cpu import _load_function
+
+    prepare = _load_function(
+        "rapid_mlx/mllm_batch_generator.py",
+        "_preprocess_request",
+        {"mx": np},
+        "MLLMBatchGenerator",
+    )
+    ids = [1, 4, 9]
+    request = SimpleNamespace(prompt=ids, images=None, videos=None)
+    # The pre-tokenized branch must not access a tokenizer or processor.
+    prepare(object(), request)
+    assert request.input_ids.tolist() == [ids]
+    assert request.attention_mask is None
+    assert request.extra_kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_frontend_tokenization_is_serial_and_request_local(
+    monkeypatch,
+):
+    import asyncio
+    import time
+
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens, run_prompt_work
+
+    tokenizer = _fast_tokenizer()
+    engine = _engine(tokenizer, scheduler=False)
+    active = 0
+    maximum = 0
+
+    def spy(text, *args, **kwargs):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        try:
+            time.sleep(0.01)
+            return encode_plus(text, *args, **kwargs)
+        finally:
+            active -= 1
+
+    expected = [tokenizer.encode("a" * 1000), tokenizer.encode("b" * 1000)]
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
+    states = [RequestPromptTokens(), RequestPromptTokens()]
+    results = await asyncio.gather(
+        *[
+            asyncio.to_thread(
+                run_prompt_work, engine, engine._request_prompt_ids, prompt, state
+            )
+            for prompt, state in zip(["a" * 1000, "b" * 1000], states)
+        ]
+    )
+    assert results == expected
+    assert maximum == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mllm_step", [False, True])
+async def test_deferred_lane_uses_selected_scheduler_bos_policy(stream, mllm_step):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+    from rapid_mlx.request import RequestOutput
+
+    tokenizer = _fast_tokenizer(bos=True)
+    engine = BatchedEngine("test-model")
+    engine._loaded = True
+    engine._is_mllm = True
+    engine._tokenizer = tokenizer
+    engine.__dict__["_mllm_text_ids_probe_result"] = True  # Eligible processor.
+    engine._ensure_generation_admission = lambda: ("test", False)
+    engine._select_mllm_request_path = lambda *args: mllm_step
+    engine._transfer_admission_to_scheduler = lambda *a, **kw: None
+    seen = {}
+    output = RequestOutput(
+        request_id="test", output_text="ok", new_text="ok", finished=True
+    )
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        return output
+
+    async def add_request(**kwargs):
+        seen.update(kwargs)
+        return "test"
+
+    async def outputs(request_id):
+        yield output
+
+    scheduler = SimpleNamespace(
+        generate=generate,
+        add_request=add_request,
+        add_request_async=add_request,
+        stream_outputs=outputs,
+    )
+    engine._mllm_scheduler = scheduler
+    engine._engine = scheduler
+    state = RequestPromptTokens()
+    prompt = "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n"
+    expected = tokenizer.encode(prompt, add_special_tokens=not mllm_step)
+    state.encode(tokenizer, prompt, add_special_tokens=False)
+    if stream:
+        _ = [out async for out in engine.stream_generate(prompt, _prompt_tokens=state)]
+    else:
+        await engine.generate(prompt, _prompt_tokens=state)
+    assert seen["prompt"] == expected
+    assert "_prompt_tokens" not in seen
+
+
+def test_guided_prefill_consumes_exact_request_ids(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    from tests.test_mllm_prompt_admission_cpu import _load_function
+
+    class PrefillReachedError(Exception):
+        pass
+
+    expected = [7, 4, 8]
+
+    def array(ids):
+        assert ids == expected
+        raise PrefillReachedError
+
+    cache_module = ModuleType("mlx_lm.models.cache")
+    cache_module.make_prompt_cache = lambda model: []
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", cache_module)
+    decode = _load_function(
+        "rapid_mlx/api/guided.py",
+        "_decode_constrained",
+        {
+            "LLMatcher": lambda *a: SimpleNamespace(get_error=lambda: ""),
+            "allocate_token_bitmask": lambda *a: None,
+            "mx": SimpleNamespace(array=array),
+            "_PREFILL_STEP_SIZE": 8,
+        },
+        "GuidedGenerator",
+    )
+    generator = SimpleNamespace(
+        _model=object(),
+        _tokenizer=object(),
+        _get_lltokenizer=lambda: SimpleNamespace(vocab_size=10),
+    )
+    with pytest.raises(PrefillReachedError):
+        decode(generator, "grammar", expected, max_tokens=1, temperature=0)
+
+
+def test_custom_template_ids_cannot_replace_model_tokenization():
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _SectionTokenizer()
+    tokenizer.apply_chat_template = lambda *a, tokenize=True, **kw: (
+        [999] if tokenize else "different text"
+    )
+    state = RequestPromptTokens()
+    assert state.apply_template(tokenizer, _conversation()) == [999]
+    engine = _engine(tokenizer, scheduler=False)
+    engine._is_mllm = True
+    prompt = _render(_conversation())
+    # Custom MLLM tokenizers keep the processor's own tokenization of the text.
+    assert engine._request_prompt_ids(prompt, state) == prompt
+
+
+def test_custom_mllm_tokenizer_keeps_processor_call_contract():
+    """Review P1: a tokenizer whose ``__call__`` differs from ``encode`` must
+    reach the MLLM processor as text, so the processor's call decides the IDs."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    class CallDiffers(_SectionTokenizer):
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [[7]]}
+
+        def encode(self, text, add_special_tokens=True):
+            return [99, 7]
+
+    engine = _engine(CallDiffers(), scheduler=False)
+    engine._is_mllm = True
+    prompt = "hello"
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
+
+
+def test_fast_mllm_ids_match_processor_call():
+    """For the standard fast tokenizer the reused IDs equal what the MLLM
+    processor's ``tokenizer(prompt, add_special_tokens=False, padding=True)``
+    call produces, with and without a BOS post-processor."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    for style in ("chatml", "gemma", "llama"):
+        for bos in (False, True):
+            tokenizer = _fast_tokenizer(style, bos=bos)
+            tokenizer.pad_token = "<unk>"  # Real MLLM processors define one.
+            engine = _engine(tokenizer, scheduler=False)
+            engine._is_mllm = True
+            prompt = _render(_conversation())
+            processor_ids = tokenizer(
+                prompt, add_special_tokens=False, padding=True, padding_side="left"
+            )["input_ids"]
+            assert (
+                engine._request_prompt_ids(
+                    prompt, RequestPromptTokens(), mllm_step=True
+                )
+                == processor_ids
+            )
+
+
+def test_fast_tokenizer_with_custom_conversion_hook_is_not_reused():
+    """Review round 2 P1: a fast-tokenizer subclass that rewrites the encoding
+    must keep its own tokenization instead of reused backend IDs."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    base = _fast_tokenizer("chatml")
+
+    class InjectsId(type(base)):
+        def _convert_encoding(self, *args, **kwargs):
+            encoding_dict, encodings = super()._convert_encoding(*args, **kwargs)
+            encoding_dict["input_ids"] = [
+                [2, *ids] for ids in encoding_dict["input_ids"]
+            ]
+            return encoding_dict, encodings
+
+    tokenizer = _fast_tokenizer("chatml")
+    tokenizer.__class__ = InjectsId
+    assert RequestPromptTokens._is_fast_tokenizer(base)
+    assert not RequestPromptTokens._is_fast_tokenizer(tokenizer)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._is_mllm = True
+    prompt = _render(_conversation())
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
+
+
+@pytest.mark.parametrize("bos", [False, True])
+def test_mlx_lm_wrapper_is_unwrapped_for_reuse(bos):
+    """The served text tokenizer is mlx-lm's ``TokenizerWrapper``; reuse must
+    see through it (otherwise the text path keeps re-encoding) and produce
+    exactly ``wrapper.encode`` for both special-token policies."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    inner = _fast_tokenizer("llama", bos=bos)
+    wrapper = TokenizerWrapper(inner)
+    assert RequestPromptTokens._is_fast_tokenizer(wrapper)
+    prompt = _render(_conversation())
+    state = RequestPromptTokens()
+    assert state.encode(wrapper, prompt, add_special_tokens=False) == wrapper.encode(
+        prompt, add_special_tokens=False
+    )
+    calls = []
+    real = inner._tokenizer
+
+    class Counting:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def encode_batch(self, *args, **kwargs):
+            calls.append(1)
+            return real.encode_batch(*args, **kwargs)
+
+        def encode_batch_fast(self, *args, **kwargs):
+            calls.append(1)
+            return real.encode_batch_fast(*args, **kwargs)
+
+    inner._tokenizer = Counting()
+    # The other policy is served from the same Rust encoding.
+    assert state.encode(wrapper, prompt) == wrapper.encode(prompt)
+    inner._tokenizer = real
+    assert len(calls) == 1  # only the reference ``wrapper.encode`` call
+
+
+def test_instance_level_hook_override_is_not_reused():
+    """Review round 3 P1: a hook installed on the instance must also disable
+    reuse, directly and through the mlx-lm wrapper."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer("chatml")
+    original = tokenizer._convert_encoding
+
+    def injects(*args, **kwargs):
+        encoding_dict, encodings = original(*args, **kwargs)
+        encoding_dict["input_ids"] = [[2, *ids] for ids in encoding_dict["input_ids"]]
+        return encoding_dict, encodings
+
+    tokenizer._convert_encoding = injects
+    assert not RequestPromptTokens._is_fast_tokenizer(tokenizer)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._is_mllm = True
+    prompt = _render(_conversation())
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
+    mlx_lm = pytest.importorskip("mlx_lm.tokenizer_utils")
+    assert not RequestPromptTokens._is_fast_tokenizer(
+        mlx_lm.TokenizerWrapper(tokenizer)
+    )
+
+
+def test_instance_level_template_override_keeps_tokenize_true_call():
+    """Review round 4 P1: a template installed on the instance keeps its own
+    ``tokenize=True`` result instead of render-plus-encode."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer("chatml")
+    tokenizer.apply_chat_template = lambda messages, tokenize=True, **kw: (
+        [0, 0, 0] if tokenize else "hello"
+    )
+    assert RequestPromptTokens().apply_template(tokenizer, _conversation()) == [0, 0, 0]
+
+
+def _fake_mllm_probe_modules(monkeypatch):
+    """Exercise the host-side probe even when MLX imports are forbidden."""
+    monkeypatch.setitem(sys.modules, "mlx", None)
+    monkeypatch.setitem(sys.modules, "mlx.core", None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", None)
+    generator = ModuleType("rapid_mlx.mllm_batch_generator")
+    generator._attention_mask_is_droppable = lambda mask: (
+        mask is None or all(value == 1 for row in mask for value in row)
+    )
+    inputs = ModuleType("rapid_mlx.models.mlx_vlm_vendored.inputs")
+    inputs.prepare_inputs = lambda *_args, **_kwargs: {}
+    monkeypatch.setitem(sys.modules, generator.__name__, generator)
+    monkeypatch.setitem(sys.modules, inputs.__name__, inputs)
+    return inputs
+
+
+@pytest.mark.parametrize(
+    ("outputs", "expected"),
+    [
+        ({}, True),
+        ({"attention_mask": "ones"}, True),
+        ({"token_type_ids": "zeros"}, False),
+        ({"attention_mask": "padded"}, False),
+        ({"input_ids": "different"}, False),
+    ],
+)
+def test_mllm_text_ids_probe_requires_processor_equivalence(
+    monkeypatch, outputs, expected
+):
+    """Text-only MLLM requests take token IDs only when the processor's own
+    text-only preparation yields the same IDs and nothing else."""
+    vendored = _fake_mllm_probe_modules(monkeypatch)
+
+    tokenizer = _fast_tokenizer("chatml")
+    engine = _engine(tokenizer, scheduler=False)
+    del engine.__dict__["_mllm_text_ids_probe_result"]
+    engine._is_mllm = True
+    engine._processor = SimpleNamespace(tokenizer=engine._tokenizer)
+    probe = engine._MLLM_TEXT_IDS_PROBE
+    ids = tokenizer.encode(probe, add_special_tokens=False)
+    calls = []
+
+    def prepare_inputs(processor, images=None, prompts=None, **kwargs):
+        calls.append(prompts)
+        result = {"input_ids": [ids]}
+        for key, value in outputs.items():
+            if value == "ones":
+                result[key] = [[1] * len(ids)]
+            elif value == "padded":
+                result[key] = [[0] + [1] * (len(ids) - 1)]
+            elif value == "zeros":
+                result[key] = [[0] * len(ids)]
+            elif value == "different":
+                result[key] = [[*ids, 0]]
+        return result
+
+    monkeypatch.setattr(vendored, "prepare_inputs", prepare_inputs)
+    prompt = _render(_conversation())
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    got = engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+    assert (got != prompt) is expected
+    engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+    assert calls == [probe]  # probed once per engine
+
+
+def test_mllm_text_ids_probe_failure_keeps_processor_path(monkeypatch):
+    vendored = _fake_mllm_probe_modules(monkeypatch)
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    engine = _engine(_fast_tokenizer("chatml"), scheduler=False)
+    del engine.__dict__["_mllm_text_ids_probe_result"]
+    engine._is_mllm = True
+    engine._processor = SimpleNamespace(tokenizer=engine._tokenizer)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("processor unavailable")
+
+    monkeypatch.setattr(vendored, "prepare_inputs", boom)
+    prompt = _render(_conversation())
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
+
+
+@pytest.mark.parametrize("cached", [0, 1])
+def test_mllm_text_ids_probe_cache_returns_bool(monkeypatch, cached):
+    _fake_mllm_probe_modules(monkeypatch)
+    engine = _engine(_SectionTokenizer())
+    engine.__dict__["_mllm_text_ids_probe_result"] = cached
+    assert engine._mllm_text_ids_match_processor() is bool(cached)
+
+
+@pytest.mark.parametrize("model_type", ["lfm3_vl", "other"])
+def test_mllm_text_ids_probe_skips_ineligible_processor(monkeypatch, model_type):
+    vendored = _fake_mllm_probe_modules(monkeypatch)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("ineligible processors must not be called")
+
+    vendored.prepare_inputs = unexpected
+    engine = _engine(_SectionTokenizer())
+    del engine.__dict__["_mllm_text_ids_probe_result"]
+    engine._model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+    engine._processor = object() if model_type == "lfm3_vl" else None
+    assert engine._mllm_text_ids_match_processor() is False
+    assert engine.__dict__["_mllm_text_ids_probe_result"] is False
+
+
+def test_mllm_text_ids_probe_accepts_array_like_ids_and_empty_extras(monkeypatch):
+    vendored = _fake_mllm_probe_modules(monkeypatch)
+    tokenizer = _SectionTokenizer()
+    engine = _engine(tokenizer)
+    del engine.__dict__["_mllm_text_ids_probe_result"]
+    engine._processor = object()
+    ids = tokenizer.encode(engine._MLLM_TEXT_IDS_PROBE, add_special_tokens=False)
+    vendored.prepare_inputs = lambda *_args, **_kwargs: {
+        "input_ids": SimpleNamespace(tolist=lambda: [ids]),
+        "token_type_ids": None,
+    }
+    assert engine._mllm_text_ids_match_processor() is True
+
+
+def test_run_prompt_work_without_engine_dict():
+    from rapid_mlx.prompt_token_reuse import run_prompt_work
+
+    class SlottedEngine:
+        __slots__ = ()
+
+    calls = []
+
+    def work(value, *, suffix):
+        calls.append((value, suffix))
+        return value + suffix
+
+    assert run_prompt_work(SlottedEngine(), work, "prompt", suffix="!") == "prompt!"
+    assert calls == [("prompt", "!")]
+
+
+@pytest.mark.parametrize("override", ["encode", "__call__", "instance", "non_fast"])
+def test_tokenizer_wrapper_rejects_hooks_and_non_fast_inner(override):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    attributes = {"__module__": "mlx_lm.tokenizer_utils"}
+    if override in ("encode", "__call__"):
+        attributes[override] = lambda *_args, **_kwargs: [99]
+    wrapper_type = type("TokenizerWrapper", (), attributes)
+    wrapper = wrapper_type()
+    wrapper._tokenizer = (
+        _SectionTokenizer() if override == "non_fast" else _fast_tokenizer()
+    )
+    if override == "instance":
+        wrapper._convert_encoding = lambda *_args: [99]
+    assert RequestPromptTokens._reusable_backend(wrapper) is None
+
+
+@pytest.mark.parametrize("error", [TypeError, ValueError])
+def test_build_prompt_falls_back_when_signature_is_unavailable(monkeypatch, error):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    seen = []
+
+    def build_prompt(messages, *, tools, enable_thinking):
+        seen.append((messages, tools, enable_thinking))
+        return "rendered"
+
+    def signature(callable_):
+        assert callable_ is build_prompt
+        raise error("signature unavailable")
+
+    monkeypatch.setattr(helpers.inspect, "signature", signature)
+    messages = [{"role": "user", "content": "hello"}]
+    assert (
+        helpers._build_prompt_with_thinking_compat(
+            build_prompt,
+            messages,
+            tools=None,
+            enable_thinking=False,
+            prompt_tokens=RequestPromptTokens(),
+        )
+        == "rendered"
+    )
+    assert seen == [(messages, None, False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("dense", [False, True])
+async def test_transient_chat_boundary_retains_request_tokens(stream, dense):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _SectionTokenizer()
+    engine = _engine(tokenizer)
+    engine._loaded = True
+    engine._is_mllm = dense
+    engine._mllm_dense_singleton_fastpath = dense
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    engine._create_output_router = lambda: None
+    engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+        prompt,
+        None,
+    )
+    messages = [
+        *_conversation(),
+        {
+            "role": "developer",
+            "content": "checkpoint",
+            "_rapid_mlx_transient_priming": True,
+        },
+    ]
+    cleaned = [
+        {k: v for k, v in m.items() if not k.startswith("_rapid")} for m in messages
+    ]
+    rendered = _render(cleaned)
+    expected_boundary = engine._compute_prefix_boundary(
+        cleaned, generation_prompt=rendered, transient_message_start=len(messages) - 1
+    )
+    assert expected_boundary > 0
+    state = RequestPromptTokens()
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        return GenerationOutput(text="ok", new_text="ok", finished=True)
+
+    async def stream_generate(**kwargs):
+        yield await generate(**kwargs)
+
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    if stream:
+        outputs = [
+            out async for out in engine.stream_chat(messages, _prompt_tokens=state)
+        ]
+        assert outputs[-1].text == "ok"
+    else:
+        assert (await engine.chat(messages, _prompt_tokens=state)).text == "ok"
+    assert seen["prefix_boundary"] == expected_boundary
+    if dense:
+        assert seen["prompt"] == rendered
+        assert seen["_prompt_tokens"] is state
+    else:
+        assert seen["prompt"] == tokenizer.encode(rendered)
+        assert state.encode(tokenizer, rendered) == seen["prompt"]
+    # The boundary computation remembers the text scheduler's exact IDs.
+    assert state._tokens[(id(tokenizer), rendered, True)] == tuple(
+        tokenizer.encode(rendered)
+    )
+
+
+@pytest.mark.asyncio
+async def test_guided_generation_reuses_request_ids(monkeypatch):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    monkeypatch.setattr(batched, "HAS_GUIDED", True)
+    tokenizer = _fast_tokenizer()
+    engine = _engine(tokenizer, scheduler=False)
+    engine._loaded = True
+    engine._model_load_executor = None
+    messages = [{"role": "user", "content": "hello"}]
+    rendered = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    state = RequestPromptTokens()
+    expected = state.encode(tokenizer, rendered)
+    seen = {}
+
+    def guided(**kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    engine._run_guided_generation = guided
+    result = await engine.generate_with_schema(
+        messages, {"type": "object"}, _prompt_tokens=state
+    )
+    assert seen["prompt"] == expected
+    assert result.text == "{}"
+    assert engine._guided_abort_events == {}

@@ -3597,9 +3597,13 @@ def test_line1_route_threads_predicate_into_offload_build():
     # codex r4 #1: the route captures the prompt-token count the context guard
     # already paid for and runs the HARD window check, disengaging the gate to the
     # forced-prefix fallback when the window cannot fit the budget + a minimal call.
-    assert "_line1_prompt_tokens = enforce_context_length_for_messages(" in src, (
-        "route must capture the prompt-token count for the hard window check"
-    )
+    _line1_capture = src.find("_line1_prompt_tokens = await asyncio.to_thread(")
+    assert (
+        _line1_capture != -1
+        and src.find("enforce_context_length_for_messages,", _line1_capture)
+        - _line1_capture
+        < 200
+    ), "route must capture the prompt-token count for the hard window check"
     room_pos = src.find("not _line1_context_room_ok(")
     assert room_pos != -1, (
         "route must DISENGAGE on a provable no-room verdict (codex r4 #1)"
