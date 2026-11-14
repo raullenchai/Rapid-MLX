@@ -189,3 +189,124 @@ def test_explicit_model_context_is_fetched_after_readiness(monkeypatch, tmp_path
         json.loads(config.read_text())["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]
         == "16384"
     )
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_loading_wait_is_bounded_and_visible(monkeypatch, capsys, owned):
+    from rapid_mlx.agents import server_discovery as discovery
+
+    clock = [0.0]
+    monkeypatch.setattr(setup.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        setup.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    server = discovery.Server(42, 8123, "wanted", listening=True) if owned else None
+    monkeypatch.setattr(discovery, "server_for_url", lambda _url: server)
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    shown = []
+    monkeypatch.setattr(
+        discovery.Progress, "show", lambda self, url, now: shown.append(url)
+    )
+    monkeypatch.setattr(
+        setup,
+        "verify_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            setup.ServerLoadingError("loading", "model_not_loaded")
+        ),
+    )
+    failures = []
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *args: failures.append(args)
+    )
+    with pytest.raises(setup.ServerReadinessError, match="did not become ready"):
+        setup.wait_for_server(
+            "http://localhost:8123/v1", "wanted", agent="opencode", timeout=1
+        )
+    assert 1 <= clock[0] <= 1.25
+    assert shown
+    assert failures == [("server_not_ready", "opencode", "startup_timeout")]
+
+
+def test_loading_unowned_server_becomes_ready(monkeypatch):
+    from rapid_mlx.agents import server_discovery as discovery
+
+    monkeypatch.setattr(discovery, "server_for_url", lambda _url: None)
+    monkeypatch.setattr(discovery.Progress, "show", lambda *_a: None)
+    monkeypatch.setattr(setup.time, "sleep", lambda _s: None)
+    attempts = []
+
+    def verify(url, model, **kwargs):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise setup.ServerLoadingError("loading", "model_not_loaded")
+        return "wanted"
+
+    monkeypatch.setattr(setup, "verify_server", verify)
+    assert (
+        setup.wait_for_server("http://localhost:8123/v1", "wanted", agent="pi")
+        == "wanted"
+    )
+    assert attempts == ["http://localhost:8123/v1"] * 2
+
+
+def test_health_liveness_does_not_skip_model_loading(monkeypatch):
+    class Response(BytesIO):
+        status = 200
+
+    requests = []
+
+    def open_url(request, **_kwargs):
+        requests.append(request)
+        return Response(b'{"ready": false}')
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", open_url)
+    with pytest.raises(setup.ServerLoadingError):
+        setup.verify_server(
+            "http://localhost:8123/v1", "wanted", agent="opencode", track_failure=False
+        )
+    assert requests == ["http://localhost:8123/health"]
+
+
+def test_setup_ready_timeout_parser():
+    from rapid_mlx.cli_parser import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["agents", "opencode", "--setup"]).ready_timeout == 600
+    assert (
+        parser.parse_args(["agents", "opencode", "--ready-timeout", "20"]).ready_timeout
+        == 20
+    )
+    with pytest.raises(SystemExit):
+        parser.parse_args(["agents", "opencode", "--ready-timeout", "0"])
+
+
+def test_health_loading_then_ready_waits_before_model_discovery(monkeypatch):
+    from rapid_mlx.agents import server_discovery as discovery
+
+    class Response(BytesIO):
+        status = 200
+
+    calls = []
+
+    def open_url(request, **_kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        calls.append(url)
+        if url.endswith("/health"):
+            return Response(
+                b'{"ready": false}' if len(calls) == 1 else b'{"ready": true}'
+            )
+        return Response(b'{"data": [{"id": "wanted"}]}')
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(discovery, "server_for_url", lambda _url: None)
+    shown = []
+    monkeypatch.setattr(discovery.Progress, "show", lambda *_a: shown.append(True))
+    monkeypatch.setattr(setup.time, "sleep", lambda _s: None)
+    assert (
+        setup.wait_for_server("http://localhost:8123/v1", "wanted", agent="opencode")
+        == "wanted"
+    )
+    assert calls == ["http://localhost:8123/health"] * 2 + [
+        "http://localhost:8123/v1/models"
+    ]
+    assert shown == [True]

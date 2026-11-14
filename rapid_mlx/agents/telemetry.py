@@ -12,12 +12,17 @@ def _telemetry_agent(agent: str) -> str:
     return agent if agent in values and agent != "other" else "other"
 
 
-def track_agent_configured(agent: str) -> None:
+def track_agent_configured(agent: str, *, server_state: str | None = None) -> None:
     """Record one completed agent configuration."""
     try:
         from rapid_mlx.telemetry.track import track
 
-        track("agent_configured", {"agent": _telemetry_agent(agent)})
+        props = {"agent": _telemetry_agent(agent)}
+        if server_state is not None:
+            props["server_state"] = server_state
+        track("agent_configured", props)
+        if server_state == "not_running":
+            return
         from rapid_mlx.onboarding import track_first_integration
 
         track_first_integration(agent)

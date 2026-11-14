@@ -530,3 +530,15 @@ def test_app_opened_desktop_trigger_is_optional_and_closed():
         assert reg.validate("app_opened", {"trigger": trigger}) == {"trigger": trigger}
     assert reg.validate("app_opened", {"trigger": "mouse contents"}) is None
     assert reg.validate("app_opened", {"trigger": 1}) is None
+
+
+@pytest.mark.parametrize("state", ["ready", "not_running", "unchecked"])
+def test_agent_configuration_server_state_is_closed(state):
+    props = {"agent": "opencode", "server_state": state}
+    assert reg.validate("agent_configured", props) == props
+    assert (
+        reg.validate(
+            "agent_configured", {**props, "server_state": "http://private-host"}
+        )
+        is None
+    )

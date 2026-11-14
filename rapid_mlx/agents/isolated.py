@@ -163,10 +163,9 @@ def save_port(port: int) -> None:
 
 def connection_status(port: int, key: str, model: str) -> str:
     """Return ready, stopped, or a specific local configuration error."""
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/models",
-        headers={"Authorization": f"Bearer {key}"},
-    )
+    from rapid_mlx.http_auth import model_probe_request
+
+    request = model_probe_request(f"http://127.0.0.1:{port}/v1", api_key=key)
     try:
         with urllib.request.urlopen(request, timeout=2) as response:
             payload = json.loads(response.read())
@@ -232,12 +231,10 @@ def running_model(port: int, key: str) -> str | None:
     """Find a single text checkpoint on the authenticated local server."""
     from http.client import HTTPException
 
+    from rapid_mlx.http_auth import model_probe_request
     from rapid_mlx.model_aliases import resolve_model
 
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/models",
-        headers={"Authorization": f"Bearer {key}"},
-    )
+    request = model_probe_request(f"http://127.0.0.1:{port}/v1", api_key=key)
     try:
         with urllib.request.urlopen(request, timeout=2) as response:
             payload = json.loads(response.read())

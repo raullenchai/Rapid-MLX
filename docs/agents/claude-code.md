@@ -47,11 +47,13 @@ rapid-mlx agents claude-code --setup
 
 Setup shows the exact JSON diff before asking, preserves unrelated settings,
 waits for the server to advertise the selected model, backs up an existing
-file, and writes atomically. If a local server is still downloading or loading, setup waits while its
-process is alive. Use `--port` to select a specific local server. A failed check leaves the config untouched and prints a retry
-command.
-For automation use `--yes`. To prepare the config before starting the server,
-pass `--model <model>`; setup prints a start command pinned to the same port.
+file, and writes atomically. If a server is downloading or loading, setup waits
+with progress for up to 600 seconds; use `--ready-timeout <seconds>` to change
+the deadline or Ctrl-C to cancel. Use `--port` to select a specific local server.
+A failed check leaves the config untouched and prints a retry command.
+For automation use `--yes`. Setup also works before starting the server: it
+uses `--model <model>` or a recommendation for this Mac, saves the config, and
+prints the exact start command pinned to the same port.
 
 To make it permanent, export the two env vars in your shell profile:
 

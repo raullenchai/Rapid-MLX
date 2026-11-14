@@ -29,6 +29,7 @@
   },
 
   "enums": {
+    "agent_server_state": {"values": ["ready", "not_running", "unchecked"]},
     "desktop_open_trigger": {
       "_about": "Desktop lifecycle only; CLI/server omit this property.",
       "values": ["launch", "day_rollover"]
@@ -905,9 +906,10 @@
       }
     },
     "agent_configured": {
-      "_about": "Which integrations matter. Emitted only after setup changes configuration and any requested server verification succeeds.",
+      "_about": "Configuration changed successfully. Optional server_state distinguishes deferred local verification; this event alone does not prove a working integration.",
       "props": {
-        "agent": {"kind": "enum", "enum": "agent", "required": true}
+        "agent": {"kind": "enum", "enum": "agent", "required": true},
+        "server_state": {"kind": "enum", "enum": "agent_server_state", "required": false}
       }
     },
     "agent_configure_failed": {
@@ -915,6 +917,7 @@
       "twin_of": "agent_configured",
       "props": {
         "agent": {"kind": "enum", "enum": "agent", "required": false},
+        "server_state": {"kind": "enum", "enum": "agent_server_state", "required": false},
         "error_class": {"kind": "enum", "enum": "agent_error_class", "required": true},
         "cause": {
           "kind": "enum", "enum": "agent_failure_cause", "required": false,

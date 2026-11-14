@@ -11,6 +11,13 @@ and 2.x use different custom-provider config keys. `rapid-mlx agents
 opencode --setup` detects the installed CLI and writes its supported shape
 to `~/.config/opencode/opencode.json`.
 
+For setup before the server is running, use
+`rapid-mlx agents opencode --setup --yes`. It saves a model recommended for
+this Mac and prints the exact command to start the server. Pass `--model`
+to choose a model and `--port` for a specific endpoint. A loading server gets
+up to 600 seconds with progress; use `--ready-timeout` to adjust or Ctrl-C to
+cancel. See the [shared setup behavior](matrix.md).
+
 ## Setup
 
 ```bash

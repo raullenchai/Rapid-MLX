@@ -2890,7 +2890,7 @@ def _add_agents_parser(
     agents_parser.add_argument(
         "--setup",
         action="store_true",
-        help="Configure the agent; wait for a starting server or write offline with --model",
+        help="Configure the agent; wait for startup or save config with a recommended model",
     )
     agents_parser.add_argument(
         "--dry-run",
@@ -2902,6 +2902,12 @@ def _add_agents_parser(
         "-y",
         action="store_true",
         help="Apply setup without an interactive confirmation",
+    )
+    agents_parser.add_argument(
+        "--ready-timeout",
+        type=positive_int,
+        default=600,
+        help="Seconds to wait for server startup (default: 600; Ctrl-C cancels)",
     )
     agents_parser.add_argument(
         "--no-check",
@@ -2917,7 +2923,7 @@ def _add_agents_parser(
         "--model",
         type=str,
         default=None,
-        help="Model to use (default: auto-detect from running server)",
+        help="Model to use (default: running model, else a recommendation for this Mac)",
     ).completer = alias_completer
     endpoint = agents_parser.add_mutually_exclusive_group()
     endpoint.add_argument(
