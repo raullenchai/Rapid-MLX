@@ -181,6 +181,7 @@ class RequestPromptTokens:
             and self._is_fast_tokenizer(tokenizer)
             and type(tokenizer).apply_chat_template
             is PreTrainedTokenizerBase.apply_chat_template
+            and "apply_chat_template" not in getattr(tokenizer, "__dict__", {})
         ):
             rendered = tokenizer.apply_chat_template(messages, tokenize=False, **kwargs)
             return self.encode(tokenizer, rendered, add_special_tokens=False)

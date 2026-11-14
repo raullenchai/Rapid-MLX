@@ -1494,3 +1494,15 @@ def test_instance_level_hook_override_is_not_reused():
     assert not RequestPromptTokens._is_fast_tokenizer(
         mlx_lm.TokenizerWrapper(tokenizer)
     )
+
+
+def test_instance_level_template_override_keeps_tokenize_true_call():
+    """Review round 4 P1: a template installed on the instance keeps its own
+    ``tokenize=True`` result instead of render-plus-encode."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer("chatml")
+    tokenizer.apply_chat_template = lambda messages, tokenize=True, **kw: (
+        [0, 0, 0] if tokenize else "hello"
+    )
+    assert RequestPromptTokens().apply_template(tokenizer, _conversation()) == [0, 0, 0]
