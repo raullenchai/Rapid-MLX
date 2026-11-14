@@ -1682,6 +1682,51 @@ def test_profile_operations_reject_symlinked_ancestor(private_home, ancestor):
     assert not (external / "codex").exists()
 
 
+@pytest.mark.parametrize("existing_profile", (False, True))
+def test_qwen_settings_are_private_minimal_and_removable(
+    private_home, existing_profile
+):
+    user_home = private_home / ".qwen"
+    user_home.mkdir()
+    user_settings = user_home / "settings.json"
+    original = b'{"security":{"auth":{"selectedType":"qwen-oauth"}}}\n'
+    user_settings.write_bytes(original)
+    root = isolated.connection_dir() / "agents" / "qwen-code"
+    if existing_profile:
+        root.mkdir(parents=True)
+        (root / "qwen.env").write_text("OPENAI_MODEL=old-model\n")
+
+    isolated.configure("qwen-code", "local-model", port=7660)
+
+    settings = root / "settings.json"
+    assert json.loads(settings.read_text()) == {}
+    assert stat.S_IMODE(settings.stat().st_mode) == 0o600
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    before = settings.read_bytes()
+    isolated.configure("qwen-code", "local-model", port=7661)
+    assert settings.read_bytes() == before
+    assert isolated.remove("qwen-code")
+    assert not root.exists()
+    assert not isolated.remove("qwen-code")
+    assert list(user_home.iterdir()) == [user_settings]
+    assert user_settings.read_bytes() == original
+
+
+def test_qwen_settings_reject_symlink_to_user_config(private_home):
+    user_settings = private_home / ".qwen" / "settings.json"
+    user_settings.parent.mkdir()
+    original = b'{"model":{"name":"cloud"}}\n'
+    user_settings.write_bytes(original)
+    root = isolated.connection_dir() / "agents" / "qwen-code"
+    root.mkdir(parents=True)
+    (root / "settings.json").symlink_to(user_settings)
+
+    with pytest.raises(ValueError, match="refusing symlinked config"):
+        isolated.configure("qwen-code", "local-model", port=7660)
+
+    assert user_settings.read_bytes() == original
+
+
 def test_qwen_runner_reads_current_port_after_saved_port_moves(
     private_home, monkeypatch
 ):
@@ -1727,6 +1772,7 @@ def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
         '#!/bin/sh\nprintf "%s\\n" "$@" > "$TEST_CAPTURE"\n'
         'printf "%s" "$QWEN_HOME" > "$TEST_QWEN_HOME_CAPTURE"\n'
         'printf "%s" "$QWEN_RUNTIME_DIR" > "$TEST_QWEN_RUNTIME_CAPTURE"\n'
+        'cat "$QWEN_HOME/settings.json" > "$TEST_QWEN_SETTINGS_CAPTURE"\n'
     )
     qwen.chmod(0o700)
     monkeypatch.setenv("HOME", str(private_home))
@@ -1734,10 +1780,12 @@ def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
     capture = private_home / "qwen-args"
     home_capture = private_home / "qwen-home"
     runtime_capture = private_home / "qwen-runtime"
+    settings_capture = private_home / "qwen-settings"
     monkeypatch.setenv("QWEN_RUNTIME_DIR", str(private_home / "existing-runtime"))
     monkeypatch.setenv("TEST_CAPTURE", str(capture))
     monkeypatch.setenv("TEST_QWEN_HOME_CAPTURE", str(home_capture))
     monkeypatch.setenv("TEST_QWEN_RUNTIME_CAPTURE", str(runtime_capture))
+    monkeypatch.setenv("TEST_QWEN_SETTINGS_CAPTURE", str(settings_capture))
     with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
         isolated.configure("qwen-code", model, port=7660)
     runner = isolated.connection_dir() / "agents" / "qwen-code" / "run"
@@ -1758,6 +1806,7 @@ def test_qwen_runner_overrides_saved_cloud_auth_without_editing_it(
         isolated.connection_dir() / "agents" / "qwen-code" / "runtime"
     )
     assert settings.read_bytes() == original
+    assert json.loads(settings_capture.read_text()) == {}
 
 
 def test_crush_runner_uses_private_config_directory(private_home, monkeypatch):
