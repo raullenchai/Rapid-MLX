@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -360,6 +361,58 @@ def reply_finished(agent: str, output: str) -> bool:
     return True
 
 
+def opencode_v1_reply_seen(
+    home: Path, since: float, hello: str, nonce: str, output: str
+) -> bool:
+    """Read v1 parts; only fall back to raw PTY output if no database exists."""
+    db = home / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
+    if not db.is_file():
+        return nonce in output and reply_finished("opencode", output)
+    try:
+        with contextlib.closing(
+            sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.2)
+        ) as conn:
+            rows = conn.execute(
+                "SELECT p.session_id, m.data, p.data FROM part p "
+                "JOIN message m ON m.id = p.message_id AND m.session_id = p.session_id "
+                "WHERE (m.time_created >= ? OR m.time_updated >= ?) "
+                "AND (p.time_created >= ? OR p.time_updated >= ?)",
+                (int(since * 1000),) * 4,
+            ).fetchall()
+    except sqlite3.Error:
+        return False
+    sessions: dict[str, tuple[set[str], list[str]]] = {}
+    for session_id, raw_message, raw_part in rows:
+        try:
+            message = json.loads(raw_message)
+            part = json.loads(raw_part)
+        except json.JSONDecodeError:
+            return False
+        if message.get("role") != "assistant":
+            continue
+        reads, replies = sessions.setdefault(session_id, (set(), []))
+        if part.get("type") == "tool" and part.get("tool") == "read":
+            state = part.get("state", {})
+            if state.get("status") == "completed":
+                path = Path(state.get("input", {}).get("filePath", "")).name
+                contents = state.get("output", "")
+                if path == "hello.txt" and hello in contents:
+                    reads.add("hello.txt")
+                if path == "nonce.txt" and nonce in contents:
+                    reads.add("nonce.txt")
+        elif (
+            part.get("type") == "text"
+            and part.get("time", {}).get("end") is not None
+            and message.get("time", {}).get("completed") is not None
+        ):
+            replies.append(part.get("text", ""))
+    return any(
+        reads == {"hello.txt", "nonce.txt"}
+        and any(hello in reply and nonce in reply for reply in replies)
+        for reads, replies in sessions.values()
+    )
+
+
 def opencode_reply_seen(home: Path, since: float, hello: str, nonce: str) -> bool:
     """Read one v2 conversation instead of fragmented TUI redraws."""
     db = home / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
@@ -535,6 +588,10 @@ def session(
     def reply_seen(output: str, hello: str, nonce: str, since: float) -> bool:
         if opencode_v2:
             return opencode_reply_seen(Path(env["HOME"]), since, hello, nonce)
+        if command[2] == "opencode":
+            return opencode_v1_reply_seen(
+                Path(env["HOME"]), since, hello, nonce, output
+            )
         return nonce in output and reply_finished(command[2], output)
 
     with transcript.open("wb") as sink:
