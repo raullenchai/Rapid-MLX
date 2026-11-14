@@ -740,6 +740,8 @@ def configure(
         hermes_config["telemetry"] = {
             "shared_metrics": {"enabled": False, "send": False, "offer_version": 2}
         }
+        # Record Hermes' default so the low-disk prompt cannot eat the first message.
+        hermes_config.setdefault("sessions", {})["auto_prune"] = False
         rendered = yaml.safe_dump(hermes_config, sort_keys=False).replace(
             "  base_url: ", f'  api_key: "{key}"\n  base_url: ', 1
         )

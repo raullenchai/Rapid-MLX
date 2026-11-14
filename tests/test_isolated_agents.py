@@ -283,8 +283,27 @@ def test_private_hermes_records_telemetry_opt_out(private_home, saved_metrics):
             "send": False,
             "offer_version": 2,
         }
+        assert config["sessions"]["auto_prune"] is False
         assert user_config.read_text() == original
     assert not (root / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("auto_prune", [None, False, True])
+def test_private_hermes_records_auto_prune_opt_out(private_home, auto_prune):
+    profile = isolated.get_profile("hermes")
+    sessions = {"retention_days": 30}
+    if auto_prune is not None:
+        sessions["auto_prune"] = auto_prune
+    rendered = profile.render_config("http://127.0.0.1:8724/v1", "local/model")
+    rendered += yaml.safe_dump({"sessions": sessions})
+    with patch.object(type(profile), "render_config", return_value=rendered):
+        for _ in range(2):
+            isolated.configure("hermes", "local/model")
+            root = isolated.connection_dir() / "agents" / "hermes"
+            config = yaml.safe_load(
+                (root / "profiles" / "rapid" / "config.yaml").read_text()
+            )
+            assert config["sessions"] == {"retention_days": 30, "auto_prune": False}
 
 
 def test_remove_hermes_stale_lock_never_invokes_gateway(private_home):
