@@ -851,3 +851,242 @@ def test_abort_during_scoring_chunk_prevents_next_forward(
     scheduler.step()
     assert calls == [128]
     scheduler.batch_generator.insert.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "prompt,decoded,expected",
+    [
+        ("a  b c", ["a", "a b", "a b c"], ["a", "  b", " c"]),
+        ("éb", ["e", "e\u0301", "e\u0301b"], ["", "é", "b"]),
+        ("é  ﬁ c", ["e\u0301", "e\u0301 fi", "e\u0301 fi c"], ["é", "  ﬁ", " c"]),
+    ],
+)
+def test_normalizing_slow_tokenizer_offsets(prompt, decoded, expected):
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    class NormalizingTokenizer(Tokenizer):
+        def decode(self, ids, **kwargs):
+            return decoded[len(ids) - 1] if ids else ""
+
+    scores = _wire_scores([1, 2, 3])
+    payload = legacy_prompt_logprobs(prompt, NormalizingTokenizer(), scores)
+    assert payload["tokens"] == expected
+    assert payload["text_offset"] == [
+        sum(map(len, expected[:i])) for i in range(len(expected))
+    ]
+    assert payload["token_logprobs"] == scores.logprobs
+
+
+def test_unsupported_prompt_scoring_emits_caller_telemetry(patched_config, monkeypatch):
+    from rapid_mlx.telemetry import inference
+
+    emit = MagicMock()
+    monkeypatch.setattr(inference, "emit_capability_rejected", emit)
+    client, engine = _build_completions_app(patched_config, monkeypatch)
+    engine.supports_prompt_logprobs = False
+    response = client.post(
+        "/v1/completions",
+        headers={"User-Agent": "codex", "X-Rapid-Client": "cli"},
+        json={
+            "model": "stub-model",
+            "prompt": "abc",
+            "echo": True,
+            "logprobs": 0,
+            "max_tokens": 0,
+        },
+    )
+    assert response.status_code == 400
+    emit.assert_called_once()
+    assert emit.call_args.args == ("logprobs_unsupported",)
+    assert emit.call_args.kwargs["caller_agent"] == "codex"
+    assert emit.call_args.kwargs["caller_client"] == "cli"
+
+
+@pytest.mark.parametrize("top_k", [0, 20])
+def test_scoring_then_decode_reuses_private_kv(monkeypatch, top_k):
+    import mlx_lm.models.cache as caches
+
+    private_cache = [SimpleNamespace(state=mx.array(0))]
+    monkeypatch.setattr(caches, "make_prompt_cache", lambda model: private_cache)
+    scheduler = Scheduler(
+        model=lambda tokens, cache: mx.zeros((1, tokens.shape[1], 4)),
+        tokenizer=Tokenizer(),
+        config=SchedulerConfig(enable_prefix_cache=False, use_memory_aware_cache=False),
+    )
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.insert.return_value = [1]
+    monkeypatch.setattr(scheduler, "_ensure_batch_generator", lambda params: True)
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", lambda request: True)
+    result = PromptLogprobs(top_k)
+    request = Request(
+        "decode", [1, 2, 3], SamplingParams(max_tokens=1, prompt_logprobs=result)
+    )
+    scheduler.add_request(request)
+    assert scheduler._schedule_waiting() == [request]
+    assert request._prompt_scoring_state is None
+    inserted = scheduler.batch_generator.insert.call_args
+    assert inserted.kwargs["caches"] == [private_cache]
+    assert inserted.args == ([[3]],)
+    assert result.logprobs == [
+        None,
+        pytest.approx(-1.38629436),
+        pytest.approx(-1.38629436),
+    ]
+    assert all(len(top) == min(top_k, 4) for top in result.top_logprobs[1:])
+
+
+def test_malformed_offsets_fall_back_to_decoded_alignment():
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    class MalformedOffsets(Tokenizer):
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [97, 98], "offset_mapping": [(0, 1)]}
+
+    payload = legacy_prompt_logprobs("ab", MalformedOffsets(), _wire_scores([97, 98]))
+    assert payload["tokens"] == ["a", "b"]
+    assert payload["text_offset"] == [0, 1]
+
+
+def test_unalignable_decoder_uses_coarse_partition():
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    tokenizer = Tokenizer()
+    tokenizer.decode = lambda ids: "x" * len(ids)
+    payload = legacy_prompt_logprobs("abcd", tokenizer, _wire_scores([1, 2]))
+    assert payload["tokens"] == ["ab", "cd"]
+    assert payload["text_offset"] == [0, 2]
+
+
+def test_base_engine_does_not_claim_prompt_scoring():
+    from rapid_mlx.engine.base import BaseEngine
+
+    assert BaseEngine.supports_prompt_logprobs.fget(object()) is False
+
+
+def test_unsupported_completion_without_scoring_stays_404():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.routes.completions import install_unsupported_completions
+
+    app = FastAPI()
+    install_unsupported_completions(app)
+    response = TestClient(app).post(
+        "/v1/completions", json={"model": "stub", "prompt": "a"}
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_stream_preserves_keepalives(monkeypatch):
+    from rapid_mlx.routes import completions
+
+    async def stream(*args, **kwargs):
+        yield ": keepalive\n\n"
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(completions, "stream_completion", stream)
+    events = [
+        event
+        async for event in completions._stream_completion_prompts(
+            None, ["a", "b"], None
+        )
+    ]
+    assert events == [": keepalive\n\n", ": keepalive\n\n", "data: [DONE]\n\n"]
+
+
+def test_scoring_never_snapshots_shared_prefixes(monkeypatch):
+    scheduler = Scheduler(
+        model=object(),
+        tokenizer=Tokenizer(),
+        config=SchedulerConfig(enable_prefix_cache=False, use_memory_aware_cache=False),
+    )
+    request = Request(
+        "private", [1, 2, 3], SamplingParams(prompt_logprobs=PromptLogprobs(0))
+    )
+    scheduler.add_request(request)
+    request.prefix_boundary = 2
+    scheduler.uid_to_request_id[1] = request.request_id
+    scheduler.memory_aware_cache = MagicMock()
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.extract_cache.return_value = {1: ([object()], [1, 2])}
+    monkeypatch.setattr(scheduler, "_hybrid_checkpoints_enabled", lambda: True)
+    response = SimpleNamespace(
+        uid=1, progress=(2, 3), end_of_segment=True, end_of_prompt=False
+    )
+    scheduler._record_hybrid_checkpoints([response])
+    scheduler.batch_generator.extract_cache.assert_not_called()
+    scheduler._snapshot_boundary_segments([response])
+    scheduler.batch_generator.extract_cache.assert_called_once_with([1])
+    scheduler.memory_aware_cache.store.assert_not_called()
+
+
+def test_generation_error_discards_private_scoring_state():
+    from rapid_mlx.request import RequestStatus
+
+    scheduler = Scheduler(
+        model=object(),
+        tokenizer=Tokenizer(),
+        config=SchedulerConfig(enable_prefix_cache=False, use_memory_aware_cache=False),
+    )
+    request = Request(
+        "error", [1, 2], SamplingParams(prompt_logprobs=PromptLogprobs(0))
+    )
+    scheduler.add_request(request)
+    scheduler.waiting.remove(request)
+    scheduler.running[request.request_id] = request
+    request._prompt_scoring_state = object()
+    request.prompt_cache = [object()]
+    assert scheduler._recover_from_generation_error() == {"error"}
+    assert request.status == RequestStatus.FINISHED_ABORTED
+    assert request._prompt_scoring_state is None
+    assert request.prompt_cache is None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_echo_without_scoring_keeps_text(patched_config, monkeypatch, stream):
+    import json
+
+    async def generate(**kwargs):
+        return GenerationOutput(
+            text="Z",
+            prompt_tokens=1,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="length",
+        )
+
+    async def stream_generate(**kwargs):
+        yield GenerationOutput(
+            text="Z",
+            new_text="Z",
+            prompt_tokens=1,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="length",
+        )
+
+    client, engine = _build_completions_app(patched_config, monkeypatch)
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    response = client.post(
+        "/v1/completions",
+        json={
+            "model": "stub-model",
+            "prompt": "a",
+            "echo": True,
+            "stream": stream,
+            "max_tokens": 1,
+        },
+    )
+    assert response.status_code == 200
+    if stream:
+        events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        ]
+        assert "".join(c["text"] for event in events for c in event["choices"]) == "aZ"
+        assert response.text.count("data: [DONE]") == 1
+    else:
+        assert response.json()["choices"][0]["text"] == "aZ"

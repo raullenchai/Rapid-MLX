@@ -86,8 +86,22 @@ def _engine_supports_completion_logprobs(engine) -> bool:
     return structural_support
 
 
-def _require_prompt_logprobs(engine):
+def _require_prompt_logprobs(
+    engine, *, caller_agent=None, caller_client=None, model=None
+):
     if getattr(engine, "supports_prompt_logprobs", False) is not True:
+        from rapid_mlx.telemetry.inference import (
+            emit_capability_rejected,
+            model_type_token,
+        )
+
+        emit_capability_rejected(
+            "logprobs_unsupported",
+            model_type=model_type_token(engine),
+            model=model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
         raise HTTPException(
             status_code=400,
             detail="echo with logprobs requires an engine supporting prompt logprobs; "
@@ -99,9 +113,14 @@ def install_unsupported_completions(app, *, dependencies=None):
     """Give scoring clients a capability error on chat-only server modes."""
     app.state.supports_prompt_logprobs = False
 
-    async def unsupported_completion(request: CompletionRequest):
+    async def unsupported_completion(request: CompletionRequest, raw_request: Request):
         if request.echo and request.logprobs is not None:
-            _require_prompt_logprobs(app.state)
+            from rapid_mlx.telemetry.inference import request_caller_headers
+
+            agent, client = request_caller_headers(raw_request)
+            _require_prompt_logprobs(
+                app.state, caller_agent=agent, caller_client=client
+            )
         raise HTTPException(
             status_code=404, detail="Legacy completions are unavailable in this mode."
         )
@@ -474,7 +493,12 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
         if request.echo and _want_logprobs:
-            _require_prompt_logprobs(engine)
+            _require_prompt_logprobs(
+                engine,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+                model=_served_telemetry_id,
+            )
         if _want_logprobs and not _engine_supports_completion_logprobs(engine):
             from rapid_mlx.telemetry.inference import (
                 emit_capability_rejected,

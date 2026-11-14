@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request-local prompt scoring; no vocabulary distributions survive prefill."""
 
+import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -79,7 +81,48 @@ def prefill_prompt_logprobs(model: Any, tokens: list[int], result: PromptLogprob
     return state.cache
 
 
-def _incremental_ends(tokenizer, ids, special):
+def _normalized_alignment_text(text):
+    """Normalize characters and whitespace while retaining source end offsets."""
+    chars, ends = [], []
+    for i, char in enumerate(text):
+        for normalized in unicodedata.normalize("NFKD", char):
+            if normalized.isspace():
+                normalized = " "
+                if chars and chars[-1] == " ":
+                    ends[-1] = i + 1
+                    continue
+            chars.append(normalized)
+            ends.append(i + 1)
+    return "".join(chars), ends
+
+
+def _align_decoded_ends(prompt, decoded, ends):
+    """Map decoded boundaries to submitted characters, including normalization.
+
+    If the tokenizer changes content beyond Unicode/whitespace normalization,
+    exact alignment is unavailable. Use proportional character boundaries as a
+    coarse partition, preserving order and all submitted text; these offsets
+    cannot identify the original token spans in that case.
+    """
+    if prompt == decoded:
+        return ends
+    original, original_ends = _normalized_alignment_text(prompt)
+    normalized, decoded_ends = _normalized_alignment_text(decoded)
+    if original != normalized:
+        return [round(end * len(prompt) / max(1, len(decoded))) for end in ends]
+    aligned = []
+    for end in ends:
+        count = bisect_right(decoded_ends, end)
+        position = original_ends[count - 1] if count else 0
+        # A decomposed character can span multiple decoded tokens. Assign the
+        # submitted character only once its full normalized spelling is seen.
+        if 0 < count < len(original_ends) and original_ends[count] == position:
+            position -= 1
+        aligned.append(position)
+    return aligned
+
+
+def _incremental_ends(prompt, tokenizer, ids, special):
     """Decode incrementally, bounding the naive decoder's retained context."""
     from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
 
@@ -89,7 +132,7 @@ def _incremental_ends(tokenizer, ids, special):
     detok = factory(tokenizer)
     detok.reset()
     naive = isinstance(detok, NaiveStreamingDetokenizer)
-    ends, context = [], []
+    ends, context, pieces = [], [], []
     position = previous = 0
     for tid, is_special in zip(ids, special):
         if not is_special:
@@ -98,7 +141,9 @@ def _incremental_ends(tokenizer, ids, special):
             text = detok.text
             # Wait for complete UTF-8 before assigning a character to a token.
             length = len(text.rstrip("\ufffd"))
-            position += max(0, length - previous)
+            piece = text[previous:length]
+            pieces.append(piece)
+            position += len(piece)
             previous = length
             if (
                 naive
@@ -115,7 +160,7 @@ def _incremental_ends(tokenizer, ids, special):
                 previous = len(detok.text.rstrip("\ufffd"))
         ends.append(position)
     detok.finalize()
-    return ends
+    return _align_decoded_ends(prompt, "".join(pieces), ends)
 
 
 def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
@@ -165,7 +210,7 @@ def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
         ]
     content = [i for i, added in enumerate(special) if not added]
     if offsets is None:
-        ends = _incremental_ends(tokenizer, ids, special)
+        ends = _incremental_ends(prompt, tokenizer, ids, special)
     else:
         ends = [0] * len(ids)
         for index, i in enumerate(content):
