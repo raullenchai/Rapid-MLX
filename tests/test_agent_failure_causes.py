@@ -16,6 +16,35 @@ class Response(BytesIO):
     status = 200
 
 
+@pytest.mark.parametrize("track_failure", [True, False])
+def test_health_not_ready_reports_model_not_loaded(monkeypatch, track_failure):
+    emitted = []
+    requests = []
+
+    def open_url(request, **_kwargs):
+        requests.append(request)
+        return Response(b'{"ready": false}')
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *values: emitted.append(values)
+    )
+
+    with pytest.raises(setup.ServerLoadingError) as caught:
+        setup.verify_server(
+            "http://localhost:8000/v1",
+            "default",
+            agent="codex",
+            track_failure=track_failure,
+        )
+
+    assert caught.value.cause == "model_not_loaded"
+    assert requests == ["http://localhost:8000/health"]
+    assert emitted == (
+        [("server_not_ready", "codex", "model_not_loaded")] if track_failure else []
+    )
+
+
 @pytest.mark.parametrize("stage", ["health", "models"])
 @pytest.mark.parametrize(
     "error,local_cause,remote_cause",
