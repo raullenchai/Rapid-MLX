@@ -9,6 +9,7 @@ import os
 import secrets
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -734,6 +735,11 @@ def configure(
             _private_write(marker, "Private local profile: no bundled skills.\n")
         hermes_config = yaml.safe_load(str(rendered))
         hermes_config["platform_toolsets"] = {"cli": ["terminal", "file"]}
+        # Record "No thanks" in this profile; v0.23.1 re-asks without the
+        # current offer version, consuming the first chat message as consent.
+        hermes_config["telemetry"] = {
+            "shared_metrics": {"enabled": False, "send": False, "offer_version": 2}
+        }
         rendered = yaml.safe_dump(hermes_config, sort_keys=False).replace(
             "  base_url: ", f'  api_key: "{key}"\n  base_url: ', 1
         )
@@ -885,6 +891,78 @@ def configure(
     return shlex.quote(str(runner))
 
 
+def _signal_hermes_gateway(lock: Path, pid: int, sig: signal.Signals) -> None:
+    """Signal only a live, same-user process with this private lock open."""
+    if pid <= 1 or pid == os.getpid():
+        raise ValueError("unsafe gateway PID")
+    os.kill(pid, 0)
+    owner = subprocess.run(
+        ["lsof", "-a", "-p", str(pid), "-u", str(os.getuid()), "-Fpu", "--", str(lock)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    identity = {
+        line for line in owner.stdout.splitlines() if line.startswith(("p", "u"))
+    }
+    if identity != {f"p{pid}", f"u{os.getuid()}"}:
+        raise ValueError("gateway lock ownership could not be verified")
+    os.kill(pid, sig)
+
+
+def _stop_hermes_gateways(root: Path) -> None:
+    import fcntl
+    import time
+
+    for home in (root, root / "profiles" / "rapid"):
+        lock = home / "gateway.lock"
+        _reject_symlinked_ancestors(lock)
+        if not lock.is_file():
+            continue
+        try:
+            with lock.open("r", encoding="utf-8") as handle:
+                info = os.fstat(handle.fileno())
+                if info.st_uid != os.getuid() or info.st_nlink != 1:
+                    raise ValueError("unsafe gateway lock")
+                pid = None
+                killed = False
+                deadline = 0.0
+                while True:
+                    try:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        pass
+                    if pid is None:
+                        # Hermes v0.23.1 runtime_ownership.reserve writes the
+                        # status._build_pid_record JSON into HERMES_HOME/gateway.lock.
+                        record = json.load(handle)
+                        if (
+                            not isinstance(record, dict)
+                            or record.get("kind") != "hermes-gateway"
+                            or record.get("hermes_home") != str(home.resolve())
+                            or type(record.get("pid")) is not int
+                            or record.get("purpose")
+                        ):
+                            raise ValueError("invalid gateway lock record")
+                        pid = record["pid"]
+                        _signal_hermes_gateway(lock, pid, signal.SIGTERM)
+                        deadline = time.monotonic() + 10
+                    elif time.monotonic() >= deadline:
+                        if killed:
+                            raise ValueError("gateway is still running")
+                        # Reverify ownership before escalation: never trust a stale PID.
+                        _signal_hermes_gateway(lock, pid, signal.SIGKILL)
+                        killed = True
+                        deadline = time.monotonic() + 2
+                    time.sleep(0.1)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise ValueError(
+                "Hermes private gateway shutdown failed; retry removal."
+            ) from exc
+
+
 def remove(name: str) -> bool:
     profile = get_profile(name)
     if profile is None or profile.name not in SUPPORTED:
@@ -893,5 +971,7 @@ def remove(name: str) -> bool:
     _reject_symlinked_ancestors(root)
     if not root.exists():
         return False
+    if profile.name == "hermes":
+        _stop_hermes_gateways(root)
     shutil.rmtree(root)
     return True

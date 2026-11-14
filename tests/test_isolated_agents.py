@@ -13,6 +13,7 @@ import sys
 import tomllib
 import urllib.error
 from argparse import ArgumentParser, Namespace
+from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -236,6 +237,265 @@ def test_hermes_provider_is_selected_from_private_config(private_home, model, po
         "--model",
         model,
     ]
+
+
+@pytest.mark.parametrize(
+    "saved_metrics",
+    [None, {"enabled": False, "send": False}, {"enabled": True, "send": True}],
+)
+def test_private_hermes_records_telemetry_opt_out(private_home, saved_metrics):
+    user_config = private_home / ".hermes" / "config.yaml"
+    user_config.parent.mkdir()
+    original = "telemetry:\n  shared_metrics:\n    enabled: true\n    send: true\n"
+    user_config.write_text(original)
+    root = isolated.connection_dir() / "agents" / "hermes"
+    config_path = root / "profiles" / "rapid" / "config.yaml"
+    if saved_metrics is not None:
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            yaml.safe_dump({"telemetry": {"shared_metrics": saved_metrics}})
+        )
+    for _ in range(2):
+        isolated.configure("hermes", "qwen3.5-9b-4bit")
+        config = yaml.safe_load(config_path.read_text())
+        # v0.23.1 re-asks an explicit opt-out unless offer_version is current.
+        assert config["telemetry"]["shared_metrics"] == {
+            "enabled": False,
+            "send": False,
+            "offer_version": 2,
+        }
+        assert user_config.read_text() == original
+    assert not (root / "config.yaml").exists()
+
+
+def test_remove_hermes_stale_lock_never_invokes_gateway(private_home):
+    root = isolated.connection_dir() / "agents" / "hermes"
+    root.mkdir(parents=True)
+    (root / "gateway.lock").write_text("stale")
+    with patch("rapid_mlx.agents.isolated.subprocess.run") as run:
+        assert isolated.remove("hermes")
+    assert run.call_count == 0
+
+
+@pytest.fixture
+def hermes_writer(private_home):
+    root = isolated.connection_dir() / "agents" / "hermes"
+    home = root / "profiles" / "rapid"
+    home.mkdir(parents=True)
+    source = """
+import fcntl, json, os, signal, sys, time
+from pathlib import Path
+home = Path(sys.argv[1])
+with (home / 'gateway.lock').open('w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    json.dump({'pid': os.getpid(), 'kind': 'hermes-gateway',
+               'hermes_home': str(home.resolve())}, lock)
+    lock.flush()
+    print('ready', flush=True)
+    while True:
+        (home / 'state.db').write_text('gateway running')
+        time.sleep(0.01)
+"""
+    with subprocess.Popen(
+        [sys.executable, "-u", "-c", source, str(home)],
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as worker:
+        assert worker.stdout.readline().strip() == "ready"
+        try:
+            yield root, worker
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait(timeout=5)
+
+
+def test_remove_hermes_stops_only_verified_private_writer(hermes_writer, private_home):
+    root, worker = hermes_writer
+    native = private_home / ".hermes"
+    native.mkdir()
+    (native / "gateway.lock").write_text(json.dumps({"pid": os.getpid()}))
+    (root / "borrowed-runtime").symlink_to(native, target_is_directory=True)
+    run = subprocess.run
+
+    def probe(command, **kwargs):
+        assert command[0] == "lsof"
+        assert command[-1] == str(root / "profiles" / "rapid" / "gateway.lock")
+        return run(command, **kwargs)
+
+    with patch("rapid_mlx.agents.isolated.subprocess.run", side_effect=probe) as calls:
+        assert isolated.remove("hermes")
+    assert calls.call_count == 1
+    worker.wait(timeout=5)
+    assert worker.returncode == -signal.SIGTERM
+    assert not root.exists()
+    assert (native / "gateway.lock").is_file()
+
+
+@pytest.mark.parametrize(
+    "record",
+    ["broken", "[]", '{"pid": 123}', '{"pid": true, "kind": "hermes-gateway"}'],
+)
+def test_remove_hermes_refuses_invalid_lock_record(hermes_writer, record):
+    root, worker = hermes_writer
+    (root / "profiles" / "rapid" / "gateway.lock").write_text(record)
+    with (
+        patch("rapid_mlx.agents.isolated.os.kill") as kill,
+        patch("rapid_mlx.agents.isolated.subprocess.run") as run,
+        pytest.raises(ValueError, match="retry removal"),
+    ):
+        isolated.remove("hermes")
+    kill.assert_not_called()
+    run.assert_not_called()
+    assert worker.poll() is None
+    assert root.exists()
+
+
+@pytest.mark.parametrize("pid", [0, 1, -1, os.getpid()])
+def test_remove_hermes_refuses_unsafe_pid(hermes_writer, pid):
+    root, _ = hermes_writer
+    lock = root / "profiles" / "rapid" / "gateway.lock"
+    record = json.loads(lock.read_text())
+    record["pid"] = pid
+    lock.write_text(json.dumps(record))
+    with (
+        patch("rapid_mlx.agents.isolated.os.kill") as kill,
+        pytest.raises(ValueError, match="retry removal"),
+    ):
+        isolated.remove("hermes")
+    kill.assert_not_called()
+    assert root.exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("lsof"),
+        subprocess.CalledProcessError(1, "lsof"),
+        subprocess.TimeoutExpired("lsof", 5),
+        "foreign-uid",
+        "foreign-pid",
+    ],
+)
+def test_remove_hermes_refuses_unverified_pid(hermes_writer, failure):
+    root, worker = hermes_writer
+    with (
+        patch("rapid_mlx.agents.isolated.os.kill") as kill,
+        patch("rapid_mlx.agents.isolated.subprocess.run") as run,
+        pytest.raises(ValueError, match="retry removal"),
+    ):
+        if isinstance(failure, Exception):
+            run.side_effect = failure
+        else:
+            run.return_value.stdout = (
+                f"p{worker.pid}\nu{os.getuid() + 1}\n"
+                if failure == "foreign-uid"
+                else f"p{worker.pid + 1}\nu{os.getuid()}\n"
+            )
+        isolated.remove("hermes")
+    kill.assert_called_once_with(worker.pid, 0)
+    assert root.exists()
+
+
+@pytest.mark.parametrize("failure", [ProcessLookupError(), PermissionError()])
+def test_remove_hermes_refuses_dead_or_inaccessible_pid(hermes_writer, failure):
+    root, _ = hermes_writer
+    with (
+        patch("rapid_mlx.agents.isolated.os.kill", side_effect=failure),
+        patch("rapid_mlx.agents.isolated.subprocess.run") as run,
+        pytest.raises(ValueError, match="retry removal"),
+    ):
+        isolated.remove("hermes")
+    run.assert_not_called()
+    assert root.exists()
+
+
+@pytest.mark.parametrize("foreign_owner", [False, True])
+def test_remove_hermes_refuses_unsafe_lock_inode(hermes_writer, foreign_owner):
+    root, _ = hermes_writer
+    lock = root / "profiles" / "rapid" / "gateway.lock"
+    if not foreign_owner:
+        os.link(lock, root / "hardlink")
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.os.getuid",
+            return_value=os.getuid() + int(foreign_owner),
+        ),
+        patch("rapid_mlx.agents.isolated.os.kill") as kill,
+        pytest.raises(ValueError, match="retry removal"),
+    ):
+        isolated.remove("hermes")
+    kill.assert_not_called()
+    assert root.exists()
+
+
+@pytest.mark.parametrize("outcome", ["term", "kill", "timeout", "lost-ownership"])
+def test_remove_hermes_bounded_wait_and_reverified_escalation(hermes_writer, outcome):
+    root, worker = hermes_writer
+    lock = root / "profiles" / "rapid" / "gateway.lock"
+    blocked = BlockingIOError()
+    flock_results = {
+        "term": [blocked, blocked, None],
+        "kill": [blocked, blocked, None],
+        "timeout": [blocked, blocked, blocked],
+        "lost-ownership": [blocked, blocked],
+    }
+    with (
+        patch("fcntl.flock", side_effect=flock_results[outcome]),
+        patch(
+            "time.monotonic",
+            side_effect=[0, 1] if outcome == "term" else [0, 10, 10, 12],
+        ),
+        patch("time.sleep") as sleep,
+        patch("rapid_mlx.agents.isolated.os.kill") as kill,
+        patch("rapid_mlx.agents.isolated.subprocess.run") as run,
+    ):
+        verified = subprocess.CompletedProcess(
+            [], 0, f"p{worker.pid}\nu{os.getuid()}\n"
+        )
+        run.side_effect = (
+            [verified, subprocess.CompletedProcess([], 0, "")]
+            if (outcome == "lost-ownership")
+            else [verified, verified]
+        )
+        if outcome in {"timeout", "lost-ownership"}:
+            with pytest.raises(ValueError, match="retry removal"):
+                isolated.remove("hermes")
+            assert root.exists()
+        else:
+            assert isolated.remove("hermes")
+            assert not root.exists()
+        signals = [call.args for call in kill.call_args_list if call.args[1] != 0]
+        assert signals == [(worker.pid, signal.SIGTERM)] + (
+            [(worker.pid, signal.SIGKILL)] if outcome in {"kill", "timeout"} else []
+        )
+        for call in run.call_args_list:
+            assert call.args[0] == [
+                "lsof",
+                "-a",
+                "-p",
+                str(worker.pid),
+                "-u",
+                str(os.getuid()),
+                "-Fpu",
+                "--",
+                str(lock),
+            ]
+        assert sleep.call_count == (1 if outcome == "lost-ownership" else 2)
+
+
+def test_remove_hermes_refuses_symlinked_gateway_home(private_home):
+    native = private_home / ".hermes"
+    native.mkdir()
+    (native / "gateway.lock").touch()
+    root = isolated.connection_dir() / "agents" / "hermes"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "rapid").symlink_to(native, target_is_directory=True)
+    with patch("rapid_mlx.agents.isolated.subprocess.run") as shutdown:
+        with pytest.raises(ValueError, match="symlinked config path"):
+            isolated.remove("hermes")
+        shutdown.assert_not_called()
+    assert (native / "gateway.lock").is_file()
 
 
 def test_old_opencode_shape_and_hermes_auth(private_home):
@@ -966,8 +1226,11 @@ def test_key_creation_race_reuses_winner(private_home):
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        (urllib.error.HTTPError("url", 401, "no", {}, None), "key-mismatch"),
-        (urllib.error.HTTPError("url", 503, "loading", {}, None), "server-error"),
+        (urllib.error.HTTPError("url", 401, "no", Message(), None), "key-mismatch"),
+        (
+            urllib.error.HTTPError("url", 503, "loading", Message(), None),
+            "server-error",
+        ),
         (urllib.error.URLError(ConnectionRefusedError()), "stopped"),
         (ValueError("bad JSON"), "server-error"),
     ],
