@@ -829,6 +829,9 @@ def configure(
             "os.execvpe('aider', args, environment)\n",
         )
     elif name == "qwen-code":
+        # An explicit empty config avoids QWEN_HOME's missing-migration warning.
+        # Model, endpoint, and auth stay in the launch flags/environment.
+        _private_write(root / "settings.json", "{}\n")
         _private_write(
             root / "qwen.env", f"OPENAI_BASE_URL={base}\nOPENAI_MODEL={model}\n"
         )
