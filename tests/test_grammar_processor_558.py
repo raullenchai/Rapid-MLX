@@ -3603,9 +3603,7 @@ def test_line1_route_threads_predicate_into_offload_build():
         and src.find("enforce_context_length_for_messages,", _line1_capture)
         - _line1_capture
         < 200
-    ), (
-        "route must capture the prompt-token count for the hard window check"
-    )
+    ), "route must capture the prompt-token count for the hard window check"
     room_pos = src.find("not _line1_context_room_ok(")
     assert room_pos != -1, (
         "route must DISENGAGE on a provable no-room verdict (codex r4 #1)"

@@ -3018,7 +3018,7 @@ class BatchedEngine(BaseEngine):
         """
         cached = self.__dict__.get("_mllm_text_ids_probe_result")
         if cached is not None:
-            return cached
+            return bool(cached)
         result = False
         try:
             processor = getattr(self, "_processor", None)
