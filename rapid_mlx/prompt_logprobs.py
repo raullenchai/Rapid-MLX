@@ -53,8 +53,53 @@ def prefill_prompt_logprobs(model: Any, tokens: list[int], result: PromptLogprob
     return cache
 
 
+def _incremental_ends(tokenizer, ids, special):
+    """Decode incrementally, bounding the naive decoder's retained context."""
+    from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
+
+    detok = getattr(tokenizer, "detokenizer", None)
+    if detok is None:
+        detok = NaiveStreamingDetokenizer(tokenizer)
+    detok.reset()
+    naive = isinstance(detok, NaiveStreamingDetokenizer)
+    ends, context = [], []
+    position = previous = 0
+    for tid, is_special in zip(ids, special):
+        if not is_special:
+            detok.add_token(tid)
+            context.append(tid)
+            text = detok.text
+            # Wait for complete UTF-8 before assigning a character to a token.
+            length = len(text.rstrip("\ufffd"))
+            position += max(0, length - previous)
+            previous = length
+            if (
+                naive
+                and len(context) >= 32
+                and (not text.endswith("\ufffd") or len(context) >= 64)
+            ):
+                # The generic decoder otherwise re-decodes the entire line.
+                # Keep a small overlap for whitespace/word-boundary context;
+                # even an arbitrarily long line has bounded decode work.
+                context = context[-8:]
+                detok.reset()
+                for token in context:
+                    detok.add_token(token)
+                previous = len(detok.text.rstrip("\ufffd"))
+        ends.append(position)
+    detok.finalize()
+    return ends
+
+
 def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
-    """Map scores to original text, including special and split Unicode tokens."""
+    """Partition the submitted prompt over the actual scored input IDs.
+
+    The completions scheduler uses encode(prompt) with default special-token
+    insertion. Keep those BOS/EOS scores as zero-width entries at their sequence
+    positions: echo must reproduce the client's prompt, not decoded BOS/EOS
+    spellings. A literal special token in the prompt still occupies its span
+    (the tokenizer's insertion mask distinguishes it from added tokens).
+    """
     ids = result.token_ids
     if not ids:
         return {
@@ -64,23 +109,56 @@ def legacy_prompt_logprobs(prompt: str, tokenizer: Any, result: PromptLogprobs):
             "text_offset": [],
         }
     base = getattr(tokenizer, "_tokenizer", tokenizer)
-    starts = None
+    offsets = None
+    special = None
     try:
-        encoded = base(prompt, return_offsets_mapping=True)
+        encoded = base(
+            prompt, return_offsets_mapping=True, return_special_tokens_mask=True
+        )
         if list(encoded["input_ids"]) == ids:
-            starts = [int(pair[0]) for pair in encoded["offset_mapping"]]
+            offsets = encoded["offset_mapping"]
+            special = encoded.get("special_tokens_mask")
+            if len(offsets) != len(ids):
+                offsets = None
     except (TypeError, AttributeError, KeyError, NotImplementedError):
         pass
-    if starts is None:
-        # Prefix decoding avoids treating a partial UTF-8 byte as a character.
-        starts = [0]
-        for i in range(1, len(ids)):
-            prefix = tokenizer.decode(ids[:i]).rstrip("\ufffd")
-            starts.append(min(len(prompt), len(prefix)))
-    starts = [min(len(prompt), max(0, x)) for x in starts]
-    # Byte fallback tokens may share a character offset. Give that character
-    # to the last piece, leaving zero-width entries for preceding byte pieces.
-    ends = starts[1:] + [len(prompt)] if ids else []
+    if special is None:
+        # Slow tokenizers may provide the insertion mask without offsets.
+        try:
+            encoded = base(prompt, return_special_tokens_mask=True)
+            if list(encoded["input_ids"]) == ids:
+                special = encoded["special_tokens_mask"]
+        except (TypeError, AttributeError, KeyError, NotImplementedError):
+            pass
+    if special is None or len(special) != len(ids):
+        special_ids = set(getattr(base, "all_special_ids", []))
+        special = [
+            tid in special_ids and (offsets is None or tuple(offsets[i]) == (0, 0))
+            for i, tid in enumerate(ids)
+        ]
+    content = [i for i, added in enumerate(special) if not added]
+    if offsets is None:
+        ends = _incremental_ends(tokenizer, ids, special)
+    else:
+        ends = [0] * len(ids)
+        for index, i in enumerate(content):
+            # Shared starts belong to the last byte piece of a character.
+            # Before an inserted special token use the preceding span's END,
+            # never its (possibly zero) offset or the special token's (0, 0).
+            next_i = content[index + 1] if index + 1 < len(content) else len(ids)
+            ends[i] = (
+                int(offsets[next_i][0] if next_i == i + 1 else offsets[i][1])
+                if next_i < len(ids)
+                else len(prompt)
+            )
+    if content:
+        ends[content[-1]] = len(prompt)
+    starts = []
+    position = 0
+    for i, added in enumerate(special):
+        starts.append(position)
+        position = position if added else min(len(prompt), max(position, ends[i]))
+        ends[i] = position
     return {
         "tokens": [prompt[a:b] for a, b in zip(starts, ends)],
         "token_logprobs": result.logprobs,

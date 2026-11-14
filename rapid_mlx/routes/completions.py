@@ -740,7 +740,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 if scoring is not None:
                     from ..prompt_logprobs import legacy_prompt_logprobs
 
-                    prefix = legacy_prompt_logprobs(prompt, engine.tokenizer, scoring)
+                    prefix = await asyncio.to_thread(
+                        legacy_prompt_logprobs, prompt, engine.tokenizer, scoring
+                    )
                     tokens_arr.extend(prefix["tokens"])
                     token_lps.extend(prefix["token_logprobs"])
                     top_lps.extend(prefix["top_logprobs"])
@@ -1019,7 +1021,9 @@ async def stream_completion(
         if scoring is not None:
             from ..prompt_logprobs import legacy_prompt_logprobs
 
-            prefix = legacy_prompt_logprobs(prompt, engine.tokenizer, scoring)
+            prefix = await asyncio.to_thread(
+                legacy_prompt_logprobs, prompt, engine.tokenizer, scoring
+            )
             echo_data = {
                 "id": completion_id,
                 "object": "text_completion",

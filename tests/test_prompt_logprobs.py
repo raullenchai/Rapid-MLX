@@ -24,6 +24,7 @@ patched_config = _patched_config
 
 
 class Tokenizer:
+    clean_up_tokenization_spaces = False
     eos_token_id = None
 
     def encode(self, text):
@@ -39,7 +40,21 @@ class Tokenizer:
 def test_echo_scores_lists_and_streams(
     patched_config, monkeypatch, stream, max_tokens, top_k
 ):
+    import asyncio
     import json
+
+    from rapid_mlx import prompt_logprobs
+
+    build = prompt_logprobs.legacy_prompt_logprobs
+    builder_calls = []
+
+    def off_loop_builder(*args):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        builder_calls.append(args[0])
+        return build(*args)
+
+    monkeypatch.setattr(prompt_logprobs, "legacy_prompt_logprobs", off_loop_builder)
 
     def factory():
         e = MagicMock()
@@ -93,6 +108,7 @@ def test_echo_scores_lists_and_streams(
         },
     )
     assert response.status_code == 200, response.text
+    assert builder_calls == prompts
     if stream:
         events = [
             json.loads(line[6:])
@@ -506,3 +522,120 @@ def test_scoring_only_admission_liveness(monkeypatch, policy, path, abort):
     assert finished == {"following"}
     scheduler._cleanup_finished(finished)
     assert not scheduler.running and not scheduler.waiting
+
+
+def _wire_scores(ids):
+    return PromptLogprobs(
+        0,
+        token_ids=ids,
+        logprobs=[None] + [-float(i) for i in range(1, len(ids))],
+        top_logprobs=[None] + [{} for _ in ids[1:]],
+    )
+
+
+@pytest.mark.parametrize("middle", [False, True])
+def test_added_special_tokens_have_sequence_offsets(middle):
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    ids = [10, 97, 11, 98, 12] if middle else [10, 97, 98, 12]
+    tokenizer = Tokenizer()
+    tokenizer._tokenizer = lambda text, **kw: {
+        "input_ids": ids,
+        "offset_mapping": (
+            [(0, 0), (0, 1), (0, 0), (1, 2), (0, 0)]
+            if middle
+            else [(0, 0), (0, 1), (1, 2), (0, 0)]
+        ),
+        "special_tokens_mask": [1, 0, 1, 0, 1] if middle else [1, 0, 0, 1],
+    }
+    scores = _wire_scores(ids)
+    payload = legacy_prompt_logprobs("ab", tokenizer, scores)
+    assert payload["tokens"] == (
+        ["", "a", "", "b", ""] if middle else ["", "a", "b", ""]
+    )
+    assert payload["text_offset"] == ([0, 0, 1, 1, 2] if middle else [0, 0, 1, 2])
+    assert payload["token_logprobs"] == scores.logprobs
+    assert "".join(payload["tokens"]) == "ab"
+
+
+def test_no_offsets_long_prompt_uses_bounded_decode_windows():
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    class SlowTokenizer(Tokenizer):
+        clean_up_tokenization_spaces = False
+
+        def decode(self, ids, **kwargs):
+            decoded_lengths.append(len(ids))
+            return super().decode(ids, **kwargs)
+
+    decoded_lengths = []
+    prompt = "ab " * 2000
+    payload = legacy_prompt_logprobs(
+        prompt, SlowTokenizer(), _wire_scores(list(map(ord, prompt)))
+    )
+    assert "".join(payload["tokens"]) == prompt
+    assert payload["text_offset"] == list(range(len(prompt)))
+    assert max(decoded_lengths) <= 64
+    assert sum(decoded_lengths) <= 64 * (len(prompt) + 1)
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_no_offsets_byte_fallback_and_special_tokens(optimized):
+    from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
+
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    class ByteTokenizer:
+        vocab = {
+            "<s>": 0,
+            "a": 1,
+            "<0xF0>": 2,
+            "<0x9F>": 3,
+            "<0x98>": 4,
+            "<0x80>": 5,
+            "b": 6,
+            "</s>": 7,
+        }
+        all_special_ids = [0, 7]
+        clean_up_tokenization_spaces = False
+
+        def decode(self, ids):
+            raw = [b"<s>", b"a", b"\xf0", b"\x9f", b"\x98", b"\x80", b"b", b"</s>"]
+            return b"".join(raw[i] for i in ids).decode("utf-8", "replace")
+
+        @property
+        def detokenizer(self):
+            return SPMStreamingDetokenizer(self) if optimized else None
+
+    payload = legacy_prompt_logprobs(
+        "a😀b", ByteTokenizer(), _wire_scores(list(range(8)))
+    )
+    assert payload["tokens"] == ["", "a", "", "", "", "😀", "b", ""]
+    assert payload["text_offset"] == [0, 0, 1, 1, 1, 1, 2, 3]
+    assert "".join(payload["tokens"]) == "a😀b"
+
+
+@pytest.mark.parametrize("offsets_available", [False, True])
+def test_literal_special_token_retains_submitted_text(offsets_available):
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    class SpecialTokenizer(Tokenizer):
+        all_special_ids = [10, 12]
+
+        def __call__(self, prompt, **kwargs):
+            if not offsets_available and kwargs.get("return_offsets_mapping"):
+                raise NotImplementedError
+            return {
+                "input_ids": [10, 10, 97, 12],
+                "offset_mapping": [(0, 0), (0, 3), (3, 4), (0, 0)],
+                "special_tokens_mask": [1, 0, 0, 1],
+            }
+
+        def decode(self, ids, **kwargs):
+            return "".join("<s>" if i == 10 else chr(i) for i in ids)
+
+    payload = legacy_prompt_logprobs(
+        "<s>a", SpecialTokenizer(), _wire_scores([10, 10, 97, 12])
+    )
+    assert payload["tokens"] == ["", "<s>", "a", ""]
+    assert payload["text_offset"] == [0, 0, 3, 4]
