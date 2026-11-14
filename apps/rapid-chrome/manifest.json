@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Rapid MLX for Chrome",
+  "version": "0.1.0",
+  "description": "Chat with your local Rapid engine and operate explicitly shared browser tabs.",
+  "minimum_chrome_version": "125",
+  "permissions": ["debugger", "tabs", "tabGroups", "storage", "sidePanel", "scripting"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "side_panel": {"default_path": "panel.html"},
+  "action": {"default_title": "Open Rapid", "default_icon": {"16":"icons/16.png", "32":"icons/32.png"}},
+  "icons": {"16":"icons/16.png", "32":"icons/32.png", "48":"icons/48.png", "128":"icons/128.png"},
+  "commands": {"open-panel": {"suggested_key": {"default":"Alt+Shift+R"}, "description":"Open Rapid side panel"}}
+}

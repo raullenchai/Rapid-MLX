@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rapid MLX for Chrome</title><link rel="stylesheet" href="panel.css"></head>
+<body>
+<header><div><strong>Rapid MLX</strong><small>Your local browser assistant</small></div><button id="settings-toggle" disabled aria-label="Settings" aria-expanded="false">Settings</button></header>
+<p id="status" role="status">Connecting to extension…</p>
+<section id="settings" hidden>
+  <h2>Local engine</h2>
+  <form id="settings-form">
+    <label>Base URL<input id="base" type="url" required placeholder="http://127.0.0.1:8000"></label>
+    <label>API key (optional)<input id="api-key" type="password" autocomplete="off"></label>
+    <label>Model<select id="model"><option value="">First available model</option></select></label>
+    <label class="inline"><input id="vision" type="checkbox"> Model supports vision</label>
+    <label>Maximum tool steps<input id="step-cap" type="number" min="1" max="100" value="25"></label>
+    <button type="submit">Save & connect</button><button id="refresh" type="button">Refresh models</button>
+  </form><small>Keys stay in local extension storage. Page data goes only to your configured local engine.</small>
+</section>
+<div class="toolbar"><button id="share">Use this tab</button><button id="stop" class="danger" disabled>Stop</button></div>
+<div id="owned" aria-label="Shared tabs"></div>
+<div class="toolbar"><button id="new-chat">New chat</button><button id="copy-trace">Copy debug trace</button></div>
+<main id="transcript" aria-label="Conversation" aria-live="polite"><div id="messages"></div><section id="steps" aria-label="Tool steps"></section></main>
+<section id="approvals" aria-label="Approvals" aria-live="assertive"></section>
+<section id="paused" hidden><p>Chrome debugger was detached. Reattach and keep working?</p><button id="resume">Keep working</button><button id="pause-stop">Stop</button></section>
+<form id="chat"><label class="sr-only" for="message">Message Rapid</label><textarea id="message" rows="3" placeholder="Ask Rapid to help with your tabs…" required></textarea><button id="send" type="submit">Send</button></form>
+<script src="panel.js" type="module"></script>
+</body></html>
