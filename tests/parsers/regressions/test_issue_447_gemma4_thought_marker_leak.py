@@ -34,7 +34,7 @@ xfail in this file.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import pytest
 
@@ -43,8 +43,7 @@ from rapid_mlx.output_router import OutputRouter
 from ..fake_tokenizer import GEMMA4_VOCAB, gemma4_fake_tokenizer
 
 
-@dataclass
-class _Case:
+class _Case(NamedTuple):
     id: str
     token_ids: list[int]
     expected_content: str | None

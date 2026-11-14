@@ -41,8 +41,9 @@ def test_reasoning_reconstructor_accumulates_separately():
 
 def test_reasoning_reconstructor_rejects_both_populated():
     rec = StreamingReasoningReconstructor()
-    with pytest.raises(AssertionError, match="leaked"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(DeltaMessage(reasoning="r", content="c"))
+    assert "leaked" in str(exc_info.value)
 
 
 def test_reasoning_reconstructor_ignores_empty_role_only_delta():
@@ -96,41 +97,47 @@ def test_tool_reconstructor_accumulates_arguments():
 def test_tool_reconstructor_rejects_duplicate_id():
     rec = StreamingToolReconstructor()
     rec.append_delta(_tool_delta(id="call_1", name="f"))
-    with pytest.raises(AssertionError, match="id only once"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(id="call_1", args="x"))
+    assert "id only once" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_duplicate_name():
     rec = StreamingToolReconstructor()
     rec.append_delta(_tool_delta(id="call_1", name="f"))
-    with pytest.raises(AssertionError, match="function.name only once"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(name="f", args="x"))
+    assert "function.name only once" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_first_delta_without_id():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="id on first appearance"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(name="f"))
+    assert "id on first appearance" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_first_delta_without_name():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="function.name on first"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(_tool_delta(id="call_1"))
+    assert "function.name on first" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_bad_type():
     rec = StreamingToolReconstructor()
     delta = _tool_delta(id="call_1", name="f")
     delta["tool_calls"][0]["type"] = "something_else"
-    with pytest.raises(AssertionError, match="type='function'"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(delta)
+    assert "type='function'" in str(exc_info.value)
 
 
 def test_tool_reconstructor_rejects_empty_delta():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="content or tool_calls"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta({})
+    assert "content or tool_calls" in str(exc_info.value)
 
 
 def test_tool_reconstructor_accepts_pure_content():
@@ -149,8 +156,9 @@ def test_tool_reconstructor_rejects_two_tools_per_delta_by_default():
             {"index": 1, "id": "b", "function": {"name": "f2"}},
         ]
     }
-    with pytest.raises(AssertionError, match="only one tool call per delta"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta(delta)
+    assert "only one tool call per delta" in str(exc_info.value)
 
 
 def test_tool_reconstructor_allows_two_tools_when_opted_in():
@@ -185,8 +193,9 @@ def test_batch_deltas_handles_empty():
 
 
 def test_batch_deltas_rejects_zero_interval():
-    with pytest.raises(AssertionError, match=">= 1"):
+    with pytest.raises(AssertionError) as exc_info:
         batch_deltas_with_stream_interval(["x"], 0)
+    assert ">= 1" in str(exc_info.value)
 
 
 # ----- Harmony marker allow-list -----------------------------------------
@@ -237,14 +246,16 @@ def test_assert_no_marker_leak_accepts_clean_content():
 
 @pytest.mark.parametrize("marker", HARMONY_LEAK_MARKERS)
 def test_assert_no_marker_leak_catches_each_marker(marker):
-    with pytest.raises(AssertionError, match="leaked"):
+    with pytest.raises(AssertionError) as exc_info:
         assert_no_harmony_marker_leak(f"prefix {marker} suffix")
+    assert "leaked" in str(exc_info.value)
 
 
 # ----- Reconstructor None-handling (codex K2) ---------------------------
 
 
-def test_tool_reconstructor_rejects_malformed_tool_calls():
+@pytest.mark.parametrize("bad", ["not-a-list", {"index": 0}, 42, b"bytes"])
+def test_tool_reconstructor_rejects_malformed_tool_calls(bad):
     """``tool_calls`` must be a list when present — string / dict / int /
     bytes all rejected. Renamed from ``rejects_null_tool_calls`` (codex
     raised in re-review): the prior name claimed null coverage, but the
@@ -252,10 +263,10 @@ def test_tool_reconstructor_rejects_malformed_tool_calls():
     to "key absent" (so JSON deltas that explicitly serialize the field
     as ``None`` round-trip cleanly). Only non-list types are rejected.
     """
-    for bad in ("not-a-list", {"index": 0}, 42, b"bytes"):
-        rec = StreamingToolReconstructor()
-        with pytest.raises(AssertionError, match="malformed 'tool_calls'"):
-            rec.append_delta({"content": "ok", "tool_calls": bad})
+    rec = StreamingToolReconstructor()
+    with pytest.raises(AssertionError) as exc_info:
+        rec.append_delta({"content": "ok", "tool_calls": bad})
+    assert "malformed 'tool_calls'" in str(exc_info.value)
 
 
 def test_tool_reconstructor_accepts_explicit_null_tool_calls():
@@ -273,11 +284,13 @@ def test_tool_reconstructor_accepts_explicit_null_tool_calls():
 
 def test_tool_reconstructor_rejects_null_function():
     rec = StreamingToolReconstructor()
-    with pytest.raises(AssertionError, match="malformed 'function'"):
+    with pytest.raises(AssertionError) as exc_info:
         rec.append_delta({"tool_calls": [{"index": 0, "id": "x", "function": None}]})
+    assert "malformed 'function'" in str(exc_info.value)
 
 
-def test_tool_reconstructor_rejects_non_string_arguments():
+@pytest.mark.parametrize("bad", [0, False, ["arg"], {"a": 1}, b"bytes"])
+def test_tool_reconstructor_rejects_non_string_arguments(bad):
     """raised in Codex re-review: ``arguments`` was previously coerced via
     ``function.get("arguments") or ""``, silently swallowing ``None`` /
     ``0`` / ``False``. Strict typing now requires the field to be absent
@@ -285,12 +298,12 @@ def test_tool_reconstructor_rejects_non_string_arguments():
     """
     rec = StreamingToolReconstructor()
     rec.append_delta(_tool_delta(id="call_1", name="get_weather"))
-    for bad in (0, False, ["arg"], {"a": 1}, b"bytes"):
-        with pytest.raises(AssertionError, match="malformed 'arguments'"):
-            rec.append_delta(
-                {
-                    "tool_calls": [
-                        {"index": 0, "function": {"arguments": bad}},
-                    ]
-                }
-            )
+    with pytest.raises(AssertionError) as exc_info:
+        rec.append_delta(
+            {
+                "tool_calls": [
+                    {"index": 0, "function": {"arguments": bad}},
+                ]
+            }
+        )
+    assert "malformed 'arguments'" in str(exc_info.value)
