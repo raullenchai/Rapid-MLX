@@ -123,17 +123,17 @@ def _attach(generator, gen, cache):
         _plain_mask = staticmethod(cache.create_attention_mask)
 
     def merge(caches):
-        # Same layer merge dispatch as upstream; never intercept non-plain KV.
-        merged = []
-        for layers in zip(*caches):
-            result = layers[0].merge(list(layers))
+        # Delegate to the module's current merge so other admission paths
+        # (the singleton pass-through) keep their layers; mark only plain
+        # batched KV that this merge produced from plain KV inputs.
+        merged = gen._merge_caches(caches)
+        for layers, result in zip(zip(*caches), merged):
             if type(result) is cache.BatchKVCache and all(
                 type(layer) is cache.KVCache for layer in layers
             ):
                 lengths = [layer.size() for layer in layers]
                 result.__class__ = UnpaddedBatchKVCache
                 result._unpadded = len(set(lengths)) == 1
-            merged.append(result)
         return merged
 
     class PromptBatch(gen.PromptProcessingBatch):
