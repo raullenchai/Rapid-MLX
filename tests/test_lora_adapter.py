@@ -582,14 +582,19 @@ async def test_failed_adapter_start_releases_cache_overrides(
         await engine.stop()
 
 
-async def test_failed_adapter_stop_releases_cache_overrides(adapter, monkeypatch):
-    from unittest.mock import AsyncMock
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.parametrize("preserve_model_worker", [False, True])
+async def test_failed_adapter_stop_keeps_cache_isolation_until_retry(
+    adapter, monkeypatch, caplog, failure, preserve_model_worker
+):
+    from unittest.mock import AsyncMock, Mock
 
     from rapid_mlx import disk_caches, response_cache
     from rapid_mlx.engine import batched
 
     directory, base = adapter
-    before = disk_caches.source()
+    disk_caches.configure(False)
+    monkeypatch.setenv(disk_caches.ENV_VAR, "0")
     response_cache.configure_response_cache(8)
     configured_cache = response_cache.get_response_cache()
     engine = batched.BatchedEngine(
@@ -598,12 +603,101 @@ async def test_failed_adapter_stop_releases_cache_overrides(adapter, monkeypatch
     monkeypatch.setattr(batched, "prepare_execution_host", AsyncMock())
     monkeypatch.setattr(engine, "_start_llm", AsyncMock())
     await engine.start()
-    monkeypatch.setattr(
-        engine, "_stop_engine", AsyncMock(side_effect=RuntimeError("stop"))
+    scope = engine._adapter_cache_scope
+    stop_started = asyncio.Event()
+
+    async def fail_stop():
+        stop_started.set()
+        if failure is asyncio.CancelledError:
+            await asyncio.Future()
+        raise failure("stop")
+
+    # Exercise the real shutdown boundary with a core that is still serving.
+    core = SimpleNamespace(stop=AsyncMock(side_effect=fail_stop), engine=Mock())
+    engine._engine = core
+    try:
+        stopping = asyncio.create_task(
+            engine.stop(preserve_model_worker=preserve_model_worker)
+        )
+        await stop_started.wait()
+        if failure is asyncio.CancelledError:
+            stopping.cancel()
+        with pytest.raises(failure):
+            await stopping
+        assert engine._engine is core
+        assert engine._loaded
+        core.engine.close.assert_not_called()
+        assert engine._adapter_cache_scope is scope
+        assert disk_caches.source() == "--adapter"
+        assert not response_cache.get_response_cache().enabled
+        assert "retaining adapter cache isolation" in caplog.text
+    finally:
+        core.stop.side_effect = None
+        await engine.stop(preserve_model_worker=preserve_model_worker)
+    core.engine.close.assert_called_once()
+    assert engine._adapter_cache_scope is None
+    assert not disk_caches.disabled()
+    assert response_cache.get_response_cache() is configured_cache
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.parametrize(
+    "cleanup_failure", [None, RuntimeError, asyncio.CancelledError]
+)
+async def test_partial_adapter_start_releases_isolation_only_after_cleanup(
+    adapter, monkeypatch, caplog, failure, cleanup_failure
+):
+    from unittest.mock import AsyncMock, Mock
+
+    from rapid_mlx import disk_caches, response_cache
+    from rapid_mlx.engine import batched
+
+    directory, base = adapter
+    disk_caches.configure(False)
+    monkeypatch.setenv(disk_caches.ENV_VAR, "0")
+    response_cache.configure_response_cache(8)
+    configured_cache = response_cache.get_response_cache()
+    engine = batched.BatchedEngine(
+        str(base), adapter_path=str(directory), force_text=True
     )
-    with pytest.raises(RuntimeError, match="stop"):
+    monkeypatch.setattr(batched, "prepare_execution_host", AsyncMock())
+    start_error = failure("start")
+
+    async def cleanup():
+        assert disk_caches.source() == "--adapter"
+        assert not response_cache.get_response_cache().enabled
+        if cleanup_failure is not None:
+            raise cleanup_failure("cleanup")
+
+    core = SimpleNamespace(stop=AsyncMock(side_effect=cleanup), engine=Mock())
+
+    async def partial_start():
+        # A scheduler may exist before _loaded/_engine_started become true.
+        engine._engine = core
+        raise start_error
+
+    monkeypatch.setattr(engine, "_start_llm", partial_start)
+    try:
+        with pytest.raises(failure) as caught:
+            await engine.start()
+        assert caught.value is start_error
+        core.stop.assert_awaited_once()
+        if cleanup_failure is None:
+            core.engine.close.assert_called_once()
+            assert engine._adapter_cache_scope is None
+            assert not disk_caches.disabled()
+            assert response_cache.get_response_cache() is configured_cache
+        else:
+            core.engine.close.assert_not_called()
+            assert engine._adapter_cache_scope is not None
+            assert disk_caches.source() == "--adapter"
+            assert not response_cache.get_response_cache().enabled
+            assert "retaining adapter cache isolation" in caplog.text
+    finally:
+        core.stop.side_effect = None
         await engine.stop()
-    assert disk_caches.source() == before
+    assert engine._adapter_cache_scope is None
+    assert not disk_caches.disabled()
     assert response_cache.get_response_cache() is configured_cache
 
 

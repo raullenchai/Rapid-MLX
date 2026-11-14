@@ -1890,7 +1890,15 @@ class BatchedEngine(BaseEngine):
         try:
             await self._start_engine()
         except BaseException:
-            self._release_adapter_cache_scope()
+            if getattr(self, "_adapter_cache_scope", None) is not None:
+                # Startup may have launched a scheduler before failing or
+                # being cancelled. Only confirmed cleanup can restore caches.
+                try:
+                    await self.stop()
+                except BaseException:
+                    # stop() logs and retains isolation. Preserve the original
+                    # startup error even when its cleanup also fails.
+                    pass
             raise
 
     async def _start_engine(self) -> None:
@@ -2816,8 +2824,15 @@ class BatchedEngine(BaseEngine):
         """Stop the engine and cleanup resources."""
         try:
             await self._stop_engine(preserve_model_worker=preserve_model_worker)
-        finally:
-            self._release_adapter_cache_scope()
+        except BaseException:
+            if getattr(self, "_adapter_cache_scope", None) is not None:
+                logger.warning(
+                    "Adapter engine shutdown failed or was cancelled; "
+                    "retaining adapter cache isolation",
+                    exc_info=True,
+                )
+            raise
+        self._release_adapter_cache_scope()
 
     async def _stop_engine(self, *, preserve_model_worker: bool) -> None:
         # Scheduler shutdown queues work on the same single model executor
