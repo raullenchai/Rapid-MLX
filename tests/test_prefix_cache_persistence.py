@@ -3531,8 +3531,9 @@ def test_kv_checkpoint_hook_returns_early_when_disk_caches_are_disabled():
     fake = SimpleNamespace(config=SimpleNamespace(kv_disk_checkpoint_interval=256))
     disk_caches.configure(True)
     try:
-        # A request without attributes proves the hook returns before reading it.
-        assert scheduler.Scheduler._maybe_disk_checkpoint(fake, object(), None) is None
+        # Only the prompt-scoring guard runs before the disk-cache opt-out.
+        request = SimpleNamespace(sampling_params=SimpleNamespace(prompt_logprobs=None))
+        assert scheduler.Scheduler._maybe_disk_checkpoint(fake, request, None) is None
     finally:
         disk_caches.configure(False)
 

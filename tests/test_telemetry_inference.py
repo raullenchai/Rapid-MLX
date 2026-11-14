@@ -2386,7 +2386,6 @@ def test_operational_prompt_cap_rejection_emits_closed_reason(monkeypatch):
     ("fields", "capability"),
     [
         ({"best_of": 2}, "multi_sample_unsupported"),
-        ({"echo": True, "logprobs": 1}, "logprobs_unsupported"),
     ],
 )
 async def test_legacy_completion_early_rejections_emit_capability(
@@ -2464,8 +2463,10 @@ async def test_legacy_completion_format_rejections_emit_capability(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("echo", [False, True])
 async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
     monkeypatch,
+    echo,
 ):
     from fastapi import HTTPException
 
@@ -2473,7 +2474,9 @@ async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
     from rapid_mlx.routes import completions
     from rapid_mlx.telemetry import inference
 
-    engine = SimpleNamespace()
+    engine = SimpleNamespace(
+        supports_prompt_logprobs=True, supports_completion_logprobs=False
+    )
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(completions, "_validate_model_name", lambda _model: None)
     monkeypatch.setattr(completions, "get_engine", lambda _model: engine)
@@ -2487,9 +2490,6 @@ async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
         completions, "enforce_context_length_for_prompt", lambda *_a, **_k: None
     )
     monkeypatch.setattr(completions, "_resolve_max_tokens", lambda *_a: 8)
-    monkeypatch.setattr(
-        completions, "_engine_supports_completion_logprobs", lambda _engine: False
-    )
     monkeypatch.setattr(
         completions, "_release_admission_unless_committed", lambda *_a, **_k: None
     )
@@ -2506,7 +2506,7 @@ async def test_legacy_completion_engine_logprobs_rejection_emits_capability(
         suffix=None,
         n=1,
         best_of=1,
-        echo=False,
+        echo=echo,
         logprobs=1,
         stream=False,
         max_tokens=8,

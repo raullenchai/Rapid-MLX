@@ -44,6 +44,14 @@ def test_echo_scores_lists_and_streams(
     import json
 
     from rapid_mlx import prompt_logprobs
+    from rapid_mlx.telemetry import inference
+
+    rejections = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda *a, **kw: rejections.append((a, kw)),
+    )
 
     build = prompt_logprobs.legacy_prompt_logprobs
     builder_calls = []
@@ -108,6 +116,7 @@ def test_echo_scores_lists_and_streams(
         },
     )
     assert response.status_code == 200, response.text
+    assert rejections == []
     assert builder_calls == prompts
     if stream:
         events = [
@@ -161,20 +170,24 @@ def test_echo_scores_lists_and_streams(
 def test_chunked_scores_include_boundary_targets(monkeypatch):
     import mlx_lm.models.cache as caches
 
-    monkeypatch.setattr(
-        caches, "make_prompt_cache", lambda model: [SimpleNamespace(state=[])]
-    )
+    def fresh_cache():
+        return [SimpleNamespace(state=mx.array(0))]
+
+    monkeypatch.setattr(caches, "make_prompt_cache", lambda model: fresh_cache())
     sizes = []
 
     def model(tokens, cache):
         sizes.append(tokens.shape[1])
-        # Context-dependent logits expose chunk-boundary off-by-one errors.
-        return -mx.abs(mx.arange(17)[None, None, :] - tokens[:, :, None])
+        # Retain prior tokens so resetting or losing KV between chunks fails.
+        context = mx.cumsum(tokens, axis=1) + cache[0].state
+        cache[0].state = context[0, -1]
+        return -mx.abs(mx.arange(17)[None, None, :] - (context % 17)[:, :, None])
 
     tokens = [i % 17 for i in range(PROMPT_LOGPROBS_CHUNK_SIZE * 2 + 9)]
     result = PromptLogprobs(3)
-    prefill_prompt_logprobs(model, tokens, result)
-    logits = model(mx.array([tokens[:-1]]), None)[0]
+    cache = prefill_prompt_logprobs(model, tokens, result)
+    assert cache[0].state.item() == sum(tokens[:-1])
+    logits = model(mx.array([tokens[:-1]]), fresh_cache())[0]
     reference = logits - mx.logsumexp(logits, -1, keepdims=True)
     actual = mx.take_along_axis(reference, mx.array(tokens[1:])[:, None], -1)[:, 0]
     assert result.logprobs[0] is None
