@@ -35,9 +35,14 @@ telemetry, and empty-project Git menus. During task replies, a PTY output
 hook also answers these specific confirmations:
 
 - Crush: the complete `Permission Required` dialog for `Tool bash`, with a
-  `Path` exactly matching the test project directory and the known
+  `Path` resolving exactly to the test project directory and the known
   `Allow / Allow for Session / Deny` menu and arrow-key instructions. The
   runner sends Right-arrow then Enter to select **Allow for Session**.
+  For `Tool write`, `Tool edit`, and `Tool multiedit`, the same complete dialog
+  must show a `File` resolving inside the test project directory. The runner
+  sends only Enter for **Allow**, approving that action alone. Both checks
+  resolve symlinks (including macOS `/tmp` → `/private/tmp`); files resolving
+  outside the project remain unanswered.
 - Aider: `Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
   The runner sends `y` then Enter for that command, without disabling later
   confirmations.

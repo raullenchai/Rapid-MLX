@@ -5,6 +5,8 @@ import io
 import json
 import signal
 import sqlite3
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -325,6 +327,75 @@ def crush_modal(workspace, command="cat hello.txt nonce.txt"):
         f"{workspace}    ││ Desc Read files ││ {command} ││ "
         "Allow      Allow for Session      Deny ││ ←/→ choose • enter confirm"
     )
+
+
+def crush_file_modal(path, tool="write"):
+    return (
+        crush_modal(path, "@@ -1,0 +1,1 @@ ││ 1 + hi")
+        .replace("Tool bash", f"Tool {tool}")
+        .replace("Path ", "File ")
+    )
+
+
+@pytest.mark.parametrize("tool", ["bash", "write", "edit", "multiedit"])
+def test_crush_resolves_tmp_alias(tool, monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    with tempfile.TemporaryDirectory(
+        prefix="website-poshog-agent-e2e-crush-write-", dir="/tmp"
+    ) as directory:
+        workspace = Path(directory).resolve()
+        alias = Path("/tmp") / workspace.name
+        assert alias.resolve() == workspace
+        prompt = (
+            crush_modal(alias)
+            if tool == "bash"
+            else crush_file_modal(alias / "hello.txt", tool)
+        )
+        approval_handler("crush", 10, workspace)(prompt)
+    assert sent == [b"\x1b[C\r" if tool == "bash" else b"\r"]
+
+
+@pytest.mark.parametrize("tool", ["write", "edit", "multiedit"])
+@pytest.mark.parametrize("outside", ["absolute", "parent", "sibling", "symlink"])
+def test_crush_file_outside_workspace_is_not_answered(
+    tool, outside, tmp_path, monkeypatch
+):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "escape").symlink_to(tmp_path, target_is_directory=True)
+    path = {
+        "absolute": Path("/etc/hosts"),
+        "parent": workspace / "../outside.txt",
+        "sibling": tmp_path / "project-other/hello.txt",
+        "symlink": workspace / "escape/outside.txt",
+    }[outside]
+    approval_handler("crush", 10, workspace)(crush_file_modal(path, tool))
+    assert sent == []
+
+
+def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_file_modal(tmp_path / "hello.txt")
+    approve(prompt[:30])
+    assert sent == []
+    approve(prompt)
+    approve(prompt)
+    output = prompt + "\r\n" + prompt
+    approve(output)
+    assert sent == [b"\r"]
+    output += crush_file_modal(tmp_path / "nonce.txt")
+    approve(output)
+    approve(output)
+    assert sent == [b"\r", b"\r"]
+    output += "\x1b]9;4;state=working:app=crush\x07"
+    output += crush_file_modal(tmp_path / "nonce.txt")
+    approve(output)
+    assert sent == [b"\r", b"\r", b"\r"]
 
 
 @pytest.mark.parametrize("agent", ["aider", "crush"])

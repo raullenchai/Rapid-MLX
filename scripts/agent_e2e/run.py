@@ -474,9 +474,12 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
         )
         keys = b"y\r"
     elif agent == "crush" and workspace is not None:
+        workspace = workspace.resolve()
         pattern = re.compile(
             r"Permission Required(?:(?!Permission Required).)*?"
-            r"Tool bash\s*│(?:(?!Permission Required).)*?Path (?P<path>[^│\r\n]+)│"
+            r"Tool (?:(?P<bash>bash)|write|edit|multiedit)\s*│"
+            r"(?:(?!Permission Required).)*?(?(bash)Path|File) "
+            r"(?P<path>[^│\r\n]+)│"
             r"(?:(?!Permission Required).)*?"
             r"Allow\s+Allow for Session\s+Deny"
             r"(?:(?!Permission Required).)*?←/→ choose • enter confirm",
@@ -507,10 +510,20 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
             ):
                 continue
             previous = prompt
-            if agent == "crush" and Path(match["path"].strip()) != workspace:
-                continue
+            answer_keys = keys
+            if agent == "crush":
+                path = Path(match["path"].strip()).resolve()
+                allowed = (
+                    path == workspace
+                    if match["bash"]
+                    else path.is_relative_to(workspace)
+                )
+                if not allowed:
+                    continue
+                # File grants must apply only to this action, never the session.
+                answer_keys = b"\x1b[C\r" if match["bash"] else b"\r"
             news = prompt.startswith("Would you like")
-            os.write(master, b"n\r" if news else keys)
+            os.write(master, b"n\r" if news else answer_keys)
             if sink is not None and (
                 agent == "crush" or prompt.startswith("Run shell")
             ):
