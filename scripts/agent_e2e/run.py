@@ -391,14 +391,20 @@ def opencode_v1_reply_seen(
         if message.get("role") != "assistant":
             continue
         reads, replies = sessions.setdefault(session_id, (set(), []))
-        if part.get("type") == "tool" and part.get("tool") == "read":
+        if part.get("type") == "tool" and part.get("tool") in {"read", "bash"}:
             state = part.get("state", {})
             if state.get("status") == "completed":
                 path = Path(state.get("input", {}).get("filePath", "")).name
                 contents = state.get("output", "")
-                if path == "hello.txt" and hello in contents:
+                if not isinstance(contents, str):
+                    continue
+                if (
+                    part["tool"] == "bash" or path == "hello.txt"
+                ) and hello in contents:
                     reads.add("hello.txt")
-                if path == "nonce.txt" and nonce in contents:
+                if (
+                    part["tool"] == "bash" or path == "nonce.txt"
+                ) and nonce in contents:
                     reads.add("nonce.txt")
         elif (
             part.get("type") == "text"
@@ -435,16 +441,22 @@ def opencode_reply_seen(home: Path, since: float, hello: str, nonce: str) -> boo
             return False
         reads, replies = sessions.setdefault(session_id, (set(), []))
         for part in message.get("content", []):
-            if part.get("type") == "tool" and part.get("name") == "read":
+            if part.get("type") == "tool" and part.get("name") in {"read", "bash"}:
                 state = part.get("state", {})
                 if state.get("status") == "completed":
                     path = Path(state.get("input", {}).get("path", "")).name
                     contents = " ".join(
-                        item.get("text", "") for item in state.get("content", [])
+                        item["text"]
+                        for item in state.get("content", [])
+                        if isinstance(item.get("text"), str)
                     )
-                    if path == "hello.txt" and hello in contents:
+                    if (
+                        part["name"] == "bash" or path == "hello.txt"
+                    ) and hello in contents:
                         reads.add("hello.txt")
-                    if path == "nonce.txt" and nonce in contents:
+                    if (
+                        part["name"] == "bash" or path == "nonce.txt"
+                    ) and nonce in contents:
                         reads.add("nonce.txt")
             elif part.get("type") == "text" and message.get("time", {}).get(
                 "completed"
