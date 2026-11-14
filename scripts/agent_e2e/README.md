@@ -61,9 +61,12 @@ launched in the dedicated project directory; it grants no general permission
 for other tools, paths, or prompt formats.
 
 The runner asks for a file write and readback of an unprompted challenge value,
-then a second edit and fresh challenge readback, repeats
-the launch in a new process, starts the native agent after `--remove`, and
-compares byte hashes and modes of pre-existing user configuration. It leaves
+then asks for a second edit and fresh challenge readback only if the first turn
+succeeds. If the first turn fails or times out, it records the failure and sends
+only cancellation controls during shutdown, so the second prompt cannot land in
+a pending dialog. It repeats the launch in a new process, starts the native agent
+after `--remove`, and compares byte hashes and modes of pre-existing user
+configuration. It leaves
 raw terminal transcripts and a metadata-only request log in the private run
 directory. Inspect `day-one.pty`, `day-two.pty`, and `normal-mode.pty` for
 errors and ugly output; do not publish raw transcripts or `results.json`, which
