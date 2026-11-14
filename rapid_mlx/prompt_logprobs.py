@@ -83,9 +83,10 @@ def _incremental_ends(tokenizer, ids, special):
     """Decode incrementally, bounding the naive decoder's retained context."""
     from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
 
-    detok = getattr(tokenizer, "detokenizer", None)
-    if detok is None:
-        detok = NaiveStreamingDetokenizer(tokenizer)
+    # Use TokenizerWrapper's streaming factory; a stored detokenizer may be
+    # shared with generation or another prompt-offset build in a worker thread.
+    factory = getattr(tokenizer, "_detokenizer_class", NaiveStreamingDetokenizer)
+    detok = factory(tokenizer)
     detok.reset()
     naive = isinstance(detok, NaiveStreamingDetokenizer)
     ends, context = [], []

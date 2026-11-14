@@ -594,9 +594,64 @@ def test_no_offsets_long_prompt_uses_bounded_decode_windows():
     assert sum(decoded_lengths) <= 64 * (len(prompt) + 1)
 
 
+@pytest.mark.parametrize("with_factory", [False, True])
+def test_concurrent_fallback_offsets_match_serial_results(monkeypatch, with_factory):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from mlx_lm import tokenizer_utils
+
+    from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
+
+    barrier = None
+    instances = []
+
+    class InterleavedDetokenizer(tokenizer_utils.NaiveStreamingDetokenizer):
+        def __init__(self, tokenizer):
+            super().__init__(tokenizer)
+            instances.append(self)
+
+        def add_token(self, token):
+            super().add_token(token)
+            if barrier is not None:
+                barrier.wait(timeout=5)
+
+    monkeypatch.setattr(
+        tokenizer_utils, "NaiveStreamingDetokenizer", InterleavedDetokenizer
+    )
+    tokenizer = Tokenizer()
+    tokenizer.detokenizer = InterleavedDetokenizer(tokenizer)
+    tokenizer.detokenizer.add_token(ord("!"))
+    if with_factory:
+        tokenizer._detokenizer_class = InterleavedDetokenizer
+
+    def build(prompt):
+        return legacy_prompt_logprobs(
+            prompt, tokenizer, _wire_scores(tokenizer.encode(prompt))
+        )
+
+    prompts = ["abc😀def", "XYéZ123"]
+    serial = [build(prompt) for prompt in prompts]
+    for prompt, payload in zip(prompts, serial):
+        assert payload["tokens"] == list(prompt)
+        assert payload["text_offset"] == list(range(len(prompt)))
+
+    # Force both threads to append before either reads the decoded text.
+    barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        concurrent = list(pool.map(build, prompts))
+
+    assert concurrent == serial
+    assert tokenizer.detokenizer.text == "!"
+    assert len(instances) == 5  # Shared instance plus four request-local instances.
+
+
 @pytest.mark.parametrize("optimized", [False, True])
 def test_no_offsets_byte_fallback_and_special_tokens(optimized):
-    from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
+    from mlx_lm.tokenizer_utils import (
+        NaiveStreamingDetokenizer,
+        SPMStreamingDetokenizer,
+    )
 
     from rapid_mlx.prompt_logprobs import legacy_prompt_logprobs
 
@@ -618,9 +673,9 @@ def test_no_offsets_byte_fallback_and_special_tokens(optimized):
             raw = [b"<s>", b"a", b"\xf0", b"\x9f", b"\x98", b"\x80", b"b", b"</s>"]
             return b"".join(raw[i] for i in ids).decode("utf-8", "replace")
 
-        @property
-        def detokenizer(self):
-            return SPMStreamingDetokenizer(self) if optimized else None
+        _detokenizer_class = (
+            SPMStreamingDetokenizer if optimized else NaiveStreamingDetokenizer
+        )
 
     payload = legacy_prompt_logprobs(
         "a😀b", ByteTokenizer(), _wire_scores(list(range(8)))
