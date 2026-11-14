@@ -3005,6 +3005,60 @@ class BatchedEngine(BaseEngine):
             return list(encode(prompt))
         return None
 
+    _MLLM_TEXT_IDS_PROBE = "Rapid-MLX text probe: 12 harbor tides.\n"
+
+    def _mllm_text_ids_match_processor(self) -> bool:
+        """Probe once whether text-only MLLM admission may take token IDs.
+
+        A pre-tokenized MLLM prompt skips processor preparation and carries no
+        attention mask or extra processor outputs. That is only equivalent when
+        this processor's text-only output is exactly ``input_ids`` (equal to the
+        reused encoding) plus at most an all-valid mask. Any other output (e.g.
+        ``token_type_ids``) keeps the processor path for every request.
+        """
+        cached = self.__dict__.get("_mllm_text_ids_probe_result")
+        if cached is not None:
+            return cached
+        result = False
+        try:
+            processor = getattr(self, "_processor", None)
+            config = getattr(getattr(self, "_model", None), "config", None)
+            if processor is not None and getattr(config, "model_type", None) != (
+                "lfm3_vl"
+            ):
+                from ..mllm_batch_generator import _attention_mask_is_droppable
+                from ..models.mlx_vlm_vendored.inputs import prepare_inputs
+
+                probe = self._MLLM_TEXT_IDS_PROBE
+                inputs = prepare_inputs(
+                    processor,
+                    images=None,
+                    prompts=probe,
+                    image_token_index=getattr(config, "image_token_index", None),
+                )
+                extra = {
+                    key
+                    for key, value in inputs.items()
+                    if key not in ("input_ids", "attention_mask") and value is not None
+                }
+                ids = inputs.get("input_ids")
+                ids = ids.tolist() if hasattr(ids, "tolist") else ids
+                expected = RequestPromptTokens().encode(
+                    self.tokenizer, probe, add_special_tokens=False
+                )
+                result = (
+                    not extra
+                    and _attention_mask_is_droppable(inputs.get("attention_mask"))
+                    and ids == [expected]
+                )
+        except Exception:
+            logger.debug(
+                "MLLM text-id probe failed; keeping processor path", exc_info=True
+            )
+            result = False
+        self.__dict__["_mllm_text_ids_probe_result"] = result
+        return result
+
     def _request_prompt_ids(
         self, prompt, tokens: RequestPromptTokens, *, mllm_step: bool | None = None
     ) -> str | list[int]:
@@ -3017,7 +3071,10 @@ class BatchedEngine(BaseEngine):
             # The MLLM processor tokenizes with ``tokenizer(prompt, ...)``, not
             # ``encode``. Only the standard fast-tokenizer contract makes the two
             # provably identical; any other tokenizer keeps the processor path.
-            if not RequestPromptTokens._is_fast_tokenizer(tokenizer):
+            if (
+                not RequestPromptTokens._is_fast_tokenizer(tokenizer)
+                or not self._mllm_text_ids_match_processor()
+            ):
                 return prompt
             return tokens.encode(tokenizer, prompt, add_special_tokens=False)
 

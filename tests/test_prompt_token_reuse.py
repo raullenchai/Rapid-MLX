@@ -133,6 +133,9 @@ def _engine(tokenizer, *, scheduler: bool = True):
         else None
     )
     engine._apply_chat_template = _render
+    # Model an MLLM processor whose text-only output is exactly input_ids;
+    # the probe itself is covered by the dedicated tests below.
+    engine.__dict__["_mllm_text_ids_probe_result"] = True
     return engine
 
 
@@ -1049,6 +1052,7 @@ def test_http_chat_reuses_request_ids(monkeypatch, api, stream, mllm):
     engine._loaded = True
     engine._is_mllm = mllm
     engine._tokenizer = _fast_tokenizer()
+    engine.__dict__["_mllm_text_ids_probe_result"] = True  # Eligible processor.
     engine.check_admission = lambda: None  # No scheduler in this CPU-only route test.
     engine._needs_prefix_boundary_snapshot = lambda: True
     # The request-local IDs must work even when the process LRU retains nothing.
@@ -1262,6 +1266,7 @@ async def test_deferred_lane_uses_selected_scheduler_bos_policy(stream, mllm_ste
     engine._loaded = True
     engine._is_mllm = True
     engine._tokenizer = tokenizer
+    engine.__dict__["_mllm_text_ids_probe_result"] = True  # Eligible processor.
     engine._ensure_generation_admission = lambda: ("test", False)
     engine._select_mllm_request_path = lambda *args: mllm_step
     engine._transfer_admission_to_scheduler = lambda *a, **kw: None
@@ -1506,3 +1511,75 @@ def test_instance_level_template_override_keeps_tokenize_true_call():
         [0, 0, 0] if tokenize else "hello"
     )
     assert RequestPromptTokens().apply_template(tokenizer, _conversation()) == [0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("outputs", "expected"),
+    [
+        ({}, True),
+        ({"attention_mask": "ones"}, True),
+        ({"token_type_ids": "zeros"}, False),
+        ({"attention_mask": "padded"}, False),
+        ({"input_ids": "different"}, False),
+    ],
+)
+def test_mllm_text_ids_probe_requires_processor_equivalence(
+    monkeypatch, outputs, expected
+):
+    """Text-only MLLM requests take token IDs only when the processor's own
+    text-only preparation yields the same IDs and nothing else."""
+    import mlx.core as mx
+
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as vendored
+
+    tokenizer = _fast_tokenizer("chatml")
+    engine = _engine(tokenizer, scheduler=False)
+    del engine.__dict__["_mllm_text_ids_probe_result"]
+    engine._is_mllm = True
+    engine._processor = SimpleNamespace(tokenizer=engine._tokenizer)
+    probe = engine._MLLM_TEXT_IDS_PROBE
+    ids = tokenizer.encode(probe, add_special_tokens=False)
+    calls = []
+
+    def prepare_inputs(processor, images=None, prompts=None, **kwargs):
+        calls.append(prompts)
+        result = {"input_ids": mx.array([ids])}
+        for key, value in outputs.items():
+            if value == "ones":
+                result[key] = mx.ones((1, len(ids)))
+            elif value == "padded":
+                result[key] = mx.array([[0] + [1] * (len(ids) - 1)])
+            elif value == "zeros":
+                result[key] = mx.zeros((1, len(ids)))
+            elif value == "different":
+                result[key] = mx.array([[*ids, 0]])
+        return result
+
+    monkeypatch.setattr(vendored, "prepare_inputs", prepare_inputs)
+    prompt = _render(_conversation())
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    got = engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+    assert (got != prompt) is expected
+    engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+    assert calls == [probe]  # probed once per engine
+
+
+def test_mllm_text_ids_probe_failure_keeps_processor_path(monkeypatch):
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as vendored
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    engine = _engine(_fast_tokenizer("chatml"), scheduler=False)
+    del engine.__dict__["_mllm_text_ids_probe_result"]
+    engine._is_mllm = True
+    engine._processor = SimpleNamespace(tokenizer=engine._tokenizer)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("processor unavailable")
+
+    monkeypatch.setattr(vendored, "prepare_inputs", boom)
+    prompt = _render(_conversation())
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
