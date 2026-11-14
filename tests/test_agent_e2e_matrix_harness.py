@@ -39,6 +39,180 @@ def test_opencode_evidence_reader_follows_cli_major_version():
     assert not is_opencode_v2("opencode 1.2.3")
 
 
+@pytest.fixture
+def opencode_v1_db(tmp_path):
+    db = tmp_path / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            "CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, "
+            "time_updated INTEGER, data TEXT);"
+            "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, "
+            "time_created INTEGER, time_updated INTEGER, data TEXT);"
+        )
+        conn.execute(
+            "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+            (
+                "m1",
+                "s1",
+                11000,
+                12000,
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "time": {"created": 11000, "completed": 12000},
+                    }
+                ),
+            ),
+        )
+        parts = [
+            {
+                "type": "tool",
+                "tool": "read",
+                "state": {
+                    "status": "completed",
+                    "input": {"filePath": f"/work/{path}"},
+                    "output": f"<content>1: {value}</content>",
+                    "time": {"start": 11000, "end": 12000},
+                },
+            }
+            for path, value in (("hello.txt", "hi-abc"), ("nonce.txt", "nonce-def"))
+        ]
+        parts.append(
+            {
+                "type": "text",
+                "text": "hi-abc nonce-def",
+                "time": {"start": 11000, "end": 12000},
+            }
+        )
+        conn.executemany(
+            "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (f"p{i}", "m1", "s1", 11000, 12000, json.dumps(part))
+                for i, part in enumerate(parts)
+            ],
+        )
+    return db
+
+
+@pytest.mark.parametrize("separate_reply", [False, True])
+def test_opencode_v1_reply_ignores_fragmented_tui(
+    tmp_path, opencode_v1_db, separate_reply
+):
+    if separate_reply:
+        with sqlite3.connect(opencode_v1_db) as conn:
+            conn.execute(
+                "INSERT INTO message SELECT 'm2', session_id, time_created, "
+                "time_updated, data FROM message"
+            )
+            conn.execute("UPDATE part SET message_id = 'm2' WHERE id = 'p2'")
+    output = "hi-abc nonce-d\x1b[3D⬝⬝⬝⬝⬝⬝⬝⬝ef"
+    assert "nonce-def" not in output
+    assert run.opencode_v1_reply_seen(tmp_path, 10, "hi-abc", "nonce-def", output)
+    assert not run.opencode_v1_reply_seen(tmp_path, 10, "hi-abc", "nonce-wrong", output)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "DELETE FROM part WHERE id = 'p1'",
+        "UPDATE part SET data = json_set(data, '$.state.status', 'running') WHERE id = 'p1'",
+        "UPDATE part SET data = json_set(data, '$.state.output', 'wrong') WHERE id = 'p1'",
+        "UPDATE message SET data = json_remove(data, '$.time.completed')",
+        "UPDATE part SET data = json_remove(data, '$.time.end') WHERE id = 'p2'",
+        "UPDATE message SET data = json_set(data, '$.role', 'user')",
+        "UPDATE part SET data = json_set(data, '$.text', 'hi-abc') WHERE id = 'p2'",
+        "UPDATE part SET session_id = 's2', message_id = 'm2' WHERE id = 'p2'",
+        "UPDATE part SET time_created = 1000, time_updated = 2000 WHERE id = 'p1'",
+        "UPDATE message SET time_created = 1000, time_updated = 2000",
+        "UPDATE part SET data = 'invalid json' WHERE id = 'p1'",
+        "DROP TABLE part",
+    ],
+)
+def test_opencode_v1_requires_current_completed_evidence(
+    tmp_path, opencode_v1_db, change
+):
+    with sqlite3.connect(opencode_v1_db) as conn:
+        conn.execute(
+            "INSERT INTO message SELECT 'm2', 's2', time_created, time_updated, data "
+            "FROM message WHERE id = 'm1'"
+        )
+        conn.execute(change)
+    # An existing database is authoritative, even if raw PTY contains the nonce.
+    assert not run.opencode_v1_reply_seen(
+        tmp_path, 10, "hi-abc", "nonce-def", "nonce-def"
+    )
+
+
+def test_opencode_v1_accepts_updated_rows(tmp_path, opencode_v1_db):
+    with sqlite3.connect(opencode_v1_db) as conn:
+        conn.execute("UPDATE message SET time_created = 1000")
+        conn.execute("UPDATE part SET time_created = 1000")
+    assert run.opencode_v1_reply_seen(tmp_path, 10, "hi-abc", "nonce-def", "")
+    assert not run.opencode_v1_reply_seen(tmp_path, 13, "hi-abc", "nonce-def", "")
+
+
+def test_opencode_v1_missing_db_falls_back_to_raw_output(tmp_path):
+    assert run.opencode_v1_reply_seen(tmp_path, 10, "hi-abc", "nonce-def", "nonce-def")
+    assert not run.opencode_v1_reply_seen(
+        tmp_path, 10, "hi-abc", "nonce-def", "nonce-d\x1b[3D⬝⬝⬝⬝⬝⬝⬝⬝ef"
+    )
+    assert not (tmp_path / ".rapid-mlx").exists()
+
+
+def test_opencode_v1_session_uses_database_for_both_prompts(
+    tmp_path, opencode_v1_db, monkeypatch
+):
+    proc = SimpleNamespace(poll=lambda: None, returncode=0)
+    monkeypatch.setattr(run, "version", lambda *_args: "opencode v1.19.5")
+    monkeypatch.setattr(run, "open_terminal", lambda: (10, 11))
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(run.os, "close", lambda _fd: None)
+    monkeypatch.setattr(run.os, "write", lambda *_args: None)
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(run.time, "time", lambda: 10)
+    monkeypatch.setattr(run, "stop_terminal_process", lambda _proc: None)
+    monkeypatch.setattr(run, "handle_first_run_menus", lambda _agent, out, *args: out)
+    replies = []
+
+    def send_reply(_agent, _fd, prompt):
+        hello = prompt.split("exactly ")[1].split()[0].rstrip(".")
+        nonce = (tmp_path / "nonce.txt").read_text().strip()
+        (tmp_path / "hello.txt").write_text(hello)
+        with sqlite3.connect(opencode_v1_db) as conn:
+            for part_id, value in (("p0", hello), ("p1", nonce)):
+                conn.execute(
+                    "UPDATE part SET data = json_set(data, '$.state.output', ?) "
+                    "WHERE id = ?",
+                    (value, part_id),
+                )
+            conn.execute(
+                "UPDATE part SET data = json_set(data, '$.text', ?) WHERE id = 'p2'",
+                (f"{hello} {nonce}",),
+            )
+        replies.append(f"{hello} {nonce[:8]}\x1b[3D⬝⬝⬝⬝⬝⬝⬝⬝{nonce[8:]}")
+
+    def read_reply(_fd, _proc, _timeout, sink, stop_when=None, on_output=None):
+        if not replies:
+            return "Agent ready.", None
+        if stop_when is not None:
+            assert stop_when(replies[-1])
+        return replies[-1], None
+
+    monkeypatch.setattr(run, "send_prompt", send_reply)
+    monkeypatch.setattr(run, "read_until", read_reply)
+    result = run.session(
+        ["rapid-mlx", "launch", "opencode"],
+        {"HOME": str(tmp_path)},
+        tmp_path,
+        tmp_path / "session.pty",
+        1,
+        False,
+    )
+    assert result["tool_ok"] and result["second_ok"]
+    assert len(replies) == 2
+
+
 def test_opencode_v2_reply_uses_completed_session_not_tui_fragments(tmp_path):
     assert opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def") is False
     db = tmp_path / ".rapid-mlx/connect/agents/opencode/xdg-data/opencode/opencode.db"
