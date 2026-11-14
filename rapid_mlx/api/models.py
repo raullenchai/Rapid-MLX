@@ -2575,7 +2575,7 @@ class CompletionRequest(BaseModel):
     @model_validator(mode="after")
     def _validate_scoring_only(self):
         if self.max_tokens == 0 and not (self.echo and self.logprobs is not None):
-            raise ValueError("max_tokens=0 requires echo=true with logprobs")
+            raise ValueError("max_tokens must be >= 1 unless echo=true with logprobs")
         return self
 
     # ``_normalize_stop`` + ``_validate_timeout`` mirror the chat

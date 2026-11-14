@@ -184,6 +184,7 @@ from .prefix_cache import (
     validate_paged_cache_capability,
 )
 from .prompt_host_cache import PromptHostCache
+from .prompt_logprobs import PromptLogprobs
 from .repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
@@ -263,9 +264,12 @@ def _common_prefix_len(a: list[int], b: list[int]) -> int:
 
 
 def _skip_prefix_cache(request: Request) -> bool:
-    return getattr(
+    scoring = getattr(
         getattr(request, "sampling_params", None), "prompt_logprobs", None
-    ) is not None or _pflash_compressed(request)
+    )
+    # Only an actual scoring result opts out of cache storage. Optional
+    # attributes on request adapters must not bypass the guarded store path.
+    return isinstance(scoring, PromptLogprobs) or _pflash_compressed(request)
 
 
 def _pflash_compressed(request: Request) -> bool:
@@ -10282,7 +10286,7 @@ class Scheduler:
         Returns:
             List of requests that were scheduled
         """
-        scheduled = []
+        scheduled: list[Request] = []
         scoring_budget = (
             self._bound_prefill_chunk_for_decode(
                 self._select_adaptive_prefill_size(), extra_rows=1
@@ -10416,13 +10420,15 @@ class Scheduler:
             if scoring is not None:
                 from .prompt_logprobs import PromptScoringState
 
+                prompt_tokens = request.prompt_token_ids
+                assert prompt_tokens is not None
                 state = request._prompt_scoring_state
                 if state is None:
                     state = PromptScoringState.create(
-                        self.model, request.prompt_token_ids, scoring
+                        self.model, prompt_tokens, scoring
                     )
                     request._prompt_scoring_state = state
-                while state.position < len(request.prompt_token_ids) - 1:
+                while state.position < len(prompt_tokens) - 1:
                     with self._cancel_counter_lock:
                         if request.request_id in self._pending_abort_ids:
                             break
@@ -10435,7 +10441,7 @@ class Scheduler:
                         self._admitting_request_id = None
                         return scheduled
                     scoring_budget -= state.advance(
-                        self.model, request.prompt_token_ids, scoring_budget
+                        self.model, prompt_tokens, scoring_budget
                     )
                 request.prompt_cache = state.cache
                 request._prompt_scoring_state = None
@@ -10462,7 +10468,7 @@ class Scheduler:
                     self._step_request_id = None
                     self._admitting_request_id = None
                     continue
-                tokens_to_process = request.prompt_token_ids[-1:]
+                tokens_to_process = prompt_tokens[-1:]
             cache_to_use = request.prompt_cache  # May be None
 
             # Prefix-cache HIT with live quantization on: normalize the restored
