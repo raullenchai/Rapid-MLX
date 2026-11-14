@@ -224,10 +224,6 @@ def test_harmony_router_compound_analysis_then_commentary(case: _Case, router):
         f"Expected 1 tool call; got {tool_calls!r}"
     )
 
-    payload = (
-        tool_calls[0]
-        if isinstance(tool_calls[0], str)
-        else _stringify_structured(tool_calls[0])
-    )
+    payload = _stringify_structured(tool_calls[0])
     assert case.expected_function_name in payload
     assert case.expected_args_marker in payload
