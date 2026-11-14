@@ -3332,6 +3332,7 @@ def load_model(
 
     entry = ModelEntry(
         engine=_engine,
+        is_adapter=adapter is not None,
         model_name=_model_name,
         model_path=_model_path or model_name,
         telemetry_model_id=_telemetry_model_id(_model_path or model_name),
@@ -3374,11 +3375,7 @@ async def _load_dynamic_resident_model(
 ) -> ModelEntry:
     """Construct and start one non-primary engine for the residency manager."""
 
-    if ":lora:" in model_name or any(
-        (entry.model_name == model_name or model_name in entry.aliases)
-        and getattr(entry.engine, "_adapter", None) is not None
-        for entry in _model_registry.list_entries()
-    ):
+    if _model_registry.is_adapter_model(model_name):
         raise ValueError(
             "--adapter identities cannot be reloaded without the startup adapter; restart the server"
         )
@@ -3598,7 +3595,7 @@ def _handoff_resident_primary_audio_worker(
 ) -> _ResidentPrimaryAudioHandoff:
     """Reserve audio ownership for a transactional primary replacement."""
 
-    if getattr(entry.engine, "_adapter", None) is not None:
+    if entry.is_adapter or getattr(entry.engine, "_adapter", None) is not None:
         from .runtime.resident_models import ResidentModelError
 
         raise ResidentModelError(

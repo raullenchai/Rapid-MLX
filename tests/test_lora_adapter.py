@@ -416,42 +416,73 @@ def test_server_propagates_adapter_and_publishes_identity(
         )
         assert server.get_config().model_name == public_name
         assert server._model_registry.list_entries()[0].model_name == public_name
+        assert server._model_registry.list_entries()[0].is_adapter
+        assert server._model_registry.is_adapter_model(public_name)
         assert not response_cache.get_response_cache().enabled
         assert disk_caches.disabled()
     finally:
         disk_caches.configure(False)
 
 
-def test_resident_primary_replacement_cannot_drop_adapter():
+@pytest.mark.parametrize("unloaded", [False, True])
+@pytest.mark.parametrize("name", ["base:lora:abc", "custom", "alias"])
+async def test_resident_reload_rejects_adapter_metadata(monkeypatch, name, unloaded):
     from rapid_mlx import server
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
     from rapid_mlx.runtime.resident_models import ResidentModelError
 
-    entry = SimpleNamespace(engine=SimpleNamespace(_adapter=object()))
+    registry = ModelRegistry()
+    entry = ModelEntry(
+        engine=SimpleNamespace(_adapter=object()),
+        model_name=name if name != "alias" else "custom",
+        model_path="base",
+        aliases={"alias"},
+    )
+    registry.add(entry)
+    if unloaded:
+        registry.remove(entry.model_name)
+        entry.engine = None
+    monkeypatch.setattr(server, "_model_registry", registry)
+    with pytest.raises(ValueError, match="--adapter identities cannot be reloaded"):
+        await server._load_dynamic_resident_model(name, "base")
     with pytest.raises(ResidentModelError, match="--adapter is startup-only"):
         server._handoff_resident_primary_audio_worker(entry)
 
 
-async def test_resident_reload_rejects_adapter_identity():
-    from rapid_mlx import server
-
-    with pytest.raises(ValueError, match="--adapter identities cannot be reloaded"):
-        await server._load_dynamic_resident_model("base:lora:abc", "base")
-
-
-@pytest.mark.parametrize("name", ["custom", "alias"])
-async def test_resident_reload_rejects_custom_adapter_name(monkeypatch, name):
+async def test_resident_load_allows_lora_substring_without_adapter(
+    monkeypatch, adapter
+):
     from rapid_mlx import server
     from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 
+    _, base = adapter
+    (base / "model.safetensors").write_bytes(b"stub weights")
+    name = "custom:lora:verbatim"
+    constructed = []
+
+    class Engine:
+        is_mllm = False
+
+        def __init__(self, **kwargs):
+            constructed.append(kwargs)
+
+        async def start(self):
+            pass
+
+        def generate_warmup(self):
+            pass
+
     registry = ModelRegistry()
-    registry.add(
-        ModelEntry(
-            engine=SimpleNamespace(_adapter=object()),
-            model_name="custom",
-            model_path="base",
-            aliases={"alias"},
-        )
-    )
+    registry.add(ModelEntry(engine=Engine(), model_name=name, model_path=str(base)))
     monkeypatch.setattr(server, "_model_registry", registry)
-    with pytest.raises(ValueError, match="--adapter identities cannot be reloaded"):
-        await server._load_dynamic_resident_model(name, "base")
+    monkeypatch.setattr(server, "BatchedEngine", Engine)
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda _: None)
+    monkeypatch.setattr(server, "resolve_serving_lane", lambda *_a, **_k: (False, True))
+    for unloaded in (False, True):
+        if unloaded:
+            registry.remove(name)
+        entry = await server._load_dynamic_resident_model(name, str(base))
+        assert entry.model_name == name
+        assert entry.model_path == str(base)
+        assert isinstance(entry.engine, Engine)
+    assert len(constructed) == 3
