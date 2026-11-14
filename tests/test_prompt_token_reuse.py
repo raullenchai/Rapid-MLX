@@ -937,6 +937,102 @@ async def test_fast_chat_tokenizes_once_and_preserves_ids_and_boundary(
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mllm", [False, True])
+@pytest.mark.parametrize("style", ["chatml", "gemma", "llama", "deepseek"])
+@pytest.mark.parametrize("bos", [False, True])
+async def test_engine_tokenizes_once_when_gate_text_differs(
+    monkeypatch, stream, mllm, style, bos
+):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer(style, bos=bos)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._loaded = True
+    engine._is_mllm = mllm
+    engine._needs_prefix_boundary_snapshot = lambda: True
+    del (
+        engine._apply_chat_template
+    )  # Exercise production rendering and kwargs handling.
+    engine._prompt_host_cache.enabled = False
+    messages = _conversation()
+    tools = (
+        [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+        if style in ("chatml", "gemma")
+        else None
+    )
+    template_kwargs = {
+        "enable_thinking": False,
+        "chat_template_kwargs": {"prompt_label": "rules\n"},
+    }
+    from rapid_mlx.api.tool_calling import convert_tools_for_template
+
+    rendered = engine._apply_chat_template(
+        messages,
+        convert_tools_for_template(tools) if tools else None,
+        **template_kwargs,
+    )
+    expected = tokenizer.encode(rendered, add_special_tokens=not mllm)
+    # Force the historical full-encode reference, with exactly the same BOS policy.
+    monkeypatch.setattr(tokenizer, "get_added_vocab", lambda: {})
+    boundary = engine._compute_prefix_boundary(
+        messages, tools, generation_prompt=rendered, **template_kwargs
+    )
+    monkeypatch.undo()
+    calls = []
+
+    def spy(text, *args, **kwargs):
+        calls.append(text)
+        return encode_plus(text, *args, **kwargs)
+
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
+    # The MLLM gate renders with the tokenizer template, while the engine may
+    # render with the processor template; model the gate's IDs as unrelated
+    # text, so the engine's own boundary + admission must share one encode.
+    state = RequestPromptTokens()
+    state.encode(tokenizer, "gate text", add_special_tokens=False)
+    calls.clear()
+    seen = {}
+
+    async def generate(**kwargs):
+        seen.update(kwargs)
+        if isinstance(kwargs["prompt"], str):
+            # Emulate the legacy scheduler admission when the engine submits text.
+            seen["prompt"] = tokenizer.encode(
+                kwargs["prompt"], add_special_tokens=not mllm
+            )
+        return GenerationOutput(text="ok", new_text="ok", finished=True)
+
+    async def stream_generate(**kwargs):
+        yield await generate(**kwargs)
+
+    engine.generate = generate
+    engine.stream_generate = stream_generate
+    if stream:
+        _ = [
+            out
+            async for out in engine.stream_chat(
+                messages, tools=tools, _prompt_tokens=state, **template_kwargs
+            )
+        ]
+    else:
+        await engine.chat(
+            messages, tools=tools, _prompt_tokens=state, **template_kwargs
+        )
+    assert seen["prompt"] == expected
+    assert seen["prefix_boundary"] == boundary
+    assert calls.count(rendered) == 1
+    assert all(len(text) < len(rendered) // 2 for text in calls if text != rendered), [
+        (len(t), t[-80:]) for t in calls
+    ]
+
+
 @pytest.mark.parametrize("api", ["openai", "anthropic"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("mllm", [False, True])

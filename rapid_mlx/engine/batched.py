@@ -4379,19 +4379,26 @@ class BatchedEngine(BaseEngine):
             if isinstance(real_prompt, str):
                 real_text = real_prompt
                 if request_prompt_tokens is not None:
-
-                    def encode_real():
-                        encoded = self.encode_prompt_text(real_prompt)
-                        return (
-                            encoded
-                            if encoded is not None
-                            else tokenizer.encode(real_prompt)
+                    encoded = self.encode_prompt_text(real_prompt)
+                    if encoded is not None:
+                        # Text scheduler: keep its exact (host-cached) encode.
+                        request_prompt_tokens.remember(
+                            self.tokenizer,
+                            real_prompt,
+                            encoded,
+                            add_special_tokens=True,
                         )
-
-                    real_tokens = request_prompt_tokens.encode(
-                        self.tokenizer,
-                        real_prompt,
-                        encode=encode_real,
+                    # Without a text scheduler this is ``tokenizer.encode`` with
+                    # default special tokens; the shared Rust encoding also
+                    # serves the MLLM admission's no-special-token IDs.
+                    real_tokens = (
+                        request_prompt_tokens.encode(self.tokenizer, real_prompt)
+                        if encoded is not None or tokenizer is self.tokenizer
+                        else request_prompt_tokens.encode(
+                            self.tokenizer,
+                            real_prompt,
+                            encode=lambda: tokenizer.encode(real_prompt),
+                        )
                     )
                 else:
                     encoded = self.encode_prompt_text(real_prompt)
