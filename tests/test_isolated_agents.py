@@ -2403,6 +2403,42 @@ def test_aider_runner_ignores_existing_cloud_config(private_home, monkeypatch, m
     assert user_config.read_bytes() == original
 
 
+def test_aider_runs_commands_in_user_shell_with_user_home(private_home, monkeypatch):
+    """Aider runs commands via $SHELL; without it, macOS /bin/sh breaks echo -n."""
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh not installed")
+    project = private_home / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    commands = private_home / "commands"
+    commands.mkdir()
+    rapid = commands / "rapid-mlx"
+    rapid.write_text("#!/bin/sh\nexit 0\n")
+    rapid.chmod(0o700)
+    capture = private_home / "aider-shell"
+    aider = commands / "aider"
+    aider.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$SHELL" > "{capture}"\n'
+        f'"$SHELL" -c \'echo -n hi; echo; printf "%s\\n" "$HOME"\' >> "{capture}"\n'
+    )
+    aider.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    monkeypatch.setenv("SHELL", zsh)
+    with patch("rapid_mlx.agents.isolated._cli_invocation", return_value=str(rapid)):
+        isolated.configure("aider", "qwen3.5-9b-4bit", port=7660)
+    root = isolated.connection_dir() / "agents/aider"
+    wrapper = root / "shell" / "zsh"
+    assert stat.S_IMODE(wrapper.stat().st_mode) == 0o700
+    subprocess.run([zsh, str(root / "run")], check=True)
+    assert capture.read_text().splitlines() == [
+        str(wrapper),
+        "hi",
+        str(Path.home()),
+    ]
+
+
 @pytest.mark.parametrize("context_length", [131072, None, True, False, 0, -1, 1.5])
 def test_aider_model_metadata_is_private_and_removable(
     private_home, monkeypatch, context_length
