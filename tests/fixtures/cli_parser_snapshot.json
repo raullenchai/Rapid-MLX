@@ -154,7 +154,7 @@
        "const": true,
        "default": false,
        "dest": "setup",
-       "help": "Configure the agent; wait for a starting server or write offline with --model",
+       "help": "Configure the agent; wait for startup or save config with a recommended model",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -195,6 +195,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 600,
+       "dest": "ready_timeout",
+       "help": "Seconds to wait for server startup (default: 600; Ctrl-C cancels)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--ready-timeout"
+       ],
+       "required": false,
+       "type": "rapid_mlx.cli_parser.positive_int"
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -230,7 +245,7 @@
        "const": null,
        "default": null,
        "dest": "model",
-       "help": "Model to use (default: auto-detect from running server)",
+       "help": "Model to use (default: running model, else a recommendation for this Mac)",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -306,6 +321,7 @@
         "setup",
         "dry_run",
         "yes",
+        "ready_timeout",
         "no_check",
         "test",
         "model",
@@ -9381,9 +9397,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": null,
+       "default": 600,
        "dest": "ready_timeout",
-       "help": "Optional startup deadline in seconds (default: wait while the server lives)",
+       "help": "Startup deadline in seconds (default: 600; Ctrl-C cancels)",
        "metavar": null,
        "nargs": null,
        "option_strings": [

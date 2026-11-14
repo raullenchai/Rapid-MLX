@@ -730,12 +730,24 @@ def verify_server(
                     email.message.Message(),
                     None,
                 )
+            # /health is liveness and may return 200 before readiness.
+            # Older servers omit ready; retain their health+models contract.
+            try:
+                health = json.loads(response.read())
+            except (ValueError, AttributeError):
+                health = {}
+            if isinstance(health, dict) and health.get("ready") is False:
+                if track_failure:
+                    track_agent_configure_failed(
+                        "server_not_ready", agent, "model_not_loaded"
+                    )
+                raise ServerLoadingError(
+                    f"server is still loading at {root}", "model_not_loaded"
+                )
         checking_health = False
-        from rapid_mlx.http_auth import rapid_mlx_auth_headers
+        from rapid_mlx.http_auth import model_probe_request
 
-        request = urllib.request.Request(
-            f"{root}/v1/models", headers=rapid_mlx_auth_headers()
-        )
+        request = model_probe_request(f"{root}/v1")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read())
     except urllib.error.HTTPError as exc:
@@ -837,10 +849,10 @@ def wait_for_server(
     expected_model: str,
     *,
     agent: str,
-    timeout: float = 60.0,
+    timeout: float = 600.0,
     endpoint: Endpoint | None = None,
 ) -> str:
-    """Allow live local startup to finish; bound other verification failures."""
+    """Wait for startup with progress and a fixed, cancellable deadline."""
     from .server_discovery import (
         Progress,
         non_chat_server,
@@ -911,11 +923,7 @@ def wait_for_server(
                 base_url,
                 expected_model,
                 agent=agent,
-                timeout=(
-                    2.0
-                    if server is not None
-                    else min(2.0, max(0.1, deadline - time.monotonic()))
-                ),
+                timeout=min(2.0, max(0.1, deadline - time.monotonic())),
                 track_failure=False,
             )
         except RuntimeError as exc:
@@ -963,16 +971,18 @@ def wait_for_server(
                 raise
             if server is None and (endpoint is None or not endpoint.follow):
                 server = server_for_url(base_url)
-            if server is not None and isinstance(
-                exc, (ServerNotRunningError, ServerLoadingError)
-            ):
+            loading = isinstance(exc, ServerLoadingError) or (
+                server is not None and isinstance(exc, ServerNotRunningError)
+            )
+            if loading and time.monotonic() < deadline:
                 if endpoint is not None:
                     endpoint.server = server
                 progress.show(base_url, time.monotonic())
-                # The bounded budget for other errors starts once startup is
-                # over, so a long load cannot consume it before the first one.
-                deadline = time.monotonic() + timeout
-            elif isinstance(exc, ServerNotRunningError) and time.monotonic() >= grace:
+            elif (
+                not loading
+                and isinstance(exc, ServerNotRunningError)
+                and time.monotonic() >= grace
+            ):
                 if (
                     isinstance(reselection_error, NonChatModelError)
                     and non_chat_server(reselection_error.port, expected_model) is None
@@ -987,7 +997,7 @@ def wait_for_server(
                 ):
                     track_agent_configure_failed("model_not_advertised", agent)
                     raise reselection_error from exc
-                cause = getattr(exc, "cause", "other")
+                cause = "startup_timeout" if loading else getattr(exc, "cause", "other")
                 track_agent_configure_failed("server_not_ready", agent, cause)
                 error_type = (
                     ServerAuthenticationError

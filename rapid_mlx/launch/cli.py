@@ -500,6 +500,11 @@ def launch_command(args: argparse.Namespace) -> None:
             assert key is not None  # configure() created or reused it above.
             server_pid = None
             status = connection_status(port, key, model)
+            from rapid_mlx.agents.server_discovery import startup_loading
+
+            loading = status in {"server-error", "ready"} and startup_loading(
+                f"http://localhost:{port}/v1"
+            )
             if status == "stopped":
                 if not (args.start_server or resume_saved):
                     print(f"  Local server is stopped. Start it with: {start_hint}")
@@ -515,22 +520,20 @@ def launch_command(args: argparse.Namespace) -> None:
                 _ensure_model_downloaded(resolve_model(model))
                 print(f"  Loading {model}; waiting for readiness…", flush=True)
                 server_pid = _start_server_background(model, port, api_key=key)
+            if server_pid is not None or loading:
                 import time
 
                 try:
                     from rapid_mlx.agents.server_discovery import (
                         Progress,
                         pid_alive,
-                        startup_loading,
                     )
 
                     progress = Progress()
                     url = f"http://localhost:{port}/v1"
-                    # Binding and loading wait as long as the server lives;
-                    # any other server error keeps the old 600 s budget.
-                    error_since = None
+                    deadline = time.monotonic() + 600
                     while True:
-                        if not pid_alive(server_pid):
+                        if server_pid is not None and not pid_alive(server_pid):
                             print(
                                 f"  Local server on :{port} exited during startup; "
                                 f"check the serve output. Retry: {start_hint}"
@@ -538,15 +541,12 @@ def launch_command(args: argparse.Namespace) -> None:
                             raise SystemExit(1)
                         status = connection_status(port, key, model)
                         if status not in {"stopped", "server-error"}:
-                            break
+                            if status != "ready" or not startup_loading(url):
+                                break
                         now = time.monotonic()
-                        if status == "stopped" or startup_loading(url):
-                            error_since = None
-                        elif error_since is None:
-                            error_since = now
-                        elif now - error_since >= 600:
+                        if now >= deadline:
                             print(
-                                f"  Local server on :{port} kept returning errors; "
+                                f"  Local server on :{port} did not become ready within 600s; "
                                 f"check the serve output. Retry: {start_hint}"
                             )
                             raise SystemExit(1)
@@ -560,7 +560,8 @@ def launch_command(args: argparse.Namespace) -> None:
                         )
                         raise SystemExit(1)
                 except BaseException:
-                    _stop_failed_start(server_pid)
+                    if server_pid is not None:
+                        _stop_failed_start(server_pid)
                     raise
             if status != "ready":
                 print(
@@ -801,6 +802,13 @@ def launch_command(args: argparse.Namespace) -> None:
                 "No server was started. Start Rapid-MLX at the configured endpoint "
                 "(or confirm an existing server is ready), then open the client."
             )
+            from rapid_mlx.agents.server_hint import (
+                is_local_base_url,
+                start_server_command,
+            )
+
+            if is_local_base_url(server_url):
+                print(f"Start it with: {start_server_command(None, server_url, model)}")
     if failures:
         sys.exit(1)
 

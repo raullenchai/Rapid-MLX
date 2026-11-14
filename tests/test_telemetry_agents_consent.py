@@ -479,6 +479,7 @@ def test_saved_first_class_config_with_dead_server_emits_only_failure(
         dry_run=False,
         yes=True,
         no_check=False,
+        ready_timeout=0.01,
     )
 
     with pytest.raises(SystemExit) as raised:
@@ -1003,7 +1004,7 @@ def test_onboarding_events_follow_real_consent(
     ]
 
 
-def test_setup_without_server_or_model_tracks_not_running(
+def test_setup_without_server_or_model_tracks_deferred_success(
     loopback_telemetry, monkeypatch
 ):
     from types import SimpleNamespace
@@ -1029,17 +1030,36 @@ def test_setup_without_server_or_model_tracks_not_running(
         yes=True,
         no_check=False,
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.agents_command(args)
-    assert exc.value.code == 1
+    monkeypatch.setattr(
+        "rapid_mlx.run.cli._select_model", lambda **_kw: "qwen3.5-4b-4bit"
+    )
+    cli.agents_command(args)
     posthog_sender.get_sender().flush(2.0)
     assert [_event_view(item) for item in _items(loopback_telemetry)] == [
         {
-            "event": "agent_configure_failed",
+            "event": "agent_configured",
             "properties": {
                 "agent": "codex",
-                "error_class": "server_not_running",
-                "cause": "connection_refused",
+                "server_state": "not_running",
             },
+        }
+    ]
+
+
+def test_offline_configuration_does_not_mark_first_integration(
+    loopback_telemetry, monkeypatch
+):
+    integrations = []
+    monkeypatch.setattr(
+        "rapid_mlx.onboarding.track_first_integration",
+        lambda agent: integrations.append(agent),
+    )
+    agent_telemetry.track_agent_configured("opencode", server_state="not_running")
+    posthog_sender.get_sender().flush(2.0)
+    assert integrations == []
+    assert [_event_view(item) for item in _items(loopback_telemetry)] == [
+        {
+            "event": "agent_configured",
+            "properties": {"agent": "opencode", "server_state": "not_running"},
         }
     ]

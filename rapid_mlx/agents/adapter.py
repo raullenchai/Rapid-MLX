@@ -246,6 +246,7 @@ def setup_agent_config(
     *,
     context_length: int | None = None,
     dry_run: bool = False,
+    server_state: str | None = None,
     _probe_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> str:
     """Write the agent's config file or print env vars to set up the integration.
@@ -314,7 +315,9 @@ def setup_agent_config(
                 " (required for OpenHands CLI 1.x to use these variables)"
             )
         if not dry_run:
-            track_agent_configured(profile.name)
+            track_agent_configured(
+                profile.name, **({"server_state": server_state} if server_state else {})
+            )
         return summary
 
     if cfg.path:
@@ -422,7 +425,9 @@ def setup_agent_config(
                 # rather than discover it.
                 summary += "; comments were not preserved"
         if config_changed or catalog_changed:
-            track_agent_configured(profile.name)
+            track_agent_configured(
+                profile.name, **({"server_state": server_state} if server_state else {})
+            )
         return summary
 
     track_failure("other")

@@ -35,6 +35,32 @@ def rapid_mlx_client_headers(
     return rapid_client_headers(label, headers)
 
 
+def model_probe_request(base_url: str, api_key: str | None = None):
+    """Build a model request with explicit, env, then config credentials.
+
+    Credentials are sent only over loopback HTTP or HTTPS and are never
+    forwarded on redirects. Callers must not log this request or its headers.
+    """
+    import ipaddress
+    import urllib.parse
+    import urllib.request
+
+    from rapid_mlx.config import get_config
+
+    url = base_url.rstrip("/") + "/models"
+    endpoint = urllib.parse.urlsplit(url)
+    host = endpoint.hostname or ""
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host == "localhost"
+    request = urllib.request.Request(url)
+    key = api_key or os.environ.get("RAPID_MLX_API_KEY") or get_config().api_key
+    if key and (endpoint.scheme == "https" or (endpoint.scheme == "http" and loopback)):
+        request.add_unredirected_header("Authorization", f"Bearer {key}")
+    return request
+
+
 def probe_models(base_url: str) -> list[dict]:
     """Discover models, preserving authentication failures for CLI guidance.
 
@@ -42,28 +68,12 @@ def probe_models(base_url: str) -> list[dict]:
     Only loopback HTTP or HTTPS endpoints may receive credentials, and a
     redirect never receives the bearer header. Other probe failures return [].
     """
-    import ipaddress
     import json
     import urllib.error
-    import urllib.parse
     import urllib.request
 
-    from rapid_mlx.config import get_config
-
     try:
-        url = base_url.rstrip("/") + "/models"
-        endpoint = urllib.parse.urlsplit(url)
-        host = endpoint.hostname or ""
-        try:
-            loopback = ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            loopback = host == "localhost"
-        request = urllib.request.Request(url)
-        key = os.environ.get("RAPID_MLX_API_KEY") or get_config().api_key
-        if key and (
-            endpoint.scheme == "https" or (endpoint.scheme == "http" and loopback)
-        ):
-            request.add_unredirected_header("Authorization", f"Bearer {key}")
+        request = model_probe_request(base_url)
         with urllib.request.urlopen(request, timeout=2) as response:
             payload = json.loads(response.read())
         entries = payload.get("data") if isinstance(payload, dict) else None

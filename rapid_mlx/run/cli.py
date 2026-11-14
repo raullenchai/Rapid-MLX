@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -121,8 +122,8 @@ def register(subparsers) -> None:
     parser.add_argument(
         "--ready-timeout",
         type=int,
-        default=None,
-        help="Optional startup deadline in seconds (default: wait while the server lives)",
+        default=600,
+        help="Startup deadline in seconds (default: 600; Ctrl-C cancels)",
     )
     _add_disable_disk_caches_arg(parser)
     _add_disable_model_downloads_arg(parser)
@@ -604,6 +605,7 @@ def _reuse_or_refuse(
     * 0 — reused or dry-run previewed; start_command returns directly.
     * Non-zero — refused; start_command returns the refusal.
     """
+    from rapid_mlx.agents.server_discovery import startup_loading
     from rapid_mlx.http_auth import probe_models
 
     api_base_url = f"{base_url.rstrip('/')}/v1"
@@ -616,6 +618,28 @@ def _reuse_or_refuse(
             "Keys are sent only over loopback HTTP or HTTPS."
         )
         return 1
+    if not args.dry_run and startup_loading(api_base_url):
+        from rapid_mlx.agents.setup import wait_for_server
+
+        try:
+            wait_for_server(
+                api_base_url,
+                "default",
+                agent=profile.name if profile else "other",
+                timeout=getattr(args, "ready_timeout", None) or 600,
+            )
+            models = probe_models(api_base_url)
+        except PermissionError:
+            print("  Server requires an API key; set RAPID_MLX_API_KEY and retry.")
+            return 1
+        except KeyboardInterrupt:
+            print("\n  Startup cancelled.")
+            return 130
+        except RuntimeError as exc:
+            print(
+                f"  {exc}. Retry: rapid-mlx start --model {shlex.quote(served_model)} --port {args.port}"
+            )
+            return 1
     served = {str(m.get("id")) for m in models if m.get("id")}
     if not served:
         print(

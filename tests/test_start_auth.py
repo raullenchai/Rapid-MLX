@@ -192,3 +192,87 @@ def test_unavailable_server(monkeypatch, error):
 
     monkeypatch.setattr(urllib.request, "urlopen", fail)
     assert http_auth.probe_models("http://127.0.0.1/v1") == []
+
+
+@pytest.mark.parametrize("source", ["config", "env", "precedence"])
+def test_start_reuses_loading_authenticated_server(monkeypatch, capsys, source):
+    """Real probe/wait functions retain credentials across warmup."""
+    monkeypatch.setattr(get_config(), "api_key", "test-secret")
+    if source in {"env", "precedence"}:
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "test-secret")
+    if source == "precedence":
+        monkeypatch.setattr(get_config(), "api_key", "wrong-secret")
+    seen = []
+    health_checks = []
+
+    def reply(request):
+        if request.path == "/health":
+            health_checks.append(request.path)
+            return 200, {}, json.dumps({"ready": len(health_checks) >= 3}).encode()
+        seen.append(request.headers.get("Authorization"))
+        if seen[-1] != "Bearer test-secret":
+            return 401, {}, b"auth denied"
+        return 200, {}, b'{"data": [{"id": "wanted"}]}'
+
+    attached = []
+    monkeypatch.setattr(cli, "_hf_id", lambda value: value)
+    monkeypatch.setattr(
+        cli, "_attach_and_configure", lambda *args: attached.append(args) or 0
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.server_discovery.Progress.show", lambda *a: None
+    )
+    with server(reply) as base:
+        result = cli._reuse_or_refuse(
+            base,
+            "wanted",
+            "wanted",
+            None,
+            SimpleNamespace(
+                port=int(base.rsplit(":", 1)[1]), dry_run=False, ready_timeout=2
+            ),
+        )
+    assert result == 0
+    assert len(attached) == 1
+    assert len(health_checks) == 3
+    assert seen == ["Bearer test-secret"] * 3  # initial, readiness, final probe
+    output = capsys.readouterr()
+    assert "test-secret" not in output.out + output.err
+    assert "wrong-secret" not in output.out + output.err
+
+
+@pytest.mark.parametrize("explicit", [None, "explicit-secret"])
+def test_probe_request_credential_precedence(monkeypatch, explicit):
+    monkeypatch.setattr(get_config(), "api_key", "config-secret")
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "env-secret")
+    request = http_auth.model_probe_request("http://localhost/v1", explicit)
+    assert request.get_header("Authorization") == f"Bearer {explicit or 'env-secret'}"
+    assert "Authorization" not in request.headers
+
+
+@pytest.mark.parametrize(
+    "base,allowed",
+    [
+        ("http://localhost/v1", True),
+        ("https://example.test/v1", True),
+        ("http://example.test/v1", False),
+    ],
+)
+def test_readiness_uses_probe_transport_policy(monkeypatch, base, allowed):
+    from rapid_mlx.agents.setup import verify_server
+
+    monkeypatch.setattr(get_config(), "api_key", "test-secret")
+
+    def open_request(request, timeout):
+        if isinstance(request, str):
+            response = io.BytesIO(b'{"ready": true}')
+            response.status = 200
+            return response
+        assert request.get_header("Authorization") == (
+            "Bearer test-secret" if allowed else None
+        )
+        assert "Authorization" not in request.headers
+        return io.BytesIO(b'{"data": [{"id": "wanted"}]}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    assert verify_server(base, "wanted", agent="other") == "wanted"

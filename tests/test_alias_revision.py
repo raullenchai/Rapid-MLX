@@ -590,13 +590,13 @@ def test_launch_warm_pinned_cache_has_no_download_label(
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *a: None)
     start = Mock(return_value=12345)
     monkeypatch.setattr(launch_cli, "_start_server_background", start)
-    # The fake pid 12345 is not a real process; the startup wait treats it as
-    # a live server that is still loading.
+    # The fake pid 12345 stays alive until the mocked status becomes ready;
+    # its health probe must agree that loading has finished.
     monkeypatch.setattr(
         "rapid_mlx.agents.server_discovery.pid_alive", lambda _pid: True
     )
     monkeypatch.setattr(
-        "rapid_mlx.agents.server_discovery.startup_loading", lambda _url: True
+        "rapid_mlx.agents.server_discovery.startup_loading", lambda _url: False
     )
     monkeypatch.setattr(
         "rapid_mlx.agents.server_discovery.Progress.show", lambda *a, **k: None

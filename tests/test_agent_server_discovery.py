@@ -50,7 +50,7 @@ def events(monkeypatch):
             monkeypatch.setattr(
                 module,
                 "track_agent_configured",
-                lambda *v: recorded.append(("configured", *v)),
+                lambda *v, **kw: recorded.append(("configured", *v, *kw.values())),
             )
     return recorded
 
@@ -92,24 +92,14 @@ def refuse(*_a, **_k):
 def test_offline_setup(clock, events, configs, monkeypatch, capsys, agent, model):
     monkeypatch.setattr(setup, "verify_server", refuse)
     monkeypatch.setattr("rapid_mlx.run.cli._cached_context_window", lambda _m: 8192)
-    if model:
-        cli.agents_command(args(agent, model))
-        paths = list(configs.rglob("*.json" if agent != "codex" else "config.toml"))
-        assert paths
-        contents = "\n".join(p.read_text() for p in paths)
-        assert "localhost:8462" in contents
-        assert "tiny-model" in contents
-        assert events == [("configured", agent)]
-        assert "--port 8462" in capsys.readouterr().out
-    else:
-        with pytest.raises(SystemExit) as exc:
-            cli.agents_command(args(agent))
-        assert exc.value.code == 1
-        assert not list(configs.rglob("config.toml"))
-        assert not list(configs.rglob("opencode.json"))
-        assert not (configs / ".claude/settings.json").exists()
-        assert events == [("failed", "server_not_running", agent, "connection_refused")]
-        assert "http://localhost:8462" in capsys.readouterr().out
+    cli.agents_command(args(agent, model))
+    paths = list(configs.rglob("*.json" if agent != "codex" else "config.toml"))
+    assert paths
+    contents = "\n".join(p.read_text() for p in paths)
+    assert "localhost:8462" in contents
+    assert (model or "qwen3.5-4b-4bit") in contents
+    assert events == [("configured", agent, "not_running")]
+    assert "--port 8462" in capsys.readouterr().out
     assert clock[0] < 3
 
 
@@ -269,7 +259,7 @@ def test_live_serve_does_not_unbound_verification_errors(
 
     def response(request, **_kwargs):
         # Fail promptly if the bounded wait regresses into an endless loop.
-        assert clock[0] <= 60
+        assert clock[0] <= 600
         url = request if isinstance(request, str) else request.full_url
         if url.endswith(path):
             if isinstance(failure, int):
@@ -292,7 +282,7 @@ def test_live_serve_does_not_unbound_verification_errors(
         return
     with pytest.raises(RuntimeError, match="http://localhost:8462/v1") as raised:
         setup.wait_for_server("http://localhost:8462/v1", "tiny-model", agent="codex")
-    assert clock[0] == 60
+    assert clock[0] == 600
     cause = (
         "http_auth"
         if failure in (401, 403)
@@ -344,7 +334,7 @@ def test_verification_allows_two_second_responses(clock, events, monkeypatch, lo
 
 
 @pytest.mark.parametrize("startup", ["refused", "503", "503-response"])
-def test_only_recognized_startup_can_outlast_deadline(
+def test_recognized_startup_waits_longer_than_one_minute(
     clock, events, monkeypatch, startup
 ):
     server = discovery.Server(123, 8462, "tiny-model")
@@ -355,7 +345,7 @@ def test_only_recognized_startup_can_outlast_deadline(
         status = 200
 
     def response(request, *, timeout):
-        assert timeout == 2.0
+        assert 0.1 <= timeout <= 2.0
         url = request if isinstance(request, str) else request.full_url
         if clock[0] < 75:
             assert url.endswith("/health")
@@ -449,7 +439,7 @@ def test_foreign_unhealthy_listener_keeps_bounded_failure(clock, events, monkeyp
     monkeypatch.setattr(setup, "verify_server", unhealthy)
     with pytest.raises(RuntimeError, match="8462"):
         setup.wait_for_server("http://localhost:8462/v1", "tiny-model", agent="codex")
-    assert clock[0] == 60
+    assert clock[0] == 600
     assert events == [("failed", "server_not_ready", "codex", "other")]
 
 
@@ -701,7 +691,7 @@ def test_unrelated_server_still_allows_offline_model_config(
     cli.agents_command(args(agent, "tiny-model", port=None))
     paths = list(configs.rglob("*.json" if agent != "codex" else "config.toml"))
     assert any("localhost:8000" in p.read_text() for p in paths)
-    assert events == [("configured", agent)]
+    assert events == [("configured", agent, "not_running")]
     assert capsys.readouterr().out.count("Note: rapid-mlx serve") == 1
 
 
@@ -891,7 +881,7 @@ def test_startup_loading_and_pid_alive(monkeypatch):
     def answer(code):
         def urlopen(url, **_k):
             if code == 200:
-                return contextlib.nullcontext()
+                return contextlib.nullcontext(BytesIO(b'{"ready": true}'))
             raise urllib.error.HTTPError(url, code, "x", None, None)
 
         return urlopen

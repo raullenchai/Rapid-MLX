@@ -1949,3 +1949,82 @@ def test_start_default_wait_has_no_model_loading_deadline(monkeypatch):
     proc = types.SimpleNamespace(poll=lambda: None)
     cli._wait_for_chat_server("http://localhost:8462", proc, timeout_s=None)
     assert now[0] > 600
+
+
+@pytest.mark.parametrize("outcome", ["ready", "timeout", "cancel"])
+def test_reuse_waits_for_loading_server(monkeypatch, outcome, capsys):
+    from rapid_mlx import http_auth
+    from rapid_mlx.agents import server_discovery, setup
+
+    calls = []
+    monkeypatch.setattr(
+        http_auth, "probe_models", lambda _url: [] if not calls else [{"id": "wanted"}]
+    )
+    monkeypatch.setattr(server_discovery, "startup_loading", lambda _url: True)
+    monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
+    attached = []
+    monkeypatch.setattr(
+        run_cli, "_attach_and_configure", lambda *args: attached.append(args) or 0
+    )
+
+    def wait(url, model, **kwargs):
+        calls.append((url, kwargs["timeout"]))
+        if outcome == "timeout":
+            raise setup.ServerReadinessError("startup timed out")
+        if outcome == "cancel":
+            raise KeyboardInterrupt
+        return "wanted"
+
+    monkeypatch.setattr(setup, "wait_for_server", wait)
+    result = run_cli._reuse_or_refuse(
+        "http://127.0.0.1:8123",
+        "wanted",
+        "wanted",
+        None,
+        _make_args(port=8123, ready_timeout=7),
+    )
+    assert result == {"ready": 0, "timeout": 1, "cancel": 130}[outcome]
+    assert calls == [("http://127.0.0.1:8123/v1", 7)]
+    assert bool(attached) == (outcome == "ready")
+
+
+@pytest.mark.parametrize("failure_stage", ["wait", "probe"])
+def test_reuse_loading_server_auth_failure(monkeypatch, capsys, failure_stage):
+    from rapid_mlx import http_auth
+    from rapid_mlx.agents import server_discovery, setup
+
+    calls = []
+
+    def probe(url):
+        calls.append(("probe", url))
+        if len(calls) > 1:
+            raise PermissionError("authentication failed")
+        return []
+
+    def wait(url, model, **kwargs):
+        calls.append(("wait", url))
+        if failure_stage == "wait":
+            raise PermissionError("authentication failed")
+        return "wanted"
+
+    monkeypatch.setattr(http_auth, "probe_models", probe)
+    monkeypatch.setattr(setup, "wait_for_server", wait)
+    monkeypatch.setattr(server_discovery, "startup_loading", lambda _url: True)
+
+    result = run_cli._reuse_or_refuse(
+        "http://127.0.0.1:8123",
+        "wanted",
+        "wanted",
+        None,
+        _make_args(port=8123, ready_timeout=7),
+    )
+
+    assert result == 1
+    assert capsys.readouterr().out == (
+        "  Server requires an API key; set RAPID_MLX_API_KEY and retry.\n"
+    )
+    api_url = "http://127.0.0.1:8123/v1"
+    expected_calls = [("probe", api_url), ("wait", api_url)]
+    if failure_stage == "probe":
+        expected_calls.append(("probe", api_url))
+    assert calls == expected_calls

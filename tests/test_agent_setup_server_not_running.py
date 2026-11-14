@@ -3,7 +3,7 @@
 
 A refused connection means no server is running yet — the normal first-run
 order — so setup finishes with the one command that starts a matching server
-instead of failing. Only a generic writer with no model to write still refuses.
+instead of failing, including when setup must select a recommended model.
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ def short_readiness_wait(monkeypatch):
     real_wait = setup.wait_for_server
 
     def bounded(*args, **kwargs):
-        return real_wait(*args, timeout=0.01, **kwargs)
+        kwargs["timeout"] = 0.01
+        return real_wait(*args, **kwargs)
 
     monkeypatch.setattr(setup, "wait_for_server", bounded)
 
@@ -47,8 +48,12 @@ def dead_url():
 def events(monkeypatch):
     recorded: list[tuple] = []
 
-    def configured(agent):
-        recorded.append(("configured", agent))
+    def configured(agent, *, server_state=None):
+        recorded.append(
+            ("configured", agent, server_state)
+            if server_state
+            else ("configured", agent)
+        )
 
     def failed(error_class, agent, cause=None):
         recorded.append(("configure_failed", error_class, agent, cause))
@@ -216,21 +221,19 @@ def test_first_class_setup_writes_offline(dead_url, events, continue_config, cap
     assert continue_config.exists()
     assert f"--port {port}" in output
     assert "Connection check passed" not in output
-    assert events == [("configured", "continue")]
+    assert events == [("configured", "continue", "not_running")]
 
 
-def test_first_class_no_server_without_model_fails(
+def test_first_class_no_server_selects_recommendation(
     dead_url, events, continue_config, capsys
 ):
-    base_url, _ = dead_url
-    with pytest.raises(SystemExit) as exc:
-        cli.agents_command(_args("continue", base_url))
-    assert exc.value.code == 1
-    assert not continue_config.exists()
-    assert base_url in capsys.readouterr().out
-    assert events == [
-        ("configure_failed", "server_not_running", "continue", "connection_refused")
-    ]
+    base_url, port = dead_url
+    cli.agents_command(_args("continue", base_url))
+    assert "qwen3.5-4b-4bit" in continue_config.read_text()
+    output = capsys.readouterr().out
+    assert f"rapid-mlx serve qwen3.5-4b-4bit --port {port}" in output
+    assert "Connection check passed" not in output
+    assert events == [("configured", "continue", "not_running")]
 
 
 def test_first_class_setup_with_live_server_reports_check(
@@ -263,38 +266,63 @@ def test_generic_setup_with_model_writes_offline(dead_url, events, codex_home, c
     assert base_url in (codex_home / "config.toml").read_text()
     assert f"--port {port}" in output
     assert "Connection check passed" not in output
-    assert events == [("configured", "codex")]
+    assert events == [("configured", "codex", "not_running")]
 
 
-def test_generic_setup_without_model_refuses_with_start_command(
+def test_generic_setup_without_model_selects_recommendation(
     dead_url, events, codex_home, capsys
 ):
     base_url, port = dead_url
-
-    with pytest.raises(SystemExit) as raised:
-        cli.agents_command(_args("codex", base_url))
-
-    assert raised.value.code == 1
+    cli.agents_command(_args("codex", base_url))
+    config = (codex_home / "config.toml").read_text()
+    assert 'model = "qwen3.5-4b-4bit"' in config
+    assert base_url in config
     output = capsys.readouterr().out
-    assert not (codex_home / "config.toml").exists()
-    assert f"No Rapid-MLX server on http://127.0.0.1:{port}" in output
-    assert f"rapid-mlx agents codex --setup --yes --base-url {base_url}" in output
-    assert "Traceback" not in output
-    assert events == [
-        ("configure_failed", "server_not_running", "codex", "connection_refused")
-    ]
+    assert f"rapid-mlx serve qwen3.5-4b-4bit --port {port}" in output
+    assert "Connection check passed" not in output
+    assert events == [("configured", "codex", "not_running")]
 
 
-def test_generic_refusal_omits_default_base_url(
-    monkeypatch, events, codex_home, capsys
+def test_no_recommendation_gives_action_without_writing(
+    monkeypatch, dead_url, events, codex_home, capsys
 ):
-    def refused(*_args, **_kwargs):
-        raise ServerNotRunningError("no server is running at http://localhost:8000")
+    monkeypatch.setattr("rapid_mlx.run.cli._select_model", lambda **_kw: None)
+    with pytest.raises(SystemExit) as raised:
+        cli.agents_command(_args("codex", dead_url[0]))
+    assert raised.value.code == 1
+    assert not (codex_home / "config.toml").exists()
+    assert "--model <model>" in capsys.readouterr().out
 
-    monkeypatch.setattr(setup, "verify_server", refused)
-    monkeypatch.setattr(adapter, "_detect_running_model", lambda _url: (None, None))
-    with pytest.raises(SystemExit):
-        cli.agents_command(_args("codex", "http://localhost:8000/v1"))
+
+@pytest.mark.parametrize(
+    "agent",
+    [
+        "opencode",
+        "codex",
+        "claude-code",
+        "pi",
+        "continue",
+        "deepseek-harness",
+        "hermes",
+        "qwen-code",
+    ],
+)
+def test_all_file_agents_configure_before_server(
+    agent, dead_url, events, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        setup.claude_code, "current_config_path", lambda: tmp_path / "claude.json"
+    )
+    monkeypatch.setattr(
+        setup.continue_dev, "current_config_path", lambda: tmp_path / "continue.yaml"
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(adapter, "_hermes_supported_toolsets", lambda *_a: None)
+    cli.agents_command(_args(agent, dead_url[0], model="qwen3.5-4b-4bit"))
+    assert events == [("configured", agent, "not_running")]
     output = capsys.readouterr().out
-    assert "--setup --yes\n" in output
-    assert "--base-url" not in output
+    assert f"rapid-mlx serve qwen3.5-4b-4bit --port {dead_url[1]}" in output
+    assert "Connection check passed" not in output
+    assert any(
+        "qwen3.5-4b-4bit" in p.read_text() for p in tmp_path.rglob("*") if p.is_file()
+    )

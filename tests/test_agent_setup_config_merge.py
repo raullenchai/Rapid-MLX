@@ -1011,7 +1011,7 @@ class TestIdempotentSetupSummary:
         monkeypatch.setattr(
             setup,
             "wait_for_server",
-            lambda base_url, model_id, *, agent, endpoint=None: (
+            lambda base_url, model_id, *, agent, endpoint=None, timeout=600: (
                 verified.append((base_url, model_id, agent)) or "served-model"
             ),
         )

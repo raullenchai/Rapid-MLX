@@ -9,6 +9,16 @@ rapid-mlx launch codex
 
 Replace `codex` with `claude-code`, `opencode`, `pi`, `hermes`, `crush`, or `goose`. Run the same command next time. Use `rapid-mlx launch <agent> --remove` to remove Rapid's private profile for that agent. Run `rapid-mlx launch list` for other integrations.
 
+You can also run `rapid-mlx agents <agent> --setup --yes` before starting a
+server. Setup saves the configuration using `--model <alias>` or a model
+recommended for this Mac, then prints the matching `rapid-mlx serve` command.
+It does not download or load weights. Use `--port <port>` or `--base-url <url>`
+to pin the endpoint. If a server is still loading, setup shows progress and
+waits up to 600 seconds (`--ready-timeout <seconds>` changes this; Ctrl-C
+cancels without writing). Authentication and invalid-model errors include a
+recovery instruction. A saved configuration alone does not verify a live model.
+
+
 ## Guides
 
 - [Codex](codex-cli.md)

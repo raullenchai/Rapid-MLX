@@ -16029,9 +16029,14 @@ def agents_command(args):
         )
         from rapid_mlx.agents.context_budget import agent_context_budget
 
-        def setup_context_budget(model_id):
+        def setup_context_budget(model_id, *, offline=False):
             try:
-                return agent_context_budget(profile.name, base_url, model_id)
+                return agent_context_budget(
+                    profile.name,
+                    base_url,
+                    model_id,
+                    **({"offline": True} if offline else {}),
+                )
             except ValueError as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}")
                 sys.exit(1)
@@ -16076,7 +16081,6 @@ def agents_command(args):
             from rapid_mlx.agents.server_discovery import Endpoint, resolve_endpoint
             from rapid_mlx.agents.server_hint import (
                 ServerNotRunningError,
-                start_server_command,
             )
             from rapid_mlx.agents.setup import wait_for_server
 
@@ -16089,43 +16093,60 @@ def agents_command(args):
                 )
                 base_url = profile.normalize_base_url(endpoint.base_url)
                 advertised = wait_for_server(
-                    base_url, model_id, agent=profile.name, endpoint=endpoint
+                    base_url,
+                    model_id,
+                    agent=profile.name,
+                    endpoint=endpoint,
+                    timeout=getattr(args, "ready_timeout", 600),
                 )
                 base_url = profile.normalize_base_url(endpoint.base_url)
             except KeyboardInterrupt:
                 print("\n  Setup cancelled; nothing was written.")
                 sys.exit(130)
-            except ServerNotRunningError as exc:
-                if requested_model:
-                    offline = True
-                    if needs_ctx:
-                        from rapid_mlx.run.cli import _cached_context_window
-
-                        context_length = _cached_context_window(requested_model)
-                else:
-                    from rapid_mlx.agents.isolated import SUPPORTED
+            except ServerNotRunningError:
+                if (
+                    not requested_model
+                    and endpoint is not None
+                    and (endpoint.skipped_auth or endpoint.skipped_non_chat)
+                ):
+                    # Discovery already printed the precise key/model recovery
+                    # instruction. An inaccessible server is not an offline Mac.
                     from rapid_mlx.agents.telemetry import track_agent_configure_failed
 
                     track_agent_configure_failed(
-                        "server_not_running", profile.name, exc.cause
+                        "server_not_running", profile.name, "connection_refused"
                     )
                     print(
-                        f"\n  No Rapid-MLX server on {base_url} (and no rapid-mlx serve is starting)."
-                    )
-                    print(
-                        f"  Start one:  {start_server_command(profile, base_url, 'default')}   (in another terminal)"
-                    )
-                    print(
-                        f"  Or write the config now:  rapid-mlx agents {profile.name} --setup --model <model>"
-                    )
-                    if profile.name in SUPPORTED:
-                        print(
-                            f"  Or let Rapid start everything:  rapid-mlx launch {profile.name}"
-                        )
-                    print(
-                        f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}"
+                        "  No Rapid-MLX server accessible for this agent; follow the instruction above."
                     )
                     sys.exit(1)
+                # Configuration is useful before serve starts. Select exactly
+                # the same memory-fit model as start, without downloading it.
+                from rapid_mlx.run.cli import _select_model
+
+                offline = True
+                if endpoint is not None:
+                    base_url = profile.normalize_base_url(endpoint.base_url)
+                model_id = requested_model or _select_model(
+                    explicit=None, profile=profile, no_download=False, quiet=True
+                )
+                if not model_id:
+                    # Some profiles only list large models. Reuse the shared
+                    # coding-agent recommendations for smaller Macs as well.
+                    model_id = _select_model(
+                        explicit=None,
+                        profile=get_profile("claude-code"),
+                        no_download=False,
+                        quiet=True,
+                    )
+                if not model_id:
+                    print("  No recommended model fits this Mac. Choose a model:")
+                    print(
+                        f"  {_agent_setup_retry_command(args, profile.name, base_url)} --model <model>"
+                    )
+                    sys.exit(1)
+                if needs_ctx:
+                    context_length = setup_context_budget(model_id, offline=True)
             except RuntimeError as exc:
                 from rapid_mlx.agents.chat_models import NonChatModelError
                 from rapid_mlx.agents.setup import ServerAuthenticationError
@@ -16228,7 +16249,9 @@ def agents_command(args):
                 # A configured event means a config mutation completed and
                 # verification passed, was skipped with --no-check, or was
                 # deferred because no server was running yet.
-                track_agent_configured(plan.agent)
+                track_agent_configured(
+                    plan.agent, **({"server_state": "not_running"} if offline else {})
+                )
             if profile.name == "cline":
                 from rapid_mlx.launch import cline
 
@@ -16241,13 +16264,8 @@ def agents_command(args):
             print()
             return
 
-        # Generic file writers do not have the first-class plan's post-write
-        # verifier. Refuse before mutation when the endpoint is broken, or when
-        # no server is running and no --model was given, so a failed setup
-        # cannot leave a new `model = default` config behind. With --model, a
-        # not-yet-started server is the normal first-run order: write it.
-        # --no-check remains the explicit offline-config escape hatch, and a
-        # dry run remains side-effect-free preview even without a live server.
+        # Both writers use the model and endpoint resolved above; an absent
+        # local server defers verification rather than blocking configuration.
         summary = setup_agent_config(
             profile,
             base_url,
@@ -16255,6 +16273,7 @@ def agents_command(args):
             agent_version=args.agent_version,
             context_length=context_length,
             dry_run=args.dry_run,
+            **({"server_state": "not_running"} if offline else {}),
         )
         if summary.startswith("Cannot"):
             print(f"\n  {profile.display_name} setup failed.")

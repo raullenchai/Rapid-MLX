@@ -129,11 +129,12 @@ def scan_servers() -> list[Server]:
 
 
 def startup_loading(base_url: str) -> bool:
-    """True when ``/health`` answers 503: the serve startup probe is loading."""
+    """True when health reports startup (503 or an explicit ready=false)."""
     root = base_url.rstrip("/").removesuffix("/v1")
     try:
-        with urllib.request.urlopen(f"{root}/health", timeout=2):
-            return False
+        with urllib.request.urlopen(f"{root}/health", timeout=2) as response:
+            payload = json.loads(response.read())
+            return isinstance(payload, dict) and payload.get("ready") is False
     except urllib.error.HTTPError as exc:
         return exc.code == 503
     except (OSError, ValueError):

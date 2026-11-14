@@ -848,8 +848,8 @@ def test_connection_status_shares_local_refusal_classification(private_home):
 
 
 @pytest.mark.parametrize("loading", [True, False])
-def test_launch_waits_beyond_600_seconds_while_pid_alive(private_home, loading):
-    """Loading (503) waits without a cap; any other server error keeps 600 s."""
+def test_launch_bounds_startup_even_while_pid_alive(private_home, loading):
+    """Loading and other startup errors have a fixed 600 s deadline."""
     now = [0.0]
     from rapid_mlx.launch.cli import launch_command, register
 
@@ -891,13 +891,9 @@ def test_launch_waits_beyond_600_seconds_while_pid_alive(private_home, loading):
     ):
         launch_command(args)
     start.assert_called_once()
-    if loading:
-        assert exit_info.value.code == 0
-        assert now[0] > 600
-        agent.assert_called_once()
-    else:
-        assert exit_info.value.code == 1
-        agent.assert_not_called()
+    assert exit_info.value.code == 1
+    assert now[0] == 600
+    agent.assert_not_called()
 
 
 def test_private_storage_rejects_links_and_unsafe_files(private_home):
@@ -2349,3 +2345,84 @@ def test_short_launch_does_not_adopt_server_rejecting_saved_key(
         launch_command(_launch_args("goose"))
     assert isolated.saved_model("goose") is None
     assert "could not verify" in capsys.readouterr().err
+
+
+def test_launch_waits_for_existing_loading_server(private_home):
+    from rapid_mlx.launch.cli import launch_command, register
+
+    parser = ArgumentParser()
+    register(parser.add_subparsers())
+    args = parser.parse_args(
+        ["launch", "opencode", "--isolated", "--model", "qwen3.5-9b-4bit", "--run"]
+    )
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["server-error", "server-error", "ready"],
+        ),
+        patch(
+            "rapid_mlx.agents.server_discovery.startup_loading",
+            side_effect=[True, False],
+        ),
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
+        patch("rapid_mlx.launch.cli._start_server_background") as start,
+        patch("rapid_mlx.launch.cli._stop_failed_start") as stop,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as agent,
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as result,
+    ):
+        launch_command(args)
+    assert result.value.code == 0
+    start.assert_not_called()
+    stop.assert_not_called()
+    agent.assert_called_once()
+
+
+def test_launch_loading_reuse_retains_config_key(private_home, monkeypatch, capsys):
+    """Real isolated probes keep the saved profile key throughout warmup."""
+    import io
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.launch.cli import launch_command, register
+
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    key = isolated.stable_key()
+    monkeypatch.setattr(get_config(), "api_key", key)
+    parser = ArgumentParser()
+    register(parser.add_subparsers())
+    args = parser.parse_args(
+        ["launch", "opencode", "--isolated", "--model", "qwen3.5-9b-4bit", "--run"]
+    )
+    seen = []
+    health_checks = []
+
+    def open_request(request, timeout):
+        if isinstance(request, str) and request.endswith("/health"):
+            health_checks.append(request)
+            return io.BytesIO(json.dumps({"ready": len(health_checks) >= 3}).encode())
+        assert request.full_url.endswith("/v1/models")
+        seen.append(request.get_header("Authorization"))
+        if seen[-1] != f"Bearer {key}":
+            raise urllib.error.HTTPError(request.full_url, 401, "denied", {}, None)
+        assert "Authorization" not in request.headers
+        return io.BytesIO(b'{"data": [{"id": "qwen3.5-9b-4bit"}]}')
+
+    with (
+        patch("urllib.request.urlopen", side_effect=open_request),
+        patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
+        patch("rapid_mlx.launch.cli._start_server_background") as start,
+        patch("rapid_mlx.launch.cli._stop_failed_start") as stop,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as agent,
+        patch("time.sleep"),
+        pytest.raises(SystemExit) as result,
+    ):
+        launch_command(args)
+    assert result.value.code == 0
+    assert len(health_checks) == 3
+    assert len(seen) >= 4
+    assert set(seen) == {f"Bearer {key}"}
+    start.assert_not_called()
+    stop.assert_not_called()
+    agent.assert_called_once()
+    output = capsys.readouterr()
+    assert key not in output.out + output.err
