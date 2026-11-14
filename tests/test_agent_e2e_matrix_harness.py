@@ -464,8 +464,115 @@ def crush_file_modal(path, tool="write"):
     )
 
 
+@pytest.fixture
+def clock(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(run.time, "monotonic", lambda: now[0])
+    return now
+
+
+def test_crush_waits_for_dialog_guard_and_quiet(tmp_path, monkeypatch, clock):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_modal(tmp_path)
+    approve(prompt)
+    assert sent == []
+    clock[0] += 1.599
+    approve(prompt)
+    assert sent == []
+    clock[0] = 101.6
+    approve(prompt)
+    approve(prompt)
+    assert sent == [b"s"]
+
+
+def test_crush_waits_for_output_quiet_without_resetting_guard(
+    tmp_path, monkeypatch, clock
+):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_modal(tmp_path)
+    approve(prompt)
+    clock[0] = 101.5
+    output = prompt + "\r\n" + prompt
+    approve(output)
+    clock[0] = 101.6
+    approve(output)
+    assert sent == []
+    clock[0] = 101.999
+    approve(output)
+    assert sent == []
+    clock[0] = 102.0
+    approve(output)
+    approve(output)
+    assert sent == [b"s"]
+
+
+@pytest.mark.parametrize("new_state", ["working", "unknown", "incomplete", "outside"])
+def test_crush_drops_stale_pending_answer(new_state, tmp_path, monkeypatch, clock):
+    sent = []
+    sink = io.BytesIO()
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path, sink)
+    prompt = crush_modal(tmp_path)
+    approve(prompt)
+    newer = {
+        "working": "\x1b]9;4;state=working:app=crush\x07",
+        "unknown": prompt.replace("Tool bash", "Tool read"),
+        "incomplete": "Permission Required ││ Tool write ││",
+        "outside": crush_modal(tmp_path.parent),
+    }[new_state]
+    output = prompt + newer
+    # Check freshness even if no callback ran between detection and deadline.
+    clock[0] += 2
+    approve(output)
+    clock[0] += 2
+    approve(output)
+    assert sent == []
+    assert sink.getvalue() == b""
+
+
+def test_crush_different_modal_gets_its_own_deadline(tmp_path, monkeypatch, clock):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_modal(tmp_path)
+    approve(prompt)
+    clock[0] = 101.0
+    output = prompt + crush_file_modal(tmp_path / "hello.txt")
+    approve(output)
+    clock[0] = 101.6
+    approve(output)
+    assert sent == []
+    clock[0] = 102.6
+    approve(output)
+    approve(output)
+    assert sent == [b"a"]
+
+
+@pytest.mark.parametrize(
+    "gap", ["Permission Required Tool read", "state=working:app=crush"]
+)
+def test_crush_pending_intervening_state_before_redraw(
+    gap, tmp_path, monkeypatch, clock
+):
+    sent = []
+    monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_modal(tmp_path)
+    approve(prompt)
+    clock[0] += 1
+    output = prompt + gap + prompt
+    approve(output)
+    clock[0] += 2
+    approve(output)
+    assert sent == ([b"s"] if "working" in gap else [])
+
+
 @pytest.mark.parametrize("tool", ["bash", "write", "edit", "multiedit"])
-def test_crush_resolves_tmp_alias(tool, monkeypatch):
+def test_crush_resolves_tmp_alias(tool, monkeypatch, clock):
     sent = []
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
     with tempfile.TemporaryDirectory(
@@ -479,14 +586,17 @@ def test_crush_resolves_tmp_alias(tool, monkeypatch):
             if tool == "bash"
             else crush_file_modal(alias / "hello.txt", tool)
         )
-        approval_handler("crush", 10, workspace)(prompt)
-    assert sent == [b"\x1b[C\r" if tool == "bash" else b"\r"]
+        approve = approval_handler("crush", 10, workspace)
+        approve(prompt)
+        clock[0] += 1.6
+        approve(prompt)
+    assert sent == [b"s" if tool == "bash" else b"a"]
 
 
 @pytest.mark.parametrize("tool", ["write", "edit", "multiedit"])
 @pytest.mark.parametrize("outside", ["absolute", "parent", "sibling", "symlink"])
 def test_crush_file_outside_workspace_is_not_answered(
-    tool, outside, tmp_path, monkeypatch
+    tool, outside, tmp_path, monkeypatch, clock
 ):
     sent = []
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
@@ -499,11 +609,15 @@ def test_crush_file_outside_workspace_is_not_answered(
         "sibling": tmp_path / "project-other/hello.txt",
         "symlink": workspace / "escape/outside.txt",
     }[outside]
-    approval_handler("crush", 10, workspace)(crush_file_modal(path, tool))
+    approve = approval_handler("crush", 10, workspace)
+    prompt = crush_file_modal(path, tool)
+    approve(prompt)
+    clock[0] += 2
+    approve(prompt)
     assert sent == []
 
 
-def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch):
+def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch, clock):
     sent = []
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
     approve = approval_handler("crush", 10, tmp_path)
@@ -514,15 +628,21 @@ def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch):
     approve(prompt)
     output = prompt + "\r\n" + prompt
     approve(output)
-    assert sent == [b"\r"]
+    clock[0] += 1.6
+    approve(output)
+    assert sent == [b"a"]
     output += crush_file_modal(tmp_path / "nonce.txt")
     approve(output)
     approve(output)
-    assert sent == [b"\r", b"\r"]
+    clock[0] += 1.6
+    approve(output)
+    assert sent == [b"a", b"a"]
     output += "\x1b]9;4;state=working:app=crush\x07"
     output += crush_file_modal(tmp_path / "nonce.txt")
     approve(output)
-    assert sent == [b"\r", b"\r", b"\r"]
+    clock[0] += 1.6
+    approve(output)
+    assert sent == [b"a", b"a", b"a"]
 
 
 @pytest.mark.parametrize(
@@ -530,7 +650,7 @@ def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch):
     [("aider", AIDER_SHELL), ("aider", AIDER_SHELL_PLURAL), ("crush", None)],
 )
 def test_permission_answers_split_reads_and_redraws_once(
-    agent, aider_prompt, tmp_path, monkeypatch
+    agent, aider_prompt, tmp_path, monkeypatch, clock
 ):
     sent = []
     sink = io.BytesIO()
@@ -545,7 +665,9 @@ def test_permission_answers_split_reads_and_redraws_once(
     approve(prompt)
     approve(prompt + "\r\n   " + prompt)
     approve(prompt + "\r\n   " + prompt)
-    keys = b"y\r" if agent == "aider" else b"\x1b[C\r"
+    clock[0] += 1.6
+    approve(prompt + "\r\n   " + prompt)
+    keys = b"y\r" if agent == "aider" else b"s"
     assert sent == [keys]
     marker = b"\n[agent_e2e: permission prompt answered]\n"
     assert sink.getvalue() == marker
@@ -554,6 +676,8 @@ def test_permission_answers_split_reads_and_redraws_once(
         if agent == "aider"
         else crush_modal(tmp_path, "cat hello.txt")
     )
+    approve(prompt + "\r\n   " + prompt + next_prompt)
+    clock[0] += 1.6
     approve(prompt + "\r\n   " + prompt + next_prompt)
     assert sent == [keys, keys]
     assert sink.getvalue() == marker * 2
@@ -583,10 +707,14 @@ def test_unknown_permission_prompts_are_not_answered(
 
 
 @pytest.mark.parametrize("relative", ["..", "../project-other", "child"])
-def test_crush_requires_exact_test_workspace(relative, tmp_path, monkeypatch):
+def test_crush_requires_exact_test_workspace(relative, tmp_path, monkeypatch, clock):
     sent = []
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
-    approval_handler("crush", 10, tmp_path)(crush_modal(tmp_path / relative))
+    approve = approval_handler("crush", 10, tmp_path)
+    prompt = crush_modal(tmp_path / relative)
+    approve(prompt)
+    clock[0] += 2
+    approve(prompt)
     assert sent == []
     assert approval_handler("crush", 10) is None
 
@@ -1100,7 +1228,9 @@ def test_session_sends_second_prompt_only_after_first_success(
 
 
 @pytest.mark.parametrize("agent", ["aider", "crush"])
-def test_session_records_permissions_for_both_turns(agent, tmp_path, monkeypatch):
+def test_session_records_permissions_for_both_turns(
+    agent, tmp_path, monkeypatch, clock
+):
     sent = []
     proc = SimpleNamespace(poll=lambda: None, returncode=0)
     monkeypatch.setattr(run, "open_terminal", lambda: (10, 11))
@@ -1118,8 +1248,10 @@ def test_session_records_permissions_for_both_turns(agent, tmp_path, monkeypatch
         prompt = AIDER_SHELL if agent == "aider" else crush_modal(tmp_path)
         on_output(prompt)
         on_output(prompt)
+        clock[0] += 1.6
+        on_output(prompt)
         # Model output arrives only after the confirmation has been answered.
-        assert sent[-1] == (b"y\r" if agent == "aider" else b"\x1b[C\r")
+        assert sent[-1] == (b"y\r" if agent == "aider" else b"s")
         task = next(data for data in reversed(sent[:-1]) if b"hello.txt" in data)
         content = task.decode().split("exactly ")[1].split()[0].rstrip(".")
         (tmp_path / "hello.txt").write_text(content)
@@ -1165,37 +1297,50 @@ def test_read_loop_keeps_waiting_after_answering_permission(tmp_path, monkeypatc
     assert b"permission prompt answered" in sink.getvalue()
 
 
-def test_crush_new_occurrence_after_working_state(tmp_path, monkeypatch):
+def test_crush_new_occurrence_after_working_state(tmp_path, monkeypatch, clock):
     sent = []
     monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
     approve = approval_handler("crush", 10, tmp_path)
     prompt = crush_modal(tmp_path)
+    approve(prompt)
+    clock[0] += 1.6
     approve(prompt)
     # OSC progress establishes that the previous modal was dismissed, even
     # when the next tool requests an identical command.
     output = prompt + "\x1b]9;4;state=working:app=crush\x07" + prompt
     approve(output)
     approve(output)
-    assert sent == [b"\x1b[C\r", b"\x1b[C\r"]
+    clock[0] += 1.6
+    approve(output)
+    assert sent == [b"s", b"s"]
 
 
-def test_crush_read_loop_handles_split_utf8_and_ansi(tmp_path, monkeypatch):
+def test_crush_read_loop_handles_split_utf8_and_ansi(tmp_path, monkeypatch, clock):
     sent = []
     monkeypatch.setattr(run.os, "write", lambda _fd, data: sent.append(data))
     raw = ("\x1b[32m" + crush_modal(tmp_path) + "\x1b[0m").encode()
     # Feed one byte per PTY read, splitting both ANSI escapes and box glyphs.
     chunks = iter([bytes([byte]) for byte in raw] + [b"\xff\xe2", b""])
+    reads = [0]
+
+    def select_tick(*_args):
+        reads[0] += 1
+        if len(raw) + 1 < reads[0] < len(raw) + 10:
+            clock[0] += 0.25
+            return [], [], []
+        return [10], [], []
+
     monkeypatch.setattr(run.os, "read", lambda *_args: next(chunks))
-    monkeypatch.setattr(run.select, "select", lambda *args: ([10], [], []))
+    monkeypatch.setattr(run.select, "select", select_tick)
     output, _ = read_until(
         10,
         SimpleNamespace(poll=lambda: None),
-        1,
+        5,
         io.BytesIO(),
         on_output=approval_handler("crush", 10, tmp_path),
     )
     assert output == raw.decode() + "\ufffd\ufffd"
-    assert sent == [b"\x1b[C\r"]
+    assert sent == [b"s"]
 
 
 def test_crush_does_not_combine_incomplete_or_other_tool_dialogs(tmp_path, monkeypatch):
