@@ -53,6 +53,7 @@ from ..parsing.prompt_owner import (
     served_model_identity,
     split_buffered,
 )
+from ..prompt_token_reuse import RequestPromptTokens, run_prompt_work
 from ..reasoning import finalize_streaming_compat
 from ..request import (
     is_batch_cap_error,
@@ -755,9 +756,14 @@ async def create_anthropic_message(
         # back to its own estimator helper. We forward the value
         # verbatim (including ``None``) so the streaming path can
         # distinguish "skip" from "real zero count".
-        _ctx_prompt_tokens = enforce_context_length_for_messages(
+        request_prompt_tokens = RequestPromptTokens()
+        _ctx_prompt_tokens = await asyncio.to_thread(
+            run_prompt_work,
+            engine,
+            enforce_context_length_for_messages,
             engine,
             messages,
+            request_prompt_tokens=request_prompt_tokens,
             tools=openai_request.tools,
             max_tokens=_resolve_max_tokens(
                 openai_request.max_tokens,
@@ -796,6 +802,7 @@ async def create_anthropic_message(
                     request_id_holder=_anth_rid_holder,
                     served_telemetry_id=_served_telemetry_id,
                     prompt_tokens_estimate=_ctx_prompt_tokens,
+                    request_prompt_tokens=request_prompt_tokens,
                     prepared_messages=messages,
                     prepared_images=images,
                     prepared_videos=videos,
@@ -839,6 +846,7 @@ async def create_anthropic_message(
         # (codex r3 BLOCKING #1 / codex r5 BLOCKING #1).
 
         chat_kwargs = {
+            "_prompt_tokens": request_prompt_tokens,
             "max_tokens": _resolve_max_tokens(
                 openai_request.max_tokens,
                 _resolve_enable_thinking(openai_request),
@@ -1662,6 +1670,7 @@ async def _stream_anthropic_messages(
     *,
     request_id_holder: list | None = None,
     prompt_tokens_estimate: int | None = None,
+    request_prompt_tokens=None,
     prepared_messages: list | None = None,
     prepared_images: list | None = None,
     prepared_videos: list | None = None,
@@ -1732,6 +1741,7 @@ async def _stream_anthropic_messages(
         )
 
     chat_kwargs = {
+        "_prompt_tokens": request_prompt_tokens,
         "max_tokens": _resolve_max_tokens(
             openai_request.max_tokens,
             _resolve_enable_thinking(openai_request),
@@ -1962,7 +1972,10 @@ async def _stream_anthropic_messages(
     # ``None`` would emit ``"input_tokens": null`` which violates the
     # public schema.
     if prompt_tokens_estimate is None:
-        initial_prompt_tokens_estimate = _estimate_anthropic_prompt_tokens(
+        initial_prompt_tokens_estimate = await asyncio.to_thread(
+            run_prompt_work,
+            engine,
+            _estimate_anthropic_prompt_tokens,
             engine,
             messages,
             tools=openai_request.tools,

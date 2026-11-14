@@ -5560,7 +5560,7 @@ def enforce_rendered_context_length(
     return allowed_tokens
 
 
-def count_prompt_tokens(engine, prompt) -> int:
+def count_prompt_tokens(engine, prompt, *, prompt_tokens=None) -> int:
     """Return the integer prompt-token count under ``engine``'s tokenizer.
 
     Accepts both string prompts (chat-template output, raw completions)
@@ -5614,13 +5614,29 @@ def count_prompt_tokens(engine, prompt) -> int:
         # which tokenizes it again at admission. Looked up on the class so a
         # dynamic proxy or mock never stands in for the real method.
         encode_prompt_text = getattr(type(engine), "encode_prompt_text", None)
+
+        def encode():
+            token_ids = (
+                encode_prompt_text(engine, prompt)
+                if add_special_tokens and callable(encode_prompt_text)
+                else None
+            )
+            if token_ids is None:
+                token_ids = tokenizer.encode(
+                    prompt, add_special_tokens=add_special_tokens
+                )
+            return token_ids
+
         token_ids = (
-            encode_prompt_text(engine, prompt)
-            if add_special_tokens and callable(encode_prompt_text)
-            else None
+            prompt_tokens.encode(
+                tokenizer,
+                prompt,
+                add_special_tokens=add_special_tokens,
+                encode=encode if add_special_tokens else None,
+            )
+            if prompt_tokens is not None
+            else encode()
         )
-        if token_ids is None:
-            token_ids = tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
         return len(token_ids)
     except Exception:
         logger.debug("count_prompt_tokens: tokenizer.encode failed", exc_info=True)
@@ -5956,6 +5972,7 @@ def _build_prompt_with_thinking_compat(
     tools: list | None,
     enable_thinking: bool | None,
     chat_template_kwargs: dict | None = None,
+    prompt_tokens=None,
 ):
     """Call ``engine.build_prompt`` with ``enable_thinking=...``,
     falling back to the pre-#280 two-argument shape when the callable
@@ -5991,6 +6008,23 @@ def _build_prompt_with_thinking_compat(
     only fires on the first call for an engine with the legacy
     signature.
     """
+    supports_prompt_tokens = False
+    if prompt_tokens is not None:
+        try:
+            supports_prompt_tokens = (
+                "_prompt_tokens" in inspect.signature(build_prompt).parameters
+            )
+        except (TypeError, ValueError):
+            pass  # Keep the legacy callable path when introspection is unavailable.
+    if supports_prompt_tokens:
+        return build_prompt(
+            messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
+            _prompt_tokens=prompt_tokens,
+        )
+
     if chat_template_kwargs is not None:
         signature = inspect.signature(build_prompt)
         if signature is not None and ("chat_template_kwargs" in signature.parameters):
@@ -6032,6 +6066,7 @@ def enforce_context_length_for_messages(
     telemetry_model: str | None = None,
     caller_agent: str | None = None,
     caller_client: str | None = None,
+    request_prompt_tokens=None,
 ) -> int | None:
     """Run the context-length gate for a chat-style request and return
     the rendered prompt's token count (``None`` on permissive-skip paths).
@@ -6116,13 +6151,24 @@ def enforce_context_length_for_messages(
             # Render image parts as the processor does. Templates that only
             # know ``{"type": "image"}`` otherwise serialize each data URL as
             # text, so a few images read as hundreds of thousands of tokens.
-            prompt_ids = apply_template(
-                BatchedEngine._prepare_mllm_messages(messages),
-                tools=convert_tools_for_template(tools) if tools else None,
-                tokenize=True,
-                add_generation_prompt=True,
-                **template_kwargs,
-            )
+            template_messages = BatchedEngine._prepare_mllm_messages(messages)
+            template_tools = convert_tools_for_template(tools) if tools else None
+            if request_prompt_tokens is not None:
+                prompt_ids = request_prompt_tokens.apply_template(
+                    tokenizer,
+                    template_messages,
+                    tools=template_tools,
+                    add_generation_prompt=True,
+                    **template_kwargs,
+                )
+            else:
+                prompt_ids = apply_template(
+                    template_messages,
+                    tools=template_tools,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    **template_kwargs,
+                )
             prompt_tokens = _tokenized_prompt_length(prompt_ids)
         except HTTPException:
             raise
@@ -6156,6 +6202,7 @@ def enforce_context_length_for_messages(
             tools=tools,
             enable_thinking=enable_thinking,
             chat_template_kwargs=chat_template_kwargs,
+            prompt_tokens=request_prompt_tokens,
         )
     except HTTPException:
         raise
@@ -6184,7 +6231,9 @@ def enforce_context_length_for_messages(
         return None
     if not prompt:
         return None
-    prompt_tokens = count_prompt_tokens(engine, prompt)
+    prompt_tokens = count_prompt_tokens(
+        engine, prompt, prompt_tokens=request_prompt_tokens
+    )
     if prompt_tokens <= 0:
         if _requires_exact_prompt_count():
             _raise_prompt_count_unavailable()
@@ -6207,6 +6256,7 @@ def repair_messages_fit_context(
     tools: list | None = None,
     max_tokens: int | None = None,
     enable_thinking: bool | None = None,
+    request_prompt_tokens=None,
 ) -> bool:
     """Re-check the context-length gate for the R12-4 strict-mode
     repair-retry prompt (H-06 #267b).
@@ -6262,6 +6312,7 @@ def repair_messages_fit_context(
             repair_messages,
             tools=tools,
             enable_thinking=enable_thinking,
+            prompt_tokens=request_prompt_tokens,
         )
     except Exception:
         # If the repair prompt can't even be rendered, we can't make
@@ -6272,7 +6323,9 @@ def repair_messages_fit_context(
         return True
     if not prompt:
         return True
-    prompt_tokens = count_prompt_tokens(engine, prompt)
+    prompt_tokens = count_prompt_tokens(
+        engine, prompt, prompt_tokens=request_prompt_tokens
+    )
     if prompt_tokens <= 0:
         return True
     max_context = get_model_max_context(engine)

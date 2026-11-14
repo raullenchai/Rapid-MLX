@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tokenize prompt variants by re-encoding only the text that differs.
+"""Retain request-local prompt IDs and tokenize boundary variants by their tails.
+
+The request-local store carries exact IDs through admission and generation,
+independent of whether the process-wide host LRU can retain the prompt.
 
 The prefix-boundary probe renders two or three variants of the request's chat
 prompt (without the generation marker, with a placeholder next turn) and
@@ -26,13 +29,118 @@ some cache reuse but cannot change any output.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 # How far back from the first differing character to look for an added token.
 # Chat templates close every message with one, so a cut is normally found
 # within a single message; a miss simply falls back to a full encode.
 _SEARCH_WINDOW_CHARS = 16384
+
+
+def run_prompt_work(engine, work, /, *args, **kwargs):
+    """Serialize frontend tokenizer work off-loop: HF backends mutate call settings.
+
+    Each engine owns its lock; requests retain their own IDs. The worker's
+    multimodal processor already owns an independent tokenizer clone.
+    """
+    state = getattr(engine, "__dict__", None)
+    if not isinstance(state, dict):
+        return work(*args, **kwargs)
+    lock = state.setdefault("_prompt_tokenization_lock", threading.RLock())
+    with lock:
+        return work(*args, **kwargs)
+
+
+@dataclass
+class RequestPromptTokens:
+    """Exact host tokenizations retained for this request, independent of LRU eviction.
+
+    Key by encoder identity and special-token policy as well as text. A changed
+    prompt (repair, forced prefix, or template options) must never reuse stale IDs.
+    """
+
+    _tokens: dict[tuple[int, str, bool], tuple[int, ...]] = field(default_factory=dict)
+
+    @staticmethod
+    def _is_fast_tokenizer(tokenizer) -> bool:
+        # Only the standard encode contract can be replaced by BatchEncoding.
+        # Custom overrides retain their own encode behavior.
+        from transformers import PreTrainedTokenizerBase, PreTrainedTokenizerFast
+
+        return (
+            isinstance(tokenizer, PreTrainedTokenizerFast)
+            and type(tokenizer).encode is PreTrainedTokenizerBase.encode
+            and type(tokenizer).__call__ is PreTrainedTokenizerBase.__call__
+            and type(tokenizer)._encode_plus is PreTrainedTokenizerFast._encode_plus
+        )
+
+    def encode(
+        self,
+        tokenizer,
+        text: str,
+        *,
+        add_special_tokens: bool = True,
+        encode: Callable[[], Sequence[int]] | None = None,
+    ) -> list[int]:
+        key = (id(tokenizer), text, add_special_tokens)
+        if key not in self._tokens:
+            if encode is None and self._is_fast_tokenizer(tokenizer):
+                # Keep the Rust Encoding so both BOS policies can be obtained
+                # by post-processing the same tokenization, without re-encoding.
+                result = tokenizer(
+                    text,
+                    add_special_tokens=False,
+                    return_attention_mask=False,
+                    return_token_type_ids=False,
+                )
+                encoding = result.encodings[0]
+                self.remember(tokenizer, text, encoding.ids, add_special_tokens=False)
+                processed = tokenizer.backend_tokenizer.post_process(
+                    encoding, add_special_tokens=True
+                )
+                self.remember(tokenizer, text, processed.ids, add_special_tokens=True)
+            else:
+                tokens = (
+                    encode()
+                    if encode is not None
+                    else tokenizer.encode(text, add_special_tokens=add_special_tokens)
+                )
+                self.remember(
+                    tokenizer, text, tokens, add_special_tokens=add_special_tokens
+                )
+        return list(self._tokens[key])
+
+    def remember(
+        self, tokenizer, text: str, tokens: Sequence[int], *, add_special_tokens: bool
+    ) -> None:
+        self._tokens[(id(tokenizer), text, add_special_tokens)] = tuple(tokens)
+
+    def apply_template(self, tokenizer, messages, **kwargs):
+        from transformers import PreTrainedTokenizerBase
+
+        # HF's standard template path is render + encode(add_special_tokens=False).
+        # Processor/custom template tokenizers retain their exact existing path.
+        tokenization_options = {
+            "padding",
+            "truncation",
+            "max_length",
+            "return_tensors",
+            "return_dict",
+            "return_assistant_tokens_mask",
+            "tokenizer_kwargs",
+        }
+        if (
+            not tokenization_options.intersection(kwargs)
+            and self._is_fast_tokenizer(tokenizer)
+            and type(tokenizer).apply_chat_template
+            is PreTrainedTokenizerBase.apply_chat_template
+        ):
+            rendered = tokenizer.apply_chat_template(messages, tokenize=False, **kwargs)
+            return self.encode(tokenizer, rendered, add_special_tokens=False)
+        return tokenizer.apply_chat_template(messages, tokenize=True, **kwargs)
 
 
 def common_prefix_length(left: str, right: str) -> int:
