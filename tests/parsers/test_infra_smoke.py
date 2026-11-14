@@ -288,6 +288,7 @@ def test_tool_reconstructor_rejects_null_function():
         rec.append_delta({"tool_calls": [{"index": 0, "id": "x", "function": None}]})
     assert "malformed 'function'" in str(exc_info.value)
 
+
 @pytest.mark.parametrize("bad", [0, False, ["arg"], {"a": 1}, b"bytes"])
 def test_tool_reconstructor_rejects_non_string_arguments(bad):
     """raised in Codex re-review: ``arguments`` was previously coerced via
