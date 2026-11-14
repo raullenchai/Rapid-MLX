@@ -446,6 +446,8 @@ AIDER_SHELL = "Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:
 AIDER_SHELL_PLURAL = (
     "Run shell commands? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:"
 )
+AIDER_SHELL_NO_SKIP = "Run shell command? (Y)es/(N)o/(D)on't ask again [Yes]:"
+AIDER_SHELL_PLURAL_NO_SKIP = "Run shell commands? (Y)es/(N)o/(D)on't ask again [Yes]:"
 
 
 def crush_modal(workspace, command="cat hello.txt nonce.txt"):
@@ -647,7 +649,13 @@ def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch, clock
 
 @pytest.mark.parametrize(
     "agent,aider_prompt",
-    [("aider", AIDER_SHELL), ("aider", AIDER_SHELL_PLURAL), ("crush", None)],
+    [
+        ("aider", AIDER_SHELL),
+        ("aider", AIDER_SHELL_PLURAL),
+        ("aider", AIDER_SHELL_NO_SKIP),
+        ("aider", AIDER_SHELL_PLURAL_NO_SKIP),
+        ("crush", None),
+    ],
 )
 def test_permission_answers_split_reads_and_redraws_once(
     agent, aider_prompt, tmp_path, monkeypatch, clock
@@ -691,6 +699,11 @@ def test_permission_answers_split_reads_and_redraws_once(
     [
         ("aider", "Run shell command? [Yes]:"),
         ("aider", "Run shell commands? [Yes]:"),
+        ("aider", "Run shell command? (Y)es/(N)o [Yes]:"),
+        ("aider", "Run shell command? (Y)es/(N)o/(S)kip all [Yes]:"),
+        ("aider", AIDER_SHELL.replace("/(S)kip all", "/(A)ll/(S)kip all")),
+        ("aider", AIDER_SHELL_NO_SKIP.replace("[Yes]", "[No]")),
+        ("aider", AIDER_SHELL_NO_SKIP.removesuffix(":")),
         ("aider", "Allow access outside the project?"),
         ("aider", "Select login method"),
         ("crush", "Allow      Allow for Session      Deny"),
