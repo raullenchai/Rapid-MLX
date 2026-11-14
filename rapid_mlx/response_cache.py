@@ -64,6 +64,7 @@ import hashlib
 import json
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import Any
 
 
@@ -397,6 +398,22 @@ def make_cache_key(
 # ── Module singleton ──────────────────────────────────────────────────
 
 _response_cache = ResponseCache(capacity=0)
+_adapter_response_cache = ResponseCache(capacity=0)
+_adapter_users = 0
+_adapter_lock = threading.Lock()
+
+
+@contextmanager
+def _suspend_for_adapter():
+    """Keep the configured cache intact while adapter engines bypass it."""
+    global _adapter_users
+    with _adapter_lock:
+        _adapter_users += 1
+    try:
+        yield
+    finally:
+        with _adapter_lock:
+            _adapter_users -= 1
 
 
 def get_response_cache() -> ResponseCache:
@@ -407,7 +424,7 @@ def get_response_cache() -> ResponseCache:
     calls :func:`configure_response_cache` with the resolved
     ``--response-cache-entries`` value.
     """
-    return _response_cache
+    return _adapter_response_cache if _adapter_users else _response_cache
 
 
 def configure_response_cache(capacity: int) -> None:

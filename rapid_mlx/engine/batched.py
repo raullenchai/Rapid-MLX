@@ -25,6 +25,7 @@ import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -1223,6 +1224,7 @@ class BatchedEngine(BaseEngine):
                 residency APIs report the decision that was actually loaded.
         """
         self._adapter = None
+        self._adapter_cache_scope = None
         if adapter_path is not None:
             from ..lora_adapter import reject_adapter_options, validate_adapter
 
@@ -1234,9 +1236,6 @@ class BatchedEngine(BaseEngine):
                 not in (None, "none"),
             )
             self._adapter = validate_adapter(adapter_path, model_name)
-            from .. import disk_caches
-
-            disk_caches.configure(True)
             logger.warning(
                 "--adapter disables persisted caches to prevent cross-adapter KV reuse; "
                 "automatic MTP/speculative decoding is disabled"
@@ -1876,6 +1875,25 @@ class BatchedEngine(BaseEngine):
         if self._loaded:
             return
 
+        scope = getattr(self, "_adapter_cache_scope", None)
+        if getattr(self, "_adapter", None) is not None and scope is None:
+            from .. import disk_caches, response_cache
+
+            scope = ExitStack()
+            try:
+                scope.enter_context(disk_caches._suspend_for_adapter())
+                scope.enter_context(response_cache._suspend_for_adapter())
+            except BaseException:
+                scope.close()
+                raise
+            self._adapter_cache_scope = scope
+        try:
+            await self._start_engine()
+        except BaseException:
+            self._release_adapter_cache_scope()
+            raise
+
+    async def _start_engine(self) -> None:
         # Lane-capability admission at the text/MLLM split — BEFORE any
         # weights are loaded or a scheduler is constructed, so an
         # unsupported explicit configuration can never come up "Ready"
@@ -1896,6 +1914,12 @@ class BatchedEngine(BaseEngine):
         self._loaded = True
         self._start_time = time.monotonic()
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
+
+    def _release_adapter_cache_scope(self) -> None:
+        scope = getattr(self, "_adapter_cache_scope", None)
+        self._adapter_cache_scope = None
+        if scope is not None:
+            scope.close()
 
     def _validate_lane_capabilities(self) -> None:
         """Fail closed on capabilities the selected serving lane cannot honor.
@@ -2790,6 +2814,12 @@ class BatchedEngine(BaseEngine):
 
     async def stop(self, *, preserve_model_worker: bool = False) -> None:
         """Stop the engine and cleanup resources."""
+        try:
+            await self._stop_engine(preserve_model_worker=preserve_model_worker)
+        finally:
+            self._release_adapter_cache_scope()
+
+    async def _stop_engine(self, *, preserve_model_worker: bool) -> None:
         # Scheduler shutdown queues work on the same single model executor
         # used by guided decoding. Signal guided jobs first so a long schema
         # request cannot hold model unload behind it.

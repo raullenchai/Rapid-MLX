@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Startup adapter validation, dispatch and identity regressions."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -14,6 +15,24 @@ from rapid_mlx.lora_adapter import (
     validate_adapter,
     validate_adapter_checkpoint,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_adapter_cache_state(monkeypatch):
+    """Restore process cache state even when a loader/lifecycle assertion fails."""
+    from rapid_mlx import disk_caches, response_cache
+
+    monkeypatch.setattr(disk_caches, "_cli_disabled", disk_caches._cli_disabled)
+    monkeypatch.setattr(disk_caches, "_adapter_users", disk_caches._adapter_users)
+    monkeypatch.setattr(response_cache, "_adapter_users", response_cache._adapter_users)
+    monkeypatch.setattr(
+        response_cache, "_response_cache", response_cache.ResponseCache(capacity=0)
+    )
+    monkeypatch.setattr(
+        response_cache,
+        "_adapter_response_cache",
+        response_cache.ResponseCache(capacity=0),
+    )
 
 
 @pytest.fixture
@@ -210,18 +229,15 @@ def test_batched_engine_guards_and_identity(adapter):
     from rapid_mlx.engine.batched import BatchedEngine
 
     directory, base = adapter
-    try:
-        engine = BatchedEngine(str(base), adapter_path=str(directory), force_text=True)
-        assert engine.model_name == engine._adapter.cache_identity(str(base))
-        assert engine.get_stats()["adapter_sha256"] == engine._adapter.digest
-        assert engine._no_spec_decode
-        assert disk_caches.disabled()
-        with pytest.raises(ValueError, match="disk streaming"):
-            BatchedEngine(
-                str(base), adapter_path=str(directory), enable_disk_stream=True
-            )
-    finally:
-        disk_caches.configure(False)
+    before = disk_caches.disabled()
+    engine = BatchedEngine(str(base), adapter_path=str(directory), force_text=True)
+    assert engine.model_name == engine._adapter.cache_identity(str(base))
+    assert engine.get_stats()["adapter_sha256"] == engine._adapter.digest
+    assert engine._no_spec_decode
+    assert disk_caches.disabled() == before
+    with pytest.raises(ValueError, match="disk streaming"):
+        BatchedEngine(str(base), adapter_path=str(directory), enable_disk_stream=True)
+    assert disk_caches.disabled() == before
 
 
 def test_text_loader_passes_adapter_and_never_falls_back(adapter, monkeypatch):
@@ -399,29 +415,25 @@ def test_server_propagates_adapter_and_publishes_identity(
     monkeypatch.setattr(server, "_enable_tool_logits_bias", False)
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _: None)
     monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
-    try:
-        server.load_model(
-            str(base),
-            adapter_path=str(directory),
-            served_model_name=served_name,
-            scheduler_config=SchedulerConfig(response_cache_entries=8),
-            force_text=True,
-        )
-        assert constructed[0]["adapter_path"] == str(directory)
-        assert constructed[0]["no_spec_decode"] is True
-        public_name = (
-            served_name
-            if served_name is not None
-            else expected.model_identity(str(base))
-        )
-        assert server.get_config().model_name == public_name
-        assert server._model_registry.list_entries()[0].model_name == public_name
-        assert server._model_registry.list_entries()[0].is_adapter
-        assert server._model_registry.is_adapter_model(public_name)
-        assert not response_cache.get_response_cache().enabled
-        assert disk_caches.disabled()
-    finally:
-        disk_caches.configure(False)
+    before = disk_caches.disabled()
+    server.load_model(
+        str(base),
+        adapter_path=str(directory),
+        served_model_name=served_name,
+        scheduler_config=SchedulerConfig(response_cache_entries=8),
+        force_text=True,
+    )
+    assert constructed[0]["adapter_path"] == str(directory)
+    assert constructed[0]["no_spec_decode"] is True
+    public_name = (
+        served_name if served_name is not None else expected.model_identity(str(base))
+    )
+    assert server.get_config().model_name == public_name
+    assert server._model_registry.list_entries()[0].model_name == public_name
+    assert server._model_registry.list_entries()[0].is_adapter
+    assert server._model_registry.is_adapter_model(public_name)
+    assert response_cache.get_response_cache().enabled
+    assert disk_caches.disabled() == before
 
 
 @pytest.mark.parametrize("unloaded", [False, True])
@@ -449,6 +461,7 @@ async def test_resident_reload_rejects_adapter_metadata(monkeypatch, name, unloa
         server._handoff_resident_primary_audio_worker(entry)
 
 
+@pytest.mark.usefixtures("isolated_server_model_state")
 async def test_resident_load_allows_lora_substring_without_adapter(
     monkeypatch, adapter
 ):
@@ -486,3 +499,136 @@ async def test_resident_load_allows_lora_substring_without_adapter(
         assert entry.model_path == str(base)
         assert isinstance(entry.engine, Engine)
     assert len(constructed) == 3
+
+
+@pytest.mark.parametrize("disk_setting", ["enabled", "cli", "env"])
+async def test_adapter_cache_scope_lasts_until_last_engine_stops(
+    adapter, monkeypatch, disk_setting
+):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx import disk_caches, response_cache
+    from rapid_mlx.engine import batched
+
+    directory, base = adapter
+    disk_caches.configure(disk_setting == "cli")
+    monkeypatch.setenv(disk_caches.ENV_VAR, "1" if disk_setting == "env" else "0")
+    original_source = disk_caches.source()
+    response_cache.configure_response_cache(8)
+    configured_cache = response_cache.get_response_cache()
+    monkeypatch.setattr(batched, "prepare_execution_host", AsyncMock())
+
+    async def load():
+        assert disk_caches.source() == "--adapter"
+        assert not response_cache.get_response_cache().enabled
+
+    engines = [
+        batched.BatchedEngine(str(base), adapter_path=str(directory), force_text=True)
+        for _ in range(2)
+    ]
+    for engine in engines:
+        monkeypatch.setattr(engine, "_start_llm", load)
+    assert disk_caches.source() == original_source
+    assert response_cache.get_response_cache() is configured_cache
+    try:
+        for engine in engines:
+            await engine.start()
+            await engine.start()  # idempotent acquisition
+        # Release out of acquisition order: the other engine still owns its scope.
+        await engines[0].stop()
+        await engines[0].stop()  # idempotent release
+        assert disk_caches.source() == "--adapter"
+        assert not response_cache.get_response_cache().enabled
+        await engines[1].stop()
+        assert disk_caches.source() == original_source
+        assert response_cache.get_response_cache() is configured_cache
+        assert configured_cache.capacity == 8
+    finally:
+        for engine in engines:
+            await engine.stop()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_failed_adapter_start_releases_cache_overrides(
+    adapter, monkeypatch, failure
+):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx import disk_caches, response_cache
+    from rapid_mlx.engine import batched
+
+    directory, base = adapter
+    before = disk_caches.source()
+    response_cache.configure_response_cache(8)
+    configured_cache = response_cache.get_response_cache()
+    engine = batched.BatchedEngine(
+        str(base), adapter_path=str(directory), force_text=True
+    )
+    monkeypatch.setattr(batched, "prepare_execution_host", AsyncMock())
+
+    async def fail():
+        assert disk_caches.source() == "--adapter"
+        assert not response_cache.get_response_cache().enabled
+        raise failure()
+
+    monkeypatch.setattr(engine, "_start_llm", fail)
+    try:
+        with pytest.raises(failure):
+            await engine.start()
+        assert disk_caches.source() == before
+        assert response_cache.get_response_cache() is configured_cache
+        assert engine._adapter_cache_scope is None
+    finally:
+        await engine.stop()
+
+
+async def test_failed_adapter_stop_releases_cache_overrides(adapter, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx import disk_caches, response_cache
+    from rapid_mlx.engine import batched
+
+    directory, base = adapter
+    before = disk_caches.source()
+    response_cache.configure_response_cache(8)
+    configured_cache = response_cache.get_response_cache()
+    engine = batched.BatchedEngine(
+        str(base), adapter_path=str(directory), force_text=True
+    )
+    monkeypatch.setattr(batched, "prepare_execution_host", AsyncMock())
+    monkeypatch.setattr(engine, "_start_llm", AsyncMock())
+    await engine.start()
+    monkeypatch.setattr(
+        engine, "_stop_engine", AsyncMock(side_effect=RuntimeError("stop"))
+    )
+    with pytest.raises(RuntimeError, match="stop"):
+        await engine.stop()
+    assert disk_caches.source() == before
+    assert response_cache.get_response_cache() is configured_cache
+
+
+async def test_engine_without_adapter_preserves_cache_settings(adapter, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx import disk_caches, response_cache
+    from rapid_mlx.engine import batched
+
+    _, base = adapter
+    disk_caches.configure(False)
+    monkeypatch.setenv(disk_caches.ENV_VAR, "0")
+    response_cache.configure_response_cache(8)
+    configured_cache = response_cache.get_response_cache()
+    engine = batched.BatchedEngine(str(base), force_text=True)
+    monkeypatch.setattr(batched, "prepare_execution_host", AsyncMock())
+
+    async def load():
+        assert not disk_caches.disabled()
+        assert response_cache.get_response_cache() is configured_cache
+
+    monkeypatch.setattr(engine, "_start_llm", load)
+    try:
+        await engine.start()
+    finally:
+        await engine.stop()
+    assert not disk_caches.disabled()
+    assert response_cache.get_response_cache() is configured_cache

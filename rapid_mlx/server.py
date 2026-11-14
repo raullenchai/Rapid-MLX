@@ -3104,12 +3104,9 @@ def load_model(
                 "--adapter supports text models only (no image/video/audio/diffusion)"
             )
         if served_model_name is None:
-            _model_name = adapter.model_identity(_model_name)
+            _model_name += f":lora:{adapter.digest[:12]}"
         if _model_alias:
             _model_alias = adapter.model_identity(_model_alias)
-        from . import disk_caches
-
-        disk_caches.configure(True)
 
     if _profile_modality == "video-gen":
         from .runtime.video_lane import VideoEngine
@@ -3269,14 +3266,6 @@ def load_model(
             force_disable_response_cache()
         except Exception:  # pragma: no cover — defensive
             pass
-
-    if adapter is not None:
-        from .response_cache import force_disable_response_cache
-
-        force_disable_response_cache()
-        logger.warning(
-            "--adapter disables response caching to prevent cross-adapter reuse"
-        )
 
     # Set native tool format support on the engine (thread-safe via instance property)
     _engine.preserve_native_tool_format = _detect_native_tool_support()
