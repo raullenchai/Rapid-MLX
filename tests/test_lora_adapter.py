@@ -387,11 +387,20 @@ def test_real_text_loader_validates_shapes_before_loading(
 
 
 @pytest.mark.usefixtures("isolated_server_model_state")
-@pytest.mark.parametrize("served_name", [None, "custom", "custom:lora:verbatim"])
+@pytest.mark.parametrize(
+    ("served_name", "with_alias", "modality"),
+    [
+        (None, False, "text"),
+        ("custom", False, "text"),
+        ("custom:lora:verbatim", False, "text"),
+        ("custom", True, "text"),
+        (None, False, "image-gen"),
+    ],
+)
 def test_server_propagates_adapter_and_publishes_identity(
-    adapter, monkeypatch, served_name, scheduler_config_stub
+    adapter, monkeypatch, served_name, scheduler_config_stub, with_alias, modality
 ):
-    from rapid_mlx import disk_caches, response_cache, server
+    from rapid_mlx import disk_caches, model_aliases, response_cache, server
     from rapid_mlx.runtime.model_registry import ModelRegistry
 
     directory, base = adapter
@@ -407,7 +416,13 @@ def test_server_propagates_adapter_and_publishes_identity(
 
     (base / "model.safetensors").write_bytes(b"stub weights")
     monkeypatch.setattr(server, "BatchedEngine", Engine)
-    monkeypatch.setattr(server, "_model_alias", None)
+    monkeypatch.setattr(server, "_model_alias", str(base) if with_alias else None)
+    if modality != "text":
+        profile = model_aliases._coerce(
+            "test",
+            {"hf_path": str(base), "modality": modality, "supports_spec_decode": False},
+        )
+        monkeypatch.setattr(model_aliases, "resolve_profile", lambda _: profile)
     monkeypatch.setattr(server, "_model_registry", ModelRegistry())
     monkeypatch.setattr(server, "_primary_lazy_load", False)
     monkeypatch.setattr(server, "_primary_idle_unload_seconds", 0)
@@ -415,6 +430,11 @@ def test_server_propagates_adapter_and_publishes_identity(
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _: None)
     monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
     before = disk_caches.disabled()
+    if modality != "text":
+        with pytest.raises(ValueError, match="--adapter supports text models only"):
+            server.load_model(str(base), adapter_path=str(directory), force_text=True)
+        assert constructed == []
+        return
     server.load_model(
         str(base),
         adapter_path=str(directory),
@@ -431,6 +451,14 @@ def test_server_propagates_adapter_and_publishes_identity(
     assert server._model_registry.list_entries()[0].model_name == public_name
     assert server._model_registry.list_entries()[0].is_adapter
     assert server._model_registry.is_adapter_model(public_name)
+    if with_alias:
+        assert server._model_alias == expected.model_identity(str(base))
+        assert (
+            server._model_registry.get_entry(
+                expected.model_identity(str(base))
+            ).model_name
+            == public_name
+        )
     assert response_cache.get_response_cache().enabled
     assert disk_caches.disabled() == before
 
@@ -725,3 +753,270 @@ async def test_engine_without_adapter_preserves_cache_settings(adapter, monkeypa
         await engine.stop()
     assert not disk_caches.disabled()
     assert response_cache.get_response_cache() is configured_cache
+
+
+def test_non_lora_fine_tune_type_rejected(adapter):
+    directory, base = adapter
+    config_path = directory / "adapter_config.json"
+    config = json.loads(config_path.read_text())
+    config["fine_tune_type"] = "full"
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="only mlx-lm LoRA adapters"):
+        validate_adapter(str(directory), str(base))
+
+
+def test_cli_requires_base_model(adapter):
+    directory, _ = adapter
+    with pytest.raises(ValueError, match="requires a text base model"):
+        prepare_adapter_cli(SimpleNamespace(adapter=str(directory), model=None))
+
+
+@pytest.mark.parametrize("runtime", ["native", "cua", "image", "audio", "local_audio"])
+def test_cli_rejects_non_text_runtime_before_dispatch(adapter, monkeypatch, runtime):
+    from rapid_mlx import model_aliases
+    from rapid_mlx.audio import probe, registry
+    from rapid_mlx.models.deepseek_v41_native import artifacts
+
+    directory, base = adapter
+    monkeypatch.setattr(artifacts, "is_product_target", lambda _: runtime == "native")
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_profile",
+        lambda _: SimpleNamespace(modality="image-gen") if runtime == "image" else None,
+    )
+    monkeypatch.setattr(probe, "is_audio_model_alias", lambda _: runtime == "audio")
+    monkeypatch.setattr(
+        registry, "resolve_local_audio_folder", lambda _: runtime == "local_audio"
+    )
+    args = SimpleNamespace(
+        adapter=str(directory), model=str(base), cua_only=runtime == "cua"
+    )
+    with pytest.raises(
+        ValueError, match="dedicated native/media|supports text models only"
+    ):
+        prepare_adapter_cli(args)
+
+
+@pytest.mark.parametrize("failure", [ValueError, OSError])
+def test_serve_reports_adapter_error_before_dispatch(
+    adapter, capsys, failure, monkeypatch
+):
+    from rapid_mlx import cli, lora_adapter
+
+    directory, base = adapter
+    args = build_parser().parse_args(["serve", str(base), "--adapter", str(directory)])
+
+    def fail(_):
+        raise failure("adapter cannot be read")
+
+    monkeypatch.setattr(lora_adapter, "prepare_adapter_cli", fail)
+    with pytest.raises(SystemExit) as caught:
+        cli.serve_command(args)
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == "error: adapter cannot be read\n"
+
+
+async def test_adapter_scope_acquisition_failure_unwinds_disk_cache(
+    adapter, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx import disk_caches, response_cache
+    from rapid_mlx.engine.batched import BatchedEngine
+
+    directory, base = adapter
+    before = disk_caches.source()
+    engine = BatchedEngine(str(base), adapter_path=str(directory), force_text=True)
+    start = AsyncMock()
+    monkeypatch.setattr(engine, "_start_engine", start)
+
+    def fail():
+        assert disk_caches.source() == "--adapter"
+        raise RuntimeError("response cache scope unavailable")
+
+    monkeypatch.setattr(response_cache, "_suspend_for_adapter", fail)
+    with pytest.raises(RuntimeError, match="response cache scope unavailable"):
+        await engine.start()
+    assert disk_caches.source() == before
+    assert engine._adapter_cache_scope is None
+    start.assert_not_awaited()
+
+
+async def test_adapter_rejects_shared_model_injection(adapter):
+    from rapid_mlx.engine.batched import BatchedEngine
+
+    directory, base = adapter
+    engine = BatchedEngine(str(base), adapter_path=str(directory), force_text=True)
+    with pytest.raises(ValueError, match="cannot use preloaded/shared model injection"):
+        await engine._inject_shared_model(object(), object())
+    assert engine._model is None
+    assert not engine._loaded
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_engine_passes_adapter_and_rechecks_content_after_load(
+    adapter, monkeypatch, changed
+):
+    import sys
+    from types import ModuleType
+    from unittest.mock import Mock
+
+    from rapid_mlx import moe_fusion
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.utils import tokenizer as loader
+
+    directory, base = adapter
+    engine = BatchedEngine(str(base), adapter_path=str(directory), force_text=True)
+    engine._trust_remote_code = False
+    core = ModuleType("rapid_mlx.engine_core")
+    core.AsyncEngineCore = object
+    core.EngineConfig = object
+    core._init_mlx_step_thread = lambda: None
+    scheduler = ModuleType("rapid_mlx.scheduler")
+    scheduler.SchedulerConfig = object
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", core)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
+    calls = []
+
+    def load(name, **kwargs):
+        calls.append((name, kwargs))
+        if changed:
+            (directory / "adapters.safetensors").write_bytes(b"replaced during load")
+        return object(), object(), str(base)
+
+    class ReachedFusionError(RuntimeError):
+        pass
+
+    fusion = Mock(side_effect=ReachedFusionError)
+    monkeypatch.setattr(loader, "load_model_with_fallback", load)
+    monkeypatch.setattr(moe_fusion, "fuse_gate_up", fusion)
+    try:
+        if changed:
+            with pytest.raises(ValueError, match="changed during startup"):
+                await engine._start_llm()
+            fusion.assert_not_called()
+        else:
+            with pytest.raises(ReachedFusionError):
+                await engine._start_llm()
+            fusion.assert_called_once_with(engine._model)
+    finally:
+        engine._model_load_executor.shutdown(wait=True)
+    assert calls == [
+        (
+            str(base),
+            {
+                "return_source": True,
+                "tokenizer_config": {"trust_remote_code": False},
+                "adapter_path": str(directory),
+            },
+        )
+    ]
+    assert not engine._loaded
+
+
+@pytest.mark.parametrize(
+    "weights_case", ["valid", "empty", "non_lora", "missing", "unknown", "shape"]
+)
+@pytest.mark.parametrize("return_source", [False, True])
+def test_adapter_loader_validates_before_applying_weights_without_mlx(
+    adapter, monkeypatch, weights_case, return_source
+):
+    import sys
+    from types import ModuleType
+    from unittest.mock import Mock
+
+    from rapid_mlx.utils import chat_template_registry
+    from rapid_mlx.utils import tokenizer as loader
+
+    directory, base = adapter
+    tensor = SimpleNamespace(shape=(2, 2))
+    parameters = {"layer.lora_a": tensor, "layer.lora_b": tensor}
+    weights = dict(parameters)
+    if weights_case == "empty":
+        weights = {}
+    elif weights_case == "non_lora":
+        weights = {"layer.weight": tensor}
+    elif weights_case == "missing":
+        del weights["layer.lora_b"]
+    elif weights_case == "unknown":
+        weights["other.lora_a"] = tensor
+    elif weights_case == "shape":
+        weights["layer.lora_b"] = SimpleNamespace(shape=(3, 3))
+    events = []
+    model = SimpleNamespace(
+        parameters=Mock(return_value=parameters), load_weights=Mock(), eval=Mock()
+    )
+    tokenizer = SimpleNamespace(chat_template=None)
+    modules = {
+        name: ModuleType(name)
+        for name in (
+            "mlx",
+            "mlx.core",
+            "mlx.utils",
+            "mlx_lm",
+            "mlx_lm.tuner",
+            "mlx_lm.tuner.utils",
+        )
+    }
+    modules["mlx.core"].load = Mock(return_value=weights)
+    modules["mlx.utils"].tree_flatten = lambda value: list(value.items())
+    modules["mlx_lm"].load = Mock(return_value=(model, tokenizer))
+
+    def construct(network, num_layers, config):
+        assert network is model
+        assert num_layers == 1
+        assert config == {"rank": 2, "scale": 2}
+        events.append("construct")
+
+    modules["mlx_lm.tuner.utils"].linear_to_lora_layers = construct
+    model.parameters.side_effect = lambda: events.append("parameters") or parameters
+    model.load_weights.side_effect = lambda *_a, **_k: events.append("apply")
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(loader, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(loader, "_post_load_ubc_evict", Mock())
+    monkeypatch.setattr(loader, "_apply_chat_template_sidecar", Mock())
+    monkeypatch.setattr(loader, "augment_eos_token_ids_from_generation_config", Mock())
+    monkeypatch.setattr(loader, "repair_byte_level_decoder", Mock())
+    monkeypatch.setattr(chat_template_registry, "resolve_chat_template", Mock())
+    monkeypatch.setattr(
+        loader,
+        "_load_model_with_fallback_impl",
+        Mock(side_effect=AssertionError("must not fall back")),
+    )
+    errors = {
+        "empty": "no LoRA weights",
+        "non_lora": "no LoRA weights",
+        "missing": "missing LoRA tensors",
+        "unknown": "does not match base model: other.lora_a",
+        "shape": "does not match base model: layer.lora_b",
+    }
+    if weights_case != "valid":
+        with pytest.raises(
+            ValueError, match="--adapter could not load.*" + errors[weights_case]
+        ):
+            loader.load_model_with_fallback(
+                str(base), adapter_path=str(directory), return_source=return_source
+            )
+        model.load_weights.assert_not_called()
+        model.eval.assert_not_called()
+        assert events == ["construct", "parameters"]
+    else:
+        result = loader.load_model_with_fallback(
+            str(base), adapter_path=str(directory), return_source=return_source
+        )
+        assert result == (
+            (model, tokenizer, str(base)) if return_source else (model, tokenizer)
+        )
+        assert events == ["construct", "parameters", "apply"]
+        model.load_weights.assert_called_once_with(list(weights.items()), strict=False)
+        model.eval.assert_called_once_with()
+        loader._apply_chat_template_sidecar.assert_called_once_with(base, tokenizer)
+        loader.augment_eos_token_ids_from_generation_config.assert_called_once_with(
+            tokenizer, str(base)
+        )
+        loader.repair_byte_level_decoder.assert_called_once_with(tokenizer)
+        loader._post_load_ubc_evict.assert_called_once_with(str(base))
+    modules["mlx.core"].load.assert_called_once_with(
+        str(directory / "adapters.safetensors")
+    )
