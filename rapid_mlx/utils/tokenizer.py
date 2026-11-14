@@ -1408,6 +1408,7 @@ def load_model_with_fallback(
     model_name: str,
     tokenizer_config: dict = None,
     *,
+    adapter_path: str | None = None,
     enable_dspark: bool = False,
     chat_template_id: str | None = None,
     lazy: bool = False,
@@ -1452,6 +1453,18 @@ def load_model_with_fallback(
         ``return_source=True``; or ``(model, tokenizer, config, source)``
         when both flags are true.
     """
+    adapter = None
+    if adapter_path is not None:
+        from ..lora_adapter import (
+            reject_adapter_options,
+            validate_adapter,
+            validate_adapter_checkpoint,
+        )
+
+        reject_adapter_options(disk_stream=lazy, speculative=enable_dspark)
+        adapter = validate_adapter(adapter_path, model_name)
+        validate_adapter_checkpoint(model_name)
+
     # Resolve model-owned prompt serialization before ``model_name`` becomes a
     # cache snapshot path.  The selected template is installed once after the
     # tokenizer loads; request rendering does no model/template inference.
@@ -1532,6 +1545,72 @@ def load_model_with_fallback(
             raise ValueError("Cannot inspect model configuration before loading")
         validate_model_code(config or {}, trust_remote_code=trust_remote_code)
         validate_local_model_file(model_name)
+
+    if adapter is not None:
+        from mlx_lm import load as _mlx_lm_load
+
+        from ..lora_adapter import validate_adapter_checkpoint
+
+        validate_adapter_checkpoint(model_name)
+        tokenizer_config = _neutralize_unbundled_template_types(
+            model_name, tokenizer_config
+        )
+        try:
+            result = _mlx_lm_load(
+                model_name,
+                tokenizer_config=tokenizer_config,
+                return_config=return_config,
+                **(
+                    {"model_config": rapid_owned_model_config}
+                    if rapid_owned_runtime
+                    else {}
+                ),
+            )
+            # Construct LoRA layers BEFORE applying any adapter weights:
+            # mlx-lm's strict=False load replaces arrays even on shape mismatch.
+            import mlx.core as mx
+            from mlx.utils import tree_flatten
+            from mlx_lm.tuner.utils import linear_to_lora_layers
+
+            adapter_config = json.loads(
+                (Path(adapter.path) / "adapter_config.json").read_text()
+            )
+            linear_to_lora_layers(
+                result[0],
+                adapter_config["num_layers"],
+                adapter_config["lora_parameters"],
+            )
+            parameters = dict(tree_flatten(result[0].parameters()))
+            weights = mx.load(str(Path(adapter.path) / "adapters.safetensors"))
+            if not weights or not any("lora_" in name for name in weights):
+                raise ValueError("adapter contains no LoRA weights")
+            expected_lora = {
+                name
+                for name in parameters
+                if name.rsplit(".", 1)[-1].startswith("lora_")
+            }
+            if expected_lora - weights.keys():
+                raise ValueError(
+                    "adapter is missing LoRA tensors declared by its configuration"
+                )
+            for name, value in weights.items():
+                if name not in parameters or parameters[name].shape != value.shape:
+                    raise ValueError(
+                        f"adapter tensor does not match base model: {name}"
+                    )
+            # Apply precisely the arrays validated above, without re-reading a
+            # checkpoint that could have changed between validation and loading.
+            result[0].load_weights(list(weights.items()), strict=False)
+            result[0].eval()
+        except Exception as exc:
+            raise ValueError(f"--adapter could not load on base model: {exc}") from exc
+        if not getattr(result[1], "chat_template", None):
+            _apply_chat_template_sidecar(Path(model_name), result[1])
+        augment_eos_token_ids_from_generation_config(result[1], model_name)
+        repair_byte_level_decoder(result[1])
+        _resolve_loaded_template(result)
+        _post_load_ubc_evict(model_name)
+        return (*result, str(model_name)) if return_source else result
 
     # When repository code is explicitly enabled and declared by auto_map,
     # report the trust decision BEFORE any repository code is

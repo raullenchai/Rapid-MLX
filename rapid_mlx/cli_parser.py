@@ -564,6 +564,11 @@ def _add_serve_parser(
         default=None,
         help="The model name used in the API. If not specified, the model argument is used.",
     )
+    serve_parser.add_argument(
+        "--adapter",
+        default=None,
+        help="Load one mlx-lm LoRA adapter directory on the text base model at startup.",
+    )
     _add_force_disk_check_arg(serve_parser)
     serve_parser.add_argument(
         "--image-weight-precision",

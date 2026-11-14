@@ -4795,6 +4795,21 @@
        "type": "builtins.str"
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "adapter",
+       "help": "Load one mlx-lm LoRA adapter directory on the text base model at startup.",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--adapter"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -7244,6 +7259,7 @@
         "cua_only",
         "yes",
         "served_model_name",
+        "adapter",
         "force_disk_check",
         "image_weight_precision",
         "disk_stream",

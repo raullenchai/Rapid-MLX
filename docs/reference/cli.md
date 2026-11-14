@@ -91,6 +91,25 @@ a closed agent label. Telemetry opt-out suppresses both events.
 
 An interactive `serve` prints a one-time [newsletter pointer](https://rapidmlx.com/newsletter) after its ready banner.
 
+### `serve --adapter PATH`
+
+Apply one mlx-lm LoRA adapter at startup:
+
+```bash
+rapid-mlx serve mlx-community/Qwen3-0.6B-4bit --adapter ./adapters --port 8613
+```
+
+`PATH` must contain `adapter_config.json` and `adapters.safetensors`; its declared
+training base must match the served model. Only eager text serving is supported.
+Vision/media/diffusion, disk streaming, fp8 repacking, MTP/speculative heads,
+lazy loading, idle unloading, and runtime replacement of the adapter primary fail
+with a clear error. Automatic speculative decoding is disabled for this mode.
+
+The advertised model ID includes an adapter content hash. In-memory prefix
+caches are isolated per engine; persisted KV/prefix caches (including explicit
+import/export) and response caches are disabled. No hot swapping, multi-LoRA,
+or per-request adapter selection is provided. See [the server guide](../guides/server.md#serving-a-lora-adapter).
+
 ### TensorFold request lanes
 
 `--tensorfold-lanes {1,2,4,8}` controls concurrent decoding on the qualified
