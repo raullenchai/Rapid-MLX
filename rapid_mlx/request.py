@@ -125,6 +125,9 @@ class SamplingParams:
     # only the answer after the reasoning close is searched.
     reasoning_stop_scope: Any | None = None
 
+    # Request-local scoring result, populated on the MLX worker during prefill.
+    prompt_logprobs: Any | None = None
+
     def __post_init__(self):
         if self.stop is None:
             self.stop = []
@@ -180,6 +183,9 @@ class Request:
 
     # For BatchGenerator integration
     batch_uid: int | None = None  # UID assigned by BatchGenerator
+
+    # Private scoring progress across scheduler steps; never shared as a prefix.
+    _prompt_scoring_state: Any | None = field(default=None, init=False, repr=False)
 
     # Prefix cache fields
     prompt_cache: list[Any] | None = None  # Cached KV state from prefix cache

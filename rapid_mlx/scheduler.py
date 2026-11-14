@@ -184,6 +184,7 @@ from .prefix_cache import (
     validate_paged_cache_capability,
 )
 from .prompt_host_cache import PromptHostCache
+from .prompt_logprobs import PromptLogprobs
 from .repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
@@ -260,6 +261,15 @@ def _common_prefix_len(a: list[int], b: list[int]) -> int:
         else:
             high = mid - 1
     return low
+
+
+def _skip_prefix_cache(request: Request) -> bool:
+    scoring = getattr(
+        getattr(request, "sampling_params", None), "prompt_logprobs", None
+    )
+    # Only an actual scoring result opts out of cache storage. Optional
+    # attributes on request adapters must not bypass the guarded store path.
+    return isinstance(scoring, PromptLogprobs) or _pflash_compressed(request)
 
 
 def _pflash_compressed(request: Request) -> bool:
@@ -5766,7 +5776,7 @@ class Scheduler:
             # PFlash bypass: see scheduler.add_request — compressed
             # prompt_token_ids are not positionally faithful so storing
             # KV under this key would poison the trie.
-            if _pflash_compressed(request):
+            if _skip_prefix_cache(request):
                 return
 
             # Bounded trim-free reuse deliberately segments a cold request at
@@ -6074,7 +6084,7 @@ class Scheduler:
                 continue
             request_id = self.uid_to_request_id.get(resp.uid)
             request = self.requests.get(request_id) if request_id else None
-            if request is None or _pflash_compressed(request):
+            if request is None or _skip_prefix_cache(request):
                 continue
             # Prompt-relative positions do not describe a resumed generation.
             if getattr(request, "output_token_ids", None):
@@ -6266,7 +6276,7 @@ class Scheduler:
             # condition would short-circuit anyway, but a future change
             # touching prefix_boundary must not silently start poisoning
             # the trie.
-            if _pflash_compressed(request):
+            if _skip_prefix_cache(request):
                 continue
             prefix_boundary = getattr(
                 request,
@@ -6640,7 +6650,7 @@ class Scheduler:
         return selected, forced_selection
 
     def _commit_waiting_selection(self, selected: Request, forced: bool) -> None:
-        """Commit queue/fairness state only after generator insertion succeeds."""
+        """Commit queue/fairness state after insertion or scoring-only completion."""
         candidates = [
             request
             for request in self.waiting
@@ -7086,7 +7096,14 @@ class Scheduler:
         processing = getattr(bg, "_currently_processing", ()) if bg else ()
         prompt_batch = getattr(bg, "_prompt_batch", None) if bg else None
         prior_tokens = getattr(prompt_batch, "tokens", ()) if prompt_batch else ()
-        largest = 0
+        largest = max(
+            (
+                len(r.prompt_token_ids)
+                for r in getattr(self, "waiting", ())
+                if r.sampling_params.prompt_logprobs is not None
+            ),
+            default=0,
+        )
         for index, item in enumerate(processing):
             try:
                 already_cached = (
@@ -7240,7 +7257,9 @@ class Scheduler:
         if samples is not None:
             samples.append(elapsed / tokens)
 
-    def _bound_prefill_chunk_for_decode(self, selected: int) -> int:
+    def _bound_prefill_chunk_for_decode(
+        self, selected: int, *, extra_rows: int = 0
+    ) -> int:
         """Cap the next prompt chunk so a decoding neighbour is not stalled.
 
         ``selected`` is the chunk the memory policy would dispatch. While a
@@ -7266,6 +7285,7 @@ class Scheduler:
         if queued:
             slots = max(0, int(getattr(bg, "prefill_batch_size", 1)) - rows)
             rows += min(len(queued), slots)
+        rows += extra_rows
         if decoding <= 0 or rows <= 0:
             if getattr(self, "_decode_stall_chunk_size", None) is not None:
                 logger.info("[decode_stall] prefill chunk bound released")
@@ -8689,6 +8709,8 @@ class Scheduler:
         # original prompt, so reusing KV computed for the uncompressed
         # prefix would inject position-shifted state into a later
         # uncompressed request that shares the same sink prefix.
+        if request.sampling_params.prompt_logprobs is not None:
+            request.requires_prompt_integrity = True
         pflash_compressed = False
         _pflash_prefetched: tuple[Any, list[int], float, str | None] | None = None
         if self.config.pflash_config.mode != "off" and request.prompt_token_ids:
@@ -8791,7 +8813,7 @@ class Scheduler:
         # Check prefix cache for cached KV state. Compressed requests
         # MUST skip the lookup — see PFlash comment above for the
         # positional-fiction explanation.
-        if pflash_compressed:
+        if pflash_compressed or request.sampling_params.prompt_logprobs is not None:
             request.cache_hit_type = "miss"
             request.remaining_tokens = request.prompt_token_ids
         elif self.block_aware_cache is not None:
@@ -8911,6 +8933,7 @@ class Scheduler:
             )
         else:
             request.prompt_cache = None
+            request._prompt_scoring_state = None
             request.cached_tokens = 0
             request.remaining_tokens = prompt
             logger.info(
@@ -9462,6 +9485,7 @@ class Scheduler:
             request.set_finished(RequestStatus.FINISHED_CANCELLED)
             # Release cache references so Metal buffers can be freed
             request.prompt_cache = None
+            request._prompt_scoring_state = None
             request._extracted_cache = None
         if self.block_aware_cache is not None:
             # A cancelled request stores nothing, so nothing owns the block
@@ -9686,7 +9710,7 @@ class Scheduler:
         request.shared_prefix_snapshot_at = 0
         store: Any = getattr(self, "memory_aware_cache", None)
         prompt = request.prompt_token_ids or []
-        if store is None or _pflash_compressed(request) or pending <= 1:
+        if store is None or _skip_prefix_cache(request) or pending <= 1:
             return None
         cached = int(request.cached_tokens or 0)
         shared = min(store.shared_prefix_length(prompt), len(prompt) - 1)
@@ -9929,7 +9953,7 @@ class Scheduler:
             min_tokens <= 0
             or getattr(self, "memory_aware_cache", None) is None
             or not prompt
-            or _pflash_compressed(request)
+            or _skip_prefix_cache(request)
             or request.prefix_wait_done
         ):
             return None
@@ -9944,7 +9968,7 @@ class Scheduler:
             if (
                 leader.num_output_tokens > 0
                 or not leader_prompt
-                or _pflash_compressed(leader)
+                or _skip_prefix_cache(leader)
             ):
                 continue
             gain = _common_prefix_len(prompt, leader_prompt) - cached
@@ -10274,7 +10298,14 @@ class Scheduler:
         Returns:
             List of requests that were scheduled
         """
-        scheduled = []
+        scheduled: list[Request] = []
+        scoring_budget = (
+            self._bound_prefill_chunk_for_decode(
+                self._select_adaptive_prefill_size(), extra_rows=1
+            )
+            if any(r.sampling_params.prompt_logprobs is not None for r in self.waiting)
+            else 0
+        )
 
         # The current vendored MTP verifier owns one request-local generator
         # and explicitly supports B=1. Keep later requests in the ordinary
@@ -10397,6 +10428,59 @@ class Scheduler:
                 tokens_to_process = request.remaining_tokens
             else:
                 tokens_to_process = request.prompt_token_ids
+            scoring = request.sampling_params.prompt_logprobs
+            if scoring is not None:
+                from .prompt_logprobs import PromptScoringState
+
+                prompt_tokens = request.prompt_token_ids
+                assert prompt_tokens is not None
+                state = request._prompt_scoring_state
+                if state is None:
+                    state = PromptScoringState.create(
+                        self.model, prompt_tokens, scoring
+                    )
+                    request._prompt_scoring_state = state
+                while state.position < len(prompt_tokens) - 1:
+                    with self._cancel_counter_lock:
+                        if request.request_id in self._pending_abort_ids:
+                            break
+                    if scoring_budget <= 0:
+                        # Ranked admission retains its uncommitted candidate;
+                        # FCFS must put the popped request back for next tick.
+                        if not shortest_tail:
+                            self.waiting.appendleft(request)
+                        self._step_request_id = None
+                        self._admitting_request_id = None
+                        return scheduled
+                    scoring_budget -= state.advance(
+                        self.model, prompt_tokens, scoring_budget
+                    )
+                request.prompt_cache = state.cache
+                request._prompt_scoring_state = None
+                # Scoring runs synchronously on the executor, while aborts may
+                # arrive from the event loop during the model forward.
+                with self._cancel_counter_lock:
+                    cancelled = request.request_id in self._pending_abort_ids
+                    if cancelled:
+                        self._pending_abort_ids.discard(request.request_id)
+                    elif request.sampling_params.max_tokens == 0:
+                        # Ranked admission keeps the candidate in waiting until
+                        # commit. No generator insertion will commit this one.
+                        if shortest_tail:
+                            self._commit_waiting_selection(request, selection_forced)
+                        request.set_finished(RequestStatus.FINISHED_LENGTH_CAPPED)
+                if cancelled:
+                    self._do_abort_request(request.request_id)
+                if cancelled or request.sampling_params.max_tokens == 0:
+                    request.prompt_cache = None
+                    request._prompt_scoring_state = None
+                    if request.sampling_params.max_tokens == 0:
+                        scheduled.append(request)
+                        self.total_prompt_tokens += request.num_prompt_tokens
+                    self._step_request_id = None
+                    self._admitting_request_id = None
+                    continue
+                tokens_to_process = prompt_tokens[-1:]
             cache_to_use = request.prompt_cache  # May be None
 
             # Prefix-cache HIT with live quantization on: normalize the restored
@@ -10717,6 +10801,7 @@ class Scheduler:
                 # which under sustained traffic can accumulate hundreds of GB
                 # of wired memory (issue #442).
                 request.prompt_cache = None
+                request._prompt_scoring_state = None
                 self.running[request.request_id] = request
                 scheduled.append(request)
 
@@ -11283,6 +11368,8 @@ class Scheduler:
         Any failure is swallowed with a debug log; the caller wraps this
         whole method in a broad try/except as belt-and-suspenders.
         """
+        if request.sampling_params.prompt_logprobs is not None:
+            return
         interval = getattr(self.config, "kv_disk_checkpoint_interval", 0)
         if interval is None or interval <= 0:
             return
@@ -11398,7 +11485,7 @@ class Scheduler:
             # store entirely. Their prompt_token_ids holds the
             # compressed subsequence so a stored entry would be keyed by
             # positions that do not match any real prompt prefix.
-            pflash_skip_store = request is not None and _pflash_compressed(request)
+            pflash_skip_store = request is not None and _skip_prefix_cache(request)
 
             # Store cache for future reuse
             if (
@@ -11545,6 +11632,7 @@ class Scheduler:
             # until the request object is GC'd (issue #442).
             if request is not None:
                 request.prompt_cache = None
+                request._prompt_scoring_state = None
                 request._extracted_cache = None
 
             # Remove from running
@@ -11624,6 +11712,7 @@ class Scheduler:
                 request._prefill_memory_sampled = False
                 request.set_finished(RequestStatus.FINISHED_ABORTED)
                 request.prompt_cache = None
+                request._prompt_scoring_state = None
                 request._extracted_cache = None
                 request._continuous_mtp_state = None
                 request.batch_uid = None
@@ -11667,6 +11756,7 @@ class Scheduler:
             request.status = RequestStatus.WAITING
             request.batch_uid = None
             request.prompt_cache = None
+            request._prompt_scoring_state = None
             request.cached_tokens = 0
             request.remaining_tokens = request.prompt_token_ids
 
@@ -11889,6 +11979,32 @@ class Scheduler:
                         output.outputs = outputs
                         output.finished_request_ids = finished_ids
                         self._cleanup_finished(finished_ids)
+
+                for request in scheduled:
+                    if (
+                        request.sampling_params.prompt_logprobs is not None
+                        and request.sampling_params.max_tokens == 0
+                    ):
+                        output.outputs.append(
+                            RequestOutput(
+                                request_id=request.request_id,
+                                finished=True,
+                                finish_reason=(
+                                    "abort"
+                                    if request.status
+                                    == RequestStatus.FINISHED_CANCELLED
+                                    else "length"
+                                ),
+                                prompt_tokens=request.num_prompt_tokens,
+                                completion_tokens=0,
+                            )
+                        )
+                        output.finished_request_ids.add(request.request_id)
+                        self.num_requests_processed += 1
+                        if request.status != RequestStatus.FINISHED_CANCELLED:
+                            self.performance.record_finished_performance(request)
+                        self._cleanup_finished({request.request_id})
+                        output.has_work = True
 
                 # #558 PR-3: reconcile grammar processors when idle. The realign
                 # guard (which scrubs leaked slots AND flushes tombstones) only

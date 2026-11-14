@@ -168,8 +168,11 @@ def test_kv_checkpoint_skipped_when_disk_caches_disabled():
         config=argparse.Namespace(kv_disk_checkpoint_interval=256)
     )
     disk_caches.configure(True)
-    # A request without attributes proves the hook returns before reading it.
-    assert scheduler.Scheduler._maybe_disk_checkpoint(fake, object(), None) is None
+    # Only the prompt-scoring guard runs before the disk-cache opt-out.
+    request = argparse.Namespace(
+        sampling_params=argparse.Namespace(prompt_logprobs=None)
+    )
+    assert scheduler.Scheduler._maybe_disk_checkpoint(fake, request, None) is None
 
 
 def test_log_file_flag_wins_over_environment(monkeypatch):

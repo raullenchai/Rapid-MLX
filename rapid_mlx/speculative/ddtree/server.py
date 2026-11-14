@@ -182,6 +182,10 @@ def _build_app(
             ]
         )
 
+    from ...routes.completions import install_unsupported_completions
+
+    install_unsupported_completions(app)
+
     @app.post("/v1/chat/completions")
     async def create_chat_completion(request: ChatCompletionRequest):
         _validate_request(request)
