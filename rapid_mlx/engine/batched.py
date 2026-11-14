@@ -3007,13 +3007,18 @@ class BatchedEngine(BaseEngine):
 
     def _request_prompt_ids(
         self, prompt, tokens: RequestPromptTokens, *, mllm_step: bool | None = None
-    ) -> list[int]:
+    ) -> str | list[int]:
         if not isinstance(prompt, str):
             return list(prompt)
         tokenizer = self.tokenizer
         if mllm_step is None:
             mllm_step = self._is_mllm and getattr(self, "_engine", None) is None
         if mllm_step:
+            # The MLLM processor tokenizes with ``tokenizer(prompt, ...)``, not
+            # ``encode``. Only the standard fast-tokenizer contract makes the two
+            # provably identical; any other tokenizer keeps the processor path.
+            if not RequestPromptTokens._is_fast_tokenizer(tokenizer):
+                return prompt
             return tokens.encode(tokenizer, prompt, add_special_tokens=False)
 
         def encode():

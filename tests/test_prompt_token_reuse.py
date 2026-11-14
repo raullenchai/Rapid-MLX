@@ -751,7 +751,9 @@ async def test_custom_tokenizer_request_ids_preserve_legacy_contract(stream, mll
         _ = [out async for out in engine.stream_chat(messages, _prompt_tokens=tokens)]
     else:
         await engine.chat(messages, _prompt_tokens=tokens)
-    assert seen["prompt"] == expected
+    # A custom MLLM tokenizer keeps the processor's own ``tokenizer(...)`` call,
+    # which need not match ``encode`` (review P1); text lanes reuse exact IDs.
+    assert seen["prompt"] == (rendered if mllm else expected)
     full_encodes = (
         3 if mllm else 1
     )  # Unknown special-token policy keeps its exact fallback.
@@ -1225,5 +1227,50 @@ def test_custom_template_ids_cannot_replace_model_tokenization():
     engine = _engine(tokenizer, scheduler=False)
     engine._is_mllm = True
     prompt = _render(_conversation())
-    expected = tokenizer.encode(prompt, add_special_tokens=False)
-    assert engine._request_prompt_ids(prompt, state) == expected
+    # Custom MLLM tokenizers keep the processor's own tokenization of the text.
+    assert engine._request_prompt_ids(prompt, state) == prompt
+
+
+def test_custom_mllm_tokenizer_keeps_processor_call_contract():
+    """Review P1: a tokenizer whose ``__call__`` differs from ``encode`` must
+    reach the MLLM processor as text, so the processor's call decides the IDs."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    class CallDiffers(_SectionTokenizer):
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [[7]]}
+
+        def encode(self, text, add_special_tokens=True):
+            return [99, 7]
+
+    engine = _engine(CallDiffers(), scheduler=False)
+    engine._is_mllm = True
+    prompt = "hello"
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
+
+
+def test_fast_mllm_ids_match_processor_call():
+    """For the standard fast tokenizer the reused IDs equal what the MLLM
+    processor's ``tokenizer(prompt, add_special_tokens=False, padding=True)``
+    call produces, with and without a BOS post-processor."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    for style in ("chatml", "gemma", "llama"):
+        for bos in (False, True):
+            tokenizer = _fast_tokenizer(style, bos=bos)
+            tokenizer.pad_token = "<unk>"  # Real MLLM processors define one.
+            engine = _engine(tokenizer, scheduler=False)
+            engine._is_mllm = True
+            prompt = _render(_conversation())
+            processor_ids = tokenizer(
+                prompt, add_special_tokens=False, padding=True, padding_side="left"
+            )["input_ids"]
+            assert (
+                engine._request_prompt_ids(
+                    prompt, RequestPromptTokens(), mllm_step=True
+                )
+                == processor_ids
+            )
