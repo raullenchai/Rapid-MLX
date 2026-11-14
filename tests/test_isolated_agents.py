@@ -470,6 +470,11 @@ def test_remove_hermes_refuses_unsafe_lock_inode(hermes_writer, foreign_owner):
 @pytest.mark.parametrize("outcome", ["term", "kill", "timeout", "lost-ownership"])
 def test_remove_hermes_bounded_wait_and_reverified_escalation(hermes_writer, outcome):
     root, worker = hermes_writer
+    # This test simulates signals and flock results. Reap the real writer first:
+    # mocked SIGTERM/SIGKILL cannot stop it from racing with remove's rmtree.
+    worker.terminate()
+    worker.wait(timeout=5)
+    assert worker.returncode == -signal.SIGTERM
     lock = root / "profiles" / "rapid" / "gateway.lock"
     blocked = BlockingIOError()
     flock_results = {
