@@ -134,6 +134,16 @@ and image generation from one app.
 - Requires an M-series Mac; Windows and Linux desktop builds are not available yet
 - [Share Compute setup and credit ledger](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/guides/share-compute.md)
 
+In **Settings → Performance**, inspect system memory, engine Metal allocations,
+prefix-cache usage, running and waiting requests, and a recent memory trend.
+Engine allocations overlap system totals; do not add them together. Missing
+measurements appear as a dash.
+
+After a chat reply, expand **Generation details** for saved execution facts and
+timing. Model recommendations, `rapid-mlx models`, and `rapid-mlx doctor` show
+measured speed references when a matching chip, RAM, and configuration are
+available. These references describe measured workloads, not guaranteed speed.
+
 ### CLI and server — macOS (Apple Silicon)
 
 ```bash
@@ -162,8 +172,8 @@ Help other Mac users choose a model by sharing a standardized result from your
 own Apple Silicon Mac. Runs stay local until you explicitly choose to publish;
 you do not need a GitHub account or a benchmark JSON pull request.
 
-- **Desktop:** Enable **Community Benchmark** in **Settings → Experimental**,
-  then open the **Benchmark** tab in the sidebar, choose a model, run it, review the result
+- **Desktop:** Open the **Benchmark** tab in the sidebar, choose a model,
+  run it, review the result
   in **My Results**, and select **Publish** if you want to share it.
 - **CLI:** Run `rapid-mlx benchmark catalog`, then
   `rapid-mlx benchmark run <model>`. Review the saved result and publish it
@@ -229,7 +239,7 @@ This saves a private Claude Code profile, starts a local server if needed, and l
   <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX demo: rapid-mlx serve qwen3.5-4b-4bit until the server is ready, a curl request to /v1/chat/completions, then rapid-mlx agents claude-code --setup --dry-run previewing the Claude Code config" width="760">
 </p>
 
-<sub>Real session on a Mac mini (M2 Pro, 32 GB), rapid-mlx 0.15.6 from PyPI; idle waits shortened. Recording: <a href="https://github.com/raullenchai/Rapid-MLX/blob/main/docs/assets/demo.cast">docs/assets/demo.cast</a>.</sub>
+<sub>Real session on a Mac mini (M2 Pro, 32 GB), idle waits shortened. Recording: <a href="https://github.com/raullenchai/Rapid-MLX/blob/main/docs/assets/demo.cast">docs/assets/demo.cast</a>.</sub>
 
 ---
 
@@ -274,8 +284,8 @@ family default shown below.
 <!-- image-model-matrix:start -->
 | Alias or HF repo ID | Best fit | Modes | Download | Minimum unified memory | Default steps |
 | --- | --- | --- | ---: | ---: | ---: |
-| `flux3-klein` | FLUX 3 Klein, gated | Generate + edit (1–10 references) | 18.9 GiB | 24 GB (provisional) | 16 |
-| `flux3-klein-base` | FLUX 3 Klein base, gated | Generate + edit (1–10 references) | 18.9 GiB | 24 GB (provisional) | 50 |
+| `flux3-klein` | FLUX 3 Klein, gated (next release) | Generate + edit (1–10 references) | 18.9 GiB | 24 GB (provisional) | 16 |
+| `flux3-klein-base` | FLUX 3 Klein base, gated (next release) | Generate + edit (1–10 references) | 18.9 GiB | 24 GB (provisional) | 50 |
 | `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 16 GB | 4 |
 | `bonsai-image-4b-2bit` | Smallest download | Generate | 3.6 GiB | 12 GB | 4 |
 | `z-image-turbo` | Photorealistic images | Generate | 5.5 GiB | 16 GB | 8 |
@@ -290,7 +300,7 @@ family default shown below.
 | `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->
 
-`flux3-klein` and `flux3-klein-base` require mflux 0.23 or later and gated
+For the next release, `flux3-klein` and `flux3-klein-base` require mflux 0.23 or later and gated
 Hugging Face access under the FLUX Kommunity License. Both accept 1–10 reference
 images for editing. Their 24 GB memory floor is provisional pending real-peak
 measurement; download sizes use estimated component totals. See the
@@ -521,20 +531,8 @@ and the GLM prompt contains 8,192.
 | `qwen3.8-flash-next-4bit` | 180B total / 6B active¹ | **9.40s** | **867.9 tok/s** | 23.0 tok/s | 102.8 GB active / 148.1 GB peak |
 | `glm5.3-flash-4bit` | 320B total / 18B active | 22.78s | 359.6 tok/s | **27.8 tok/s** | 180.6 GB active / 195.6 GB peak |
 
-The biggest 0.13.4 gain is Qwen3.8-27B's verified MTP path. On the same model,
-Mac, dependency versions, prompts, and cache-clear procedure:
-
-| Prompt | 0.13.3 decode | 0.13.4 decode | Speedup | TTFT (0.13.3 → 0.13.4) |
-|---:|---:|---:|---:|---:|
-| 128 | 30.71 tok/s | 43.93 tok/s | **1.43×** | 0.54s → 0.51s |
-| 2K | 28.88 tok/s | 44.69 tok/s | **1.55×** | 6.18s → 6.07s |
-| 8K | 24.58 tok/s | 43.38 tok/s | **1.77×** | 25.04s → 24.66s |
-| 32K | 16.52 tok/s | 38.66 tok/s | **2.34×** | 110.25s → 109.12s |
-
 ¹ Flash-Next comprises a 125B language model, 51B n-gram embedding, and 4B
-MTP head. Its default autoregressive path was effectively flat between the two
-builds; separately qualified MTP and prompt-lookup modes remain
-workload-dependent.
+MTP head. Speculative decoding modes remain workload-dependent.
 
 Flash-Next prefill reaches 262 / 875 / 868 / 716 tok/s at 128 / 2K / 8K / 32K;
 median TTFT is 0.35 / 2.30 / 9.40 / 45.73s. Its 99 GB quantized weights make
@@ -683,7 +681,7 @@ The two paths above cover most users — reach for these only if you already man
 brew install rapid-mlx
 ```
 
-Ships in homebrew-core since 0.10.12 — no tap, no trust prompt. Upgrade with `brew upgrade rapid-mlx`. If you previously installed from the legacy `raullenchai/rapid-mlx` tap, switch once: `brew uninstall rapid-mlx && brew untap raullenchai/rapid-mlx && brew install rapid-mlx`.
+Available in homebrew-core. Upgrade with `brew upgrade rapid-mlx`.
 
 </details>
 
@@ -760,7 +758,7 @@ Top three things that go wrong:
 - **Contributing:** Start with [CONTRIBUTING.md](https://github.com/raullenchai/Rapid-MLX/blob/main/CONTRIBUTING.md). Explore compatible benchmark models with `rapid-mlx benchmark catalog`; runs stay local unless you explicitly share one in the internal beta.
 - **Show support:** [Star this repository](https://github.com/raullenchai/Rapid-MLX) to follow releases and help others discover the project.
 
-**Privacy:** Anonymous, metadata-only telemetry is on by default in 0.15.0 and
+**Privacy:** Anonymous, metadata-only telemetry is on by default and
 is documented in Settings → Privacy. The desktop app sends its events to
 rapidmlx.com's telemetry service. Desktop launch and daily foreground
 `app_opened` events use the engine's privacy-hardened PostHog Cloud (US) pipeline,

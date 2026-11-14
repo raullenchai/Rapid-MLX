@@ -87,8 +87,7 @@ Pi Coding Agent has a [local setup guide](pi.md) and a
 12-agent family matrix.
 
 Source: `tests/integrations/README.md` "Current cell status" (pilot run
-2026-07-06, four always-on families; Hy3 column is `xfail(strict=True)` from
-0.11.0).
+2026-07-06, four always-on families; Hy3 column is `xfail(strict=True)`).
 
 | Agent | Wire | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss | Hy3 |
 |---|---|---|---|---|---|---|
@@ -163,7 +162,7 @@ the Hy3 column adds 12 more agent cells, all `xfail(strict=True)`:
 - **Combined always-on run** (60 cells excluding Hy3): **49 PASS · 11 XFAIL
   · 0 FAIL** — 10 XFAIL are the DeepSeek R1-Distill architectural
   tool-emission cells, 1 is gpt-oss × OpenHands.
-- **Hy3 (0.11.0):** +15 cells, all `xfail(strict=True)` (Ultra-only). The
+- **Hy3:** +15 cells, all `xfail(strict=True)` (Ultra-only). The
   CI-runnable coverage is the 8-test offline `test_hy3_offline.py`
   (**8 PASS** in the normal `pytest tests/` sweep).
 

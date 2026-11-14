@@ -128,8 +128,6 @@ model:
 - **`todo` tool conflicts with Gemma 4** — Hermes injects a `todo` tool that
   errors on Gemma 4. Exclude it from `platform_toolsets` or pass the `-t`
   flag.
-- **Gemma 4 `[Calling tool` mimicry** — after many tool turns Gemma 4 may
-  parrot Hermes' UI text. Fixed in rapid-mlx v0.4.3+.
 - **A Python 3.11 or 3.12 source install starts without its runtime
   dependencies** — use Python 3.14 for the current source release.
 
