@@ -50,6 +50,8 @@ class ModelEntry:
     # than importing telemetry into this import-light module) so an entry
     # built by a code path that does not stamp it reports nothing.
     telemetry_model_id: str = "<custom>"
+    # Startup-only adapter identity survives retirement of the engine.
+    is_adapter: bool = False
 
     def matches(self, name: str) -> bool:
         """Check if a request model name matches this entry."""
@@ -73,10 +75,18 @@ class ModelRegistry:
         # Optional residency hook. Kept callback-shaped so this import-light
         # name registry does not depend on the lifecycle manager.
         self.on_engine_access = None
+        # Keep startup adapter routes reserved after unload/removal: dynamic
+        # loading cannot reconstruct them from the base checkpoint alone.
+        self._adapter_names: set[str] = set()
 
     def add(self, entry: ModelEntry, is_default: bool = False):
         """Register a model. First model added is default unless specified."""
         canonical = entry.model_name
+        entry.is_adapter = (
+            entry.is_adapter or getattr(entry.engine, "_adapter", None) is not None
+        )
+        if entry.is_adapter:
+            self._adapter_names.update({canonical, *entry.aliases})
         self._entries[canonical] = entry
 
         # Build lookup index
@@ -93,6 +103,10 @@ class ModelRegistry:
             f"(aliases={entry.aliases or 'none'}, "
             f"default={canonical == self._default})"
         )
+
+    def is_adapter_model(self, name: str) -> bool:
+        """Whether this name belongs to a startup adapter, even after unload."""
+        return name in self._adapter_names
 
     def remove(self, name: str) -> ModelEntry | None:
         """Unregister a model. Returns the entry if found."""

@@ -11,6 +11,8 @@ overrides so the server can report them at startup.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from threading import Lock
 
 from ._env import env_truthy, is_falsey
 
@@ -19,6 +21,21 @@ FLAG = "--disable-disk-caches"
 _AUTOLOAD_ENV = "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
 
 _cli_disabled = False
+_adapter_users = 0
+_adapter_lock = Lock()
+
+
+@contextmanager
+def _suspend_for_adapter():
+    """Disable persistence until the last running adapter engine exits."""
+    global _adapter_users
+    with _adapter_lock:
+        _adapter_users += 1
+    try:
+        yield
+    finally:
+        with _adapter_lock:
+            _adapter_users -= 1
 
 
 def configure(cli_flag: bool) -> None:
@@ -29,6 +46,8 @@ def configure(cli_flag: bool) -> None:
 
 def source() -> str | None:
     """Return the setting that disables disk caches, or None when enabled."""
+    if _adapter_users:
+        return "--adapter"
     if _cli_disabled:
         return FLAG
     if env_truthy(ENV_VAR):

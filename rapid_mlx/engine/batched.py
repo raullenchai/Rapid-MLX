@@ -25,6 +25,7 @@ import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -1163,6 +1164,7 @@ class BatchedEngine(BaseEngine):
         force_mllm: bool = False,
         gpu_memory_utilization: float | None = None,
         *,
+        adapter_path: str | None = None,
         force_text: bool = False,
         force_hybrid: bool = False,
         no_hybrid: bool = False,
@@ -1223,6 +1225,24 @@ class BatchedEngine(BaseEngine):
                 serving-lane decision. Kept on the live engine so model and
                 residency APIs report the decision that was actually loaded.
         """
+        self._adapter = None
+        self._adapter_cache_scope: ExitStack | None = None
+        if adapter_path is not None:
+            from ..lora_adapter import reject_adapter_options, validate_adapter
+
+            reject_adapter_options(
+                mllm=force_mllm or (not force_text and is_mllm_model(model_name)),
+                disk_stream=enable_disk_stream,
+                speculative=force_spec_decode
+                or getattr(scheduler_config, "spec_decode", "none")
+                not in (None, "none"),
+            )
+            self._adapter = validate_adapter(adapter_path, model_name)
+            logger.warning(
+                "--adapter disables persisted caches to prevent cross-adapter KV reuse; "
+                "automatic MTP/speculative decoding is disabled"
+            )
+            no_spec_decode = True
         self._model_name = model_name
         self._profile_name = profile_name or model_name
         if chat_template_id is None:
@@ -1367,8 +1387,9 @@ class BatchedEngine(BaseEngine):
 
     @property
     def model_name(self) -> str:
-        """Get the model name."""
-        return self._model_name
+        """Get the internal identity, including the full startup adapter digest."""
+        adapter = getattr(self, "_adapter", None)
+        return adapter.cache_identity(self._model_name) if adapter else self._model_name
 
     @property
     def serving_lane(self) -> str:
@@ -1856,6 +1877,33 @@ class BatchedEngine(BaseEngine):
         if self._loaded:
             return
 
+        scope = getattr(self, "_adapter_cache_scope", None)
+        if getattr(self, "_adapter", None) is not None and scope is None:
+            from .. import disk_caches, response_cache
+
+            scope = ExitStack()
+            try:
+                scope.enter_context(disk_caches._suspend_for_adapter())
+                scope.enter_context(response_cache._suspend_for_adapter())
+            except BaseException:
+                scope.close()
+                raise
+            self._adapter_cache_scope = scope
+        try:
+            await self._start_engine()
+        except BaseException:
+            if getattr(self, "_adapter_cache_scope", None) is not None:
+                # Startup may have launched a scheduler before failing or
+                # being cancelled. Only confirmed cleanup can restore caches.
+                try:
+                    await self.stop()
+                except BaseException:
+                    # stop() logs and retains isolation. Preserve the original
+                    # startup error even when its cleanup also fails.
+                    pass
+            raise
+
+    async def _start_engine(self) -> None:
         # Lane-capability admission at the text/MLLM split — BEFORE any
         # weights are loaded or a scheduler is constructed, so an
         # unsupported explicit configuration can never come up "Ready"
@@ -1876,6 +1924,12 @@ class BatchedEngine(BaseEngine):
         self._loaded = True
         self._start_time = time.monotonic()
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
+
+    def _release_adapter_cache_scope(self) -> None:
+        scope = getattr(self, "_adapter_cache_scope", None)
+        self._adapter_cache_scope = None
+        if scope is not None:
+            scope.close()
 
     def _validate_lane_capabilities(self) -> None:
         """Fail closed on capabilities the selected serving lane cannot honor.
@@ -2364,6 +2418,8 @@ class BatchedEngine(BaseEngine):
                 )
         else:
             load_kwargs = {"tokenizer_config": tokenizer_config}
+            if adapter := getattr(self, "_adapter", None):
+                load_kwargs["adapter_path"] = adapter.path
             if chat_template_id := getattr(self, "_chat_template_id", None):
                 load_kwargs["chat_template_id"] = chat_template_id
             if self._scheduler_config is not None and (
@@ -2379,6 +2435,14 @@ class BatchedEngine(BaseEngine):
                         **load_kwargs,
                     ).result()
                 )
+
+            if adapter := getattr(self, "_adapter", None):
+                from ..lora_adapter import validate_adapter
+
+                if validate_adapter(adapter.path, self._model_name) != adapter:
+                    raise ValueError(
+                        "--adapter changed during startup; restart with stable adapter files"
+                    )
 
             # Fuse MoE gate+up expert projections: one gather_qmm launch
             # instead of two per MoE layer per token, bit-exact (see
@@ -2472,7 +2536,7 @@ class BatchedEngine(BaseEngine):
         lane = getattr(self, "_lane_matmul_receipt", None)
         pin_prefix_cache_identity(
             self,
-            raw_model_name=self._model_name,
+            raw_model_name=self.model_name,
             checkpoint_source=checkpoint_source,
             kv_dtype=kv_dtype,
             numerical_law=lane["law_id"] if lane else None,
@@ -2525,7 +2589,7 @@ class BatchedEngine(BaseEngine):
         # Create engine config
         scheduler_config = self._scheduler_config or SchedulerConfig()
         engine_config = EngineConfig(
-            model_name=self._model_name,
+            model_name=self.model_name,
             profile_name=self._profile_name,
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
@@ -2756,6 +2820,19 @@ class BatchedEngine(BaseEngine):
 
     async def stop(self, *, preserve_model_worker: bool = False) -> None:
         """Stop the engine and cleanup resources."""
+        try:
+            await self._stop_engine(preserve_model_worker=preserve_model_worker)
+        except BaseException:
+            if getattr(self, "_adapter_cache_scope", None) is not None:
+                logger.warning(
+                    "Adapter engine shutdown failed or was cancelled; "
+                    "retaining adapter cache isolation",
+                    exc_info=True,
+                )
+            raise
+        self._release_adapter_cache_scope()
+
+    async def _stop_engine(self, *, preserve_model_worker: bool) -> None:
         # Scheduler shutdown queues work on the same single model executor
         # used by guided decoding. Signal guided jobs first so a long schema
         # request cannot hold model unload behind it.
@@ -3301,7 +3378,7 @@ class BatchedEngine(BaseEngine):
                 {
                     "schema": 1,
                     "kind": "render",
-                    "model": self._model_name,
+                    "model": self.model_name,
                     "applicator": (
                         f"{type(applicator).__module__}."
                         f"{type(applicator).__qualname__}:{id(applicator)}"
@@ -5345,6 +5422,8 @@ class BatchedEngine(BaseEngine):
             "loaded": self._loaded,
             "stream_interval": self._stream_interval,
         }
+        if adapter := getattr(self, "_adapter", None):
+            stats["adapter_sha256"] = adapter.digest
         prompt_host_cache = getattr(self, "_prompt_host_cache", None)
         if prompt_host_cache is not None:
             stats["prompt_host_cache"] = prompt_host_cache.stats()
@@ -5490,6 +5569,13 @@ class BatchedEngine(BaseEngine):
         lifespan SIGTERM-grace deadline can short-circuit a multi-GB
         flush; see ``EngineCore.save_cache_to_disk`` for details.
         """
+        if getattr(self, "_adapter", None) is not None:
+            from ..cache.protocol import CachePersistenceUnsupportedError
+
+            raise CachePersistenceUnsupportedError(
+                "--adapter disables persisted prefix/KV cache import and export"
+            )
+
         if self._is_mllm:
             scheduler = getattr(self, "_mllm_scheduler", None)
             save = getattr(scheduler, "save_prefix_cache_to_disk", None)
@@ -5518,6 +5604,13 @@ class BatchedEngine(BaseEngine):
         ``protected_import`` (#1111 codex r3): True for explicit HTTP import
         (pin), False for startup auto-load (obey the retention bound).
         """
+        if getattr(self, "_adapter", None) is not None:
+            from ..cache.protocol import CachePersistenceUnsupportedError
+
+            raise CachePersistenceUnsupportedError(
+                "--adapter disables persisted prefix/KV cache import and export"
+            )
+
         if self._is_mllm:
             scheduler = getattr(self, "_mllm_scheduler", None)
             load = getattr(scheduler, "load_prefix_cache_from_disk", None)
@@ -5545,6 +5638,13 @@ class BatchedEngine(BaseEngine):
         ``CachePersistenceUnsupportedError``: its in-memory cache has no
         persistence implementation, even when a text lane is also loaded.
         """
+        if getattr(self, "_adapter", None) is not None:
+            from ..cache.protocol import CachePersistenceUnsupportedError
+
+            raise CachePersistenceUnsupportedError(
+                "--adapter disables persisted prefix/KV cache import and export"
+            )
+
         if self._engine and not self._is_mllm:
             return self._engine.save_cache_with_outcome(
                 cache_dir, should_abort=should_abort
@@ -5572,6 +5672,13 @@ class BatchedEngine(BaseEngine):
         ``protected_import`` (#1111 codex r3): defaults True — this
         result-returning path serves the EXPLICIT HTTP import (#476).
         """
+        if getattr(self, "_adapter", None) is not None:
+            from ..cache.protocol import CachePersistenceUnsupportedError
+
+            raise CachePersistenceUnsupportedError(
+                "--adapter disables persisted prefix/KV cache import and export"
+            )
+
         if self._engine and not self._is_mllm:
             return self._engine.load_cache_with_result(
                 cache_dir, replace=replace, protected_import=protected_import
@@ -6052,6 +6159,9 @@ class BatchedEngine(BaseEngine):
             tokenizer: Pre-loaded tokenizer
             start_engine: Whether to start the engine loop immediately.
         """
+        if getattr(self, "_adapter", None) is not None:
+            raise ValueError("--adapter cannot use preloaded/shared model injection")
+
         from ..engine_core import AsyncEngineCore, EngineConfig
         from ..scheduler import SchedulerConfig
 

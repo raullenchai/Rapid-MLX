@@ -7254,6 +7254,14 @@ def serve_command(args):
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 
+    from .lora_adapter import prepare_adapter_cli
+
+    try:
+        prepare_adapter_cli(args)
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
     args.log_level = _resolve_serve_log_level(getattr(args, "log_level", None))
     try:
         log_target, log_source = log_file.resolve_validated(
@@ -9177,6 +9185,7 @@ def serve_command(args):
             ),
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
+            adapter_path=getattr(args, "adapter", None),
             effective_runtime_config=_effective_runtime_config,
         )
     except OptionalRuntimeMissing:

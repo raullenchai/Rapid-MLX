@@ -1498,3 +1498,38 @@ loopback, explicitly pass `--allow-unauthenticated-public`. Container and LAN
 recipes that bind to `0.0.0.0` without a key must add a key or this opt-in. The
 flag permits unauthenticated access and does not configure proxy authentication,
 Host allowlists, or CORS. Local Search retains its stricter authentication rule.
+
+## Serving a LoRA adapter
+
+Load one adapter produced by `mlx_lm.lora` when starting a text server:
+
+```bash
+rapid-mlx serve mlx-community/Qwen3-0.6B-4bit --adapter ./adapters --port 8613
+```
+
+The directory must contain `adapter_config.json` (including the training base
+`model`) and `adapters.safetensors`. The declared base must match the served
+repository, alias, or cached/local checkpoint. Loading errors abort startup;
+there is no hot loading, per-request selection, or multi-adapter support.
+
+Use the model ID returned by `/v1/models`. With `--served-model-name`, the ID is
+exactly the supplied name. Otherwise it is `<name>:lora:<digest>`, where `digest`
+is the first 12 hexadecimal characters of the SHA-256 derived from both adapter
+files. Internal cache identities and startup stability checks retain the full
+SHA-256; the short public ID is never used to isolate adapter caches.
+In-memory prefix caches belong to that adapter engine. Persisted prefix/KV
+caches (including explicit import/export) and response caching are disabled
+for adapter serving to prevent reuse of base-model or other-adapter results.
+
+Adapters currently require the standard eager text loader. Vision/MLLM,
+image/video/audio/diffusion models, disk streaming, fp8 repacking, MTP heads,
+and speculative draft runtimes are rejected. Automatic speculative decoding
+is disabled. Lazy startup, idle unloading, and runtime replacement of the adapter primary
+are also rejected. Fuse the adapter
+first if you need a separate runtime; restart the server to change adapters.
+
+To reproduce the small-model greedy comparison against `mlx_lm.fuse`, run
+`python scripts/check_lora_adapter.py` in the contributor environment. It uses
+only the cached Qwen3-0.6B-4bit model, trains eight iterations, and stores data,
+adapter, fused weights, logs, and results under
+`/private/tmp/rapid-mlx-lora-adapter-scratch/`.

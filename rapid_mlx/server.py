@@ -2585,6 +2585,7 @@ def load_model(
     gpu_memory_utilization: float | None = None,
     prefill_step_size: int | None = None,
     *,
+    adapter_path: str | None = None,
     served_model_name: str | None = None,
     mtp: bool = False,
     max_tokens_is_explicit: bool | None = None,
@@ -2651,6 +2652,21 @@ def load_model(
             launch values before applying it. Direct Python callers are
             resolved at this boundary with conservative provenance.
     """
+    adapter = None
+    if adapter_path is not None:
+        from .lora_adapter import reject_adapter_options, validate_adapter
+
+        reject_adapter_options(
+            mllm=force_mllm,
+            disk_stream=enable_disk_stream,
+            speculative=mtp
+            or force_spec_decode
+            or getattr(scheduler_config, "spec_decode", "none") not in (None, "none"),
+            lazy=_primary_lazy_load or _primary_idle_unload_seconds > 0,
+        )
+        adapter = validate_adapter(adapter_path, model_name)
+        no_spec_decode = True
+
     if force_mllm and force_text:
         raise ValueError(
             "force_mllm and force_text are mutually exclusive — "
@@ -3082,6 +3098,16 @@ def load_model(
     # already-resolved alias profile so the same call (alias-name or
     # full HF path) lands on the right lane without re-resolving.
     _profile_modality = _profile.modality if _profile is not None else "text"
+    if adapter is not None:
+        if _profile_modality != "text":
+            raise ValueError(
+                "--adapter supports text models only (no image/video/audio/diffusion)"
+            )
+        if served_model_name is None:
+            _model_name += f":lora:{adapter.digest[:12]}"
+        if _model_alias:
+            _model_alias = adapter.model_identity(_model_alias)
+
     if _profile_modality == "video-gen":
         from .runtime.video_lane import VideoEngine
 
@@ -3139,6 +3165,7 @@ def load_model(
             model_name,
         )
         _engine = BatchedEngine(
+            **({"adapter_path": adapter.path} if adapter is not None else {}),
             model_name=_engine_model_path,
             profile_name=effective_model_alias,
             chat_template_id=(
@@ -3282,7 +3309,11 @@ def load_model(
     # Register in multi-model registry
     aliases = set()
     if effective_model_alias and effective_model_alias != _model_name:
-        aliases.add(effective_model_alias)
+        aliases.add(
+            adapter.model_identity(effective_model_alias)
+            if adapter is not None
+            else effective_model_alias
+        )
     # Telemetry identity is derived from the RESOLVED checkpoint
     # (``_model_path``), never from ``_model_name`` — which is
     # ``--served-model-name`` when the operator set one.
@@ -3290,6 +3321,7 @@ def load_model(
 
     entry = ModelEntry(
         engine=_engine,
+        is_adapter=adapter is not None,
         model_name=_model_name,
         model_path=_model_path or model_name,
         telemetry_model_id=_telemetry_model_id(_model_path or model_name),
@@ -3331,6 +3363,11 @@ async def _load_dynamic_resident_model(
     image_mode: str | None = None,
 ) -> ModelEntry:
     """Construct and start one non-primary engine for the residency manager."""
+
+    if _model_registry.is_adapter_model(model_name):
+        raise ValueError(
+            "--adapter identities cannot be reloaded without the startup adapter; restart the server"
+        )
 
     from .model_aliases import resolve_model, resolve_profile
 
@@ -3546,6 +3583,13 @@ def _handoff_resident_primary_audio_worker(
     entry: ModelEntry,
 ) -> _ResidentPrimaryAudioHandoff:
     """Reserve audio ownership for a transactional primary replacement."""
+
+    if entry.is_adapter or getattr(entry.engine, "_adapter", None) is not None:
+        from .runtime.resident_models import ResidentModelError
+
+        raise ResidentModelError(
+            "--adapter is startup-only; restart the server to replace this model"
+        )
 
     # The entry identifies the primary whose residency transaction owns the
     # lease. The dispatcher is the worker-ownership SSOT and preserves that
