@@ -184,6 +184,7 @@ def patched_config(
 def remove_config() -> bool:
     """Strip the routing environment keys owned by the legacy setup."""
     path = current_config_path()
+    assert path is not None  # current_config_path never returns None here
     data = _common.load_json_lenient(path)
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
         raise ValueError("Claude Code settings and env must contain objects")
