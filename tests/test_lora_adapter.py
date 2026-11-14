@@ -861,7 +861,6 @@ async def test_engine_passes_adapter_and_rechecks_content_after_load(
     from types import ModuleType
     from unittest.mock import Mock
 
-    from rapid_mlx import moe_fusion
     from rapid_mlx.engine.batched import BatchedEngine
     from rapid_mlx.utils import tokenizer as loader
 
@@ -888,8 +887,10 @@ async def test_engine_passes_adapter_and_rechecks_content_after_load(
         pass
 
     fusion = Mock(side_effect=ReachedFusionError)
+    moe_fusion = ModuleType("rapid_mlx.moe_fusion")
+    moe_fusion.fuse_gate_up = fusion
+    monkeypatch.setitem(sys.modules, "rapid_mlx.moe_fusion", moe_fusion)
     monkeypatch.setattr(loader, "load_model_with_fallback", load)
-    monkeypatch.setattr(moe_fusion, "fuse_gate_up", fusion)
     try:
         if changed:
             with pytest.raises(ValueError, match="changed during startup"):
