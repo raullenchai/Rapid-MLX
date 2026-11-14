@@ -485,7 +485,7 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
             r"(?:(?!Permission Required).)*?←/→ choose • enter confirm",
             re.DOTALL,
         )
-        keys = b"\x1b[C\r"  # Move from Allow to Allow for Session, then confirm.
+        keys = b"s"  # Crush v0.101.0: Allow for Session (no Enter).
     elif agent == "qwen-code":
         pattern = re.compile("Waiting for user confirmation")
         keys = b"\r"
@@ -493,25 +493,37 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
         return None
     end = 0
     previous = ""
+    pending = None
+    previous_output = ""
+    last_output_at = 0.0
 
     def answer(output: str) -> None:
-        nonlocal end, previous
+        nonlocal end, previous, pending, previous_output, last_output_at
+        now = time.monotonic()
+        if output != previous_output:
+            previous_output = output
+            last_output_at = now
         working = "state=working:app=crush"
         screen = _ANSI.sub(lambda ansi: working if working in ansi[0] else "", output)
         for match in pattern.finditer(screen, end):
             gap = screen[end : match.start()]
             prompt = " ".join(match.group().split())
             end = match.end()
+            if pending is not None and (working in gap or "Permission Required" in gap):
+                pending = None
             # Repeated polling and TUI redraws are not new questions. Aider
             # echoes the answer before another question; Crush changes modal
             # contents for a new action. Never retry based on elapsed time.
             if prompt == previous and (
                 (agent == "crush" and working not in gap) or not gap.strip()
             ):
+                if pending is not None:
+                    pending = (*pending[:2], end)
                 continue
             previous = prompt
             answer_keys = keys
             if agent == "crush":
+                pending = None
                 path = Path(match["path"].strip()).resolve()
                 allowed = (
                     path == workspace
@@ -521,14 +533,27 @@ def approval_handler(agent: str, master: int, workspace: Path | None = None, sin
                 if not allowed:
                     continue
                 # File grants must apply only to this action, never the session.
-                answer_keys = b"\x1b[C\r" if match["bash"] else b"\r"
+                pending = (keys if match["bash"] else b"a", now + 1.6, end)
+                continue
             news = prompt.startswith("Would you like")
             os.write(master, b"n\r" if news else answer_keys)
-            if sink is not None and (
-                agent == "crush" or prompt.startswith("Run shell")
-            ):
+            if sink is not None and prompt.startswith("Run shell"):
                 sink.write(b"\n[agent_e2e: permission prompt answered]\n")
                 sink.flush()
+
+        if pending is not None:
+            answer_keys, deadline, modal_end = pending
+            tail = screen[modal_end:]
+            # A newer modal (even incomplete/unknown) or working state makes
+            # the scheduled grant stale. Recheck before sending on idle polls.
+            if working in tail or "Permission Required" in tail:
+                pending = None
+            elif now >= deadline and now >= last_output_at + 0.5:
+                os.write(master, answer_keys)
+                pending = None
+                if sink is not None:
+                    sink.write(b"\n[agent_e2e: permission prompt answered]\n")
+                    sink.flush()
 
     return answer
 

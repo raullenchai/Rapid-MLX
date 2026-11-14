@@ -37,20 +37,28 @@ hook also answers these specific confirmations:
 - Crush: the complete `Permission Required` dialog for `Tool bash`, with a
   `Path` resolving exactly to the test project directory and the known
   `Allow / Allow for Session / Deny` menu and arrow-key instructions. The
-  runner sends Right-arrow then Enter to select **Allow for Session**.
+  runner sends the single shortcut `s` for **Allow for Session**, without Enter.
   For `Tool write`, `Tool edit`, and `Tool multiedit`, the same complete dialog
   must show a `File` resolving inside the test project directory. The runner
-  sends only Enter for **Allow**, approving that action alone. Both checks
-  resolve symlinks (including macOS `/tmp` → `/private/tmp`); files resolving
-  outside the project remain unanswered.
+  sends the single shortcut `a` for **Allow**, without Enter, approving that
+  action alone. Both checks resolve symlinks (including macOS
+  `/tmp` → `/private/tmp`); files resolving
+  outside the project remain unanswered. Crush v0.101.0 discards dialog keys
+  during its opening grace period (425 ms of input quiet, capped at 1.5 s).
+  The runner schedules each validated answer at least 1.6 s after first
+  matching the modal and waits for at least 0.5 s of output quiet. Reads
+  continue during this delay; idle polls check the pending answer every
+  250 ms. A newer working state or different modal (including incomplete or
+  unknown dialogs) cancels the pending answer. Identical redraws retain the
+  original deadline and never trigger duplicate answers.
 - Aider: `Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
   Also handles the plural form,
   `Run shell commands? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
   The runner sends `y` then Enter for that command block, without disabling
   later confirmations or selecting skip all.
 
-The hook handles split reads and ANSI styling, ignores idle polls and repeated
-redraws of the same question, and continues waiting for the tool reply. It
+The hook handles split reads and ANSI styling, deduplicates idle polls and
+repeated redraws of the same question, and continues waiting for the tool reply. It
 retains the existing Aider file-creation/news and Qwen tool-confirmation
 handling. Each answered Crush/Aider shell prompt adds a fixed
 `permission prompt answered` marker to the private transcript; that label
