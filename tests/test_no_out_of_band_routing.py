@@ -121,6 +121,7 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
         "RAPID_MLX_LORA_DIR",  # image LoRA library directory; no routing
         "RAPID_MLX_STEP_WORKGROUP",  # opt out of macOS step scheduling hint; no routing
+        "RAPID_MLX_BATCHGEN_FASTPATH",  # kill switch for the exact-equivalent unpadded admission fast path; no routing
         # Opt-in fused affine-4 MoE expert kernels for Qwen3.6 MoE; picks a
         # kernel implementation for the same model, never a model or route.
         "RAPID_MLX_QWEN35_AFFINE4",

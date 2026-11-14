@@ -5518,6 +5518,18 @@ class Scheduler:
             # mlx-lm < 0.31.3 — no `stream` kwarg; fall back to legacy path.
             bg = BatchGenerator(**bg_kwargs)
 
+        # Instance-local admission optimization; MLLM and speculative lanes keep
+        # their existing cache/transition implementations.
+        if (
+            getattr(self.config, "spec_decode", "none") == "none"
+            and not getattr(self.config, "enable_suffix_decoding", False)
+            and not getattr(self.config, "kv_cache_quantization", False)
+        ):
+            from .batchgen_fastpath import install_batchgen_fastpath
+
+            if install_batchgen_fastpath(bg):
+                logger.info("Batch generator unpadded admission fast path enabled")
+
         from .execution_reference import observe_plain_steps
 
         execution_receipt = getattr(self, "_execution_load_receipt", None)
