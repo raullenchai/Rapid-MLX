@@ -5674,7 +5674,14 @@ async def _create_chat_completion_impl(
             _computed_key = make_cache_key(
                 model=_resolve_model_name(request.model),
                 prompt=messages,
-                sampling_kwargs=chat_kwargs,
+                # ``_prompt_tokens`` is a request-local tokenization memo; it
+                # never changes the output, and keying on it would make every
+                # request UNCACHEABLE.
+                sampling_kwargs={
+                    key: value
+                    for key, value in chat_kwargs.items()
+                    if key != "_prompt_tokens"
+                },
                 extra={
                     "response_format": (
                         _rf.model_dump() if hasattr(_rf, "model_dump") else _rf

@@ -643,7 +643,7 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
         )
 
 
-async def _sync_run(fn, **kw):
+async def _sync_run(fn, *args, **kw):
     """Run a sync callable as if it were threaded.
 
     Returns the result via an ``async def`` so the awaiting site in
@@ -651,4 +651,4 @@ async def _sync_run(fn, **kw):
     ...)``) receives a coroutine identical in shape to the real
     ``asyncio.to_thread``.
     """
-    return fn(**kw)
+    return fn(*args, **kw)
