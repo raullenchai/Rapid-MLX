@@ -1528,7 +1528,7 @@ def test_mllm_text_ids_probe_requires_processor_equivalence(
 ):
     """Text-only MLLM requests take token IDs only when the processor's own
     text-only preparation yields the same IDs and nothing else."""
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
 
     import rapid_mlx.models.mlx_vlm_vendored.inputs as vendored
 
@@ -1566,6 +1566,7 @@ def test_mllm_text_ids_probe_requires_processor_equivalence(
 
 
 def test_mllm_text_ids_probe_failure_keeps_processor_path(monkeypatch):
+    pytest.importorskip("mlx.core")
     import rapid_mlx.models.mlx_vlm_vendored.inputs as vendored
     from rapid_mlx.prompt_token_reuse import RequestPromptTokens
 
