@@ -1,4 +1,4 @@
-# FLUX 3 Image Klein
+# FLUX 3 Image Klein (next release)
 
 `flux3-klein` resolves to `black-forest-labs/flux-3-image-klein`; it uses
 16 steps, no guidance, and no negative prompt. `flux3-klein-base` resolves to

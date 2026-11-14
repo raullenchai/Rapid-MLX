@@ -4,7 +4,7 @@ This page collects small but important details about how rapid-mlx's
 OpenAI-compatible and Anthropic-compatible surfaces deviate from — or
 sit slightly outside of — the upstream specifications. None of these
 break common SDK usage in practice, but each has tripped at least one
-user during 0.7.x / 0.8.0 dogfooding. If you are debugging a strict-mode
+user during testing. If you are debugging a strict-mode
 parser, building your own SDK wrapper, or pinning a vendored client to
 a specific schema, read through these before assuming you have hit a
 bug.

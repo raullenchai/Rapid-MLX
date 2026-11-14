@@ -182,7 +182,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/audio/voices` | GET | List available TTS voices — see the [Audio Guide](audio.md) |
 | `/v1/images/generations` | POST | Image generation |
 | `/v1/images/edits` | POST | Image editing |
-| `/v1/images/loras` | GET | List user image LoRAs |
+| `/v1/images/loras` | GET | List user image LoRAs (next release) |
 | `/v1/images/progress` | GET | Denoise progress of the in-flight image render (`step / total`) |
 | `/v1/images/cancel` | POST | Stop the in-flight image render at the next denoise step |
 | `/v1/videos` | POST / GET | Start a video-generation job / list jobs — see the [Video Generation Guide](video-generation.md) |
@@ -237,7 +237,7 @@ image failures still return HTTP 500 with `type: "image_generation_error"` and
 `code: "image_generation_failed"`. Cancellation returns HTTP 200 with
 `cancelled: true` and any images already completed.
 
-### User image LoRAs
+### User image LoRAs (next release)
 
 Place compatible `.safetensors` adapters directly in `~/.rapid-mlx/loras/`,
 or set `RAPID_MLX_LORA_DIR` to another library directory. Subdirectories are
@@ -555,6 +555,47 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="")
 ```
 
+#### Token probabilities and repeatable sampling
+
+Set `logprobs: true` to return generated-token probabilities. Add
+`top_logprobs` (0–20) for alternative tokens; it only takes effect when
+`logprobs` is true. Each `choices[].logprobs.content[]` entry contains
+`token`, `logprob`, `bytes`, and a `top_logprobs` list of alternatives with
+`token`, `logprob`, and `bytes`. Omitting `top_logprobs` or setting it to 0
+returns the sampled-token probability with an empty alternatives list.
+Streaming chunks carry the same shape in `choices[].logprobs`. Use ordinary
+text generation for token scoring; the constrained-generation path does not
+populate these probabilities.
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Name a color."}],"max_tokens":32,"temperature":0.7,"seed":0,"logprobs":true,"top_logprobs":3}'
+```
+
+```python
+response = client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "Name a color."}],
+    max_tokens=32, temperature=0.7, seed=0,
+    logprobs=True, top_logprobs=3,
+)
+print(response.choices[0].logprobs.content)
+```
+
+Chat Completions, Completions, and Responses accept `seed` for text generation.
+Use the same seed, prompt, sampling parameters, model, and engine configuration
+to reproduce a sampled sequence. This does not promise identical output across
+models or engine changes. At temperature 0, sampling is greedy and the seed has
+no effect. Omit `seed` or send `null` for unseeded sampling.
+
+Seeds must be non-negative JSON integers: 0 is valid; negative values, booleans,
+strings, and floats are rejected. There is no request-level upper bound;
+the sampler maps large values to a 32-bit key with `seed & 0xFFFFFFFF`.
+For Responses, send `seed` in the JSON body; with the OpenAI Python SDK, use
+`client.responses.create(model="default", input="Name a color.",
+extra_body={"seed": 0})`.
+
 ### Completions
 
 ```bash
@@ -568,6 +609,35 @@ response = client.completions.create(
     max_tokens=50
 )
 ```
+
+Completions uses integer `logprobs` (0–5), rather than chat's boolean field
+and separate `top_logprobs` request parameter. `logprobs=0` returns only the
+sampled-token probabilities; 1–5 also requests that many alternatives.
+`choices[].logprobs` contains parallel `tokens`, `token_logprobs`,
+`top_logprobs`, and `text_offset` arrays. Each `top_logprobs` element is a
+`{token: logprob}` dictionary (empty for `logprobs=0`); offsets locate generated
+tokens in the output text. Streaming returns these arrays per chunk, with
+offsets continuing across chunks. Boolean `logprobs` values are rejected.
+
+```bash
+curl http://localhost:8000/v1/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","prompt":"The capital of France is","max_tokens":32,"temperature":0.7,"seed":42,"logprobs":3}'
+```
+
+```python
+response = client.completions.create(
+    model="default", prompt="The capital of France is",
+    max_tokens=32, temperature=0.7, seed=42, logprobs=3,
+)
+print(response.choices[0].logprobs.token_logprobs)
+```
+
+The seed rules above also apply here. Completions rejects `echo` combined with
+`logprobs`, because prompt-token scoring is unavailable. It also rejects JSON
+output formats combined with `logprobs`. An engine without the required
+per-token probability support returns HTTP 501 instead of silently omitting
+probabilities.
 
 ### Models
 
@@ -1393,6 +1463,19 @@ local files remain supported. Remote decoder-specific protocols are not
 accepted for audio or video.
 
 Media `file:///absolute/path` URIs decode escaped path characters and ignore URI query/fragment components. Their authority must be empty or `localhost`; other authorities are refused. Use an ordinary filesystem path for relative local files.
+
+### Desktop access from other devices
+
+In Desktop, open **Settings → Tools → Embedded API security** and enable
+**Allow access from other devices on your network**. This restarts a running
+model and interrupts active requests. The panel shows the LAN URL and a
+copyable authenticated curl example once the model is ready.
+
+LAN access is off by default. Enabling it uses a persistent bearer key stored
+in Keychain, with plain HTTP traffic on the local network. Other devices can
+use inference APIs; model management, Local Search, and other administrative
+routes remain local to this Mac. Include `Authorization: Bearer <key>` in
+client requests and use the displayed `/v1` URL for the OpenAI SDK.
 
 ### Network listener consent
 

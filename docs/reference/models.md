@@ -9,7 +9,7 @@ rapid-mlx recipe
 rapid-mlx models
 ```
 
-Use `rapid-mlx info <alias>` for one model's memory needs, capabilities, and runtime profile. The [model catalog](https://rapidmlx.com/docs/aliases.html) is the current long-form list. An alias in the installed v0.16.6 registry is the source for a runnable model name.
+Use `rapid-mlx info <alias>` for one model's memory needs, capabilities, and runtime profile. The [model catalog](https://rapidmlx.com/docs/aliases.html) is the current long-form list. An alias in the installed registry is the source for a runnable model name.
 
 The pinned October 2026 additions are `nanbeige4.3-33b-4bit` (32 GB minimum),
 `spark-x2.6-4b-4bit` (16 GB, text input through the `[vision]` runtime),
@@ -24,9 +24,21 @@ checkpoint with a 96 GB memory floor and a 69.6 GB download. It uses the
 `[vision]` runtime for text serving; image input is not qualified. Chat,
 streaming, named XML tools, and thinking on/off use the existing parsers.
 The [October 27 qualification record](../engineering/performance/2026-10-27-trending-models.md)
-records serving evidence and why Unlimited-OCR-2 and LFM3 remain excluded.
+records the serving evidence for that checkpoint.
 
 ## Text and vision
+
+LFM3 1.7B (`lfm3-1.7b-8bit`) handles text, and LFM3-VL 2B
+(`lfm3-vl-2b-8bit`) accepts images as well as text. Both use pinned 8-bit
+checkpoints and are available in Desktop. Start either from the CLI:
+
+```bash
+rapid-mlx serve lfm3-1.7b-8bit
+# Or, for image understanding:
+rapid-mlx serve lfm3-vl-2b-8bit
+```
+
+Send images using the [multimodal request format](../guides/multimodal.md).
 
 ### Open an existing checkpoint in Desktop
 

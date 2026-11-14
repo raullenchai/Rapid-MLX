@@ -122,6 +122,34 @@ The default BF16 KV cache favors fidelity. `--kv-cache-dtype int8` or `int4` use
 
 PFlash compresses long prompts before prefill. `--pflash auto` applies it at the configured threshold; `--pflash always` applies it to eligible prompts. It is off by default. Compression discards some prompt content, so validate results on your workload. Use `rapid-mlx serve --help` for its current tuning flags and the [performance flags guide](https://rapidmlx.com/docs/perf-flags.html) for examples.
 
+## `rapid-mlx benchmark`
+
+List compatible models, then run a local benchmark:
+
+```bash
+rapid-mlx benchmark catalog
+rapid-mlx benchmark run qwen3.5-9b-4bit
+```
+
+Text runs use the same default acceleration profile as `serve` and accept its
+supported acceleration flags. `--baseline` turns acceleration off for the
+original baseline protocol. Saved results record the configuration that ran.
+
+To compare your current Rapid Lattice settings with nearby configurations:
+
+```bash
+rapid-mlx benchmark run qwen3.5-9b-4bit --configs 4 --repetitions 3
+```
+
+`--configs` defaults to 1; choose 2–16 for a comparison. `--repetitions` is
+3–10 (default 3) and applies only to comparisons. Repetitions interleave
+configurations and reload the model for each measurement.
+
+Use `rapid-mlx benchmark results` to find a run and
+`rapid-mlx benchmark inspect <run-id>` to review it. Runs stay local until you
+explicitly upload one with `rapid-mlx benchmark share <run-id>`.
+Desktop offers the same workflow from the **Benchmark** sidebar tab.
+
 ## `rapid-mlx chat`
 
 ```bash

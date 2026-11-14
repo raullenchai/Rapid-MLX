@@ -10,7 +10,7 @@ rapid-mlx server. Codex is a Rust-based coding agent that talks to the
 OpenAI **Responses API** (`POST /v1/responses`); rapid-mlx implements that
 endpoint as a stateless shim, so any local model can drive Codex.
 
-Requires **rapid-mlx >= 0.7.10**. Verified end-to-end against Qwen 3.6,
+Verified end-to-end against Qwen 3.6,
 Gemma 4, DeepSeek, and gpt-oss in the Tier-1 agent matrix
 (`tests/integrations/test_agents_matrix.py::TestCodexCLI`). See the
 [support matrix](matrix.md) for the current per-family status.
@@ -172,10 +172,8 @@ You should see a `response` object with an `output` array containing a
 
 ## Troubleshooting
 
-- **Codex 404s on `/v1/responses`** — you're on rapid-mlx < 0.7.10. Upgrade
-  with `rapid-mlx upgrade` (for a pip install, run the same Python environment's `pip install -U rapid-mlx`).
-- **Turn ends with no output / stream closes early** — upgrade to rapid-mlx
-  >= 0.7.12; the 0.7.10–0.7.11 shim mishandled Codex 0.136's request shape.
+- **Turn ends with no output / stream closes early** — inspect the server
+  logs for a generation failure.
 - **Codex hangs on first run** — it's prompting for sandbox permissions
   (Landlock on Linux, Seatbelt on macOS). Accept them; the second run is
   non-interactive.

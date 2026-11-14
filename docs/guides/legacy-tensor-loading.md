@@ -6,7 +6,7 @@ with unrestricted deserialization, including when a process-wide environment
 setting requests it. Unknown and prerelease runtime versions are refused.
 
 Numeric tensor checkpoints remain supported. Safetensors loading does not use
-this helper. Audio adapters adopt this helper in separate changes; adding the
-helper alone does not change existing adapter behavior. The Python dependency
-floor for PyTorch is now 2.10, so existing installations should update their
-runtime before using adapters that adopt it.
+this helper. SAM and VoxCPM adapters use it for PyTorch tensor checkpoints;
+SA3 starts with the same restricted loader and has a separate
+[checkpoint consent policy](sa3-checkpoint-consent.md) for reviewed files
+requiring object loading.

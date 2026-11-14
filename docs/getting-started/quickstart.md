@@ -15,8 +15,8 @@ See the [agent guides](https://rapidmlx.com/docs/agents/).
 
 The shortest path to talking to a model — `chat` spawns its own server and
 drops you into a REPL. It uses a chat model already on this Mac, preferring the
-`qwen3.5-4b-4bit` starter if present, otherwise the best fit for this Mac's
-memory. If none is downloaded yet, it downloads the starter (~3.1 GB).
+`lfm2.5-2.6b-4bit` starter if present, otherwise the best fit for this Mac's
+memory. If none is downloaded yet, it downloads the starter.
 
 ```bash
 rapid-mlx chat                  # uses a local chat model, or downloads the starter
