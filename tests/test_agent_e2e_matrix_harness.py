@@ -114,6 +114,130 @@ def test_opencode_v1_reply_ignores_fragmented_tui(
     assert not run.opencode_v1_reply_seen(tmp_path, 10, "hi-abc", "nonce-wrong", output)
 
 
+@pytest.mark.parametrize("major", [1, 2])
+@pytest.mark.parametrize(
+    "case, expected",
+    [
+        ("cat", True),
+        ("missing_nonce", False),
+        ("running", False),
+        ("command_only_nonce", False),
+        ("non_string_output", False),
+        ("read_hello_bash_nonce", True),
+        ("bash_hello_read_nonce", True),
+        ("separate_bash_outputs", True),
+        ("other_session", False),
+        ("stale", False),
+        ("incomplete_reply", False),
+        ("reply_missing_nonce", False),
+        ("other_tool", False),
+    ],
+)
+def test_opencode_bash_file_evidence(tmp_path, opencode_v1_db, major, case, expected):
+    bash = {
+        "type": "tool",
+        "tool": "bash",
+        "state": {
+            "status": "running" if case == "running" else "completed",
+            "input": {
+                "command": (
+                    "printf 'hi-abc nonce-def'"
+                    if case == "command_only_nonce"
+                    else "cat /work/hello.txt /work/nonce.txt"
+                )
+            },
+            "output": "hi-abc\nnonce-def\n",
+        },
+    }
+    if case in {"missing_nonce", "command_only_nonce", "bash_hello_read_nonce"}:
+        bash["state"]["output"] = "hi-abc\n"
+    if case == "non_string_output":
+        bash["state"]["output"] = ["hi-abc", "nonce-def"]
+    if case in {"read_hello_bash_nonce", "separate_bash_outputs"}:
+        bash["state"]["output"] = "nonce-def\n"
+    if case == "other_tool":
+        bash["tool"] = "edit"
+    with sqlite3.connect(opencode_v1_db) as conn:
+        conn.execute("DELETE FROM part WHERE id = 'p0'")
+        conn.execute(
+            "UPDATE part SET data = ?, session_id = ?, time_created = ?, "
+            "time_updated = ? WHERE id = 'p1'",
+            (
+                json.dumps(bash),
+                "s2" if case == "other_session" else "s1",
+                1000 if case == "stale" else 11000,
+                2000 if case == "stale" else 12000,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO message SELECT 'm2', 's2', time_created, time_updated, "
+            "data FROM message WHERE id = 'm1'"
+        )
+        conn.execute("UPDATE part SET message_id = 'm2' WHERE session_id = 's2'")
+        if case in {
+            "read_hello_bash_nonce",
+            "bash_hello_read_nonce",
+            "separate_bash_outputs",
+        }:
+            path, value = (
+                ("nonce.txt", "nonce-def")
+                if case == "bash_hello_read_nonce"
+                else ("hello.txt", "hi-abc")
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p0', 'm1', 's1', 11000, 12000, ?)",
+                (
+                    json.dumps(
+                        {
+                            "type": "tool",
+                            "tool": "bash"
+                            if case == "separate_bash_outputs"
+                            else "read",
+                            "state": {
+                                "status": "completed",
+                                "input": {"filePath": f"/work/{path}"},
+                                "output": value,
+                            },
+                        }
+                    ),
+                ),
+            )
+        if case == "incomplete_reply":
+            conn.execute(
+                "UPDATE message SET data = json_remove(data, '$.time.completed')"
+            )
+        if case == "reply_missing_nonce":
+            conn.execute(
+                "UPDATE part SET data = json_set(data, '$.text', 'hi-abc') WHERE id = 'p2'"
+            )
+        if major == 2:
+            conn.execute(
+                "CREATE TABLE session_message "
+                "(session_id TEXT, type TEXT, time_created INTEGER, seq INTEGER, data TEXT)"
+            )
+            rows = conn.execute(
+                "SELECT p.session_id, m.data, p.data, p.time_created FROM part p "
+                "JOIN message m ON m.id = p.message_id AND m.session_id = p.session_id"
+            ).fetchall()
+            for seq, (session_id, raw_message, raw_part, created) in enumerate(rows):
+                message, part = json.loads(raw_message), json.loads(raw_part)
+                if part["type"] == "tool":
+                    part["name"] = part.pop("tool")
+                    state = part["state"]
+                    state["content"] = [{"text": state.pop("output")}]
+                    state["input"]["path"] = state["input"].pop("filePath", "")
+                message["content"] = [part]
+                conn.execute(
+                    "INSERT INTO session_message VALUES (?, 'assistant', ?, ?, ?)",
+                    (session_id, created, seq, json.dumps(message)),
+                )
+    if major == 1:
+        actual = run.opencode_v1_reply_seen(tmp_path, 10, "hi-abc", "nonce-def", "")
+    else:
+        actual = opencode_reply_seen(tmp_path, 10, "hi-abc", "nonce-def")
+    assert actual is expected
+
+
 @pytest.mark.parametrize(
     "change",
     [
