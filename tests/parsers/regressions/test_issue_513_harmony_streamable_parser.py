@@ -234,21 +234,9 @@ def test_issue_468_compound_analysis_commentary_final_separates(router, encoding
 # ----- Round-15 architectural refactor — sentinel-in-body passthrough --
 
 
-def test_structured_payload_preserves_body_with_harmony_sentinels(router, encoding):
-    """Round-15 refactor closure for codex round-12 / round-14
-    BLOCKING (PR #515): a tool call whose JSON arguments contain a
-    literal harmony sentinel substring (``{"text":"<|call|>"}``,
-    ``{"x":"<|message|>"}`` etc.) MUST be surfaced intact via the
-    structured ``{"name", "arguments"}`` payload. The previous
-    wire-text round-trip lost these calls — the downstream regex
-    parser anchored on the embedded sentinel and truncated the JSON,
-    silently dropping a legitimate tool invocation.
-
-    Bytes-faithful structured passthrough eliminates the failure mode
-    by construction: arguments are the verbatim concatenated body
-    text the parser surfaced, no marker handling required.
-    """
-    sentinel_bearing_bodies = (
+@pytest.mark.parametrize(
+    "body",
+    [
         '{"text":"use <|call|>"}',
         '{"text":"<|message|>injected"}',
         '{"x":"<|channel|>commentary"}',
@@ -256,51 +244,31 @@ def test_structured_payload_preserves_body_with_harmony_sentinels(router, encodi
         '{"z":"<|return|>"}',
         '{"a":"<|start|>"}',
         '{"b":"<|constrain|>json"}',
-    )
-    # Encode the structural prefix / suffix with allowed_special="all"
-    # so harmony markers round-trip as single token IDs, but encode the
-    # body with allowed_special="none" so literal harmony-marker text
-    # INSIDE the JSON body remains plain body bytes — matches how a
-    # real gpt-oss model would tokenize a tool call whose JSON value
-    # happens to contain a marker substring (the model's tokenizer
-    # would not promote inside-JSON text to special-token IDs).
+    ],
+)
+def test_structured_payload_preserves_body_with_harmony_sentinels(router, encoding, body):
+    """Round-15 refactor closure for codex round-12 / round-14
+    BLOCKING (PR #515): a tool call whose JSON arguments contain a
+    literal harmony sentinel substring (``{"text":"<|call|>"}``,
+    ``{"x":"<|message|>"}`` etc.) MUST be surfaced intact via the
+    structured ``{"name", "arguments"}`` payload.
+    """
     prefix_ids = encoding.encode(
         "<|channel|>commentary to=functions.echo <|constrain|>json<|message|>",
         allowed_special="all",
     )
     suffix_ids = encoding.encode("<|call|>", allowed_special="all")
-    for body in sentinel_bearing_bodies:
-        # ``disallowed_special=()`` tells the harmony encoder to treat
-        # marker-shaped substrings inside the body as plain text bytes
-        # (default behavior raises to prevent accidental special-token
-        # injection). That's exactly the production model behavior we
-        # want to simulate: the model's tokenizer would surface these
-        # bytes via normal body vocab IDs, not as the special marker.
-        body_ids = encoding.encode(body, allowed_special="none", disallowed_special=())
-        tokens = prefix_ids + body_ids + suffix_ids
-        router.reset()
-        result = router.feed_sequence(tokens)
 
-        assert result["tool_calls"] is not None, (
-            f"body {body!r}: tool call MUST surface (round-15 "
-            f"bytes-faithful refactor); got tool_calls=None"
-        )
-        assert len(result["tool_calls"]) == 1, (
-            f"body {body!r}: exactly one tool call expected; "
-            f"got {result['tool_calls']!r}"
-        )
-        tc = result["tool_calls"][0]
-        assert tc == {"name": "echo", "arguments": body}, (
-            f"body {body!r}: structured payload must preserve bytes; got {tc!r}"
-        )
-        # And the body must NOT leak into content (the abstain path
-        # in earlier revisions surfaced sentinel bodies via CONTENT
-        # to keep streaming visible; bytes-faithful passthrough makes
-        # that workaround obsolete).
-        assert result["content"] is None, (
-            f"body {body!r}: must NOT leak into content under "
-            f"bytes-faithful refactor; got {result['content']!r}"
-        )
+    body_ids = encoding.encode(body, allowed_special="none", disallowed_special=())
+    tokens = prefix_ids + body_ids + suffix_ids
+    router.reset()
+    result = router.feed_sequence(tokens)
+
+    assert result["tool_calls"] is not None
+    assert len(result["tool_calls"]) == 1
+    tc = result["tool_calls"][0]
+    assert tc == {"name": "echo", "arguments": body}
+    assert result["content"] is None
 
 
 def test_structured_payload_carries_truncated_recipient_namespace(router):
@@ -530,7 +498,20 @@ def test_compat_gate_rejects_unknown_tokenizer_identity():
     assert is_openai_harmony_compatible(tm, _NotGptOssTokenizer()) is False
 
 
-def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        # Nomes aceitos (quant/suffix variants)
+        ("mlx-community/gpt-oss-20b-MXFP4-Q8", True),
+        ("openai/gpt-oss-120b", True),
+        ("mlx-community/GPT-OSS-20b", True),  # case-insensitive
+        # Nomes rejeitados
+        ("mistralai/Mistral-7B-Instruct-v0.3", False),
+        ("Qwen/Qwen3-0.6B", False),
+        ("", False),  # missing name
+    ],
+)
+def test_compat_gate_accepts_gpt_oss_quant_suffix_variants(name, expected):
     """Codex round-2 BLOCKING (PR #515): the identity allowlist must
     tolerate the org-prefix + quant-suffix renames the mlx-community
     publishes (``mlx-community/gpt-oss-20b-MXFP4-Q8``,
@@ -571,23 +552,9 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants():
         def get_vocab(self):
             return {}
 
-    for name in (
-        "mlx-community/gpt-oss-20b-MXFP4-Q8",
-        "openai/gpt-oss-120b",
-        "mlx-community/GPT-OSS-20b",  # case-insensitive
-    ):
-        assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is True, (
-            f"identity {name!r} must be accepted"
-        )
-
-    for name in (
-        "mistralai/Mistral-7B-Instruct-v0.3",
-        "Qwen/Qwen3-0.6B",
-        "",  # missing name
-    ):
-        assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is False, (
-            f"identity {name!r} must be rejected"
-        )
+    assert is_openai_harmony_compatible(tm, _GptOssLike(name)) is expected, (
+        f"identity {name!r} expectation mismatch (expected {expected})"
+    )
 
 
 def test_compat_gate_rejects_tokenizer_without_encode():
@@ -656,7 +623,31 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     assert is_openai_harmony_compatible(tm, _MismatchedBodyVocabTokenizer()) is False
 
 
-def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        # Rejeitados (tail-substring fakes ou não allowlisted)
+        ("my-not-gpt-oss/whatever", False),
+        ("foo/bar-gpt-oss-malicious", False),
+        ("my-not-gpt-oss-20b", False),
+        ("notgpt-oss-fake", False),
+        ("some-user/gpt-oss-remapped", False),
+        ("evil-org/gpt-oss-20b", False),
+        ("anonymous/gpt-oss", False),
+        # Aceitos (canonical names)
+        ("openai/gpt-oss-20b", True),
+        ("openai/gpt-oss-20b-mxfp4-q8", True),
+        ("mlx-community/gpt-oss-20b-MXFP4-Q8", True),
+        ("unsloth/gpt-oss-20b-MLX-8bit", True),
+        ("gpt-oss-20b-mxfp4-q8", True),
+        ("gpt-oss", True),
+        ("/models/gpt-oss-20b", True),
+        ("~/lmstudio-models/gpt-oss-20b", True),
+        ("./gpt-oss-20b-quantized", True),
+        ("../models/gpt-oss-20b", True),
+    ],
+)
+def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake(name, expected):
     """Codex round-11 / round-12 / round-13 BLOCKING (PR #515): the
     tokenizer-identity allowlist used naive ``in`` substring matching,
     so an identity like ``my-not-gpt-oss/whatever`` (or
@@ -693,57 +684,12 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
         def encode(self, text, add_special_tokens=False):
             return enc.encode(text, allowed_special="none")
 
-    rejected_names = (
-        "my-not-gpt-oss/whatever",
-        "foo/bar-gpt-oss-malicious",
-        "my-not-gpt-oss-20b",
-        "notgpt-oss-fake",
-        "some-user/gpt-oss-remapped",
-        # ``evil-org/gpt-oss-20b`` is the canonical spoof case — a third-party
-        # org happens to use the same bare repo name as OpenAI's. A matcher
-        # that accepts any ``*/gpt-oss-20b`` would false-accept this. Kept
-        # verbatim (no alias suffix) so the spoof shape stays representative
-        # — adding the canonical alias suffix would only test a stricter
-        # variant that's already covered by the matcher.
-        "evil-org/gpt-oss-20b",
-        "anonymous/gpt-oss",
+    class _CustomTokenizer(_CompatTokenizerBase):
+        name_or_path = name
+
+    assert is_openai_harmony_compatible(tm, _CustomTokenizer()) is expected, (
+        f"identity {name!r} expectation mismatch (expected {expected})"
     )
-    for name in rejected_names:
-
-        class _Fake(_CompatTokenizerBase):
-            pass
-
-        _Fake.name_or_path = name
-        assert is_openai_harmony_compatible(tm, _Fake()) is False, (
-            f"tail-substring identity {name!r} must be rejected"
-        )
-
-    accepted_names = (
-        # OpenAI's canonical bare repo id — kept verbatim so the matcher
-        # is tested against the real upstream shape, not just the rapid-mlx
-        # alias form.
-        "openai/gpt-oss-20b",
-        # rapid-mlx alias post-rename — separately covered so an alias
-        # match doesn't shadow the bare repo match above.
-        "openai/gpt-oss-20b-mxfp4-q8",
-        "mlx-community/gpt-oss-20b-MXFP4-Q8",
-        "unsloth/gpt-oss-20b-MLX-8bit",
-        "gpt-oss-20b-mxfp4-q8",
-        "gpt-oss",
-        "/models/gpt-oss-20b",
-        "~/lmstudio-models/gpt-oss-20b",
-        "./gpt-oss-20b-quantized",
-        "../models/gpt-oss-20b",
-    )
-    for name in accepted_names:
-
-        class _Real(_CompatTokenizerBase):
-            pass
-
-        _Real.name_or_path = name
-        assert is_openai_harmony_compatible(tm, _Real()) is True, (
-            f"canonical identity {name!r} must pass"
-        )
 
 
 def test_compat_gate_accepts_hf_cache_snapshot_path():
@@ -832,9 +778,7 @@ def test_compat_gate_accepts_hf_cache_snapshot_path():
 def test_compat_cache_key_segregates_by_tokenizer_instance():
     """Codex round-11/12 BLOCKING (PR #515): two distinct tokenizer
     instances with the same name + marker IDs but a remapped body
-    vocab must NOT share a cached decision (id-reuse hazard). The
-    ``WeakKeyDictionary`` keyed on the tokenizer instance segregates
-    naturally.
+    vocab must NOT share a cached decision (id-reuse hazard).
     """
     from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
@@ -850,36 +794,22 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
         harmony_constrain=200003,
     )
 
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
-
-    class _RealHarmony:
+    class _BaseTokenizer:
         name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
+        def decode(self, ids): return ""
+        def get_vocab(self): return {}
 
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
+    class _RealHarmony(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
-            return enc.encode(text, allowed_special="none")
+            return openai_harmony.load_harmony_encoding(
+                openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
+            ).encode(text, allowed_special="none")
 
-    assert is_openai_harmony_compatible(tm, _RealHarmony()) is True
-
-    class _RemappedBody:
-        name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
+    class _RemappedBody(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
             return [99001, 99002]
 
+    assert is_openai_harmony_compatible(tm, _RealHarmony()) is True
     assert is_openai_harmony_compatible(tm, _RemappedBody()) is False, (
         "cache must segregate by tokenizer instance; "
         "remapped tokenizer shared instance #1's stale True decision"
@@ -907,36 +837,23 @@ def test_compat_gate_rejects_non_int_encode_result():
         harmony_constrain=200003,
     )
 
-    class _BatchEncodingShape:
-        def __iter__(self):
-            return iter(("input_ids", "attention_mask"))
+    class _BaseTokenizer:
+        def decode(self, ids): return ""
+        def get_vocab(self): return {}
 
-    class _BatchEncodingTokenizer:
+    class _BatchEncodingTokenizer(_BaseTokenizer):
         name_or_path = "mlx-community/gpt-oss-BATCH-ENCODING-VARIANT"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
         def encode(self, text, add_special_tokens=False):
-            return _BatchEncodingShape()
+            class _Batch:
+                def __iter__(self): return iter(("input_ids", "attention_mask"))
+            return _Batch()
 
-    assert is_openai_harmony_compatible(tm, _BatchEncodingTokenizer()) is False
-
-    class _StringTokenIdsTokenizer:
+    class _StringTokenIdsTokenizer(_BaseTokenizer):
         name_or_path = "mlx-community/gpt-oss-STRING-IDS-VARIANT"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
         def encode(self, text, add_special_tokens=False):
             return ("Hello", "world")
 
+    assert is_openai_harmony_compatible(tm, _BatchEncodingTokenizer()) is False
     assert is_openai_harmony_compatible(tm, _StringTokenIdsTokenizer()) is False
 
 
@@ -1048,25 +965,18 @@ def test_compat_gate_caches_per_tokenizer_identity():
 
     class _CountingTokenizer:
         name_or_path = "mlx-community/gpt-oss-CACHE-PROBE-INVOCATION"
-
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
+        def decode(self, ids): return ""
+        def get_vocab(self): return {}
         def encode(self, text, add_special_tokens=False):
             call_count["n"] += 1
             return [0]
 
     t = _CountingTokenizer()
-    result1 = is_openai_harmony_compatible(tm, t)
-    assert result1 is False
+    assert is_openai_harmony_compatible(tm, t) is False
     first_call_count = call_count["n"]
     assert first_call_count > 0
 
-    result2 = is_openai_harmony_compatible(tm, t)
-    assert result2 is False
+    assert is_openai_harmony_compatible(tm, t) is False
     assert call_count["n"] == first_call_count, (
         "compat gate must cache False results per identity"
     )
@@ -1075,16 +985,31 @@ def test_compat_gate_caches_per_tokenizer_identity():
 # ----- finalize() safer-default pins ----------------------------------
 
 
-def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Comentário cortado antes de <|call|>
+        (
+            "<|channel|>commentary "
+            "to=functions.get_weather <|constrain|>json<|message|>"
+            '{"city":"NYC"}'
+        ),
+        # Corpo cortado mid-JSON
+        (
+            "<|channel|>commentary "
+            "to=functions.get_weather <|constrain|>json<|message|>"
+            '{"city":"NY'
+        ),
+        # Corpo completamente vazio
+        "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>",
+    ],
+)
+def test_finalize_drops_truncated_or_empty_commentary(router, encoding, text):
     """Codex round-6 BLOCKING resolution (PR #515): finalize() adopts
     the vLLM / SGLang safer-default — a commentary message cut off
-    before ``<|call|>`` must NEVER be surfaced as a tool call.
+    before ``<|call|>``, mid-JSON, or with an empty body must NEVER
+    be surfaced as a tool call.
     """
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NYC"}'  # NO <|call|>
-    )
     tokens = _encode(encoding, text)
     router.reset()
     routed_during_stream = []
@@ -1096,40 +1021,8 @@ def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
 
     assert all(ev.channel != Channel.TOOL_CALL for ev in routed_during_stream)
     assert drained is None, (
-        f"truncated commentary must NEVER surface as a tool call; got {drained!r} "
-        f"(stream events: {len(routed_during_stream)})"
+        f"truncated or empty commentary must NEVER surface as a tool call; got {drained!r}"
     )
-
-
-def test_finalize_drops_mid_json_truncation(router, encoding):
-    """A commentary message whose body was cut off mid-JSON must also
-    be dropped — same safer-default rule as the canonical truncation
-    test.
-    """
-    text = (
-        "<|channel|>commentary "
-        "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NY'
-    )
-    tokens = _encode(encoding, text)
-    router.reset()
-    for tid in tokens:
-        router.feed(tid)
-    drained = router.finalize()
-
-    assert drained is None
-
-
-def test_finalize_drops_truncated_commentary_with_empty_body(router, encoding):
-    """A commentary message with no body whatsoever must be dropped."""
-    text = "<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>"
-    tokens = _encode(encoding, text)
-    router.reset()
-    for tid in tokens:
-        router.feed(tid)
-    drained = router.finalize()
-
-    assert drained is None
 
 
 def test_finalize_does_not_double_emit_completed_final(router, encoding):
