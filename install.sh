@@ -1029,7 +1029,7 @@ validate_target
 echo ""
 echo "  ╭─────────────────────────────────────╮"
 echo "  │  Rapid-MLX — AI on Apple Silicon    │"
-echo "  │  Up to 3x Ollama throughput         │"
+echo "  │  Fast local models for your agents  │"
 echo "  ╰─────────────────────────────────────╯"
 echo ""
 
