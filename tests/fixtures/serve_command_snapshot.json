@@ -7,6 +7,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -232,6 +233,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -265,6 +267,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -492,6 +495,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -525,6 +529,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -750,6 +755,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -784,6 +790,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -1009,6 +1016,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -1042,6 +1050,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -1268,6 +1277,7 @@
      "memory_limit_bytes": 12884901888,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -1305,6 +1315,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -1530,6 +1541,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -1560,6 +1572,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -1785,6 +1798,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},
@@ -1821,6 +1835,7 @@
      "mlx-community/Qwen3.5-4B-8bit"
     ],
     "kwargs": {
+     "adapter_path": null,
      "disk_stream_cache_gb": 1.0,
      "effective_runtime_config": {
       "fields": [
@@ -2046,6 +2061,7 @@
      "memory_limit_bytes": 25769803776,
      "registry": {
       "__type__": "ModelRegistry",
+      "_adapter_names": [],
       "_default": null,
       "_entries": {},
       "_index": {},

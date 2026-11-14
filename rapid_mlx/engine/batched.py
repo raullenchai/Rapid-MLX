@@ -1224,7 +1224,7 @@ class BatchedEngine(BaseEngine):
                 residency APIs report the decision that was actually loaded.
         """
         self._adapter = None
-        self._adapter_cache_scope = None
+        self._adapter_cache_scope: ExitStack | None = None
         if adapter_path is not None:
             from ..lora_adapter import reject_adapter_options, validate_adapter
 
@@ -2587,11 +2587,7 @@ class BatchedEngine(BaseEngine):
         # Create engine config
         scheduler_config = self._scheduler_config or SchedulerConfig()
         engine_config = EngineConfig(
-            model_name=(
-                self._adapter.cache_identity(self._model_name)
-                if getattr(self, "_adapter", None)
-                else self._model_name
-            ),
+            model_name=self.model_name,
             profile_name=self._profile_name,
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,

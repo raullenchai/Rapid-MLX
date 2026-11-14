@@ -9185,11 +9185,7 @@ def serve_command(args):
             ),
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
-            **(
-                {"adapter_path": args.adapter}
-                if getattr(args, "adapter", None) is not None
-                else {}
-            ),
+            adapter_path=getattr(args, "adapter", None),
             effective_runtime_config=_effective_runtime_config,
         )
     except OptionalRuntimeMissing:

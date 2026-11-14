@@ -389,11 +389,10 @@ def test_real_text_loader_validates_shapes_before_loading(
 @pytest.mark.usefixtures("isolated_server_model_state")
 @pytest.mark.parametrize("served_name", [None, "custom", "custom:lora:verbatim"])
 def test_server_propagates_adapter_and_publishes_identity(
-    adapter, monkeypatch, served_name
+    adapter, monkeypatch, served_name, scheduler_config_stub
 ):
     from rapid_mlx import disk_caches, response_cache, server
     from rapid_mlx.runtime.model_registry import ModelRegistry
-    from rapid_mlx.scheduler import SchedulerConfig
 
     directory, base = adapter
     expected = validate_adapter(str(directory), str(base))
@@ -420,7 +419,7 @@ def test_server_propagates_adapter_and_publishes_identity(
         str(base),
         adapter_path=str(directory),
         served_model_name=served_name,
-        scheduler_config=SchedulerConfig(response_cache_entries=8),
+        scheduler_config=scheduler_config_stub(response_cache_entries=8),
         force_text=True,
     )
     assert constructed[0]["adapter_path"] == str(directory)
@@ -463,7 +462,7 @@ async def test_resident_reload_rejects_adapter_metadata(monkeypatch, name, unloa
 
 @pytest.mark.usefixtures("isolated_server_model_state")
 async def test_resident_load_allows_lora_substring_without_adapter(
-    monkeypatch, adapter
+    monkeypatch, adapter, scheduler_config_stub
 ):
     from rapid_mlx import server
     from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
