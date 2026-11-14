@@ -31,10 +31,30 @@ python3 scripts/agent_e2e/run.py \
 
 The runner drives `rapid-mlx launch <agent>` through a pseudo-terminal. It
 answers known local first-run theme, dummy-key confirmation, optional
-telemetry, and empty-project Git menus;
-unexpected login or permission prompts remain visible in the transcript. It
-asks for a file write and readback of an unprompted challenge value, then a
-second edit and fresh challenge readback, repeats
+telemetry, and empty-project Git menus. During task replies, a PTY output
+hook also answers these specific confirmations:
+
+- Crush: the complete `Permission Required` dialog for `Tool bash`, with a
+  `Path` exactly matching the test project directory and the known
+  `Allow / Allow for Session / Deny` menu and arrow-key instructions. The
+  runner sends Right-arrow then Enter to select **Allow for Session**.
+- Aider: `Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
+  The runner sends `y` then Enter for that command, without disabling later
+  confirmations.
+
+The hook handles split reads and ANSI styling, ignores idle polls and repeated
+redraws of the same question, and continues waiting for the tool reply. It
+retains the existing Aider file-creation/news and Qwen tool-confirmation
+handling. Each answered Crush/Aider shell prompt adds a fixed
+`permission prompt answered` marker to the private transcript; that label
+appears in the row's `ugly_output` in `results.json` and the matrix's Ugly
+output column, including when the task succeeds. Unknown permission and login
+prompts receive no automatic answer. This hook is limited to the test sessions
+launched in the dedicated project directory; it grants no general permission
+for other tools, paths, or prompt formats.
+
+The runner asks for a file write and readback of an unprompted challenge value,
+then a second edit and fresh challenge readback, repeats
 the launch in a new process, starts the native agent after `--remove`, and
 compares byte hashes and modes of pre-existing user configuration. It leaves
 raw terminal transcripts and a metadata-only request log in the private run

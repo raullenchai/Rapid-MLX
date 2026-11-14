@@ -8,6 +8,7 @@ private output directory; only a redacted matrix is suitable for sharing.
 from __future__ import annotations
 
 import argparse
+import codecs
 import fcntl
 import hashlib
 import json
@@ -103,7 +104,14 @@ def classified_error(value: str) -> str:
 
 
 def output_issues(*transcripts: Path) -> list[str]:
-    patterns = ("traceback", "fatal error", "warning", "deprecated", "login required")
+    patterns = (
+        "traceback",
+        "fatal error",
+        "warning",
+        "deprecated",
+        "login required",
+        "permission prompt answered",
+    )
     found = []
     for path in transcripts:
         if not path.exists():
@@ -141,7 +149,8 @@ def read_until(
     on_output=None,
 ) -> tuple[str, float | None]:
     end = time.monotonic() + seconds
-    pieces = []
+    pieces: list[str] = []
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     first = None
     last = None
     while time.monotonic() < end and process.poll() is None:
@@ -166,9 +175,10 @@ def read_until(
         last = time.monotonic()
         sink.write(data)
         sink.flush()
-        pieces.append(data.decode("utf-8", errors="replace"))
+        pieces.append(decoder.decode(data))
         if on_output is not None:
             on_output("".join(pieces))
+    pieces.append(decoder.decode(b"", final=True))
     return "".join(pieces), first
 
 
@@ -399,60 +409,60 @@ def is_opencode_v2(version_text: str) -> bool:
     return bool(re.match(r"^(?:opencode\s+)?v?2\.", version_text, re.IGNORECASE))
 
 
-def approval_handler(agent: str, master: int):
-    """Accept an explicit local tool approval, as a user at the terminal would."""
+def approval_handler(agent: str, master: int, workspace: Path | None = None, sink=None):
+    """Answer known prompts in cumulative PTY output; leave unknown prompts alone."""
     if agent == "aider":
-        answered = False
-        answered_news = False
-
-        def answer_aider(output: str) -> None:
-            nonlocal answered, answered_news
-            tail = _ANSI.sub("", output[-1200:])
-            if not answered_news and "Would you like to see what's new" in tail:
-                os.write(master, b"n\r")
-                answered_news = True
-            elif not answered and "Create new file? (Y)es/(N)o" in tail:
-                os.write(master, b"y\r")
-                answered = True
-
-        return answer_aider
-    if agent == "crush":
-        waiting = False
-        last_answered = 0.0
-        retries = 0
-
-        def answer_crush(output: str) -> None:
-            nonlocal waiting, last_answered, retries
-            raw_tail = output[-3000:]
-            tail = _ANSI.sub("", raw_tail)
-            menu = "Allow for Session" in tail and "Deny" in tail
-            if menu and (
-                not waiting or (retries < 3 and time.monotonic() - last_answered > 2)
-            ):
-                os.write(master, b"\r")  # Highlighted Allow, for this action only.
-                waiting = True
-                last_answered = time.monotonic()
-                retries += 1
-            elif (
-                waiting
-                and not menu
-                and "state=working:app=crush" in raw_tail
-                and time.monotonic() - last_answered > 1
-            ):
-                waiting = False
-                retries = 0
-
-        return answer_crush
-    if agent != "qwen-code":
+        pattern = re.compile(
+            r"Run shell command\? \(Y\)es/\(N\)o/\(S\)kip all/"
+            r"\(D\)on't ask again \[Yes\]:"
+            r"|Create new file\? \(Y\)es/\(N\)o \[Yes\]:"
+            r"|Would you like to see what's new in this version\? "
+            r"\(Y\)es/\(N\)o \[Yes\]:"
+        )
+        keys = b"y\r"
+    elif agent == "crush" and workspace is not None:
+        pattern = re.compile(
+            r"Permission Required(?:(?!Permission Required).)*?"
+            r"Tool bash\s*│(?:(?!Permission Required).)*?Path (?P<path>[^│\r\n]+)│"
+            r"(?:(?!Permission Required).)*?"
+            r"Allow\s+Allow for Session\s+Deny"
+            r"(?:(?!Permission Required).)*?←/→ choose • enter confirm",
+            re.DOTALL,
+        )
+        keys = b"\x1b[C\r"  # Move from Allow to Allow for Session, then confirm.
+    elif agent == "qwen-code":
+        pattern = re.compile("Waiting for user confirmation")
+        keys = b"\r"
+    else:
         return None
-    count = 0
+    end = 0
+    previous = ""
 
     def answer(output: str) -> None:
-        nonlocal count
-        seen = output.count("Waiting for user confirmation")
-        if seen > count:
-            count = seen
-            os.write(master, b"\r")  # The highlighted choice is "allow once".
+        nonlocal end, previous
+        working = "state=working:app=crush"
+        screen = _ANSI.sub(lambda ansi: working if working in ansi[0] else "", output)
+        for match in pattern.finditer(screen, end):
+            gap = screen[end : match.start()]
+            prompt = " ".join(match.group().split())
+            end = match.end()
+            # Repeated polling and TUI redraws are not new questions. Aider
+            # echoes the answer before another question; Crush changes modal
+            # contents for a new action. Never retry based on elapsed time.
+            if prompt == previous and (
+                (agent == "crush" and working not in gap) or not gap.strip()
+            ):
+                continue
+            previous = prompt
+            if agent == "crush" and Path(match["path"].strip()) != workspace:
+                continue
+            news = prompt.startswith("Would you like")
+            os.write(master, b"n\r" if news else keys)
+            if sink is not None and (
+                agent == "crush" or prompt.startswith("Run shell")
+            ):
+                sink.write(b"\n[agent_e2e: permission prompt answered]\n")
+                sink.flush()
 
     return answer
 
@@ -508,7 +518,7 @@ def session(
         start_new_session=True,
     )
     os.close(slave)
-    answer = {
+    answer: dict = {
         "open_s": None,
         "first_reply_s": None,
         "second_reply_s": None,
@@ -546,7 +556,7 @@ def session(
                 return answer
             sent = time.monotonic()
             answer["prompt1_at"] = time.time()
-            approve = approval_handler(command[2], master)
+            approve = approval_handler(command[2], master, workspace, sink)
             send_prompt(command[2], master, first_prompt)
             output, _ = read_until(
                 master,
@@ -577,7 +587,7 @@ def session(
                 nonce_file.write_text(nonce2 + "\n")
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
-                approve = approval_handler(command[2], master)
+                approve = approval_handler(command[2], master, workspace, sink)
                 send_prompt(command[2], master, second_prompt)
                 output2, _ = read_until(
                     master,
