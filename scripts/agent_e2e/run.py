@@ -653,7 +653,8 @@ def session(
                 # The terminal first echoes our input. Completion is the first
                 # reliable upper bound for a reply that used a tool.
                 answer["first_reply_s"] = round(time.monotonic() - sent, 2)
-            if proc.poll() is None:
+            output2 = ""
+            if answer["tool_ok"] and proc.poll() is None:
                 nonce_file.write_text(nonce2 + "\n")
                 sent = time.monotonic()
                 answer["prompt2_at"] = time.time()
@@ -693,9 +694,7 @@ def session(
                 if answer["second_ok"]:
                     answer["second_reply_s"] = round(time.monotonic() - sent, 2)
             if not answer["tool_ok"] or not answer["second_ok"]:
-                answer["error"] = (
-                    output + output2 if "output2" in locals() else output
-                )[-500:]
+                answer["error"] = (output + output2)[-500:]
             if proc.poll() is None:
                 os.write(master, b"\x03")
                 time.sleep(0.3)

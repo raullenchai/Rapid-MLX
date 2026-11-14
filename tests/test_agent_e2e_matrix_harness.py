@@ -900,6 +900,81 @@ def test_pty_cleanup_signals_group_after_launcher_exits(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("day_two", [False, True])
+@pytest.mark.parametrize("failed_turn", [1, 2, None])
+def test_session_sends_second_prompt_only_after_first_success(
+    tmp_path, monkeypatch, failed_turn, day_two
+):
+    sent = []
+    proc = SimpleNamespace(poll=lambda: None, returncode=0)
+    monkeypatch.setattr(run, "open_terminal", lambda: (10, 11))
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(run.os, "close", lambda _fd: None)
+    monkeypatch.setattr(run.os, "write", lambda fd, data: sent.append((fd, data)))
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+    stopped = []
+    monkeypatch.setattr(run, "stop_terminal_process", stopped.append)
+    monkeypatch.setattr(run, "handle_first_run_menus", lambda _agent, out, *args: out)
+    outputs = []
+    nonces = []
+
+    def read_reply(fd, _proc, _timeout, sink, stop_when=None, on_output=None):
+        if not sent or stop_when is None:
+            return "Agent ready.", None
+        assert fd == 10
+        task = next(data for _, data in reversed(sent) if b"hello.txt" in data)
+        content = task.decode().split("exactly ")[1].split()[0].rstrip(".")
+        nonce = (tmp_path / "nonce.txt").read_text()
+        nonces.append(nonce)
+        if len(nonces) == failed_turn:
+            # Timeout leaves the agent alive in an unknown approval dialog.
+            output = "Approval required: rm -rf hello.txt"
+            assert not stop_when(output)
+        else:
+            (tmp_path / "hello.txt").write_text(content)
+            output = content + "\n" + nonce
+            assert stop_when(output)
+        outputs.append(output)
+        return output, None
+
+    monkeypatch.setattr(run, "read_until", read_reply)
+    result = run.session(
+        ["rapid-mlx", "launch", "codex"],
+        {},
+        tmp_path,
+        tmp_path / "session.pty",
+        1,
+        day_two,
+    )
+    prompts = [data for fd, data in sent if b"hello.txt" in data]
+    assert len(prompts) == (1 if failed_turn == 1 else 2)
+    assert b"Create hello.txt" in prompts[0]
+    if failed_turn == 1:
+        assert not any(b"Use a tool to replace hello.txt" in data for _, data in sent)
+        assert result["first_reply_s"] is None
+        assert result["prompt2_at"] is None
+        assert (tmp_path / "nonce.txt").read_text() == nonces[0]
+    else:
+        assert b"Use a tool to replace hello.txt" in prompts[1]
+        assert result["first_reply_s"] is not None
+        assert result["prompt2_at"] is not None
+        assert nonces[0] != nonces[1]
+    assert result["tool_ok"] is (failed_turn != 1)
+    assert result["second_ok"] is (failed_turn is None)
+    assert (result["second_reply_s"] is None) is (failed_turn is not None)
+    assert result["error"] == ("" if failed_turn is None else "".join(outputs)[-500:])
+    assert result["day_two"] is day_two
+    # After the task prompts, shutdown must write only cancellation controls.
+    assert sent == [(10, data) for prompt in prompts for data in (prompt, b"\r")] + [
+        (10, b"\x03"),
+        (10, b"\x1b"),
+        (10, b"\x04"),
+    ]
+    assert stopped == [proc]
+    assert result["exit"] == 0
+    assert result["ended_at"] is not None
+
+
 @pytest.mark.parametrize("agent", ["aider", "crush"])
 def test_session_records_permissions_for_both_turns(agent, tmp_path, monkeypatch):
     sent = []
