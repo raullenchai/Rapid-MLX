@@ -213,15 +213,21 @@ def test_harmony_router_compound_analysis_then_commentary(case: _Case, router):
     assert case.expected_reasoning_marker in reasoning, (
         f"reasoning missing {case.expected_reasoning_marker!r} for case={case.id}"
     )
-    
+
     assert case.expected_function_name not in reasoning
     assert case.expected_args_marker not in reasoning
     assert "commentary" not in reasoning
     assert " to=functions." not in reasoning
 
     tool_calls = result["tool_calls"]
-    assert tool_calls and len(tool_calls) == 1, f"Expected 1 tool call; got {tool_calls!r}"
+    assert tool_calls and len(tool_calls) == 1, (
+        f"Expected 1 tool call; got {tool_calls!r}"
+    )
 
-    payload = tool_calls[0] if isinstance(tool_calls[0], str) else _stringify_structured(tool_calls[0])
+    payload = (
+        tool_calls[0]
+        if isinstance(tool_calls[0], str)
+        else _stringify_structured(tool_calls[0])
+    )
     assert case.expected_function_name in payload
     assert case.expected_args_marker in payload

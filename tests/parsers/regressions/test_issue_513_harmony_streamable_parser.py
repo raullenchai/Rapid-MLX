@@ -246,7 +246,9 @@ def test_issue_468_compound_analysis_commentary_final_separates(router, encoding
         '{"b":"<|constrain|>json"}',
     ],
 )
-def test_structured_payload_preserves_body_with_harmony_sentinels(router, encoding, body):
+def test_structured_payload_preserves_body_with_harmony_sentinels(
+    router, encoding, body
+):
     """Round-15 refactor closure for codex round-12 / round-14
     BLOCKING (PR #515): a tool call whose JSON arguments contain a
     literal harmony sentinel substring (``{"text":"<|call|>"}``,
@@ -796,8 +798,12 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
 
     class _BaseTokenizer:
         name_or_path = "mlx-community/gpt-oss-CACHE-INSTANCE-VARIANT"
-        def decode(self, ids): return ""
-        def get_vocab(self): return {}
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
 
     class _RealHarmony(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
@@ -838,18 +844,25 @@ def test_compat_gate_rejects_non_int_encode_result():
     )
 
     class _BaseTokenizer:
-        def decode(self, ids): return ""
-        def get_vocab(self): return {}
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
 
     class _BatchEncodingTokenizer(_BaseTokenizer):
         name_or_path = "mlx-community/gpt-oss-BATCH-ENCODING-VARIANT"
+
         def encode(self, text, add_special_tokens=False):
             class _Batch:
-                def __iter__(self): return iter(("input_ids", "attention_mask"))
+                def __iter__(self):
+                    return iter(("input_ids", "attention_mask"))
+
             return _Batch()
 
     class _StringTokenIdsTokenizer(_BaseTokenizer):
         name_or_path = "mlx-community/gpt-oss-STRING-IDS-VARIANT"
+
         def encode(self, text, add_special_tokens=False):
             return ("Hello", "world")
 
@@ -965,8 +978,13 @@ def test_compat_gate_caches_per_tokenizer_identity():
 
     class _CountingTokenizer:
         name_or_path = "mlx-community/gpt-oss-CACHE-PROBE-INVOCATION"
-        def decode(self, ids): return ""
-        def get_vocab(self): return {}
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
         def encode(self, text, add_special_tokens=False):
             call_count["n"] += 1
             return [0]
