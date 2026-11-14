@@ -527,6 +527,9 @@ def configure(
         _private_dir(root / "runtime")
     if name == "aider":
         _private_dir(root / "home")
+        # Aider runs shell commands through $SHELL (falling back to /bin/sh),
+        # so give it the same wrapper: the user's shell with their own HOME.
+        _write_opencode_shell(root)
         assert git is not None
         git_shim = root / "bin" / "git"
         _private_write(
@@ -846,6 +849,7 @@ def configure(
             "for name in ('SSH_AUTH_SOCK', 'SSH_ASKPASS', 'GPG_TTY', 'GNUPGHOME', "
             "'EMAIL', 'LANG', 'LC_ALL'):\n"
             "    if name in source:\n        environment[name] = source[name]\n"
+            f"environment['SHELL'] = {str(_opencode_shell(root))!r}\n"
             "for name, value in source.items():\n"
             "    indexed = name.startswith(('GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_')) "
             "and name.rsplit('_', 1)[-1].isdigit()\n"
