@@ -1274,3 +1274,31 @@ def test_fast_mllm_ids_match_processor_call():
                 )
                 == processor_ids
             )
+
+
+def test_fast_tokenizer_with_custom_conversion_hook_is_not_reused():
+    """Review round 2 P1: a fast-tokenizer subclass that rewrites the encoding
+    must keep its own tokenization instead of reused backend IDs."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    base = _fast_tokenizer("chatml")
+
+    class InjectsId(type(base)):
+        def _convert_encoding(self, *args, **kwargs):
+            encoding_dict, encodings = super()._convert_encoding(*args, **kwargs)
+            encoding_dict["input_ids"] = [
+                [2, *ids] for ids in encoding_dict["input_ids"]
+            ]
+            return encoding_dict, encodings
+
+    tokenizer = _fast_tokenizer("chatml")
+    tokenizer.__class__ = InjectsId
+    assert RequestPromptTokens._is_fast_tokenizer(base)
+    assert not RequestPromptTokens._is_fast_tokenizer(tokenizer)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._is_mllm = True
+    prompt = _render(_conversation())
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )

@@ -40,6 +40,22 @@ from typing import Any
 _SEARCH_WINDOW_CHARS = 16384
 
 
+# Tokenizer methods on the path from ``tokenizer(...)`` / ``encode`` to the
+# backend Encoding; all must be the library's own for ID reuse to be exact.
+_TOKENIZATION_HOOKS = (
+    "__call__",
+    "_call_one",
+    "encode",
+    "encode_plus",
+    "_encode_plus",
+    "batch_encode_plus",
+    "_batch_encode_plus",
+    "_convert_encoding",
+    "set_truncation_and_padding",
+    "prepare_for_model",
+)
+
+
 def run_prompt_work(engine, work, /, *args, **kwargs):
     """Serialize frontend tokenizer work off-loop: HF backends mutate call settings.
 
@@ -70,12 +86,18 @@ class RequestPromptTokens:
         # Custom overrides retain their own encode behavior.
         from transformers import PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
-        return (
-            isinstance(tokenizer, PreTrainedTokenizerFast)
-            and type(tokenizer).encode is PreTrainedTokenizerBase.encode
-            and type(tokenizer).__call__ is PreTrainedTokenizerBase.__call__
-            and type(tokenizer)._encode_plus is PreTrainedTokenizerFast._encode_plus
-        )
+        if not isinstance(tokenizer, PreTrainedTokenizerFast):
+            return False
+        cls = type(tokenizer)
+        # Any override of a hook between the call and the Rust encoding (e.g. a
+        # ``_convert_encoding`` that injects IDs) makes reuse unprovable.
+        for name in _TOKENIZATION_HOOKS:
+            base = getattr(PreTrainedTokenizerFast, name, None)
+            if base is None:
+                base = getattr(PreTrainedTokenizerBase, name, None)
+            if getattr(cls, name, None) is not base:
+                return False
+        return True
 
     def encode(
         self,
