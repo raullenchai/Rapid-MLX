@@ -2,11 +2,11 @@ import { BrowserHand, ChromeAdapter } from './src/cdp.js';
 import { runAgent, headers } from './src/agent.js';
 import { engineBase, safeURL } from './src/safety.js';
 
-const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:25};
+const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60};
 const state = {messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',settings:{...defaults},models:[],tabs:[]};
 const ports = new Set(), pending = new Map();
 let controller = null, runPromise = null, resumeGate = null, pausePromise = null;
-const hand = new BrowserHand(new ChromeAdapter(), {settings:state.settings,approve,emit,stop});
+const hand = new BrowserHand(new ChromeAdapter(), {settings:state.settings,approve,emit,stop,challenge});
 const ready = (async () => {
   const {settings} = await chrome.storage.local.get('settings');
   if (settings) { try { engineBase(settings.base); state.settings = {...defaults,...settings}; } catch {} }
@@ -54,6 +54,17 @@ function approve(card) {
     pending.set(id,finish); state.approvals.push({id,...card});
     signal.addEventListener('abort',cancel,{once:true}); publish();
   });
+}
+async function challenge(info) {
+  controller.signal.throwIfAborted();
+  if (!state.paused) pausePromise = new Promise(resolve => { resumeGate = resolve; });
+  state.paused = true; hand.paused = true;
+  state.status = info.message;
+  emit({kind:'notice',text:info.message});
+  // Release debugger and overlay so the human can interact with the check.
+  await hand.finish();
+  await checkpoint();
+  state.status = 'Working'; publish();
 }
 function stop() {
   controller?.abort(new DOMException('Stopped by user','AbortError'));
@@ -137,7 +148,7 @@ async function handle(message) {
   if (message.type === 'settings') {
     if (state.running) throw new Error('Stop the task before changing settings');
     const s = message.settings;
-    state.settings = {base:engineBase(s.base),apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 25)))};
+    state.settings = {base:engineBase(s.base),apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
     hand.settings = state.settings;
     await chrome.storage.local.set({settings:state.settings});
     await models();
@@ -147,7 +158,7 @@ async function handle(message) {
     if (state.running) throw new Error('Stop the task before sharing another tab');
     const [tab] = await chrome.tabs.query({active:true,lastFocusedWindow:true});
     if (!tab) throw new Error('No active tab');
-    safeURL(tab.url,state.settings.base);
+    if (!tab.url?.startsWith('chrome-error://')) safeURL(tab.url,state.settings.base);
     hand.tabs.set(tab.id,{attached:false,created:false,groupId:tab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
     hand.active = tab.id; refreshTabs();
     emit({kind:'notice',text:`Shared tab: ${tab.title}`});

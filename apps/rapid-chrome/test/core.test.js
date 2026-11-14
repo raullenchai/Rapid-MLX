@@ -125,11 +125,11 @@ test('password fill blocks outright even when approval would allow it', async ()
   await assert.rejects(hand.execute('fill',{ref:'e3',text:'secret'},hand.signal),/blocked_sensitive_field/);
   assert.ok(!commands.some(c => c.method.startsWith('Input.')));
 });
-test('document redirects are gated and failed when denied', async () => {
+test('page-initiated document redirects proceed without approval', async () => {
   const {hand,commands} = fakeHand();
   await hand.event(1,'Fetch.requestPaused',{requestId:'req',request:{url:'https://new.example/path'}});
-  assert.equal(commands.at(-1).method,'Fetch.failRequest');
-  assert.ok(!commands.some(c => c.method === 'Fetch.continueRequest'));
+  assert.equal(commands.at(-1).method,'Fetch.continueRequest');
+  assert.ok(!commands.some(c => c.method === 'Fetch.failRequest'));
 });
 test('takeover revokes ownership; abort remains effective after cleanup', async () => {
   const {hand} = fakeHand(); const controller = new AbortController(); hand.signal = controller.signal;
@@ -241,14 +241,21 @@ test('identical failed calls return recovery to model without executing again', 
   assert.equal(executed,1);
 });
 
-test('denial ends the batch without retrying and produces an honest final answer', async () => {
-  const executed = [], events = [];
-  const answer = await runAgent({settings,task:'Send hello',signal:new AbortController().signal,emit:e => events.push(e),
-    fetchImpl:async () => response({tool_calls:[call('click',{ref:'e1'}),call('press',{key:'Enter'},'c2')]}),
-    execute:async name => {executed.push(name);throw new Error('denied: action not executed');}});
-  assert.deepEqual(executed,['click']);
+test('denial closes stale batch and returns a tool result for replanning', async () => {
+  const executed = []; let requests = 0;
+  const answer = await runAgent({settings,task:'Send hello',signal:new AbortController().signal,
+    fetchImpl:async (_,o) => {
+      if (++requests === 1) return response({tool_calls:[call('click',{ref:'e1'}),call('press',{key:'Enter'},'c2')]});
+      if (requests === 2) {
+        const results = JSON.parse(o.body).messages.filter(m => m.role === 'tool');
+        assert.equal(results.length,2);
+        assert.match(results[0].content,/The user denied.*continue another way/);
+        return response({tool_calls:[call('read_page',{})]});
+      }
+      return response({content:'Nothing was sent. Here is another option.'});
+    },execute:async name => {executed.push(name); if (name === 'click') throw new Error('denied: Send'); return {text:'Other options'};}});
+  assert.deepEqual(executed,['click','read_page']);
   assert.match(answer,/Nothing was sent/);
-  assert.equal(events.at(-1).kind,'answer');
 });
 
 test('empty final content gets one recovery request and a bounded honest fallback', async () => {
@@ -353,6 +360,7 @@ test('zero-tool Hello gets a bounded read recovery, then normal actions and deni
         return response({tool_calls:[call('read_page',{})]});
       }
       assert.equal(body.tool_choice,undefined);
+      if (requests > 3) return response({content:'You denied approval; nothing was sent.'});
       return response({tool_calls:[call('click',{ref:'e1'})]});
     },execute:async name => { executed.push(name); if (name === 'click') throw new Error('denied: action not executed'); return {text:'Send form'}; }});
   assert.deepEqual(executed,['read_page','click']);
@@ -391,9 +399,138 @@ test('DOM inspection reads accessible names, submitter effect, method and scoped
   assert.match((await hand.inspect(1,{objectId:'button'})).name,/发送/);
 });
 
-test('unknown Enter submission stays gated', async () => {
+test('ordinary Enter without a consequential form is ungated', async () => {
   const {hand,commands} = fakeHand();
   hand.inspect = async () => ({connected:true,name:'Query',type:'text',method:'get'});
-  await assert.rejects(hand.gateTarget(1,{epoch:0},'Submit form',{submit:true}),/denied/);
+  await hand.gateTarget(1,{epoch:0},'Submit form',{submit:true});
   assert.ok(!commands.some(c => c.params?.key === 'Enter'));
+});
+
+test('iframe loads and unsolicited main-frame redirects neither prompt nor invalidate refs', async () => {
+  const {hand,commands} = fakeHand(); let approvals = 0;
+  hand.approve = async () => { approvals++; return false; };
+  const t = hand.tabs.get(1); t.mainFrame = 'main'; t.refs.set('e99',{});
+  await hand.event(1,'Page.frameNavigated',{frame:{id:'ad',parentId:'main',url:'https://ads.example'}});
+  assert.ok(t.refs.has('e99')); assert.equal(t.epoch,0);
+  for (const p of [
+    {frameId:'ad'}, {frameId:'main'}, {frameId:'main',redirectedRequestId:'previous'}
+  ]) await hand.event(1,'Fetch.requestPaused',{...p,requestId:'r',request:{url:'https://ads.example'}});
+  t.agentInputUntil = Date.now()+1000;
+  await hand.event(1,'Page.frameRequestedNavigation',{frameId:'main',reason:'scriptInitiated',url:'https://ads.example'});
+  assert.equal(t.agentNavigation,undefined);
+  assert.equal(approvals,0);
+  assert.equal(commands.filter(c => c.method === 'Fetch.continueRequest').length,3);
+});
+
+test('agent main-frame click navigation gates the actual destination and reports denial', async () => {
+  const {hand,commands} = fakeHand(); const cards = [];
+  hand.approve = async card => {cards.push(card); return false;};
+  const t = hand.tabs.get(1); t.mainFrame = 'main'; t.agentInputUntil = Date.now()+1000;
+  const url = 'https://ubereats.com/path?tracker=private';
+  await hand.event(1,'Page.frameRequestedNavigation',{frameId:'main',reason:'anchorClick',url});
+  await hand.event(1,'Fetch.requestPaused',{frameId:'ad',requestId:'ad',request:{url}});
+  assert.equal(cards.length,0);
+  await hand.event(1,'Fetch.requestPaused',{frameId:'main',requestId:'main',request:{url}});
+  assert.equal(cards.length,1); assert.equal(cards[0].action,'Go to ubereats.com?');
+  assert.ok(!JSON.stringify(cards).includes('tracker'));
+  assert.equal(commands.at(-1).method,'Fetch.failRequest');
+  await assert.rejects(hand.execute('read_page',{},hand.signal),/denied: Go to ubereats/);
+  assert.equal(t.navigationDenied,undefined);
+});
+
+test('explicit navigation and open_tab require approval before side effects', async () => {
+  for (const name of ['navigate','open_tab']) {
+    const {hand,commands} = fakeHand();
+    await assert.rejects(hand.execute(name,{url:'https://other.example'},hand.signal),/denied/);
+    assert.ok(!commands.some(c => c.method === 'Page.navigate'));
+  }
+});
+
+test('ordinary navigation keys never gate even inside a consequential form', async () => {
+  for (const key of ['Tab','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageDown','PageUp']) {
+    const {hand,commands} = fakeHand(); const original = hand.a.send;
+    hand.a.send = async (id,m,p) => m === 'Runtime.evaluate' ? {result:{objectId:'active'}} : original(id,m,p);
+    hand.approve = async () => assert.fail('unexpected keyboard approval');
+    await hand.execute('press',{key},hand.signal);
+    assert.equal(commands.filter(c => c.method === 'Input.dispatchKeyEvent').length,2);
+  }
+});
+
+test('unclassified Enter executes while a purchase Enter remains gated', async () => {
+  for (const consequential of [false,true]) {
+    const {hand,commands} = fakeHand(); const original = hand.a.send;
+    hand.a.send = async (id,m,p) => m === 'Runtime.evaluate' ? {result:{objectId:'active'}} : original(id,m,p);
+    hand.inspect = async () => ({connected:true,name:'Date',type:'text',form:consequential ? 'Confirm purchase' : '',method:'get'});
+    if (consequential) await assert.rejects(hand.execute('press',{key:'Enter'},hand.signal),/denied/);
+    else await hand.execute('press',{key:'Enter'},hand.signal);
+    assert.equal(commands.some(c => c.method === 'Input.dispatchKeyEvent'),!consequential);
+  }
+});
+
+import { detectChallenge } from '../src/challenge.js';
+import { approvalDecision } from './e2e/dogfood.mjs';
+test('challenge detection identifies active challenges and load errors, ignoring hidden telemetry', () => {
+  for (const text of ['Press and hold','Verify you are human','Human verification','Performing security verification','Just a moment...']) {
+    assert.equal(detectChallenge({nodes:[{name:{value:text}}]}).kind,'human_check');
+  }
+  for (const url of ['https://challenges.cloudflare.com/turnstile/widget','https://www.google.com/recaptcha/api2/anchor','https://newassets.hcaptcha.com/captcha']) {
+    assert.equal(detectChallenge({frames:[{url,visible:true}]}).kind,'human_check');
+    assert.equal(detectChallenge({frames:[{url,visible:false}]}),null);
+  }
+  assert.equal(detectChallenge({url:'chrome-error://chromewebdata/'}).kind,'load_error');
+  assert.equal(detectChallenge({error:'ERR_HTTP2_PROTOCOL_ERROR'}).kind,'load_error');
+  assert.equal(detectChallenge({nodes:[{name:{value:'HTTP 503 Service unavailable'}}]}).kind,'load_error');
+  assert.equal(detectChallenge({title:'Shop chargers',frames:[{url:'https://doubleclick.net/ad',visible:true}]}),null);
+});
+
+test('read_page waits for human Continue and takes a fresh observation; Stop aborts', async () => {
+  for (const stop of [false,true]) {
+    const {hand} = fakeHand(); const original = hand.a.send;
+    const controller = new AbortController(); hand.signal = controller.signal;
+    let challenged = true, continued, pauses = 0;
+    hand.a.send = async (id,m,p) => m === 'Accessibility.getFullAXTree' && challenged ? {nodes:[{name:{value:'Press and hold'}}]} : original(id,m,p);
+    hand.challenge = async info => {
+      assert.match(info.message,/press Continue/); pauses++;
+      await new Promise(resolve => {continued = resolve;});
+      challenged = false;
+    };
+    let done = false;
+    const reading = hand.execute('read_page',{},controller.signal).then(r => {done = true; return r;});
+    while (!continued) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(done,false); assert.equal(hand.tabs.get(1).refs.size,0);
+    if (stop) controller.abort();
+    continued();
+    if (stop) await assert.rejects(reading,{name:'AbortError'});
+    else {assert.match((await reading).text,/Inbox/); assert.ok(hand.tabs.get(1).refs.size);}
+    assert.equal(pauses,1);
+  }
+});
+
+test('default step budget is 60', async () => {
+  let executed = 0;
+  const answer = await runAgent({settings:{...settings,stepCap:undefined},task:'Read',signal:new AbortController().signal,
+    fetchImpl:async () => response({tool_calls:[call('wait',{ms:executed})]}),execute:async () => {executed++; return {text:'waited'};}});
+  assert.equal(answer,'step_cap'); assert.equal(executed,60);
+});
+
+test('dogfood approves navigation and non-purchase actions, denies purchase and repeated-add actions', () => {
+  for (const action of ['Go to booking.com?','Open book.example in a new tab?','Add to cart','Add to bag','Search','Press Enter','Click Next','Confirm address']) assert.equal(approvalDecision(action),'approved');
+  for (const action of ['Checkout','Place order','Pay','Buy now','Book','Reserve','Submit order','Confirm purchase','Add another one? (already added once)']) assert.equal(approvalDecision(action),'denied');
+});
+
+test('commerce AX fixture compacts cards, prioritizes viewport/main, filters whole cards and declares omissions', () => {
+  const nodes = JSON.parse(readFileSync(new URL('./fixtures/commerce-ax.json',import.meta.url)));
+  const geometry = new Map(nodes.map(n => [n.backendDOMNodeId,n.backendDOMNodeId >= 20]));
+  const o = outlineAX(nodes,{geometry});
+  assert.ok(o.text.indexOf('Charger Beta') < o.text.indexOf('Promotional departments'));
+  assert.equal(o.text.match(/Charger Alpha/g).length,1);
+  assert.match(o.text,/Product:.*link "Charger Beta".*\$39.99.*4.9 out of 5 stars/);
+  assert.match(o.text,/More below/); assert.match(o.text,/off-screen/);
+  assert.equal([...o.refs.values()].filter(r => r.role === 'link').length,3);
+  const filtered = outlineAX(nodes,{query:'alpha',geometry});
+  assert.match(filtered.text,/Charger Alpha.*\$29.99.*4.7 out of 5 stars/);
+  assert.doesNotMatch(filtered.text,/Charger Beta|Promotional departments/);
+  const capped = outlineAX(nodes,{limit:370});
+  assert.ok(capped.text.length <= 370); assert.match(capped.text,/entries\/cards omitted/);
+  for (const ref of capped.refs.keys()) assert.ok(capped.text.includes(`[${ref}]`));
 });

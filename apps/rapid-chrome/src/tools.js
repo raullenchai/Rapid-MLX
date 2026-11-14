@@ -5,13 +5,13 @@ export const TOOLS = [
   spec('list_tabs', 'List only tabs you own or the user explicitly shared.'),
   spec('open_tab', 'Open an HTTP(S) URL in the Rapid group.', {url:string}, ['url']),
   spec('navigate', 'Navigate an owned tab; choose exactly one URL or history action.', {...tab,url:string,action:{type:'string',enum:['back','forward','reload']}}),
-  spec('read_page', 'First tool to call. Read current controls, values and page text. Use only refs from this result; older refs are stale. Call again after each action.', tab),
-  spec('click', 'Click a button or link by its current ref. After filling a form, read_page then click its submit button. Sensitive actions require approval.', {...tab,ref:string}, ['ref']),
-  spec('fill', 'Fill a textbox by ref with text. Then read_page and click the form button to submit. Password/card fields are blocked. Leave submit false.', {...tab,ref:string,text:string,submit:{type:'boolean'}}, ['ref','text']),
-  spec('press', 'Press a single key: Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp/Down. Activation/deletion requires approval.', {...tab,key:{type:'string',enum:['Enter','Tab','Escape','Backspace','Delete','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown']}}, ['key']),
-  spec('scroll', 'Scroll up/down/left/right or an observed ref into view.', {...tab,direction:{type:'string',enum:['up','down','left','right']},ref:string}),
+  spec('read_page', 'First tool to call. Read current controls, values and page text. Use only refs from this result; older refs are stale. Viewport and main content first; use query to find products/text across the whole page instead of scrolling loops.', {...tab,query:{type:'string',description:'Case-insensitive text filter; includes matching product cards and their controls.'}}),
+  spec('click', 'Click a button or link by its current ref. Returns effects and a fresh outline; use its refs for the next action. Automatically scrolls the target into view. Sensitive actions require approval.', {...tab,ref:string}, ['ref']),
+  spec('fill', 'Fill a textbox by ref with text. Returns effects and a fresh outline; click the form button using those refs. Password/card fields are blocked. Leave submit false.', {...tab,ref:string,text:string,submit:{type:'boolean'}}, ['ref','text']),
+  spec('press', 'Press a single key: Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp/Down. Enter uses the same consequential form classifier as clicks. Navigation keys need no approval.', {...tab,key:{type:'string',enum:['Enter','Tab','Escape','Backspace','Delete','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown']}}, ['key']),
+  spec('scroll', 'Scroll up/down/left/right or an observed ref into view. Returns a fresh outline; use its refs directly.', {...tab,direction:{type:'string',enum:['up','down','left','right']},ref:string}),
   spec('screenshot', 'Capture JPEG only when vision is enabled.', tab),
-  spec('wait', 'Wait at most 5000ms.', {ms:{type:'integer',minimum:0,maximum:5000}}, ['ms'])
+  spec('wait', 'Wait at most 5000ms and return a fresh outline; use its refs directly.', {ms:{type:'integer',minimum:0,maximum:5000}}, ['ms'])
 ];
 export function validateTool(name, args) {
   const schema = TOOLS.find(t => t.function.name === name)?.function.parameters;

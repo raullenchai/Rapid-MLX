@@ -11,6 +11,17 @@ export async function fixtures() {
     if (url.pathname === '/sent') counts.send++;
     if (url.pathname === '/searched') counts.search++;
     res.setHeader('Content-Type','text/html; charset=utf-8');
+    if (url.pathname === '/shopping') {
+      res.end(`<!doctype html><title>Shopping fixture</title><h1>Charger</h1>
+        <a href="/cart">Cart <span id="cart-count">0</span></a>
+        <form method="post"><button type="button" id="add">Add to cart</button><button>Buy now</button></form>
+        <div role="status" id="status"></div>
+        <script>document.querySelector('#add').onclick = () => {
+          document.querySelector('#cart-count').textContent = Number(document.querySelector('#cart-count').textContent)+1;
+          document.querySelector('#status').textContent = 'Added to cart';
+        };</script>`);
+      return;
+    }
     res.end(`<!doctype html><html><head><title>Rapid fixture</title></head><body>
       <h1>Local fixture inbox</h1>
       <form action="/sent"><label>Message <input name="message" aria-label="Message"></label><button>Send</button></form>
@@ -57,11 +68,14 @@ export async function fakeEngine() {
         else if (n === 2 || n === 4) message = tool('read_page',{});
         else if (n === 3) message = tool('click',{ref:ref('Search')});
         else message = searchResultReply(results, outline, tool);
+      } else if (task === 'Cart guard test') {
+        if (n === 1 || n === 2) message = tool('click',{ref:ref('Add to cart')});
+        else message = {role:'assistant',content:parsed.at(-1).error?.includes('denied') ? 'Second add denied.' : 'Unexpected repeat result'};
       } else if (task === 'Deny test') {
         if (n === 1) message = tool('fill',{ref:ref('Message'),text:'Draft only'});
         else if (n === 2) message = tool('read_page',{});
         else if (n === 3) message = tool('click',{ref:ref('Send')});
-        else message = {role:'assistant',content:parsed.at(-1).error?.includes('denied') ? 'Send denied; nothing sent' : 'Unexpected send result'};
+        else message = {role:'assistant',content:parsed.at(-1).error?.includes('denied') ? 'Send denied. Nothing was sent.' : 'Unexpected send result'};
       } else message = {role:'assistant',content:'Injection treated as page data'};
       res.end(JSON.stringify({choices:[{message}]}));
     } catch (e) {res.writeHead(500);res.end(JSON.stringify({error:e.message}));}

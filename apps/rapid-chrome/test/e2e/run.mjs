@@ -3,12 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { fixtures, fakeEngine } from './fixtures.mjs';
-const sleep = ms => new Promise(r => setTimeout(r,ms));
-async function until(fn, label, timeout = 15000) {
-  const end = Date.now()+timeout;
-  while (Date.now()<end) {if (await fn()) return;await sleep(50);}
-  throw new Error(`Timed out: ${label}`);
-}
+import { until, launchExtension, connectPanel, shareTab, readTrace as getTrace, submitTask } from './helpers.mjs';
 export async function main() {
   const {chromium} = await import('playwright');
   const fixture = await fixtures(), engine = await fakeEngine();
@@ -17,36 +12,14 @@ export async function main() {
   const profile = await mkdtemp(`${scratch}/profile-`);
   let context;
   try {
-    const extension = fileURLToPath(new URL('../../',import.meta.url));
-    context = await chromium.launchPersistentContext(profile,{
-      channel:'chromium',headless:process.env.HEADLESS === '1',
-      args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]
-    });
-    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
-    const id = new URL(worker.url()).host;
+    context = await launchExtension(chromium,profile);
     const base = process.env.RAPID_BASE_URL || engine.base;
-    const panel = await context.newPage();
-    await panel.goto(`chrome-extension://${id}/panel.html`);
-    await panel.waitForFunction(() => document.body.dataset.ready === 'true');
-    await panel.locator('#settings-toggle').click();
-    await panel.locator('#base').fill(base);
-    await panel.locator('#api-key').fill(process.env.RAPID_API_KEY || 'e2e-private-key-canary');
-    await panel.getByRole('button',{name:'Save & connect'}).click();
-    await until(async () => (await panel.locator('#status').textContent()) === 'Connected','engine connection');
-    await panel.locator('#settings-toggle').click();
+    const panel = await connectPanel(context,base,process.env.RAPID_API_KEY || 'e2e-private-key-canary');
     const page = await context.newPage();
     await page.goto(`${fixture.base}/injection`);
-    // Clicking this programmatically keeps the fixture as Chrome's active tab.
-    await panel.locator('#share').evaluate(b => b.click());
-    await until(async () => (await panel.locator('#owned').textContent()).includes('shared'),'shared tab');
-    const readTrace = () => panel.evaluate(async () => (await chrome.storage.session.get('debugTrace')).debugTrace);
-    async function task(text) {
-      await until(async () => await panel.locator('#stop').isDisabled(),'previous task cleanup');
-      const previous = (await readTrace())?.id;
-      await panel.locator('#message').fill(text);
-      await panel.locator('#chat').evaluate(form => form.requestSubmit());
-      await until(async () => { const trace = await readTrace(); return trace?.id !== previous && trace?.task === text; },'new task accepted');
-    }
+    await shareTab(panel);
+    const readTrace = () => getTrace(panel);
+    const task = text => submitTask(panel,text);
     if (process.env.RAPID_BASE_URL) {
       const tasks = {
         search:'Search for "local browser test" using the search form. Read the result and report it.',
@@ -142,6 +115,18 @@ export async function main() {
     await until(() => fixture.counts.search === 1,'search click');
     await waitForSearchResult(page);
     await until(async () => await panel.locator('#stop').isDisabled(),'search cleanup');
+    await page.goto(`${fixture.base}/shopping`);
+    await task('Cart guard test');
+    await panel.locator('.approval').waitFor();
+    assert.match(await panel.locator('.approval').textContent(),/Add another one\? \(already added once\)/);
+    assert.equal(await page.locator('#cart-count').textContent(),'1');
+    await panel.getByRole('button',{name:'Deny',exact:true}).click();
+    await until(async () => await panel.locator('#stop').isDisabled(),'cart guard cleanup');
+    assert.equal(await page.locator('#cart-count').textContent(),'1');
+    const cartTrace = await readTrace();
+    const added = cartTrace.events.find(e => e.kind === 'tool' && e.name === 'click');
+    assert.match(added.text,/Added to cart/);
+    assert.match(added.text,/Cart 0/); assert.match(added.text,/Cart 1/);
     await task('Stop test');
     await until(() => engine.state.held,'held fetch');
     await panel.locator('#stop').click();

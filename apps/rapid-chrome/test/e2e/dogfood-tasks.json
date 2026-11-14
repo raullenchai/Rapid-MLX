@@ -1,0 +1,8 @@
+[
+ {"id":"shop-charger","start_url":"https://www.amazon.com","task":"Find a 65W USB-C wall charger under $40 with at least 4.5 stars. Compare 3 options (name, price, rating) and add the best value one to the cart. Do not check out."},
+ {"id":"shop-compare","start_url":"https://www.bestbuy.com","task":"Find the price of AirPods Pro 2 here, tell me the price and whether it is in stock for shipping."},
+ {"id":"grocery-target","start_url":"https://www.target.com","task":"Add a 12-pack of sparkling water and a box of Cheerios to the cart, then tell me the cart subtotal. Do not check out."},
+ {"id":"food-doordash","start_url":"https://www.doordash.com","task":"Find a highly rated ramen place that delivers to 1 Market St, San Francisco, CA, pick a tonkotsu ramen, add it to the cart, and tell me the total before fees. Do not place the order."},
+ {"id":"table-opentable","start_url":"https://www.opentable.com","task":"Find an Italian restaurant in San Francisco with a table for 2 tomorrow around 7pm. List 3 options with available times. Do not book."},
+ {"id":"flight-google","start_url":"https://www.google.com/travel/flights","task":"Find the cheapest nonstop round-trip flight from SFO to JFK leaving next Friday and returning the Sunday after. Tell me airline, times and price. Do not book."}
+]

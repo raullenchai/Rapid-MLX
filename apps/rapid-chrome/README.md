@@ -51,7 +51,7 @@ compatibility test.
 ## Behavior and safety boundaries
 
 - The worker sends OpenAI function tools to `/v1/chat/completions`, executes them
-  sequentially, and continues until final text, Stop, or the tool-step cap (25
+  sequentially, and continues until final text, Stop, or the tool-step cap (60
   by default, configurable 1–100). Ten tool schemas live in `src/tools.js`.
   Thinking is explicitly disabled for these tool requests. Duplicate immediate
   calls and previously failed identical calls return recovery guidance without
@@ -66,7 +66,12 @@ compatibility test.
   increasing refs mapped to backend DOM IDs. A new observation or navigation
   invalidates refs. Ignored/hidden nodes and protected values are omitted.
   Forms list their control refs, controls show empty as well as populated values,
-  and AX children follow document order. Same-process iframe AX trees are attempted; inaccessible frames are skipped.
+  and document order is preserved within viewport/main-content priority groups.
+  Empty wrappers and duplicate text are removed. Product list items/articles retain
+  link refs, prices and ratings together; omitted entries are counted explicitly.
+  Off-screen content is marked; `read_page({query:"charger"})` filters the full
+  tree and includes matching cards. Same-process iframe AX trees are attempted;
+  inaccessible frames are skipped.
 - Clicks resolve the node, scroll it into view, obtain its box center and hit
   test the target/descendant before dispatch. Fill focuses, selects all with a
   CDP editing command, and inserts text. Consequential submissions ask once after
@@ -76,15 +81,25 @@ compatibility test.
   several additional languages, using accessible control/submitter names, scoped
   form labels, action and method. Search submissions (click, fill+submit or Enter)
   do not require action approval; explicit send/payment/deletion effects still do.
-  Unknown submissions and other key presses remain gated. Target metadata and navigation epoch are rechecked
-  after approval. Denial ends the task and produces an extension-authored final
-  answer confirming that the denied action was not performed.
+  Enter uses that same classifier; Tab, Escape and navigation keys are ungated.
+  Target metadata and navigation epoch are rechecked after approval. Denial is
+  returned to the model as a tool result, discarding the remaining planned batch;
+  the model can continue another way or explain the denial. Stop cancels the task.
 - Site approval uses exact origins, deliberately stricter than registrable
   domains. The starting shared tab's origin is trusted for that task; each new
-  origin needs approval again on a new task. Document request interception
-  gates redirects, form navigation and frames, as well as explicit navigation.
+  origin needs approval again on a new task. Explicit navigate/open-tab actions
+  and main-frame navigation attributed to dispatched clicks/Enter are gated.
+  Subframes, ads, and page-initiated redirects never create site approval cards
+  or invalidate main-page refs. Cards use hostnames and human action labels.
+  Attribution uses CDP navigation reasons during agent input; delayed arbitrary
+  JavaScript navigation cannot always be attributed to a specific click.
   Browser internals, extension pages, files, the Web Store and the engine
   origin (including loopback aliases) are blocked.
+- Human-verification pages and visible Turnstile/reCAPTCHA/hCaptcha widgets pause
+  the task and release the debugger. Complete the check in the tab, then press
+  **Continue**. Load errors likewise pause for manual reload/recovery. Continue
+  reattaches and reads fresh refs; an unresolved check pauses again. No challenge
+  solving or bypass is attempted. Hidden challenge telemetry is not a blocker.
 - Screenshot data is JPEG and is added as an image content part only with
   vision enabled. Tool results stay textual; images follow all tool replies
   in their batch. Page text and images are explicitly untrusted data.
@@ -198,3 +213,45 @@ durations, the final answer, errors, and completion status. Request headers and
 settings/API keys are not recorded. The trace does contain task/page/model text.
 Collapsed tool summaries remain visible inside `#transcript`, including arguments
 and a short result; expanding a step shows the full displayed result.
+
+### Commerce dogfood
+
+Run your real engine/browser harness after reloading the extension:
+
+```bash
+HEADLESS=1 RAPID_BASE_URL=http://127.0.0.1:8000 \
+  DOGFOOD_OUT=/private/tmp/chrome-extension-e2e/dogfood-round4 \
+  node apps/rapid-chrome/test/e2e/dogfood.mjs apps/rapid-chrome/test/e2e/dogfood-tasks.json
+```
+
+The runner approves navigation and non-purchase actions (including add-to-cart),
+while denying repeated additions ("Add another one?"), checkout, place order, pay, buy now, book, reserve, submit order and
+confirm purchase. It persists each card and decision in `approvals.json`.
+A paused check is recorded as `needs_human`, not success; the unattended runner
+stops that task without attempting the check. Use the interactive panel to test
+Continue. Existing saved step-cap preferences remain unchanged; set 60 manually
+if your profile still has 25. Fresh profiles default to 60.
+
+
+### Shopping action observations
+
+Click, fill and press return an `effect` report followed by a fresh AX outline.
+The report compares URL/title, visible dialogs and live notifications (including
+transient text), and cart/bag/basket link counters. Notifications are collected
+in an isolated world during the action and a bounded 350 ms settling window;
+slower updates require a wait/read or cart inspection. Missing evidence never
+means an addition failed. Dialog contents lead the outline, including filtered
+reads. Use the returned refs directly; clicking scrolls targets automatically.
+
+Repeated add-to-cart, quick-add and quantity-increase activations for the same
+control name and product require “Add another one? (already added once)”. The
+ledger lasts for the task, survives fresh refs/navigation, and also covers Enter
+and Space. It records dispatch attempts conservatively even if observation or
+navigation subsequently fails. A new task resets it. Product context comes from
+card IDs/headings/links or the page heading/path; indistinguishable products may
+conservatively require approval. Filter roles and exact dismissal labels ignore
+unrelated form purchase text; explicit purchase/delete/send names remain gated.
+
+The fake browser harness includes a cart-counter test that denies a second add
+and checks that the counter remains one. Unit tests cover the observer, transient
+notifications, dialog priority, repeated activation and English/Chinese filters.

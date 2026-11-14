@@ -2,3 +2,7 @@
 import './core.test.js';
 
 import './races.test.js';
+
+import './shopping.test.js';
+
+import './round5.test.js';

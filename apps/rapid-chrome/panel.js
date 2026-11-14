@@ -37,7 +37,7 @@ function render(s) {
     $('approvals').dataset.ids = ids;
     $('approvals').replaceChildren(...s.approvals.map(a => {
       const card = element('article',undefined,'approval'); card.dataset.id = a.id;
-      card.append(element('h2','Allow this action?'),element('p',a.action),element('p',a.target),element('small',a.site),button('Allow once',() => send({type:'approve',id:a.id,allow:true})),button('Deny',() => send({type:'approve',id:a.id,allow:false}))); return card;
+      card.append(element('h2',a.action),element('small',a.site),button('Allow once',() => send({type:'approve',id:a.id,allow:true})),button('Deny',() => send({type:'approve',id:a.id,allow:false}))); return card;
     }));
   }
   $('paused').hidden = !s.paused;
