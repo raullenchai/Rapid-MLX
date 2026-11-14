@@ -85,6 +85,41 @@ def _encode(encoding, text: str) -> list[int]:
     return encoding.encode(text, allowed_special="all")
 
 
+def _make_harmony_token_map():
+    enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    def _id(s):
+        return enc.encode(s, allowed_special="all")[0]
+
+    tm = TokenMap(
+        format_tag="harmony",
+        harmony_channel=_id("<|channel|>"),
+        harmony_message=_id("<|message|>"),
+        harmony_call=_id("<|call|>"),
+        harmony_end=_id("<|end|>"),
+        harmony_return=_id("<|return|>"),
+        harmony_start=_id("<|start|>"),
+        harmony_constrain=_id("<|constrain|>"),
+    )
+    return tm, enc
+
+
+def _make_compat_tokenizer(enc, path: str):
+    class _CompatTokenizer:
+        name_or_path = path
+
+        def decode(self, ids):
+            return ""
+
+        def get_vocab(self):
+            return {}
+
+        def encode(self, text, add_special_tokens=False):
+            return enc.encode(text, allowed_special="none")
+
+    return _CompatTokenizer()
+
+
 # Production-shape emit sequences. ``StreamableParser`` is initialized
 # with ``role=ASSISTANT`` so the FIRST message starts directly with
 # ``<|channel|>`` (the pre-set role consumes the header). Subsequent
@@ -471,7 +506,6 @@ def test_compat_gate_rejects_unknown_tokenizer_identity():
     to match the markers and probes would otherwise be wrongly
     upgraded and might corrupt uncommon body tokens.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
@@ -519,30 +553,13 @@ def test_compat_gate_accepts_gpt_oss_quant_suffix_variants(name, expected):
     publishes (``mlx-community/gpt-oss-20b-MXFP4-Q8``,
     ``mlx-community/gpt-oss-120b-MXFP4-Q4`` etc.).
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
-
-    def _id(s):
-        return enc.encode(s, allowed_special="all")[0]
-
-    tm = TokenMap(
-        format_tag="harmony",
-        harmony_channel=_id("<|channel|>"),
-        harmony_message=_id("<|message|>"),
-        harmony_call=_id("<|call|>"),
-        harmony_end=_id("<|end|>"),
-        harmony_return=_id("<|return|>"),
-        harmony_start=_id("<|start|>"),
-        harmony_constrain=_id("<|constrain|>"),
-    )
+    tm, enc = _make_harmony_token_map()
 
     class _GptOssLike:
-        def __init__(self, name):
-            self.name_or_path = name
+        def __init__(self, tok_name):
+            self.name_or_path = tok_name
             self._enc = enc
 
         def encode(self, text, add_special_tokens=False):
@@ -564,7 +581,6 @@ def test_compat_gate_rejects_tokenizer_without_encode():
     ``.encode`` cannot prove vocab parity → gate must return False so
     the legacy router runs.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
@@ -596,7 +612,6 @@ def test_compat_gate_rejects_mismatched_body_vocab():
     decoded through harmony's vocabulary and corrupt content / tool
     arguments.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
@@ -658,43 +673,23 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake(name, expect
     remote IDs require an allowlisted owner; local paths trust the
     basename.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    tm = TokenMap(
-        format_tag="harmony",
-        harmony_channel=200005,
-        harmony_message=200008,
-        harmony_call=200012,
-        harmony_end=200007,
-        harmony_return=200002,
-        harmony_start=200006,
-        harmony_constrain=200003,
-    )
-
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
-
-    class _CompatTokenizerBase:
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
-        def encode(self, text, add_special_tokens=False):
-            return enc.encode(text, allowed_special="none")
-
-    class _CustomTokenizer(_CompatTokenizerBase):
-        name_or_path = name
-
-    assert is_openai_harmony_compatible(tm, _CustomTokenizer()) is expected, (
-        f"identity {name!r} expectation mismatch (expected {expected})"
-    )
+    tm, enc = _make_harmony_token_map()
+    assert (
+        is_openai_harmony_compatible(tm, _make_compat_tokenizer(enc, name)) is expected
+    ), f"identity {name!r} expectation mismatch (expected {expected})"
 
 
-def test_compat_gate_accepts_hf_cache_snapshot_path():
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/Users/me/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/abc123def/",
+        "/home/user/.cache/huggingface/hub/models--mlx-community--gpt-oss-20b-MXFP4-Q8/snapshots/0f1e2d3c/",
+        "/var/lib/hf-cache/models--unsloth--gpt-oss-20b-MLX-8bit/snapshots/fedcba9876/",
+    ],
+)
+def test_compat_gate_accepts_hf_cache_snapshot_path(path: str):
     """Round-15 fix for codex round-14 BLOCKING #1 (PR #515): the HF
     hub cache snapshot layout is
     ``~/.cache/huggingface/hub/models--<owner>--<name>/snapshots/<sha>/``.
@@ -708,73 +703,27 @@ def test_compat_gate_accepts_hf_cache_snapshot_path():
     remote-owner allowlist), so cache-loaded models route through the
     openai-harmony bypass like their HF-id-loaded siblings.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
+    tm, enc = _make_harmony_token_map()
+    assert (
+        is_openai_harmony_compatible(tm, _make_compat_tokenizer(enc, path)) is True
+    ), f"HF cache snapshot {path!r} must pass (round-14 BLOCKING fix)"
 
-    def _id(s):
-        return enc.encode(s, allowed_special="all")[0]
 
-    tm = TokenMap(
-        format_tag="harmony",
-        harmony_channel=_id("<|channel|>"),
-        harmony_message=_id("<|message|>"),
-        harmony_call=_id("<|call|>"),
-        harmony_end=_id("<|end|>"),
-        harmony_return=_id("<|return|>"),
-        harmony_start=_id("<|start|>"),
-        harmony_constrain=_id("<|constrain|>"),
-    )
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/x/.cache/huggingface/hub/models--evil-org--gpt-oss-20b/snapshots/xyz/",
+        "/home/x/.cache/huggingface/hub/models--openai--whisper-large/snapshots/xyz/",
+    ],
+)
+def test_compat_gate_rejects_unallowlisted_hf_cache_snapshot_path(path: str):
+    """HF cache paths with unallowlisted owners or non-gpt-oss models must be rejected."""
+    from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    class _CompatTokenizerBase:
-        def decode(self, ids):
-            return ""
-
-        def get_vocab(self):
-            return {}
-
-        def encode(self, text, add_special_tokens=False):
-            return enc.encode(text, allowed_special="none")
-
-    accepted_cache_paths = (
-        "/Users/me/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/abc123def/",
-        "/home/user/.cache/huggingface/hub/models--mlx-community--gpt-oss-20b-MXFP4-Q8/snapshots/0f1e2d3c/",
-        "/var/lib/hf-cache/models--unsloth--gpt-oss-20b-MLX-8bit/snapshots/fedcba9876/",
-    )
-    for path in accepted_cache_paths:
-
-        class _CachePath(_CompatTokenizerBase):
-            pass
-
-        _CachePath.name_or_path = path
-        assert is_openai_harmony_compatible(tm, _CachePath()) is True, (
-            f"HF cache snapshot {path!r} must pass (round-14 BLOCKING fix)"
-        )
-
-    # An HF cache path with an UNALLOWLISTED owner must still be rejected.
-    class _BadCachePath(_CompatTokenizerBase):
-        pass
-
-    _BadCachePath.name_or_path = (
-        "/home/x/.cache/huggingface/hub/models--evil-org--gpt-oss-20b/snapshots/xyz/"
-    )
-    assert is_openai_harmony_compatible(tm, _BadCachePath()) is False, (
-        "HF cache path with non-allowlisted owner must NOT pass"
-    )
-
-    # An HF cache path for a non-gpt-oss model must also be rejected.
-    class _NonGptOssCachePath(_CompatTokenizerBase):
-        pass
-
-    _NonGptOssCachePath.name_or_path = (
-        "/home/x/.cache/huggingface/hub/models--openai--whisper-large/snapshots/xyz/"
-    )
-    assert is_openai_harmony_compatible(tm, _NonGptOssCachePath()) is False, (
-        "HF cache path for non-gpt-oss model must NOT pass"
-    )
+    tm, enc = _make_harmony_token_map()
+    assert is_openai_harmony_compatible(tm, _make_compat_tokenizer(enc, path)) is False
 
 
 def test_compat_cache_key_segregates_by_tokenizer_instance():
@@ -782,7 +731,6 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
     instances with the same name + marker IDs but a remapped body
     vocab must NOT share a cached decision (id-reuse hazard).
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
     tm = TokenMap(
@@ -807,9 +755,9 @@ def test_compat_cache_key_segregates_by_tokenizer_instance():
 
     class _RealHarmony(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
-            return openai_harmony.load_harmony_encoding(
-                openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-            ).encode(text, allowed_special="none")
+            return load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS).encode(
+                text, allowed_special="none"
+            )
 
     class _RemappedBody(_BaseTokenizer):
         def encode(self, text, add_special_tokens=False):
@@ -829,19 +777,9 @@ def test_compat_gate_rejects_non_int_encode_result():
     rather than a flat ``list[int]``. The gate must return False on
     anything that isn't a flat int sequence.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    tm = TokenMap(
-        format_tag="harmony",
-        harmony_channel=200005,
-        harmony_message=200008,
-        harmony_call=200012,
-        harmony_end=200007,
-        harmony_return=200002,
-        harmony_start=200006,
-        harmony_constrain=200003,
-    )
+    tm, _ = _make_harmony_token_map()
 
     class _BaseTokenizer:
         def decode(self, ids):
@@ -874,12 +812,9 @@ def test_compat_gate_rejects_missing_marker_ids():
     """Codex round-4 BLOCKING (PR #515): the gate must require ALL
     seven harmony markers to be present in the tokenizer's TokenMap.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
+    enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
     def _id(s):
         return enc.encode(s, allowed_special="all")[0]
@@ -915,7 +850,6 @@ def test_compat_gate_cache_segregates_by_marker_ids():
     with two different ``TokenMap`` marker-ID tuples must NOT share a
     cached compatibility result.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import (
         _COMPAT_RESULT_CACHE,
         is_openai_harmony_compatible,
@@ -953,27 +887,9 @@ def test_compat_gate_caches_per_tokenizer_identity():
     on every request from the engine's streaming factory; the marker
     + body-vocab checks should only run once per tokenizer identity.
     """
-    from rapid_mlx.output_router import TokenMap
     from rapid_mlx.output_router_harmony import is_openai_harmony_compatible
 
-    enc = openai_harmony.load_harmony_encoding(
-        openai_harmony.HarmonyEncodingName.HARMONY_GPT_OSS
-    )
-
-    def _id(s):
-        return enc.encode(s, allowed_special="all")[0]
-
-    tm = TokenMap(
-        format_tag="harmony",
-        harmony_channel=_id("<|channel|>"),
-        harmony_message=_id("<|message|>"),
-        harmony_call=_id("<|call|>"),
-        harmony_end=_id("<|end|>"),
-        harmony_return=_id("<|return|>"),
-        harmony_start=_id("<|start|>"),
-        harmony_constrain=_id("<|constrain|>"),
-    )
-
+    tm, _ = _make_harmony_token_map()
     call_count = {"n": 0}
 
     class _CountingTokenizer:
