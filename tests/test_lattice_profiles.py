@@ -290,7 +290,7 @@ def test_builtin_resource_and_package_declaration():
     resource = files("rapid_mlx.lattice").joinpath("profiles/builtin.json")
     data = json.loads(resource.read_text())
     assert data["schema_version"] == 1
-    assert len(defaults.builtin_profile().cells) == len(data["cells"]) == 32
+    assert len(defaults.builtin_profile().cells) == len(data["cells"]) == 35
     config = tomllib.loads(Path("pyproject.toml").read_text())
     assert (
         "lattice/profiles/*.json"

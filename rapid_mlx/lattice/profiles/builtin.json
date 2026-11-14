@@ -136,6 +136,57 @@
       }
     },
     {
+      "id": "gemma4-moe-decode-15-ultra",
+      "hardware": [{"gpu_generation": 15, "tier": "Ultra"}],
+      "knobs": {"gemma4_moe_decode_fusion": true},
+      "provenance": {
+        "gpu_cores": 60,
+        "memory_size": 274877906944,
+        "date": "2026-11-12",
+        "commit": "c1a6b88e66bb4e230d87e9d4f703b34d1259f77d",
+        "evidence": "docs/engineering/performance/2026-11-12-gemma4-moe-decode.md",
+        "plain_tps": [121.5, 133.9],
+        "repetitions": {"plain": 3},
+        "decision": "M3 Ultra: real-serve decode +10.2% (n=3 interleaved fresh servers); greedy text matches the off arm.",
+        "hardware_scope": "Generation/tier generalization from one measured machine; the knob still requires the Gemma 4 install fact and bit-exact per-layer probes."
+      },
+      "software": {"mlx": "===0.32.4"}
+    },
+    {
+      "id": "gemma4-moe-decode-16-pro",
+      "hardware": [{"gpu_generation": 16, "tier": "Pro"}],
+      "knobs": {"gemma4_moe_decode_fusion": true},
+      "provenance": {
+        "gpu_cores": 16,
+        "memory_size": 51539607552,
+        "date": "2026-11-12",
+        "commit": "c1a6b88e66bb4e230d87e9d4f703b34d1259f77d",
+        "evidence": "docs/engineering/performance/2026-11-12-gemma4-moe-decode.md",
+        "plain_tps": [77.7, 81.6],
+        "repetitions": {"plain": 3},
+        "decision": "M4 Pro: real-serve decode +5.0% (n=3 interleaved fresh servers); greedy text matches the off arm.",
+        "hardware_scope": "Generation/tier generalization from one measured machine; the knob still requires the Gemma 4 install fact and bit-exact per-layer probes."
+      },
+      "software": {"mlx": "===0.32.4"}
+    },
+    {
+      "id": "gemma4-moe-decode-17-max",
+      "hardware": [{"gpu_generation": 17, "tier": "Max"}],
+      "knobs": {"gemma4_moe_decode_fusion": true},
+      "provenance": {
+        "gpu_cores": 32,
+        "memory_size": 38654705664,
+        "date": "2026-11-12",
+        "commit": "c1a6b88e66bb4e230d87e9d4f703b34d1259f77d",
+        "evidence": "docs/engineering/performance/2026-11-12-gemma4-moe-decode.md",
+        "plain_tps": [117.2, 124.6],
+        "repetitions": {"plain": 3},
+        "decision": "M5 Max: real-serve decode +6.3% (n=3 interleaved fresh servers); greedy text matches the off arm.",
+        "hardware_scope": "Generation/tier generalization from one measured machine; the knob still requires the Gemma 4 install fact and bit-exact per-layer probes."
+      },
+      "software": {"mlx": "===0.32.4"}
+    },
+    {
       "id": "affine4-m4-pro-rows",
       "hardware": [
         {
