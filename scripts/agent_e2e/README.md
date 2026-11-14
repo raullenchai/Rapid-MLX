@@ -44,8 +44,10 @@ hook also answers these specific confirmations:
   resolve symlinks (including macOS `/tmp` → `/private/tmp`); files resolving
   outside the project remain unanswered.
 - Aider: `Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
-  The runner sends `y` then Enter for that command, without disabling later
-  confirmations.
+  Also handles the plural form,
+  `Run shell commands? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:`.
+  The runner sends `y` then Enter for that command block, without disabling
+  later confirmations or selecting skip all.
 
 The hook handles split reads and ANSI styling, ignores idle polls and repeated
 redraws of the same question, and continues waiting for the tool reply. It

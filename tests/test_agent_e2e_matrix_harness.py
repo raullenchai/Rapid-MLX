@@ -319,6 +319,9 @@ def test_crush_prompt_uses_bracketed_paste(monkeypatch):
 
 
 AIDER_SHELL = "Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:"
+AIDER_SHELL_PLURAL = (
+    "Run shell commands? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:"
+)
 
 
 def crush_modal(workspace, command="cat hello.txt nonce.txt"):
@@ -398,13 +401,18 @@ def test_crush_file_redraws_and_consecutive_prompts(tmp_path, monkeypatch):
     assert sent == [b"\r", b"\r", b"\r"]
 
 
-@pytest.mark.parametrize("agent", ["aider", "crush"])
-def test_permission_answers_split_reads_and_redraws_once(agent, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "agent,aider_prompt",
+    [("aider", AIDER_SHELL), ("aider", AIDER_SHELL_PLURAL), ("crush", None)],
+)
+def test_permission_answers_split_reads_and_redraws_once(
+    agent, aider_prompt, tmp_path, monkeypatch
+):
     sent = []
     sink = io.BytesIO()
     monkeypatch.setattr("os.write", lambda _fd, data: sent.append(data))
     approve = approval_handler(agent, 10, tmp_path, sink)
-    prompt = AIDER_SHELL if agent == "aider" else crush_modal(tmp_path)
+    prompt = aider_prompt if agent == "aider" else crush_modal(tmp_path)
     prompt = "\x1b[32m" + prompt + "\x1b[0m"
     # Real read_until passes cumulative output, including on idle polls.
     approve(prompt[:30])
@@ -415,15 +423,16 @@ def test_permission_answers_split_reads_and_redraws_once(agent, tmp_path, monkey
     approve(prompt + "\r\n   " + prompt)
     keys = b"y\r" if agent == "aider" else b"\x1b[C\r"
     assert sent == [keys]
-    assert sink.getvalue().count(b"permission prompt answered") == 1
+    marker = b"\n[agent_e2e: permission prompt answered]\n"
+    assert sink.getvalue() == marker
     next_prompt = (
-        "\r\ny\r\ncommand completed\n" + AIDER_SHELL
+        "\r\ny\r\ncommand completed\n" + aider_prompt
         if agent == "aider"
         else crush_modal(tmp_path, "cat hello.txt")
     )
     approve(prompt + "\r\n   " + prompt + next_prompt)
     assert sent == [keys, keys]
-    assert sink.getvalue().count(b"permission prompt answered") == 2
+    assert sink.getvalue() == marker * 2
     transcript = tmp_path / "day-one.pty"
     transcript.write_bytes(sink.getvalue())
     assert output_issues(transcript, transcript) == ["permission prompt answered"]
@@ -433,6 +442,7 @@ def test_permission_answers_split_reads_and_redraws_once(agent, tmp_path, monkey
     "agent,prompt",
     [
         ("aider", "Run shell command? [Yes]:"),
+        ("aider", "Run shell commands? [Yes]:"),
         ("aider", "Allow access outside the project?"),
         ("aider", "Select login method"),
         ("crush", "Allow      Allow for Session      Deny"),
