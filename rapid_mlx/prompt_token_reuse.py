@@ -81,23 +81,44 @@ class RequestPromptTokens:
     _tokens: dict[tuple[int, str, bool], tuple[int, ...]] = field(default_factory=dict)
 
     @staticmethod
-    def _is_fast_tokenizer(tokenizer) -> bool:
-        # Only the standard encode contract can be replaced by BatchEncoding.
-        # Custom overrides retain their own encode behavior.
+    def _reusable_backend(tokenizer):
+        """Return the library fast tokenizer whose IDs may be reused, else None.
+
+        mlx-lm's ``TokenizerWrapper`` forwards ``encode`` to the wrapped HF
+        tokenizer, so it is unwrapped. Any override of a hook between the call
+        and the Rust encoding, on the class or on the instance (e.g. a
+        ``_convert_encoding`` that injects IDs), makes reuse unprovable.
+        """
         from transformers import PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
-        if not isinstance(tokenizer, PreTrainedTokenizerFast):
-            return False
-        cls = type(tokenizer)
-        # Any override of a hook between the call and the Rust encoding (e.g. a
-        # ``_convert_encoding`` that injects IDs) makes reuse unprovable.
+        inner = tokenizer
+        wrapper = type(tokenizer)
+        if wrapper.__name__ == "TokenizerWrapper" and wrapper.__module__.startswith(
+            "mlx_lm"
+        ):
+            state = getattr(tokenizer, "__dict__", {})
+            if any(name in state for name in _TOKENIZATION_HOOKS) or any(
+                name in vars(wrapper) for name in ("encode", "__call__")
+            ):
+                return None
+            inner = state.get("_tokenizer")
+        if not isinstance(inner, PreTrainedTokenizerFast):
+            return None
+        cls = type(inner)
+        instance_state = getattr(inner, "__dict__", {})
         for name in _TOKENIZATION_HOOKS:
+            if name in instance_state:
+                return None
             base = getattr(PreTrainedTokenizerFast, name, None)
             if base is None:
                 base = getattr(PreTrainedTokenizerBase, name, None)
             if getattr(cls, name, None) is not base:
-                return False
-        return True
+                return None
+        return inner
+
+    @classmethod
+    def _is_fast_tokenizer(cls, tokenizer) -> bool:
+        return cls._reusable_backend(tokenizer) is not None
 
     def encode(
         self,
@@ -109,10 +130,11 @@ class RequestPromptTokens:
     ) -> list[int]:
         key = (id(tokenizer), text, add_special_tokens)
         if key not in self._tokens:
-            if encode is None and self._is_fast_tokenizer(tokenizer):
+            backend = None if encode is not None else self._reusable_backend(tokenizer)
+            if backend is not None:
                 # Keep the Rust Encoding so both BOS policies can be obtained
                 # by post-processing the same tokenization, without re-encoding.
-                result = tokenizer(
+                result = backend(
                     text,
                     add_special_tokens=False,
                     return_attention_mask=False,
@@ -120,7 +142,7 @@ class RequestPromptTokens:
                 )
                 encoding = result.encodings[0]
                 self.remember(tokenizer, text, encoding.ids, add_special_tokens=False)
-                processed = tokenizer.backend_tokenizer.post_process(
+                processed = backend.backend_tokenizer.post_process(
                     encoding, add_special_tokens=True
                 )
                 self.remember(tokenizer, text, processed.ids, add_special_tokens=True)

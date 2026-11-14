@@ -761,6 +761,38 @@ async def test_custom_tokenizer_request_ids_preserve_legacy_contract(stream, mll
     assert seen["prefix_boundary"] == _reference_boundary(messages, rendered)
 
 
+def _spy_backend_encodes(monkeypatch, tokenizer, spy):
+    """Count full encodes at the Rust backend, so the Python tokenizer hooks
+    stay the library's own and remain eligible for ID reuse.
+
+    ``spy(text, method, *args)`` must call the returned function with the same
+    arguments to perform the real backend encode.
+    """
+    real = tokenizer._tokenizer
+
+    def text_of(inputs):
+        return inputs[0] if isinstance(inputs, list) and len(inputs) == 1 else inputs
+
+    class Backend:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def __setattr__(self, name, value):
+            setattr(real, name, value)
+
+        def encode(self, sequence, *args, **kwargs):
+            return spy(sequence, "encode", sequence, *args, **kwargs)
+
+        def encode_batch(self, inputs, *args, **kwargs):
+            return spy(text_of(inputs), "encode_batch", inputs, *args, **kwargs)
+
+        def encode_batch_fast(self, inputs, *args, **kwargs):
+            return spy(text_of(inputs), "encode_batch_fast", inputs, *args, **kwargs)
+
+    monkeypatch.setattr(tokenizer, "_tokenizer", Backend())
+    return lambda _text, method, *args, **kwargs: getattr(real, method)(*args, **kwargs)
+
+
 def _fast_tokenizer(style="chatml", *, bos=False):
     from tokenizers import Tokenizer, models, processors
     from transformers import PreTrainedTokenizerFast
@@ -856,13 +888,12 @@ async def test_fast_chat_tokenizes_once_and_preserves_ids_and_boundary(
     )
     monkeypatch.undo()
     calls = []
-    encode_plus = tokenizer._encode_plus
 
     def spy(text, *args, **kwargs):
         calls.append(text)
         return encode_plus(text, *args, **kwargs)
 
-    monkeypatch.setattr(tokenizer, "_encode_plus", spy)
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
     state = RequestPromptTokens()
     helpers.enforce_context_length_for_messages(
         engine,
@@ -929,7 +960,6 @@ def test_http_chat_reuses_request_ids(monkeypatch, api, stream, mllm):
     tokenizer = engine.tokenizer
     calls = []
     threads = []
-    encode_plus = tokenizer._encode_plus
 
     def spy(text, *args, **kwargs):
         import threading
@@ -938,7 +968,7 @@ def test_http_chat_reuses_request_ids(monkeypatch, api, stream, mllm):
         threads.append(threading.get_ident())
         return encode_plus(text, *args, **kwargs)
 
-    monkeypatch.setattr(tokenizer, "_encode_plus", spy)
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
     seen = {}
 
     async def generate(**kwargs):
@@ -1007,13 +1037,12 @@ def test_request_reuses_both_bos_policies_without_reencoding(monkeypatch):
     expected_model_ids = tokenizer.encode(prompt)
     assert expected_count_ids != expected_model_ids
     calls = []
-    encode_plus = tokenizer._encode_plus
 
     def spy(text, *args, **kwargs):
         calls.append(text)
         return encode_plus(text, *args, **kwargs)
 
-    monkeypatch.setattr(tokenizer, "_encode_plus", spy)
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
     engine = _engine(tokenizer, scheduler=False)
     state = RequestPromptTokens()
     assert helpers.count_prompt_tokens(engine, prompt, prompt_tokens=state) == len(
@@ -1099,7 +1128,6 @@ async def test_concurrent_frontend_tokenization_is_serial_and_request_local(
     engine = _engine(tokenizer, scheduler=False)
     active = 0
     maximum = 0
-    encode_plus = tokenizer._encode_plus
 
     def spy(text, *args, **kwargs):
         nonlocal active, maximum
@@ -1112,7 +1140,7 @@ async def test_concurrent_frontend_tokenization_is_serial_and_request_local(
             active -= 1
 
     expected = [tokenizer.encode("a" * 1000), tokenizer.encode("b" * 1000)]
-    monkeypatch.setattr(tokenizer, "_encode_plus", spy)
+    encode_plus = _spy_backend_encodes(monkeypatch, tokenizer, spy)
     states = [RequestPromptTokens(), RequestPromptTokens()]
     results = await asyncio.gather(
         *[
@@ -1301,4 +1329,72 @@ def test_fast_tokenizer_with_custom_conversion_hook_is_not_reused():
     assert (
         engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
         == prompt
+    )
+
+
+@pytest.mark.parametrize("bos", [False, True])
+def test_mlx_lm_wrapper_is_unwrapped_for_reuse(bos):
+    """The served text tokenizer is mlx-lm's ``TokenizerWrapper``; reuse must
+    see through it (otherwise the text path keeps re-encoding) and produce
+    exactly ``wrapper.encode`` for both special-token policies."""
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.tokenizer_utils import TokenizerWrapper
+
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    inner = _fast_tokenizer("llama", bos=bos)
+    wrapper = TokenizerWrapper(inner)
+    assert RequestPromptTokens._is_fast_tokenizer(wrapper)
+    prompt = _render(_conversation())
+    state = RequestPromptTokens()
+    assert state.encode(wrapper, prompt, add_special_tokens=False) == wrapper.encode(
+        prompt, add_special_tokens=False
+    )
+    calls = []
+    real = inner._tokenizer
+
+    class Counting:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def encode_batch(self, *args, **kwargs):
+            calls.append(1)
+            return real.encode_batch(*args, **kwargs)
+
+        def encode_batch_fast(self, *args, **kwargs):
+            calls.append(1)
+            return real.encode_batch_fast(*args, **kwargs)
+
+    inner._tokenizer = Counting()
+    # The other policy is served from the same Rust encoding.
+    assert state.encode(wrapper, prompt) == wrapper.encode(prompt)
+    inner._tokenizer = real
+    assert len(calls) == 1  # only the reference ``wrapper.encode`` call
+
+
+def test_instance_level_hook_override_is_not_reused():
+    """Review round 3 P1: a hook installed on the instance must also disable
+    reuse, directly and through the mlx-lm wrapper."""
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+
+    tokenizer = _fast_tokenizer("chatml")
+    original = tokenizer._convert_encoding
+
+    def injects(*args, **kwargs):
+        encoding_dict, encodings = original(*args, **kwargs)
+        encoding_dict["input_ids"] = [[2, *ids] for ids in encoding_dict["input_ids"]]
+        return encoding_dict, encodings
+
+    tokenizer._convert_encoding = injects
+    assert not RequestPromptTokens._is_fast_tokenizer(tokenizer)
+    engine = _engine(tokenizer, scheduler=False)
+    engine._is_mllm = True
+    prompt = _render(_conversation())
+    assert (
+        engine._request_prompt_ids(prompt, RequestPromptTokens(), mllm_step=True)
+        == prompt
+    )
+    mlx_lm = pytest.importorskip("mlx_lm.tokenizer_utils")
+    assert not RequestPromptTokens._is_fast_tokenizer(
+        mlx_lm.TokenizerWrapper(tokenizer)
     )
