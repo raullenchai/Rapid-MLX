@@ -75,6 +75,10 @@ def _merge_caches(caches):
     raise AssertionError("global merge must never be replaced or called")
 
 
+def _stock_merge(caches):
+    return [layers[0].merge(list(layers)) for layers in zip(*caches)]
+
+
 class PromptProcessingBatch:
     def __init__(self, caches):
         self.prompt_cache = _merge_caches(caches)
@@ -106,7 +110,9 @@ class Generator:
 @pytest.fixture
 def runtime(monkeypatch):
     gen = SimpleNamespace(
-        BatchGenerator=Generator, PromptProcessingBatch=PromptProcessingBatch
+        BatchGenerator=Generator,
+        PromptProcessingBatch=PromptProcessingBatch,
+        _merge_caches=_stock_merge,
     )
     cache = SimpleNamespace(
         BatchKVCache=BatchKV, KVCache=KV, create_attention_mask=plain_mask
@@ -577,3 +583,19 @@ def test_special_cache_types_stay_stock(runtime, name):
     assert result.make_mask(2) == "stock"
     result.filter([0])
     assert result.calls[-1] == [0]
+
+
+def test_merge_delegates_to_current_module_merge(runtime):
+    """Admission paths installed on the module (singleton pass-through) win."""
+    gen, _ = runtime
+    generator = Generator()
+    assert fp.install_batchgen_fastpath(generator)
+    passthrough = KV(4)
+    gen._merge_caches = lambda caches: [passthrough]
+    batch = generator._make_batch([[KV(4)]])
+    assert batch.prompt_cache == [passthrough]
+    assert type(passthrough) is KV
+    gen._merge_caches = _stock_merge
+    batch = generator._make_batch([[KV(4)]])
+    assert type(batch.prompt_cache[0]) is not BatchKV
+    assert isinstance(batch.prompt_cache[0], BatchKV)
