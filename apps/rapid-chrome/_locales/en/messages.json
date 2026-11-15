@@ -535,5 +535,13 @@
   },
   "pressKey": {
     "message": "Press $1"
+  },
+  "olderSteps": {
+    "message": "$1 older steps collapsed. Copy debug trace for the full record.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
   }
 }

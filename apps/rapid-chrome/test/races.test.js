@@ -1,3 +1,4 @@
+import { renderSteps, clip } from '../src/transcript.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -93,7 +94,7 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   const document = {getElementById:get,createElement:node,body:{dataset:{}}};
   const chrome = {permissions:{request:async grant => {grants.push(grant);return allowPermission;}},runtime:{connect:() => ({postMessage:m => sent.push(m),onMessage:{addListener:fn => {render = fn;}},onDisconnect:{addListener() {}}})}};
   const { endpoint, originPermission, LOCAL_ENDPOINTS, redact } = await import('../src/endpoint.js');
-  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,''),{document,chrome,endpoint,originPermission,LOCAL_ENDPOINTS,redact,t:k => k,localize:s => s,translateDocument() {},displayResult:s => s,toolLabel:s => s});
+  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,''),{document,chrome,endpoint,originPermission,LOCAL_ENDPOINTS,redact,renderSteps,clip,t:k => k,localize:s => s,translateDocument() {},displayResult:s => s,toolLabel:s => s});
   assert.equal(get('settings-toggle').disabled,true);
   assert.equal(document.body.dataset.ready,undefined);
   const state = {settings:{base:'http://localhost:8000',apiKey:'',model:'',vision:false,stepCap:25},models:[],messages:[],tabs:[],steps:[],approvals:[],running:false,status:'Ready'};

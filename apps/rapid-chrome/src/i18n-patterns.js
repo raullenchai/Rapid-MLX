@@ -1,5 +1,6 @@
 // Render-time templates for extension diagnostics; page and model text stay unchanged.
 export const patterns = [
+  ["$1 older steps collapsed. Copy debug trace for the full record.", "olderSteps"],
   [
     "Rapid MLX for Chrome",
     "extensionName"

@@ -30,6 +30,7 @@ export async function connectPanel(context, base, apiKey = '', options = {}) {
   await panel.locator('#base').fill(base);
   await panel.locator('#api-key').fill(apiKey);
   if (options.maxSteps) await panel.locator('#step-cap').fill(String(options.maxSteps));
+  if (process.env.REASONING) await panel.locator('#reasoning').selectOption(process.env.REASONING);
   await panel.getByRole('button',{name:'Save & connect'}).click();
   await until(async () => /^Connected(?:$|\.)/.test(await panel.locator('#status').textContent()),'engine connection');
   await panel.locator('#settings-toggle').click();

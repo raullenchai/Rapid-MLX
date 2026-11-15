@@ -142,7 +142,12 @@
       "answer_includes": [
         "/SFO|San Francisco/",
         "/JFK|New York/",
-        "/\\$\\s*\\d/"
+        "/\\$\\s*\\d/",
+        "/nonstop|non-stop/",
+        "/round[ -]trip/",
+        "/[0-9]:[0-5][0-9]\\s*[AP]M/",
+        "/depart|outbound/",
+        "/return/"
       ],
       "max_steps": 100,
       "human_review": true
@@ -334,7 +339,9 @@
     "checks": {
       "answer_includes": [
         "/p\\.?m\\.?|[12][0-9]:[0-5][0-9]/",
-        "/https:\\/\\//"
+        "/https:\\/\\//",
+        "/1[.)].*2[.)].*3[.)]/s",
+        "/tomorrow|Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday/"
       ],
       "max_steps": 60,
       "human_review": true
@@ -619,8 +626,10 @@
       "answer_includes": [
         "photosynthesis",
         "/light|sunlight/",
-        "/carbon dioxide|CO2|CO\u2082/",
-        "https://en.wikipedia.org/wiki/Photosynthesis"
+        "https://en.wikipedia.org/wiki/Photosynthesis",
+        "/chemical energy|carbohydrate|sugar/",
+        "/oxygen/",
+        "/1[.)].*2[.)].*3[.)].*4[.)].*5[.)]/s"
       ],
       "max_steps": 60,
       "human_review": true

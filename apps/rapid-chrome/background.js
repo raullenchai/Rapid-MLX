@@ -1,6 +1,7 @@
 import { BrowserHand, ChromeAdapter } from './src/cdp.js';
 import { runAgent } from './src/agent.js';
 import { LOCAL_ENDPOINTS, testConnection, redact } from './src/endpoint.js';
+import { clip } from './src/transcript.js';
 import { t, localize } from './src/i18n.js';
 import { engineBase, safeURL } from './src/safety.js';
 
@@ -31,7 +32,7 @@ const ready = (async () => {
   } else { state.status = t('stepConnect'); publish(); }
 })();
 function publish() {
-  for (const port of ports) { try { port.postMessage({...state,status:localize(state.status)}); } catch { ports.delete(port); } }
+  for (const port of ports) { try { port.postMessage({...state,messages:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,12000)})),steps:state.steps.map(s => ({...s,result:clip(s.result)})),status:localize(state.status)}); } catch { ports.delete(port); } }
 }
 function refreshTabs() {
   state.tabs = [...hand.tabs].map(([id,t]) => ({id,attached:t.attached})); publish();
@@ -40,9 +41,10 @@ function refreshTabs() {
 function emit(event) {
   if (event.kind === 'step') {
     const existing = state.steps.findIndex(s => s.id === event.id);
-    if (existing < 0) state.steps.push(event); else state.steps[existing] = event;
+    if (existing < 0) state.steps.push({...event,result:clip(event.result)}); else state.steps[existing] = {...event,result:clip(event.result)};
   } else if (event.kind === 'answer' || event.kind === 'notice' || event.kind === 'progress') {
     state.messages.push({role:'assistant',kind:event.kind,content:event.text});
+    if (state.messages.length > 60) state.messages.splice(0,state.messages.length - 60);
     void chrome.storage.session.set({transcript:state.messages.slice(-60)});
   }
   publish();
@@ -144,8 +146,8 @@ async function run(task) {
   }
 }
 async function handle(message) {
-  await ready;
   if (message.type === 'stop') { stop(); return; }
+  await ready;
   if (message.type === 'approve') { pending.get(message.id)?.(message.allow === true); return; }
   if (message.type === 'resume') { if (message.allow) resumeGate?.(true); else stop(); return; }
   if (message.type === 'send') {

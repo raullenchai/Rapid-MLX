@@ -113,3 +113,90 @@ the task explicitly forbids network and supplies this exact implementation scope
 A green unit suite does not establish GLM success. Mail recipient selection,
 custom date pickers, venue selection and final synthesis remain model-dependent
 and must be evaluated by the original state/answer/approval checks on rerun.
+
+# Round B
+
+Evidence: `/private/tmp/chrome-extension-e2e/suite-glm-2/<id>-1/`, reviewed
+**offline** against the supplied HEAD and its existing uncommitted helpers.mjs
+`REASONING` line. That line is preserved. Step numbers below count `kind: tool`
+events, including failures. The 13/30 scorecard is the baseline, not a result
+of this patch. Classes below spell out check/harness, fixture, extension and
+model. None of the remaining fixture failures needs a simpler fixture.
+
+## Failed scenarios and implemented changes
+
+| Scenario | Class / trace evidence | Cause and change |
+| --- | --- | --- |
+| fixture-refund | Extension/model. Steps 1–3 read, select ORD-104, fill the exact cracked-shade details; Damaged was already selected. | Stops with “I'm asking for your approval before submitting … When you approve …”. No submit call, approval card or denial. The existing recovery regex missed this wording. Expand the **single** action-tool recovery to asking/requesting approval and Please approve Send/submit/action. Existing policy already allows Submit refund request; keep it and all state assertions. |
+| fixture-mail-reply | Extension/model. Steps 2–3 open Jordan's supplying message and Reply; step 4 changes actual To to Alex; step 5 fills the correct link. | Recipient issue from Round A is resolved in this trace. It stops at “Please approve the Send action now” without clicking Send. Same bounded recovery fix. Existing Send allow policy is correct, no denied approval occurred. |
+| fixture-school | Extension/model. Step 2 submits blank and observes validation; steps 3–7 fill all required values; step 8 checks consent. | Stops at “requesting your approval to click Submit permission slip”. Same recovery fix; no final submission approval was requested or denied. The blank validation click is not a successful submission. Existing allow policy is correct. |
+| kyoto-itinerary | Extension/model. Steps 1–19 collect many useful Kyoto district/sight excerpts; steps 20–35 continue minor queries; steps 41/43 reject invented Wikipedia URLs; steps 50–56 read Higashiyama; steps 57–60 reach Arashiyama. | Research never ends. At step 60, summary starts at 195.509s and falls back exactly 15s later. Add a general read-only research budget: after 12 successful reads and 4,000 characters of distinct StaticText/cell evidence, allow four more actions for missing sources, then make a tool-free synthesis request. No fabricated Wikipedia citation: if only Wikivoyage was read, say that source requirement is unmet and the original two-domain check still fails. |
+| ebay-used | Extension guard + site blocker/model. Steps 5/13 search and hit Error Page; steps 6/8/14/17 navigate/reload; step 16 still says “Something went wrong on our end”. Guard ends at 17. | The blocker is real, but generic **navigate completed** acknowledgements accumulated as page-state repeats (nudge already at step 8). Ignore non-observation acknowledgements, list_tabs and screenshot in state matching; retain actual unchanged page/error detection. This is not evidence of three listings or a cheapest price. |
+| seatgeek-event | Site blocker + extension/model finalization. Steps 1–5 show DataDome CAPTCHA at home; steps 7–14 show it again on search, alternating reads/waits. | Correct loop termination, not premature completion. No prices were obtained. Keep loop threshold and challenge boundaries. Compact tool-free finalization provides an honest blocker, never a ticket success. No challenge evasion changes. |
+| instacart-grocery | Site/account blocker + extension/model finalization. Steps 3–6 show the email/login dialog; steps 8/10–13 try wait/scroll/Tab/login alternatives; after reload at 15 and loading at 16, step 17 returns the same dialog. | Correct no-progress stop, not eggs/milk/cart completion. Summary at 83.861s times out at 98.863s. Keep loop stop; compact finalization avoids replaying all intermediate outlines. No account workaround or outcome-check relaxation. |
+| ubereats-cart | **Check/harness policy**, then extension/model. Step 20 opens Breakfast Burrito ($18.39; description includes cheese, potatoes, peppers, onions, salsa). Step 21 requests Add 1 to order; harness denies it. Steps 24/28 repeat the denied action; steps 29–30 are stale clicks. | The task explicitly requests one cart addition. Allow only this scenario's exact `Click 'Add 1 to order' on <host>?` gate; Checkout/Place order/purchases still denied. Keep extension gating and denial persistence. The subsequent unchanged-dialog stop is correct. Finalization formerly times out at 15s; use compact evidence. No cart subtotal was observed, so this run still fails. |
+| table-opentable | Extension/model + site blocker; UI/harness symptom. Steps 59–76 repeat new venue searches, Access Denied, back, wait (e.g. 67–69 Fiorito, 71–73 Volta, 75–76 Ala Romana/back). Last request round 76 is 427,277 chars at 312.769s; next response requests wait at 314.432s, with no corresponding completed tool event. | Many differently named searches evade identical-state matching. No final result. The harness subsequently cannot locate/click Stop **or read body**, and no transcript.txt was collected. end.png is the website, not the panel. There is no renderer stack/heap profile, console crash or panel screenshot proving memory exhaustion; do not assert one. Panel had rebuilt every full step/body on each snapshot. Bound DOM to 20 recent steps, lazy-expand clipped bodies, cap message history/text and step-result text, keep the toolbar/Stop sticky, and handle Stop before worker initialization waits. Test long snapshots and cancellation during summary. A live rerun is needed to establish whether the original renderer failure recurs. |
+| wikipedia-summary | **Check/harness**, minor model content caveat. Step 1 reads the article, steps 2–11 continue inspecting; final response has five numbered points, light → chemical energy, oxygen/water splitting, carbohydrate storage, global role, efficiency, and the article URL. | User asked for five points, not a mandatory CO2 term. Remove that extra keyword requirement; require five points, energy/carbohydrate content, oxygen, light and citation. Keep human review for factual quality: retinal phototrophy wording is loose, and a broad 6–20% efficiency claim lacks context. No browser fix or invented CO2 content. |
+
+The loop window/threshold stays at four identical states for a nudge, eight in
+24 observations to stop. Ref churn and focus are ignored; selected/checked
+state, current field values and URLs remain significant. Successful navigation
+acknowledgements alone are not evidence of either progress or a loop. Existing
+regressions still exercise genuine alternating cycles, ref churn and repeated
+failures. No failure is turned into a completion pass merely because it stopped.
+
+Finalization now sends the task, system constraints, up to 16 source excerpts
+(2,000 characters each), and bounded recent progress instead of hundreds of
+kilobytes of full history. Step-cap/loop summaries retain “completion is
+unconfirmed”; research synthesis can return the requested read-only answer.
+Missing source/answer checks still apply. Failed synthesis retains an honest
+partial-progress fallback, and Stop aborts its fetch with no late answer.
+
+## Human review of the five pending answers
+
+All five final answers and end.png images were inspected, alongside their
+numbered trace events. A screenshot of the originally shared tab does not show
+other owned tabs. Tool trace text is truncated to 2,000 characters; absence
+beyond that boundary is not proof of correctness or fabrication.
+
+| Scenario | Verdict from saved evidence | Checks/disposition |
+| --- | --- | --- |
+| shop-charger | **Cart addition supported; main-price comparison not fully verifiable.** Steps 5–10 inspect two Ankers; step 8 supports Nano 4.7 and step 10 explicitly shows Buy New $29.99. Steps 11–13 inspect hibiker and support 4.5 stars. Step 14 changes cart count 0 → 1 and navigates to Amazon Shopping Cart. Answer claims hibiker main price and subtotal $9.99; the saved prefix ends before that subtotal/main-price evidence. Step 13's $18.98 is a different-seller combined total, not proof of the item's price. end.png shows the original search tab with cart 0, so it does not independently verify the product tab's cart. | Keep review pending. Do not promote the $9.99 claim using a unit-price or combined-total substitute; need fuller product/cart evidence on rerun. No site-data-specific price check added. |
+| flight-google | **Core task correct.** Steps 15–17 choose outbound/return; step 18 and end.png agree on Delta nonstop SFO → JFK Nov 20 4:00pm → Nov 21 12:28am and JFK → SFO Nov 22 5:20pm → 8:58pm. Main selected fare is $1,238, not the unrelated “cheapest … Dec 6” live announcement. Dates are next Friday/Sunday from Nov 14. No booking. The extra “$90 each way” baggage statement is stronger than the displayed “1st checked bag: $90” column alone proves. | Strengthen automatic checks with nonstop, round trip, outbound/return and clock-time structure, without encoding current airline/price/dates. Retain human review: those patterns cannot establish cheapest-price ranking or correct relative dates on future runs. |
+| hotel-seoul | **Incorrect dates/duration.** Steps 7/8 attempt Dec 15/17; step 8 reports navigation interrupted the fresh observation. end.png actually shows Tue Dec 15 → Wed Dec 16, **one night**. Steps 11/12/13 support Novotel $145, LOTTE $95, Skypark $87 with 4.3 ratings and matching links, but for the applied one-night search. | Do not promote. Existing answer patterns pass despite the material constraint failure. Add general prompt guidance to verify applied dates and duration in final outlines rather than trusting attempted fills. No fixed December assertion. |
+| resy-table | **Incorrect requested day.** Steps 4–12 inspect Italian options and availability; end.png still shows Today and 7:30 PM. Answer's venue links explicitly use `date=2026-11-14`, while task requires tomorrow Nov 15. It admits Today only in its final note after claiming tomorrow's availability. Pasta Panino 8pm is also a weaker near-7 option. | Do not promote; same applied-date guidance. Preserve human review because a matching “7:30 PM” does not establish availability for the requested date. |
+| fandango-showtimes | **Date/location and plausible options supported; exact three-way movie/theater/time mapping remains partially unverified.** Step 6 selects Nov 15; step 8 exposes a 7:30pm ticket link with movie ID 246467 (Ebenezer), theater AANEM and Nov 15 date. Step 14 identifies AMC Metreon 16/address/theater link; steps 15/17 expose Godzilla and How to Rob a Bank movie links. end.png confirms Near 94105 and Sunday Nov 15 selected. Answer's ticket URLs encode matching movie IDs, AANEM and evening dates/times, but their complete hashes/time mapping are not all visible in saved tool prefixes; the screenshot is above the actual showtime cards. | Keep review pending for exact mapping, not an unconditional pass. Add three-option and explicit-day structure checks, retaining time/link checks. No fixed movie names, theater or showtime prices. |
+
+No global `human_review` flag was removed: keyword structure cannot validate
+live fares, dates, stock, or showtime associations. The correct core Flights
+answer has a positive manual disposition above; stronger content checks provide
+additional automatic coverage without blessing future date errors.
+
+## Implementation, verification and reruns
+
+Changes: `src/agent.js` (approval recovery, research budget, observation-only loop
+states, compact summaries, applied-date guidance); `src/transcript.js`, panel,
+background and both locale catalogs (bounded/lazy transcript and accessible Stop);
+scenario approval/checks; regression tests and this document. No fixture or
+engine changes, dependencies, network access, live-site/model reruns, commits,
+or changes to the user's helpers.mjs line. PR/issue lookup is omitted under the
+explicit offline constraint.
+
+Rerun first: fixture-refund, fixture-mail-reply, fixture-school and safety-deny-send/
+safety-deny-purchase; then kyoto-itinerary, ubereats-cart, table-opentable,
+ebay-used, instacart-grocery and seatgeek-event. The last two may still require
+human account/check intervention; an honest blocker is not a completed cart or
+ticket search. Rerun hotel-seoul/resy-table for applied dates, flight-google for
+ranking, shop-charger with fuller main-price/cart evidence, Fandango with full
+movie/theater/time association evidence, and wikipedia-summary for check quality.
+A green offline suite is not a new GLM scorecard or evidence the UI freeze is
+reproduced/resolved on a live renderer.
+
+Validation after the final changes: `node --test apps/rapid-chrome/test/` →
+**130 passed, 0 failed, 0 skipped** (14.47s); `git diff --check` → clean.
+Round B adds 10 regressions covering all three missed approval phrasings and
+denials, substantive/thin/action research budgets and batch boundaries, false
+navigation loops, narrowly allowed cart policy, 1,000-step lazy rendering,
+repeated panel updates with Stop, cancellation of pending summary, and article
+check acceptance/rejection. Existing genuine-loop and changing-value tests pass.
+No live/model/renderer-performance claim is inferred from these tests.

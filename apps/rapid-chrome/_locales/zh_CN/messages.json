@@ -535,5 +535,13 @@
   },
   "pressKey": {
     "message": "按 $1 键"
+  },
+  "olderSteps": {
+    "message": "已折叠 $1 个较早步骤。复制调试记录可查看完整内容。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
   }
 }

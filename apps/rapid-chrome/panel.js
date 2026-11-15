@@ -1,3 +1,4 @@
+import { renderSteps, clip } from './src/transcript.js';
 import { t, localize, translateDocument, displayResult, toolLabel } from './src/i18n.js';
 import { endpoint, originPermission, LOCAL_ENDPOINTS, redact } from './src/endpoint.js';
 translateDocument();
@@ -35,13 +36,9 @@ function render(s) {
   $('stop').disabled = !s.running; $('send').disabled = s.running || !s.connected; $('share').disabled = s.running;
   for (const field of $('settings-form').elements) field.disabled = s.running || connectionBusy;
   $('new-chat').disabled = s.running;
-  $('messages').replaceChildren(...s.messages.map(m => element('article',m.role === 'assistant' ? localize(m.content) : m.content,`bubble ${m.role}`)));
+  $('messages').replaceChildren(...s.messages.slice(-60).map(m => element('article',m.role === 'assistant' ? clip(localize(m.content),12000) : clip(m.content,12000),`bubble ${m.role}`)));
   $('owned').replaceChildren(...s.tabs.map(t => { const row = element('div',`${t.id} · ${t.attached ? localize('attached') : localize('shared')} `); const b = button(localize('release'),() => send({type:'release',id:t.id})); b.disabled = s.running; row.append(b); return row; }));
-  const open = new Set([...$('steps').querySelectorAll('details[open]')].map(e => e.dataset.id));
-  $('steps').replaceChildren(...s.steps.map(step => {
-    const d = element('details'); d.dataset.id = step.id; d.open = open.has(step.id);
-    d.append(element('summary',`${toolLabel(step.name)} · ${localize(step.status)} · ${JSON.stringify(step.args)} · ${displayResult(step.result).slice(0,200)}`),element('pre',JSON.stringify(step.args,null,2)),element('p',displayResult(step.result))); return d;
-  }));
+  renderSteps(document,$('steps'),s.steps,{label:toolLabel,result:displayResult,status:localize,older:n => t('olderSteps',[String(n)])});
   // Preserve approval buttons/focus while unrelated step updates arrive.
   const ids = s.approvals.map(a => a.id).join(',');
   if ($('approvals').dataset.ids !== ids) {
