@@ -64,3 +64,9 @@ test('r14 live inspection and gate accept the fare cell without an approval', as
   assert.equal(hand.lastTargetContext.dateCell,trace.dateCell);
   assert.equal(hand.lastTargetContext.dateCellAX,trace.dateCellAX);
 });
+test('error-page reload outside forms is not gated; retry and form reloads stay gated', async () => {
+  const { classifyTarget } = await import('../src/safety.js');
+  for (const name of ['Reload','Try again','刷新']) assert.equal(classifyTarget({tag:'BUTTON',role:'button',type:'button',name}).consequential,false,name);
+  for (const t of [{name:'Retry'},{name:'Reload',form:'checkout'},{name:'Reload',method:'post',action:'/pay'},{name:'Reload',type:'submit',submitter:'x'},{name:'Reload',paymentForm:true}])
+    assert.equal(classifyTarget({tag:'BUTTON',role:'button',type:'button',...t}).consequential,true,JSON.stringify(t));
+});

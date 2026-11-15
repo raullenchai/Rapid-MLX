@@ -38,3 +38,15 @@ import './round-e.test.js';
 import './local-tuning.test.js';
 
 import './local-round2.test.js';
+
+import './round12.test.js';
+
+import './date-fare.test.js';
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+test('every test file is imported by the directory entry point', () => {
+  const index = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+  for (const f of readdirSync(new URL('.', import.meta.url)).filter(f => f.endsWith('.test.js'))) assert.ok(index.includes(`'./${f}'`), f);
+});

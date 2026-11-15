@@ -102,11 +102,13 @@ export function classifyTarget(target = {}) {
   // saves/cancellations and all financial/sensitive context remain gated.
   const preparation = target.type === 'button' && !target.form && !target.formName && !target.action && !target.method && !target.submitter &&
     /^(?:Create event|[A-Z]{1,3}\d{1,3}\s+[—–-]\s+[$€£¥]\s*\d+(?:[.,]\d{2})?)$/i.test(own);
+  // Error-page reload outside any form re-renders the page; "Retry" can replay a payment and stays gated.
+  const reload = /^(?:reload|refresh|try again|重新加载|重新載入|刷新)$/iu.test(own) && target.type !== 'submit' && !target.form && !target.formName && !target.action && !target.method && !target.submitter && !financialContext(target) && !target.sensitiveForm && !target.paymentForm;
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
   const contextual = preparatoryContext(target);
   const accountWrite = /saved|account|profile|billing|address[-_/ ]?book/i.test([target.landmark,target.heading,target.formName,target.action].join(' '));
-  const ambiguous = (target.role === 'button' || target.type === 'button') && !(contextual || preparation || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
-  return { search, financial, consequential: destructive.test(own) || explicit || accountWrite || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(contextual || searchSubmit || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
+  const ambiguous = (target.role === 'button' || target.type === 'button') && !(contextual || preparation || reload || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
+  return { search, financial, consequential: destructive.test(own) || explicit || accountWrite || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(contextual || reload || searchSubmit || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
 export function isCartAddition(name = '') {
