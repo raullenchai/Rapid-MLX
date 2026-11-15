@@ -38,8 +38,11 @@ function financialContext(target) {
 function consequentialContext(target) {
   // A lookup submitter may repeat its label in form text. Only this exact
   // phrase is benign; other effects in the same context must still win.
+  // The control's own label is classified separately (with its cart-add
+  // normalization); only surrounding form context is inspected here.
+  const own = String(target.name || target.label || '').trim().toLowerCase();
   const context = [target.form,target.formName,target.submitter,target.action,target.label,target.id]
-    .filter(Boolean).join(' ').replace(/\bsubmit search\b/gi,'search');
+    .filter(v => v && String(v).trim().toLowerCase() !== own).join(' ').replace(/\bsubmit search\b/gi,'search');
   return consequential.test(context) || destructive.test(context) || financialCommit.test(context) || financialContext(target);
 }
 // Positive browse context is required for ambiguous location/Go controls.

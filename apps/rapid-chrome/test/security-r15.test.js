@@ -94,3 +94,10 @@ test('r15 sibling exemptions cannot hide consequential submit form context', () 
     }
   }
 });
+
+test('a cart button whose own label is the submitter is not treated as form purchase context', () => {
+  const base = {tag:'BUTTON',role:'button',type:'submit',method:'post',action:'/cart/add'};
+  assert.equal(classifyTarget({...base,name:'Add 1 to order',submitter:'Add 1 to order'}).consequential,false);
+  assert.equal(classifyTarget({...base,name:'Add 1 to order',submitter:'Add 1 to order',formName:'Send message'}).consequential,true);
+  assert.equal(classifyTarget({...base,name:'Add 1 to order',submitter:'Add 1 to order',action:'/checkout'}).financial,true);
+});
