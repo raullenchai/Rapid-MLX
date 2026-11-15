@@ -17,8 +17,8 @@ What
 ----
 ``install_singleton_cache_fastpath()`` patches ``mlx_lm.generate`` so that:
 
-* ``_merge_caches([single])`` passes the per-layer caches through unchanged
-  (no batched conversion) when they qualify;
+* ``_merge_caches([single])`` keeps the per-layer cache types (no batched
+  conversion) when they qualify, detaching loaned state on admission;
 * ``_extend_cache`` promotes singleton layers to their batched forms via
   ``cls.merge([self])`` the moment a second row joins, then extends as usual
   (returning a NEW list — promotion replaces layer objects);
@@ -80,6 +80,9 @@ logger = logging.getLogger(__name__)
 # Exact types only — subclasses (e.g. the quantized _QuantizableKVCache)
 # carry semantics their merge() must apply and never pass through.
 _SINGLETON_EXACT_TYPES = (KVCache, RotatingKVCache)
+
+# Ownership belongs to this object, never to a copied __dict__ payload.
+_admitted_layers: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _is_singleton_passthrough_layer(cache_obj: Any) -> bool:
@@ -186,18 +189,20 @@ def _singleton_filter(self, batch_indices):
 _SURFACE_NAMES = ("filter", "extract", "extend")
 
 
-def _copy_exact_layer(cache_obj: Any) -> Any:
+def _copy_exact_layer(cache_obj: Any, *, headroom: int = 0) -> Any:
     """Independent copy of an exact-type layer (no shared array objects).
 
     Shared body of ``extract`` (payload leaving the batch) and
     copy-on-admit (loaned state entering the batch). KVCache copies are
-    offset-trimmed like ``BatchKVCache.extract``; RotatingKVCache is
+    offset-trimmed like ``BatchKVCache.extract`` unless admission requests
+    headroom for the next suffix write; RotatingKVCache is
     deep-copied whole so its circular layout (offset/_idx/rotation)
     continues decoding exactly as before. The bound singleton surface is
     never carried over.
     """
     if isinstance(cache_obj, RotatingKVCache):
         clone = copy.deepcopy(cache_obj)
+        _admitted_layers.discard(clone)
         for name in _SURFACE_NAMES:
             clone.__dict__.pop(name, None)
         return clone
@@ -207,8 +212,18 @@ def _copy_exact_layer(cache_obj: Any) -> Any:
     )
     if cache_obj.keys is None:
         return clone
-    clone.keys = mx.contiguous(cache_obj.keys[..., : cache_obj.offset, :])
-    clone.values = mx.contiguous(cache_obj.values[..., : cache_obj.offset, :])
+
+    def copy_array(array):
+        prefix = array[..., : cache_obj.offset, :]
+        if headroom:
+            b, h, _, d = array.shape
+            return mx.concatenate(
+                [prefix, mx.zeros((b, h, headroom, d), dtype=array.dtype)], axis=2
+            )
+        return mx.contiguous(prefix)
+
+    clone.keys = copy_array(cache_obj.keys)
+    clone.values = copy_array(cache_obj.values)
     clone.offset = cache_obj.offset
     return clone
 
@@ -241,13 +256,42 @@ def _detach_layer(cache_obj: Any) -> Any:
     if type(cache_obj) in _SINGLETON_EXACT_TYPES:
         if getattr(cache_obj, "keys", None) is None:
             return cache_obj
-        return _copy_exact_layer(cache_obj)
+        return _copy_exact_layer(
+            cache_obj, headroom=KVCache.step if type(cache_obj) is KVCache else 0
+        )
     # Native batch-surface layers (hybrid ArraysCache/MambaCache): every
     # CURRENT loan path deepcopies or refuses them (the non-trimmable
     # gate), but that is the prefix cache's contract, not this lane's —
     # deepcopy unconditionally so a future shallow loan cannot alias.
     # Fresh layers are near-empty; the copy is noise (codex r5).
     return copy.deepcopy(cache_obj)
+
+
+def _mark_owned(cache_obj: Any) -> None:
+    """Track ownership only for identity-comparing, weakrefable layers."""
+    if (
+        type(cache_obj).__eq__ is object.__eq__
+        and type(cache_obj).__hash__ is object.__hash__
+    ):
+        try:
+            _admitted_layers.add(cache_obj)
+        except TypeError:
+            pass  # Non-weakrefable or unhashable native wrappers remain untracked.
+
+
+def _admit_layer(cache_obj: Any, *, reuse_owned: bool = False) -> Any:
+    # WeakSet uses equality: only identity-comparing layers may be tracked.
+    # Foreign wrappers with value equality or without weakref support keep
+    # the conservative copy-on-admit behavior.
+    identity_equality = (
+        type(cache_obj).__eq__ is object.__eq__
+        and type(cache_obj).__hash__ is object.__hash__
+    )
+    if not (reuse_owned and identity_equality and cache_obj in _admitted_layers):
+        cache_obj = _detach_layer(cache_obj)
+    _bind_singleton_surface(cache_obj)
+    _mark_owned(cache_obj)
+    return cache_obj
 
 
 def _singleton_extract(self, idx: int):
@@ -319,6 +363,13 @@ class _WeakBoundSurface:
         owned = id(cache_obj) in memo
         cache_copy = copy.deepcopy(cache_obj, memo)
         if owned:
+            # Whole-layer deepcopy already gives an admitted layer independent
+            # arrays; prompt-to-generation handoff must not detach it again.
+            if (
+                type(cache_obj) in _SINGLETON_EXACT_TYPES
+                and cache_obj in _admitted_layers
+            ):
+                _mark_owned(cache_copy)
             return _WeakBoundSurface(self._fn, cache_copy)
         return types.MethodType(self._fn, cache_copy)
 
@@ -388,9 +439,7 @@ def _install_locked(gen) -> bool:
         ):
             admitted = []
             for c in caches[0]:
-                c = _detach_layer(c)
-                _bind_singleton_surface(c)
-                admitted.append(c)
+                admitted.append(_admit_layer(c))
             return admitted
         # Promote any singleton layers a previous pass left behind before
         # the stock merge sees them (its BatchKVCache.merge expects raw
@@ -411,9 +460,7 @@ def _install_locked(gen) -> bool:
             if all(_is_singleton_passthrough_layer(c) for c in cache_b):
                 admitted = []
                 for c in cache_b:
-                    c = _detach_layer(c)
-                    _bind_singleton_surface(c)
-                    admitted.append(c)
+                    admitted.append(_admit_layer(c, reuse_owned=True))
                 return admitted
             return cache_b
         if not cache_b:
