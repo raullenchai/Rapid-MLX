@@ -1,1 +1,0 @@
-{"private":true,"type":"module","version":"0.1.0","engines":{"node":">=22"},"scripts":{"build":"node scripts/build.mjs","test":"node --test test/"}}
