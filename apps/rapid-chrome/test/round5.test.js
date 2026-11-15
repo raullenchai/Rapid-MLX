@@ -8,8 +8,10 @@ const base = 'http://127.0.0.1:8000';
 function setup(send = async () => ({}), approve = async () => true) {
   const commands = [];
   const hand = new BrowserHand({get:async () => ({url:'https://shop.test/product',title:'Shop'}),send:async (_,method,params) => {
-    commands.push({method,params}); return send(method,params);
+    commands.push({method,params});
+    return send(method,params);
   }},{settings:{base},approve});
+  hand.sites.add('https://shop.test');
   hand.active = 1; hand.tabs.set(1,{attached:true,epoch:0,refs:new Map()});
   hand.signal = new AbortController().signal;
   return {hand,commands};
@@ -26,15 +28,14 @@ test('Send approval names the submitter for fill+submit and Enter, and the contr
   }
 });
 
-test('flight details and expanded disclosures ignore long booking copy and POST context', () => {
+test('disclosures ignore POST context but explicit consequential language anywhere in the label wins', () => {
   const context = {role:'button',method:'post',type:'submit',form:'Book now Confirm purchase'};
   for (const target of [
-    {name:'Flight details. Leaves San Francisco International Airport. Select and book'},
-    {name:'More options to book a flight',expanded:false},
+    {name:'Flight details. Leaves San Francisco International Airport'},
     {name:'Details about booking',expanded:'true'},
-    {name:'View details '+ 'x'.repeat(100) + ' buy now'}
+    {name:'View details '+ 'x'.repeat(100)}
   ]) assert.equal(classifyTarget({...context,...target}).consequential,false);
-  for (const name of ['Buy Now','Book flight','Confirm purchase','Send','Delete account'])
+  for (const name of ['Buy Now','Book flight','More options to book a flight','Flight details. Select and book','View details '+ 'x'.repeat(100) + ' buy now','Confirm purchase','Send','Delete account'])
     assert.equal(classifyTarget({...context,name}).consequential,true);
 });
 

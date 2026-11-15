@@ -584,7 +584,7 @@
     "message": "隐私"
   },
   "historyPrivacy": {
-    "message": "近期对话保存在此设备上（每次 60 条消息，保留 8 次历史对话）。浏览器观察结果和你添加的页面上下文会发送到所选引擎。新建对话会开始新的会话。"
+    "message": "最近的对话保存在此设备上（每个对话最多 60 条消息，保留 8 个历史对话）。共享后才会发送网页内容。新对话可选择保留历史或删除所有对话和活动。"
   },
   "help": {
     "message": "帮助"
@@ -834,5 +834,17 @@
   },
   "handoverPermissionAction": {
     "message": "查看权限提示"
+  },
+  "newChatTitle": {
+    "message": "开始新对话"
+  },
+  "newChatChoice": {
+    "message": "将当前对话保留在本地历史中，或永久删除所有对话、活动记录和诊断信息。设置和已共享标签页将保留。"
+  },
+  "keepChatHistory": {
+    "message": "保留在历史中"
+  },
+  "deleteAllChats": {
+    "message": "删除所有对话和活动"
   }
 }

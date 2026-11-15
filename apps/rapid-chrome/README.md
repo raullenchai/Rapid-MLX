@@ -334,3 +334,56 @@ HEADLESS=1 node test/e2e/ui-shots.mjs
 `SHOTS_OUT` changes the output directory. `PLAYWRIGHT_MODULE` can point to an
 existing local Playwright module and `CHROME_EXECUTABLE` to an installed test
 browser. This command does not install or download a browser.
+
+
+## Security review fixes
+
+Consequential labels (including Buy, Pay, Submit, Send, Delete, Transfer, Book,
+and Confirm) take precedence over disclosure ARIA. Ambiguous buttons and controls in a form
+with credential/payment fields require approval. Disclosure ARIA alone never
+establishes a benign action; recognized passive controls use narrow label/role
+rules. Add to cart, ordinary filters,
+pagination, Show more, and search retain their normal unattended behavior.
+
+Enter and Space inspect the deepest focused control through open shadow roots
+and CDP frame contexts. Unresolvable focus is refused. Focus and identity are
+rechecked before text insertion or activation; keyboard paths share denial
+memory with clicks and form submission.
+
+Every main-frame origin transition uses exact-origin approval, including server
+redirects and script navigation. Observations and actions independently check
+origin approval. Passive subframe navigation retains its separate policy. A new
+turn cannot silently approve an origin that changed since the tab was shared.
+The current composer tab's URL and title are omitted from the initial model
+request; the identifier alone routes current-page requests.
+
+Approval captures up to 100 enclosing-form inputs, selects (including selected
+options), textareas, and hidden fields, bounded to 16,000 serialized characters.
+The card prioritizes amount, currency, recipient, quantity, and address details;
+credential, payment, account, and token values are masked. All captured values
+and control identity are checked again before dispatch. Any change invalidates
+the action and requires fresh inspection/approval. Financial controls without
+inspectable form values require human completion. Page-owned JavaScript is not
+an attestable transaction record; these checks cannot authorize opaque effects.
+
+Known web vault domains (1password.com, bitwarden.com, lastpass.com, dashlane.com,
+keepersecurity.com, and Proton Pass), and login/secure/banking paths on chase.com,
+bankofamerica.com, wellsfargo.com, citi.com, capitalone.com, and paypal.com require
+handover. Visible password, card/security-code, and bank-account/routing fields,
+including fields in open shadow roots and inspectable frames, also prevent
+agent reads, screenshots, and actions. This small heuristic list is not a
+comprehensive sensitive-content detector; users should share pages accordingly.
+
+New chat offers **Keep in history**, **Delete all chats and activity**, and
+**Cancel**. Deletion clears current and archived conversations, stored run/step
+checkpoints, session transcript, and diagnostics; it keeps settings and tab
+grants. Stored tool arguments are capped at 4 KiB and results at 8 KiB. Each
+trace event is capped at 16 KiB, with at most 200 retained events; oversize data
+is replaced with a marked preview. Limits count UTF-8 JSON bytes.
+
+Regression coverage: `test/security-review.test.js` exercises all four P1
+exploit paths and the requested P2 boundaries with mocked CDP, including actual
+serialized DOM inspection callbacks. `test/ui-lifecycle.test.js` verifies real
+worker persistence/deletion and byte caps. Run `node --test apps/rapid-chrome/test/`
+from the repository root. These tests do not replace a live Chrome security
+review or guarantee comprehensive redaction of arbitrary visible page content.

@@ -54,6 +54,7 @@ function shoppingHand() {
   const approvals = [], commands = [];
   const hand = new BrowserHand({get:async () => ({url:'https://shop.test/p',title:'Charger'}),send:async (_id,method,params) => {
     commands.push({method,params});
+    if (method === 'DOM.describeNode') return {node:{backendNodeId:7,nodeName:'BUTTON'}};
     if (method === 'DOM.resolveNode') return {object:{objectId:'button'}};
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('Math.min(innerWidth')) return {result:{value:{left:0,top:0,right:100,bottom:600}}};
     if (method === 'Page.getLayoutMetrics') return {cssLayoutViewport:{clientWidth:800,clientHeight:600}};
@@ -61,7 +62,7 @@ function shoppingHand() {
     if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') additions++;
     return {};
   }},{settings:{base:'http://127.0.0.1:8000'},approve:async info => {approvals.push(info);return allowed;}});
-  hand.active = 1; hand.tabs.set(1,{attached:true,epoch:0,refs:new Map()});
+  hand.sites.add('https://shop.test'); hand.active = 1; hand.tabs.set(1,{grantedOrigin:'https://shop.test',attached:true,epoch:0,refs:new Map()});
   hand.signal = new AbortController().signal;
   hand.inspect = async () => ({name:'Add to cart',product:'Charger',connected:true,type:'submit',method:'post',form:'Buy now'});
   hand.effectWorld = async () => 1;

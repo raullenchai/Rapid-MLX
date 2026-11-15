@@ -93,6 +93,8 @@ function fakeHand(allow = false) {
     send:async (id,method,params) => {
       commands.push({id,method,params});
       if (method === 'Accessibility.getFullAXTree') return {nodes:fixture};
+      if (method === 'Runtime.evaluate') return {result:{objectId:'object',value:params.expression.includes('JSON.stringify') ? '[]' : false}};
+      if (method === 'DOM.describeNode') return {node:{backendNodeId:22,nodeName:'INPUT'}};
       if (method === 'DOM.resolveNode') return {object:{objectId:'object'}};
       if (method === 'Runtime.callFunctionOn') return {result:{value:{name:'Send',form:'Send a message',connected:true,type:'button'}}};
       return {};
@@ -125,11 +127,11 @@ test('password fill blocks outright even when approval would allow it', async ()
   await assert.rejects(hand.execute('fill',{ref:'e3',text:'secret'},hand.signal),/blocked_sensitive_field/);
   assert.ok(!commands.some(c => c.method.startsWith('Input.')));
 });
-test('page-initiated document redirects proceed without approval', async () => {
-  const {hand,commands} = fakeHand();
-  await hand.event(1,'Fetch.requestPaused',{requestId:'req',request:{url:'https://new.example/path'}});
-  assert.equal(commands.at(-1).method,'Fetch.continueRequest');
-  assert.ok(!commands.some(c => c.method === 'Fetch.failRequest'));
+test('page-initiated main-frame redirects are blocked on denied site approval', async () => {
+  const {hand,commands} = fakeHand(); hand.tabs.get(1).mainFrame = 'main';
+  await hand.event(1,'Fetch.requestPaused',{frameId:'main',requestId:'req',request:{url:'https://new.example/path'}});
+  assert.equal(commands.at(-1).method,'Fetch.failRequest');
+  assert.ok(!commands.some(c => c.method === 'Fetch.continueRequest'));
 });
 test('takeover revokes ownership; abort remains effective after cleanup', async () => {
   const {hand} = fakeHand(); const controller = new AbortController(); hand.signal = controller.signal;
@@ -297,7 +299,7 @@ test('search effect wins over generic submit but never explicit consequential ef
       assert.equal(classifyTarget({name,type:'submit',method,form:'Search query',action:'https://example.org/search'}).consequential,false);
     }
   }
-  assert.equal(classifyTarget({name:'Submit',formName:'Search',method:'get'}).consequential,false);
+  assert.equal(classifyTarget({name:'Submit',formName:'Search',method:'get'}).consequential,true);
   assert.equal(classifyTarget({name:'提交',action:'https://example.org/search',method:'post'}).consequential,false);
   for (const effect of ['Send','Pay','Buy','Delete','Publish','Post','Transfer','Confirm','发送','支付','购买','删除','发布','转账','确认']) {
     for (const field of ['submitter','formName','form','action']) {
@@ -394,7 +396,7 @@ test('ordinary Enter without a consequential form is ungated', async () => {
   assert.ok(!commands.some(c => c.params?.key === 'Enter'));
 });
 
-test('iframe loads and unsolicited main-frame redirects neither prompt nor invalidate refs', async () => {
+test('passive iframe loads stay unchanged; unsolicited main-frame redirects require approval', async () => {
   const {hand,commands} = fakeHand(); let approvals = 0;
   hand.approve = async () => { approvals++; return false; };
   const t = hand.tabs.get(1); t.mainFrame = 'main'; t.refs.set('e99',{});
@@ -405,9 +407,10 @@ test('iframe loads and unsolicited main-frame redirects neither prompt nor inval
   ]) await hand.event(1,'Fetch.requestPaused',{...p,requestId:'r',request:{url:'https://ads.example'}});
   t.agentInputUntil = Date.now()+1000;
   await hand.event(1,'Page.frameRequestedNavigation',{frameId:'main',reason:'scriptInitiated',url:'https://ads.example'});
-  assert.equal(t.agentNavigation,undefined);
-  assert.equal(approvals,0);
-  assert.equal(commands.filter(c => c.method === 'Fetch.continueRequest').length,3);
+  assert.equal(t.agentNavigation,null);
+  assert.equal(approvals,2);
+  assert.equal(commands.filter(c => c.method === 'Fetch.continueRequest').length,1);
+  assert.equal(commands.filter(c => c.method === 'Fetch.failRequest').length,2);
 });
 
 test('agent main-frame click navigation gates the actual destination and reports denial', async () => {

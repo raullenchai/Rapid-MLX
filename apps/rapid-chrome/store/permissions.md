@@ -5,14 +5,19 @@
   screenshots when the user enables a vision model. Detaches on Stop, completion,
   or user takeover. The browser displays its debugging indicator.
 - `tabs`: identifies the current tab for explicit sharing and tracks navigation,
-  closure, and ownership. Tab metadata is not uploaded in bulk.
+  closure, and ownership. The current tab’s URL and title are omitted from model requests before an
+  explicit share or control grant. Every new main-frame origin, including a
+  redirected or script-initiated destination, requires site approval. Passive
+  subframes do not acquire control authority.
 - `scripting`: installs an isolated status border and Stop control in owned tabs
   where access permits. The debugger isolated-world path handles other shared pages.
 - `tabGroups`: groups task-created tabs and detects when the user moves a tab out
   of the task group, relinquishing ownership.
 - `storage`: local settings, API key, bounded conversation history and run
   snapshots; session shared-tab ownership and debug trace. Interrupted runs
-  restore as stopped and approvals expire. There is no synchronized storage.
+  restore as stopped and approvals expire. There is no synchronized storage. New chat offers permanent deletion of all
+  chats, activity checkpoints, and traces, or keeping the conversation in history.
+  Stored tool arguments/results and trace events have UTF-8 byte limits.
 - `favicon`: displays Chrome-provided site icons through the extension `_favicon`
   endpoint. If no icon loads, Rapid keeps a site initial.
 - `sidePanel`: hosts the conversation, settings, approvals, and Stop button.

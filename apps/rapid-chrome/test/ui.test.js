@@ -13,6 +13,7 @@ function dom() {
   const nodes = new Map();
   const document = {body:{dataset:{}},activeElement:null};
   const make = (tag = 'div') => ({tagName:tag.toUpperCase(),dataset:{},style:{},children:[],options:[],elements:[],hidden:true,value:'',scrollHeight:100,scrollTop:0,clientHeight:100,
+    showModal() { this.open = true; },close() { this.open = false; },
     append(...children) { this.children.push(...children); this.options.push(...children); },
     replaceChildren(...children) { this.children = children; this.options = children; },
     querySelectorAll(selector) { return this.children.filter(c => selector === 'details[open]' && c.open); },
@@ -153,4 +154,17 @@ test('running elapsed time belongs to the activity summary and completion has no
   p.render(snapshot({resultTab:7,messages:[{role:'assistant',content:'Done'}],run:{startedAt:1000,endedAt:6000}}));
   const html = readFileSync(new URL('../panel.html',import.meta.url),'utf8');
   assert.doesNotMatch(html,/id="(?:activity-elapsed|error-elapsed|result-tab)"/);
+});
+
+
+test('P2 New chat offers keep, real deletion, and cancel choices without an automatic archive', () => {
+  const {get,sent} = panel();
+  get('new-chat').onclick(); assert.equal(get('new-chat-choice').open,true);
+  assert.equal(sent.length,0);
+  get('cancel-new-chat').onclick(); assert.equal(get('new-chat-choice').open,false);
+  assert.equal(sent.length,0);
+  get('new-chat').onclick(); get('delete-chats').onclick();
+  assert.equal(sent.at(-1).type,'new-chat'); assert.equal(sent.at(-1).deleteHistory,true);
+  get('new-chat').onclick(); get('archive-chat').onclick();
+  assert.equal(sent.at(-1).deleteHistory,false);
 });

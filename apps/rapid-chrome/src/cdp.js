@@ -2,7 +2,7 @@ import { t } from './i18n.js';
 import { watchEffects, collectEffects, effectReport } from './effects.js';
 import { detectChallenge } from './challenge.js';
 import { outlineAX } from './ax.js';
-import { safeURL, classifyTarget, needsSiteApproval, additionKey, NavigationPolicy } from './safety.js';
+import { safeURL, classifyTarget, needsSiteApproval, additionKey, NavigationPolicy, sensitivePage } from './safety.js';
 import { delay } from './agent.js';
 import { overlay, overlayPointer } from './overlay.js';
 
@@ -128,6 +128,7 @@ export class BrowserHand {
   invalidate(id) { const t = this.tabs.get(id); if (t) { t.refs.clear(); t.epoch++; } }
   async site(url, action = 'Navigate') {
     const u = safeURL(url, this.settings.base);
+    if (sensitivePage(u.href)) throw new Error('blocked_sensitive_page: complete this page yourself');
     if (needsSiteApproval(u.href, this.sites)) {
       if (!this.pendingSites.has(u.origin)) {
         const request = (async () => {
@@ -170,7 +171,8 @@ export class BrowserHand {
     this.signal = signal; this.additions.clear(); this.denials.clear(); this.sites.clear(); this.pendingSites.clear();
     if (this.active !== null && this.tabs.has(this.active)) {
       const tab = await this.a.get(this.active);
-      if (!tab.url?.startsWith('chrome-error://')) this.sites.add(safeURL(tab.url,this.settings.base).origin);
+      const owned = this.tabs.get(this.active);
+      if (owned.grantedOrigin && owned.grantedOrigin === new URL(tab.url).origin) this.sites.add(owned.grantedOrigin);
     }
     for (const [id] of this.tabs) { await this.own(id); this.invalidate(id); await this.showOverlay(id,true); }
   }
@@ -226,7 +228,7 @@ export class BrowserHand {
         if (p.frame.url?.startsWith('chrome-error://')) { t.loadError = p.frame.url; return; }
         delete t.loadError;
         if (t.bootstrapping && p.frame.url === 'about:blank') return;
-        try { safeURL(p.frame.url,this.settings.base); } catch { await this.takeover(id,'navigated to a blocked URL'); return; }
+        try { await this.site(p.frame.url); } catch { await this.takeover(id,'navigated to a blocked URL'); return; }
       }
     }
     if (method === 'Page.navigatedWithinDocument' && (!p.frameId || p.frameId === t.mainFrame)) this.invalidate(id);
@@ -239,9 +241,9 @@ export class BrowserHand {
     if (method === 'Fetch.requestPaused') {
       try {
         if (!this.signal || this.signal.aborted) throw new Error('Task stopped');
-        // Fetch also pauses ads/subframes and page redirects. Only an attributed
-        // main-frame input navigation may create an approval card.
-        if (p.frameId === t.mainFrame && t.agentNavigation === p.request.url && !p.redirectedRequestId) {
+        // Every main-frame request, including redirects and script navigation,
+        // must pass site policy. Passive subframe requests remain independent.
+        if (p.frameId === t.mainFrame) {
           t.agentNavigation = null;
           t.navigationGate = this.site(p.request.url);
           try { await t.navigationGate; } finally { t.navigationGate = null; }
@@ -260,12 +262,70 @@ export class BrowserHand {
     if (!this.tabs.has(id)) throw new Error('unowned_tab: use open_tab or ask the user to share a tab');
     if (!this.tabs.get(id).attached) throw new Error('tab_detached: ask the user to keep working');
     try { await this.tabs.get(id).navigationGate; } catch { /* surfaced below */ }
-    const tab = await this.a.get(id);
+    let tab = await this.a.get(id);
     // Observing a page-initiated redirect is not an agent navigation.
-    if (!tab.url?.startsWith('chrome-error://')) safeURL(tab.url,this.settings.base);
+    if (!tab.url?.startsWith('chrome-error://')) {
+      for (let attempt=0;attempt<3;attempt++) {
+        await this.site(tab.url);
+        const fresh = await this.a.get(id);
+        if (fresh.url === tab.url) break;
+        tab = fresh;
+        if (attempt === 2) throw new Error('stale_ref: page kept navigating during site approval');
+      }
+      await this.guardSensitivePage(id);
+    }
     const denied = this.tabs.get(id).navigationDenied;
     if (denied) { delete this.tabs.get(id).navigationDenied; throw new Error(denied); }
     this.active = id; return {id,tab,t:this.tabs.get(id)};
+  }
+  async guardSensitivePage(id) {
+    const {frameTree} = await this.send(id,'Page.getFrameTree');
+    const frames = frameTree ? [frameTree] : [null];
+    while (frames.length) {
+      const frame = frames.shift(); frames.push(...(frame?.childFrames || []));
+      const world = frame ? await this.send(id,'Page.createIsolatedWorld',{frameId:frame.frame.id,worldName:'Rapid sensitive-page inspection'}) : {};
+      const r = await this.send(id,'Runtime.evaluate',{...(world.executionContextId ? {contextId:world.executionContextId} : {}),expression:`(${sensitiveDocument.toString()})()`,returnByValue:true});
+      if (r.exceptionDetails || r.result?.value === true) throw new Error('blocked_sensitive_page: sensitive fields present or inspection unavailable; complete this page yourself');
+    }
+  }
+  async focused(id) {
+    const {frameTree} = await this.send(id,'Page.getFrameTree');
+    let frameId = frameTree?.frame.id;
+    const visited = new Set();
+    for (let depth=0;depth<16;depth++) {
+      if (frameId && visited.has(frameId)) break;
+      if (frameId) visited.add(frameId);
+      const world = frameId ? await this.send(id,'Page.createIsolatedWorld',{frameId,worldName:'Rapid focus inspection'}) : {};
+      const r = await this.send(id,'Runtime.evaluate',{...(world.executionContextId ? {contextId:world.executionContextId} : {}),expression:'(() => { let e = document.activeElement; while (e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement; return e; })()',returnByValue:false});
+      if (!r.result?.objectId) break;
+      const {node} = await this.send(id,'DOM.describeNode',{objectId:r.result.objectId,depth:1});
+      if (!node?.backendNodeId) break;
+      if (['IFRAME','FRAME'].includes(node.nodeName)) {
+        frameId = node.contentDocument?.frameId || node.frameId;
+        if (!frameId) break;
+        continue;
+      }
+      if (node.shadowRoots?.some(root => root.shadowRootType === 'closed')) break;
+      return {objectId:r.result.objectId,backendDOMNodeId:node.backendNodeId,epoch:this.tabs.get(id).epoch,name:'Focused element'};
+    }
+    throw new Error('unresolved_focus: keyboard action requires a resolved control; use a fresh ref or take over');
+  }
+  async verifyFocus(id, target) {
+    await this.verifyApproval(id,target);
+    const actual = await this.focused(id);
+    if (actual.backendDOMNodeId !== target.backendDOMNodeId || actual.epoch !== target.epoch)
+      throw new Error('focus_changed: input recipient changed; read_page before trying again');
+    const info = await this.inspect(id,actual);
+    if (classifyTarget(info).sensitive) throw new Error('blocked_sensitive_field: focused field is sensitive');
+    const latest = await this.focused(id);
+    if (latest.backendDOMNodeId !== actual.backendDOMNodeId || latest.epoch !== actual.epoch)
+      throw new Error('focus_changed: input recipient changed during inspection');
+  }
+  async verifyApproval(id,target) {
+    await this.current({tabId:id});
+    const snapshot = target.approvedInfo || target.inspectedInfo;
+    if (snapshot && (target.epoch !== this.tabs.get(id)?.epoch || JSON.stringify(snapshot) !== JSON.stringify(await this.inspect(id,target))))
+      throw new Error('stale_ref: form values or target changed after approval; request a fresh approval');
   }
   async resolve(id, ref) {
     // Accept the outline's display brackets, but only for a current exact ref.
@@ -292,9 +352,16 @@ export class BrowserHand {
       const accessibleName = node => node ? (node.getAttribute('aria-label') || (node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => node.ownerDocument.getElementById(id)?.textContent || '').join(' ').trim() || node.innerText || node.value || '') : '';
       const submitters = form ? [...form.elements].filter(el => ['submit','image'].includes(el.type)) : [];
       const recipients = form ? [...form.elements].filter(el => /^(?:to|cc|bcc)$/i.test(el.name || '')).map(el => `${el.name}: ${el.value}`).join('; ').slice(0,500) : '';
+      const fields = form ? [...form.elements].filter(el => ['INPUT','SELECT','TEXTAREA'].includes(el.tagName)) : [];
+      if (fields.length > 100) throw new Error('Form too large to bind');
+      const values = fields.map(el => ({name:el.name || el.id || '',type:el.type || '',value:el.value,checked:el.checked,disabled:el.disabled,selected:el.tagName === 'SELECT' ? [...el.selectedOptions].map(o => o.value) : undefined}));
+      if (JSON.stringify(values).length > 16000) throw new Error('Form too large to bind');
+      const sensitiveField = el => el.type === 'password' || /^(?:cc-|current-password|new-password)/i.test(el.autocomplete || '') || /password|cvv|cvc|card.?number|security.?code/i.test(el.name+' '+el.id);
+      const sensitiveForm = fields.some(sensitiveField);
+      const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${(v.type === 'hidden' && !/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(v.name)) || /password|cc-|cvv|cvc|card|token|secret|account|routing/i.test(v.name+' '+v.type) || fields.some(el => (el.name || el.id || '') === v.name && sensitiveField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
       const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.closest('[role="dialog"],dialog')?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '';
-      return {expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
+      return {values,details,sensitiveForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }
   async gateTarget(id, target, action, {fill = false, submit = false, always = false} = {}) {
@@ -313,13 +380,17 @@ export class BrowserHand {
       const effectName = (submit || info.type === 'submit') && info.submitter ? info.submitter : approvalName;
       const denialKey = JSON.stringify([new URL(tab.url).origin,info.action || new URL(tab.url).pathname,effectName.trim().toLocaleLowerCase()]);
       if (this.denials.has(denialKey)) throw new Error(`denied: '${effectName}' was already denied in this task; approval will not be requested again`);
-      if (!await this.approve({action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
+      if (info.values && !info.values.length && /\b(?:buy|pay|purchase|place order|transfer|book|reserve)\b/i.test(approvalName))
+        throw new Error('blocked_sensitive_page: transaction values are opaque; complete this transaction yourself');
+      if (!await this.approve({action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.details ? ` Form values: ${info.details}` : info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
         this.denials.add(denialKey);
         throw new Error(`denied: ${action} '${effectName}'`);
       }
       this.check();
+      target.approvedInfo = info;
       if (target.epoch !== this.tabs.get(id)?.epoch || JSON.stringify(info) !== JSON.stringify(await this.inspect(id,target))) throw new Error('stale_ref: target changed during approval; call read_page');
     }
+    target.inspectedInfo = info;
     // Link/form targets can address an iframe; gate the actual main-frame request.
     return info;
   }
@@ -355,6 +426,7 @@ export class BrowserHand {
     }
     if (!accepted && await this.call(id,target.objectId,canActivate) !== true)
       throw new Error('obscured_target: hit test failed and approved target is not visible/enabled');
+    await this.verifyApproval(id,target);
     if (target.epoch !== this.tabs.get(id)?.epoch) throw new Error('stale_ref: call read_page');
     this.tabs.get(id).agentInputUntil = Date.now()+1500;
     const t = this.tabs.get(id);
@@ -374,6 +446,7 @@ export class BrowserHand {
         }
         if (target.epoch !== t.epoch || await this.call(id,target.objectId,canActivate) !== true)
           throw new Error('stale_ref: approved target changed before DOM activation');
+        await this.verifyApproval(id,target);
         await this.call(id,target.objectId,function () { this.click(); });
       }
     } finally { t.dispatchingInput = false; }
@@ -481,7 +554,11 @@ export class BrowserHand {
   async executeCore(name,args,signal) {
     this.signal = signal; this.check();
     if (name === 'list_tabs') {
-      const tabs = await Promise.all([...this.tabs.keys()].map(async id => { const t = await this.a.get(id); return {tabId:id,title:t.title,url:t.url,attached:this.tabs.get(id).attached}; }));
+      const tabs = [];
+      for (const id of this.tabs.keys()) {
+        const {tab,t} = await this.current({tabId:id});
+        tabs.push({tabId:id,title:tab.title,url:tab.url,attached:t.attached});
+      }
       return {tabs};
     }
     if (name === 'wait') { await delay(args.ms,signal); return {text:`Waited ${args.ms}ms`,...(this.tabs.has(this.active) ? await this.meta(this.active) : {})}; }
@@ -495,6 +572,7 @@ export class BrowserHand {
       await this.showOverlay(tab.id,true);
       return {text:'Opened tab',tabId:tab.id,...await this.meta(tab.id)};
     }
+    if (name === 'navigate' && args.url) this.navigation.check(safeURL(args.url,this.settings.base));
     const {id,tab,t} = await this.current(args);
     if (name === 'read_page') {
       t.agentInputUntil = 0;
@@ -598,9 +676,11 @@ export class BrowserHand {
         if (!native?.handled) {
           await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId});
           await this.send(id,'DOM.focus',{backendNodeId:target.backendDOMNodeId});
+          await this.verifyFocus(id,target);
           // CDP editing command is platform independent (unlike Ctrl/Command+A).
           await this.send(id,'Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',commands:['selectAll']});
           await this.send(id,'Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA'});
+          await this.verifyFocus(id,target);
           await this.send(id,'Input.insertText',{text:args.text});
           if (args.choose) activation = await this.chooseOption(id,args.choose);
         }
@@ -610,17 +690,22 @@ export class BrowserHand {
           const info = await this.inspect(id,target);
           if (classifyTarget(info).sensitive) throw new Error('blocked_sensitive_field');
           if (target.additionKey) this.additions.add(target.additionKey);
+          await this.verifyFocus(id,target);
           await this.key(id,'Enter');
         }
       }
     } else if (name === 'press') {
-      const r = await this.send(id,'Runtime.evaluate',{expression:'document.activeElement',returnByValue:false});
-      const target = {objectId:r.result.objectId,epoch:t.epoch,name:'Focused element'};
+      if (!['Enter','Space','Delete','Backspace'].includes(args.key)) {
+        await this.key(id,args.key);
+        return {text:`${name} completed`,...await this.meta(id)};
+      }
+      const target = await this.focused(id);
       // Enter submits the focused form; classify that effect just like fill+submit.
       if (['Enter','Space','Delete','Backspace'].includes(args.key))
         await this.gateTarget(id,target,`Press ${args.key}`,{submit:args.key === 'Enter'});
       if (['Enter','Space'].includes(args.key) && target.additionKey) this.additions.add(target.additionKey);
       if (args.key === 'Enter') t.agentInputUntil = Date.now()+1500;
+      await this.verifyFocus(id,target);
       await this.key(id,args.key);
     } else if (name === 'scroll') {
       if (args.ref) { const target = await this.resolve(id,args.ref); await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId}); }
@@ -628,5 +713,16 @@ export class BrowserHand {
     }
     return {text:`${name} completed`,...(activation ? {activation} : {}),...await this.meta(id)};
   }
-  async meta(id) { const tab = await this.a.get(id); return {url:tab.url,title:tab.title}; }
+  async meta(id) { const {tab} = await this.current({tabId:id}); return {url:tab.url,title:tab.title}; }
+}
+
+export function sensitiveDocument() {
+  const scan = root => {
+    for (const e of root.querySelectorAll('*')) {
+      if (e.shadowRoot && scan(e.shadowRoot)) return true;
+      if (e.tagName === 'INPUT' && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && (e.type === 'password' || /^(?:cc-|current-password|new-password)/i.test(e.autocomplete || '') || /(?:card.?number|cvv|cvc|security.?code|bank.?account|routing.?number)/i.test(e.name+' '+e.id))) return true;
+    }
+    return false;
+  };
+  return scan(document);
 }

@@ -26,3 +26,5 @@ import './ui-lifecycle.test.js';
 import './ui-round2.test.js';
 
 import './round-c.test.js';
+
+import './security-review.test.js';

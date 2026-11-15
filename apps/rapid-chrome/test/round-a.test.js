@@ -61,11 +61,11 @@ test('native fill and option click integrate with the browser gates without send
     return control.fill(...args);
   };
   await hand.executeCore('fill',{ref:'e1',text:'2'},hand.signal);
-  assert.equal(control.e.value,'2'); assert.equal(gated,1); assert.deepEqual(commands,[]);
+  assert.equal(control.e.value,'2'); assert.equal(gated,1); assert.ok(commands.every(c => ['Runtime.evaluate','Page.getFrameTree'].includes(c)));
   const option={tagName:'OPTION',value:'1',closest:() => control.e};
   hand.call=async () => control.fill(undefined,undefined,option);
   assert.equal(await hand.click(1,{role:'option',epoch:0}),'native option selection');
-  assert.equal(control.e.value,'1'); assert.deepEqual(commands,[]);
+  assert.equal(control.e.value,'1'); assert.ok(commands.every(c => ['Runtime.evaluate','Page.getFrameTree'].includes(c)));
 });
 
 test('failed clicks include a fresh outline so the model can recover without a stale-ref reread loop', async () => {
@@ -151,7 +151,7 @@ test('denied submit cannot re-request via changed refs, Enter, or fill+submit; u
     info={...info,name:opts.submit ? 'Ticket quantity' : 'Buy tickets',type:opts.submit ? 'text' : 'submit'};
     await assert.rejects(hand.gateTarget(1,{epoch:1,name:'new ref'},'Press Enter',opts),/already denied/);
   }
-  assert.equal(cards.length,1); assert.deepEqual(commands,[]);
+  assert.equal(cards.length,1); assert.ok(commands.every(c => ['Runtime.evaluate','Page.getFrameTree'].includes(c)));
   info={...info,name:'Submit refund',type:'submit',submitter:'Submit refund',action:'https://mail.test/refund'};
   await assert.rejects(hand.gateTarget(1,{epoch:1},'click'),/denied/);
   assert.equal(cards.length,2);

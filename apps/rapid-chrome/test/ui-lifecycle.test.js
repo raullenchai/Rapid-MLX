@@ -8,10 +8,10 @@ import { clip } from '../src/transcript.js';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const event = () => ({listeners:[],addListener(fn) { this.listeners.push(fn); }});
 
-test('take-over yields all tabs, early Resume waits for detach, and bounded conversations restore locally', async () => {
-  const snapshots = [], persisted = [];
+test('P2 New chat deletes all chats, checkpoints, tool activity and traces; archival and takeover still work', async () => {
+  const snapshots = [], persisted = [], sessionWrites = [], removed = [];
   let hand, detachDone, inferenceDone, resumed = false, finished = false, storageBroken = false;
-  const storage = {local:{get:async () => ({settings:{base:'http://localhost:8000',model:'fixture'},conversation:Array.from({length:70},(_,i) => ({role:i % 2 ? 'assistant' : 'user',content:`message ${i}`})),chats:[]}),set:async value => { if (storageBroken) throw new Error('quota'); persisted.push(structuredClone(value)); }},session:{get:async () => ({}),set:async () => {},remove:async () => {}}};
+  const storage = {local:{get:async () => ({settings:{base:'http://localhost:8000',model:'fixture'},conversation:Array.from({length:70},(_,i) => ({role:i % 2 ? 'assistant' : 'user',content:`message ${i}`})),chats:[]}),set:async value => { if (storageBroken) throw new Error('quota'); persisted.push(structuredClone(value)); }},session:{get:async () => ({}),set:async value => sessionWrites.push(structuredClone(value)),remove:async key => removed.push(key)}};
   class Hand {
     constructor() { hand = this; this.tabs = new Map([[7,{attached:true,refs:new Map()}]]); this.active = 7; this.notices = []; this.owns = 0; this.finishes = 0; }
     async begin() {}
@@ -25,8 +25,10 @@ test('take-over yields all tabs, early Resume waits for detach, and bounded conv
     async showOverlay() {}
   }
   const chrome = {storage,runtime:{getURL:p => `chrome-extension://unit/${p}`,onConnect:event(),onMessage:event(),getPlatformInfo(){}},tabs:{onRemoved:event(),onUpdated:event()},debugger:{onEvent:event(),onDetach:event()},action:{onClicked:event()},commands:{onCommand:event()}};
-  const runAgent = async ({checkpoint,emit,execute}) => {
+  const runAgent = async ({checkpoint,emit,execute,trace}) => {
     await execute("read_page",{},new AbortController().signal);
+    await trace({kind:'tool',args:{text:'🔒'.repeat(20000)},result:'🔒'.repeat(20000)});
+    emit({kind:'step',id:'huge',name:'fill',args:{text:'🔒'.repeat(20000)},result:'🔒'.repeat(20000),status:'ok'});
     await new Promise(resolve => {inferenceDone = resolve;});
     await checkpoint(); resumed = true;
     emit({kind:'answer',text:'Finished with fresh browser ownership.'}); finished = true;
@@ -56,6 +58,19 @@ test('take-over yields all tabs, early Resume waits for detach, and bounded conv
   assert.ok(archived.messages.length <= 60);
   send({type:'restore-chat',id:archived.id}); await tick();
   assert.equal(snapshots.at(-1).messages.at(-1).content,'Finished with fresh browser ownership.');
+  assert.ok(uiState.storedBytes(JSON.stringify(sessionWrites.findLast(v => v.debugTrace).debugTrace.events.find(e => e.truncated))) <= 16384);
+  const savedStep = persisted.findLast(v => v.runState?.steps?.length).runState.steps[0];
+  assert.ok(uiState.storedBytes(JSON.stringify(savedStep.args)) <= 4096);
+  assert.ok(uiState.storedBytes(JSON.stringify(savedStep.result)) <= 8192);
+  send({type:'new-chat',deleteHistory:true}); await tick(); await tick();
+  assert.equal(snapshots.at(-1).chats.length,0);
+  assert.equal(snapshots.at(-1).messages.length,0);
+  assert.equal(snapshots.at(-1).steps.length,0);
+  assert.equal(persisted.findLast(v => v.chats).chats.length,0);
+  assert.equal(persisted.findLast(v => v.runState).runState.messages.length,0);
+  assert.equal(persisted.findLast(v => v.runState).runState.steps.length,0);
+  assert.equal(sessionWrites.findLast(v => v.transcript).transcript.length,0);
+  assert.ok(removed.includes('debugTrace'));
   storageBroken = true; send({type:'new-chat'}); await tick();
   assert.equal(snapshots.at(-1).historyWarning,'historySaveFailed');
   assert.equal(snapshots.at(-1).messages.length,0,'a storage failure must not trap the UI in the old chat');

@@ -584,7 +584,7 @@
     "message": "Privacy"
   },
   "historyPrivacy": {
-    "message": "Recent conversations are saved on this device (60 messages each, 8 previous chats). Browser observations and page context you attach are sent to your chosen engine. New chat starts a fresh conversation."
+    "message": "Recent conversations are saved on this device (up to 60 messages each, 8 previous chats). Page context is sent after sharing. New chat offers to keep history or delete all chats and activity."
   },
   "help": {
     "message": "Help"
@@ -834,5 +834,17 @@
   },
   "handoverPermissionAction": {
     "message": "Review a permission prompt"
+  },
+  "newChatTitle": {
+    "message": "Start a new chat"
+  },
+  "newChatChoice": {
+    "message": "Keep this conversation in local history, or permanently delete all chats, stored activity, and diagnostics. Settings and tab sharing are kept."
+  },
+  "keepChatHistory": {
+    "message": "Keep in history"
+  },
+  "deleteAllChats": {
+    "message": "Delete all chats and activity"
   }
 }

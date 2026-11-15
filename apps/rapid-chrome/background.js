@@ -1,4 +1,4 @@
-import { errorType, runSnapshot, restoreRun } from './src/ui-state.js';
+import { errorType, runSnapshot, restoreRun, boundedStored } from './src/ui-state.js';
 import { BrowserHand, ChromeAdapter } from './src/cdp.js';
 import { runAgent } from './src/agent.js';
 import { LOCAL_ENDPOINTS, testConnection, redact } from './src/endpoint.js';
@@ -46,7 +46,7 @@ function publish() {
 }
 function refreshTabs() {
   state.tabs = [...hand.tabs].map(([id,t]) => ({id,attached:t.attached})); publish();
-  void chrome.storage.session.set({owned:[...hand.tabs].map(([id,t]) => ({id,created:t.created,groupId:t.groupId,binding:t.binding}))});
+  void chrome.storage.session.set({owned:[...hand.tabs].map(([id,t]) => ({id,created:t.created,groupId:t.groupId,binding:t.binding,grantedOrigin:t.grantedOrigin}))});
 }
 function persistConversation() {
   return chrome.storage.local.set({conversation:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,12000)})),chats:state.chats.slice(-8)}).then(() => { state.historyWarning = ''; },() => { state.historyWarning = t('historySaveFailed'); publish(); });
@@ -156,10 +156,11 @@ async function run(task, tabId) {
   let currentTab;
   let browserStarted = false, grantDenied = false;
   const visited = new Set();
-  const debugTrace = {version:1,id:crypto.randomUUID(),task,startedAt:new Date().toISOString(),events:[]};
+  const debugTrace = {version:1,id:crypto.randomUUID(),task:boundedStored(redact(task,state.settings.apiKey)),startedAt:new Date().toISOString(),events:[]};
   const started = Date.now();
   const trace = async event => {
-    debugTrace.events.push(redact({atMs:Date.now()-started,...event},state.settings.apiKey));
+    debugTrace.events.push(boundedStored(redact({atMs:Date.now()-started,...event},state.settings.apiKey),16384));
+    debugTrace.events = debugTrace.events.slice(-200);
     await chrome.storage.session.set({debugTrace:redact(debugTrace,state.settings.apiKey)});
   };
   state.messages.push({id:crypto.randomUUID(),role:'user',content:task,at:new Date().toISOString()}); void persistConversation(); publish();
@@ -178,7 +179,7 @@ async function run(task, tabId) {
         const allowed = await approve({kind:'grant',action:'Let Rapid control this tab',site:`${currentTab.title || ''}\n${currentTab.url}`,tabId:currentTab.id});
         signal.throwIfAborted();
         if (!allowed) { grantDenied = true; throw new Error('denied: Let Rapid control this tab'); }
-        hand.tabs.set(currentTab.id,{attached:false,created:false,groupId:currentTab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
+        hand.tabs.set(currentTab.id,{grantedOrigin:safeURL(currentTab.url,state.settings.base).origin,attached:false,created:false,groupId:currentTab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
         if (browserStarted) { await hand.own(currentTab.id); await hand.showOverlay(currentTab.id,true); }
       }
       if (!browserStarted) {
@@ -190,7 +191,7 @@ async function run(task, tabId) {
       let result;
       try { result = await hand.execute(...a); }
       catch (e) {
-        if (/blocked_sensitive_field|needs_human_permission/.test(e.message)) {
+        if (/blocked_sensitive_field|blocked_sensitive_page|needs_human_permission/.test(e.message)) {
           const kind = /permission/.test(e.message) ? 'permission' : 'login';
           await challenge({kind,message:t(kind === 'permission' ? 'handoverPermission' : 'handoverSensitive'),reason:t(kind === 'permission' ? 'permissionHandover' : 'sensitiveHandover')});
           signal.throwIfAborted();
@@ -257,7 +258,8 @@ async function handle(message) {
   }
   if (message.type === 'new-chat') {
     if (state.running) throw new Error('Stop the task before starting a new chat');
-    archiveConversation();
+    if (message.deleteHistory === true) state.chats = [];
+    else archiveConversation();
     state.run = null; state.error = null; state.messages = []; state.steps = []; state.resultTab = null; state.status = 'Ready'; hand.notices = [];
     await persistConversation();
     await chrome.storage.session.set({transcript:[]});
@@ -287,7 +289,7 @@ async function handle(message) {
     const [tab] = await chrome.tabs.query({active:true,lastFocusedWindow:true});
     if (!tab) throw new Error('No active tab');
     if (!tab.url?.startsWith('chrome-error://')) safeURL(tab.url,state.settings.base);
-    hand.tabs.set(tab.id,{attached:false,created:false,groupId:tab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
+    hand.tabs.set(tab.id,{grantedOrigin:safeURL(tab.url,state.settings.base).origin,attached:false,created:false,groupId:tab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
     hand.active = tab.id; refreshTabs();
     // The tab chip is the grant receipt; keep it out of the conversation.
   }

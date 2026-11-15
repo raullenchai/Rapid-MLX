@@ -27,7 +27,7 @@ export function errorType(value = '') {
   return 'unknown';
 }
 export function runSnapshot(state) {
-  return {version:1,savedAt:Date.now(),sequence:state.sequence,run:state.run,messages:state.messages.slice(-60).map(m => ({...m,content:String(m.content).slice(0,12000)})),steps:state.steps.slice(-100).map(s => ({...s,result:String(s.result || '').slice(0,6000)})),status:state.status,error:state.error,running:state.running,paused:state.paused,pauseReason:state.pauseReason,resultTab:state.resultTab};
+  return {version:1,savedAt:Date.now(),sequence:state.sequence,run:state.run,messages:state.messages.slice(-60).map(m => ({...m,content:String(m.content).slice(0,12000)})),steps:state.steps.slice(-100).map(storedStep),status:state.status,error:state.error,running:state.running,paused:state.paused,pauseReason:state.pauseReason,resultTab:state.resultTab};
 }
 export function restoreRun(saved) {
   if (saved?.version !== 1) return {};
@@ -45,4 +45,23 @@ export function quietSteps(steps) {
     const prev = steps[i-1];
     return !(prev && step.name === 'read_page' && prev.name === step.name && prev.url === step.url && prev.status === step.status && JSON.stringify(prev.args) === JSON.stringify(step.args));
   });
+}
+
+// Limits are UTF-8 bytes, including JSON structure, rather than character counts.
+export function storedBytes(text) {
+  let size = 0;
+  for (const c of String(text)) { const n = c.codePointAt(0); size += n <= 0x7f ? 1 : n <= 0x7ff ? 2 : n <= 0xffff ? 3 : 4; }
+  return size;
+}
+export function boundedStored(value, limit = 8192) {
+  const json = JSON.stringify(value ?? null);
+  if (storedBytes(json) <= limit) return value;
+  return {truncated:true,preview:json.slice(0,Math.max(0,Math.floor((limit-64)/12)))};
+}
+
+function storedStep(step) {
+  const result = boundedStored(String(step.result || ''),8192);
+  return {id:step.id?.slice(0,256),name:step.name?.slice(0,64),status:step.status?.slice(0,32),
+    url:step.url?.slice(0,2000),targetLabel:step.targetLabel?.slice(0,1000),
+    args:boundedStored(step.args,4096),result:typeof result === 'string' ? result : JSON.stringify(result)};
 }

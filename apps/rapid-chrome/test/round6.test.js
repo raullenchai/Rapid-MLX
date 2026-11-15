@@ -100,12 +100,15 @@ test('successful repeated navigation keys and wheels are allowed; failed repeats
 test('fill choose types once and selects a unique observed option through the usual click gate', async () => {
   const {hand,commands} = setup(async (method,p) => {
     if (method === 'Runtime.callFunctionOn' && p.functionDeclaration === fillNative.toString()) return {result:{value:{handled:false}}};
+    if (method === 'Runtime.evaluate') return {result:{objectId:'1',value:false}};
+    if (method === 'DOM.describeNode') return {node:{backendNodeId:1,nodeName:'INPUT'}};
     if (method === 'DOM.resolveNode') return {object:{objectId:String(p.backendNodeId)}};
     if (method === 'Accessibility.getFullAXTree') return {nodes:[ax(10,'option','John F. Kennedy International Airport JFK'),ax(11,'option','LaGuardia LGA')]};
     return {};
   });
   hand.tabs.get(1).refs.set('e1',{backendDOMNodeId:1,role:'combobox',name:'Destination'});
   const gated = [], clicked = [];
+  hand.inspect = async () => ({connected:true,name:'Destination'});
   hand.gateTarget = async (_,target,action,opts) => { gated.push([target.backendDOMNodeId,action,opts]); };
   hand.click = async (_,target) => {clicked.push(target.backendDOMNodeId);return 'pointer';};
   validateTool('fill',{ref:'e1',text:'JFK',choose:'JFK'});

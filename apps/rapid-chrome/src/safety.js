@@ -23,28 +23,32 @@ export function safeURL(value, base) {
 export function needsSiteApproval(url, approvedSites) {
   return !approvedSites.has(new URL(url).origin);
 }
-const consequential = /\b(send|pay|buy|order|checkout|book|reserve|delete|remove|confirm|publish|post|transfer|purchase|enviar|pagar|comprar|eliminar|confirmar|publicar|envoyer|payer|acheter|supprimer|confirmer|publier|senden|bezahlen|kaufen|löschen|bestätigen)\b|发送|發送|支付|付款|购买|購買|下单|下單|订单|訂單|结账|結帳|删除|刪除|移除|确认|確認|发布|發佈|發表|转账|轉帳|送信|購入|削除|送金|결제|삭제|전송/iu;
+const consequential = /\b(submit|send|pay|buy|order|checkout|book|reserve|delete|remove|confirm|publish|post|transfer|purchase|enviar|pagar|comprar|eliminar|confirmar|publicar|envoyer|payer|acheter|supprimer|confirmer|publier|senden|bezahlen|kaufen|löschen|bestätigen)\b|发送|發送|支付|付款|购买|購買|下单|下單|订单|訂單|结账|結帳|删除|刪除|移除|确认|確認|发布|發佈|發表|转账|轉帳|送信|購入|削除|送金|결제|삭제|전송/iu;
 const sensitive = /password|passwd|credit.?card|card.?number|card.?holder|security.?code|\bcvv\b|\bcvc\b|cc-|密码|密碼|信用卡|银行卡|銀行卡|卡号|卡號/iu;
 export function classifyTarget(target = {}) {
   const text = [target.name, target.form, target.label, target.type, target.autocomplete, target.id].filter(Boolean).join(' ');
   // Form context is scoped to the target's form, never the entire page.
   // Explicit effects win over search cues (e.g. Search + Confirm purchase).
   const effect = [target.name, target.label, target.form, target.formName, target.submitter, target.action, target.id].filter(Boolean).join(' ');
-  // Long AX names include itinerary descriptions and unrelated booking copy.
-  const own = String(target.name || target.label || '').trim().slice(0,100).split(/[.!?]\s/)[0];
-  const disclosure = target.expanded === true || target.expanded === false ||
-    ['true','false'].includes(target.expanded) || /^(?:flight details|view details|show details|expand|collapse)\b/i.test(own);
-  const harmless = /^(?:close(?: dialog| modal)?|dismiss|cancel|not now|back|got it|acknowledge|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
+  // Inspect the complete label: padding and sentence breaks must not hide intent.
+  const own = String(target.name || target.label || '').trim();
+  // Page-owned ARIA is not evidence that a control merely discloses content.
+  const disclosure = /^(?:flight details|view details|show details|details about|expand|collapse|show more|load more)\b/i.test(own);
+  const pagination = /^(?:next(?: page)?|previous(?: page)?|page \d+)$/i.test(own);
+  const filterControl = /^(?:filters?|filter by .+|apply(?: filters)?|clear filters|price(?: filter)?|nonstop|airlines|stops)$/i.test(own);
+  const harmless = /^(?:done|close(?: dialog| modal)?|dismiss|cancel|not now|back|got it|acknowledge|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
   const filter = ['checkbox','radio','tab','option','menuitem','switch'].includes(target.role);
   // Filter and dismissal controls do not inherit unrelated form submitters.
   // Explicit destructive/purchase names still win (including close account).
-  const filterName = own.replace(/\b(?:order|confirm)\b|订单|訂單|确认|確認/giu,'');
+  const filterName = /^(?:order by|order history|confirm filters?|订单记录|訂單記錄|确认筛选|確認篩選)/iu.test(own)
+    ? own.replace(/\b(?:order|confirm)\b|订单|訂單|确认|確認/giu,'') : own;
   const explicit = consequential.test(filter ? filterName : own) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
   const search = /\b(search|go|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search';
   const genericSubmit = /\bsubmit\b|提交/iu.test([target.name,target.label].filter(Boolean).join(' ')) || (target.type === 'submit' && Boolean(target.method || target.action || target.form || target.submitter));
   const calendarDate = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:[\s,]+(?:\d{1,4}|MON|TUE|WED|THU|FRI|SAT|SUN|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))*$/i.test(own);
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
-  return { search, consequential: (!disclosure && explicit) || (!(disclosure || harmless || calendarDate || filter || isCartAddition(own)) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
+  const ambiguous = (target.role === 'button' || target.type === 'button') && !(disclosure || pagination || filterControl || harmless || calendarDate || filter || isCartAddition(own) || search);
+  return { search, consequential: explicit || ambiguous || Boolean(target.longName || target.sensitiveForm) || (!(disclosure || pagination || filterControl || harmless || calendarDate || filter || isCartAddition(own)) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
 export function isCartAddition(name = '') {
@@ -76,4 +80,14 @@ export class NavigationPolicy {
     if (root || search) return; // A new origin must then receive site approval.
     throw new Error('unobserved_url: URL was not supplied by the user or seen as an href in an outline in this task. Click a link from the page or use site search; do not invent product or venue URLs.');
   }
+}
+
+// Deliberately small list; exact hosts and their subdomains only.
+export function sensitivePage(url) {
+  const u = new URL(url), host = u.hostname.toLowerCase().replace(/\.$/, '');
+  const vaults = ['1password.com','bitwarden.com','lastpass.com','dashlane.com','keepersecurity.com','proton.me'];
+  if (vaults.some(d => host === d || host.endsWith('.'+d)) &&
+      (host !== 'proton.me' && !host.endsWith('.proton.me') || /pass|vault/.test(host+u.pathname))) return true;
+  const banks = ['chase.com','bankofamerica.com','wellsfargo.com','citi.com','capitalone.com','paypal.com'];
+  return banks.some(d => host === d || host.endsWith('.'+d)) && /login|logon|signin|sign-in|auth|banking|secure/i.test(host+u.pathname);
 }

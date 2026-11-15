@@ -212,7 +212,14 @@ $('stop').onclick = $('pause-stop').onclick = $('settings-stop').onclick = () =>
 $('resume').onclick = () => send({type:'resume',allow:true});
 $('chat').onsubmit = e => { e.preventDefault(); const text = $('message').value.trim(); if (!text || state?.running || !state?.connected) return; send({type:'send',tabId:contextTab?.id,text:contextAdded && contextTab ? `${text}\n\n${t('pageContext')}: ${contextTab.title}\n${contextTab.url}` : text}); $('message').value = ''; contextAdded = false; $('add-context').setAttribute('aria-pressed','false'); $('context-hint').textContent = ''; grow(); scrollBottom(); };
 $('message').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); $('chat').requestSubmit(); } };
-$('new-chat').onclick = () => { send({type:'new-chat'}); follow.seen.clear(); scrollBottom(); $('message').focus(); };
+$('new-chat').onclick = () => $('new-chat-choice').showModal();
+function startNewChat(deleteHistory) {
+  $('new-chat-choice').close(); send({type:'new-chat',deleteHistory});
+  follow.seen.clear(); scrollBottom(); $('message').focus();
+}
+$('archive-chat').onclick = () => startNewChat(false);
+$('delete-chats').onclick = () => startNewChat(true);
+$('cancel-new-chat').onclick = () => $('new-chat-choice').close();
 $('copy-trace').onclick = async () => {
   try {
     const {debugTrace} = await chrome.storage.session.get('debugTrace');
