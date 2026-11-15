@@ -283,7 +283,7 @@ test('re-review: cart labels cannot exempt a purchase form, using production DOM
     hand.call = async (_,__,fn) => runInNewContext(`(${fn}).call(node)`,{node});
     await assert.rejects(hand.gateTarget(1,{epoch:0,objectId:'cart'},'click'),error => {
       assert.equal(error.handover.kind,'payment');
-      assert.match(error.handover.message,/Your turn: review and press/);
+      assert.match(error.handover.reason,/^Review and press/);assert.doesNotMatch(error.handover.message+error.handover.reason,/Your turn/);
       assert.match(error.handover.message,/amount: 1/);
       return /financial_handover/.test(error.message);
     });
@@ -302,7 +302,7 @@ test('re-review: financial commits always hand over regardless of roles, fields 
       for (const amount of [1,10000]) {
         jsAmount = amount;
         await assert.rejects(hand.executeCore('click',{ref:'e1'},hand.signal),error => {
-          assert.match(error.handover.message,new RegExp(`press ${name} yourself`));
+          assert.match(error.handover.reason,new RegExp(`press ${name} yourself`));
           assert.match(error.handover.message,/csrf_token: \[masked\]/);
           return /financial_handover/.test(error.message);
         });
