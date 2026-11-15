@@ -463,7 +463,8 @@ export class BrowserHand {
     if ((!fill || submit) && classification.financial) {
       const message = `Your turn: review and press ${approvalName} yourself${info.details ? `. Form values: ${info.details}` : ''}`;
       const error = new Error(`financial_handover: ${message}`);
-      error.handover = {kind:'payment',message,reason:message};
+      // The panel adds its own "Your turn" title; reason/message must not repeat it.
+      error.handover = {kind:'payment',reason:`Review and press ${approvalName} yourself`,message:info.details ? `Form values: ${info.details}` : ''};
       throw error;
     }
     if (repeat || always || ((!fill || submit) && classification.consequential)) {

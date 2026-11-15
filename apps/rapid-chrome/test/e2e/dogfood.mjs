@@ -53,7 +53,7 @@ export async function runTask(chromium, task, out, base, options = {}) {
         }
         if (await panel.locator('#paused').isVisible()) {
           result.status = 'needs_human';
-          result.final_answer = await panel.locator('#pause-help').innerText();
+          result.final_answer = [await panel.locator('#pause-title').innerText(), await panel.locator('#pause-help').innerText()].filter(Boolean).join('\n');
           result.handover = {message:result.final_answer};
           break;
         }

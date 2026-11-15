@@ -285,6 +285,28 @@ connection onboarding and example tasks.
 
 ## UI screenshots
 
+For five Chrome Web Store screenshots using a running real engine and local
+fixture sites, run from the repository root (Playwright/Chromium already installed):
+
+```sh
+HEADLESS=1 RAPID_BASE_URL=http://127.0.0.1:8000 LOCALE=en \
+  node apps/rapid-chrome/test/e2e/store-shots.mjs
+```
+
+Each PNG is exactly 1280×800: an 880×800 fixture page beside the 400×800 panel.
+The runner captures chat, shopping/cart, pending Send approval, financial
+handover, and an expanded completed task timeline. Each shot waits up to five
+minutes for its target UI state without checking answer wording. Failed shots
+are logged and the remaining shots continue; any missing shot makes the final
+exit status non-zero. Store-only fixture styling and question positioning keep
+the page and conversation readable, and endpoint/key controls are hidden. `LOCALE=zh_CN` selects the shipped Chinese
+panel catalog; fixture sites and task prompts remain English. Set `RAPID_API_KEY`
+if required. `STORE_SHOTS_OUT` defaults to
+`/private/tmp/chrome-extension-e2e/store-shots` on macOS or the same relative path
+under the OS temp directory elsewhere. `HEADLESS`, `PLAYWRIGHT_BROWSERS_PATH`,
+`PLAYWRIGHT_MODULE`, and `CHROME_EXECUTABLE` work as in the other e2e runners.
+Review generated images before submission; unit tests do not verify live captures.
+
 With Playwright and Chromium already installed, run from this directory:
 
 ```sh
