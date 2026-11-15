@@ -18,6 +18,7 @@ if __name__ != "_minimax_numpy_reference":
     if sys.platform != "darwin":
         pytest.skip("MLX parity requires Darwin", allow_module_level=True)
     mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_vlm.models.minimax_h3")
 
 
 def silu(x):
@@ -720,3 +721,221 @@ def test_strict_weight_coverage(tmp_path):
     mx.save_safetensors(str(tmp_path / "model.safetensors"), wrong_shape)
     with pytest.raises(ValueError, match="shape mismatch"):
         stream_load(model, tmp_path)
+
+
+@pytest.mark.parametrize("bits", [0, 6, 16])
+def test_invalid_quantization_bits(bits):
+    from rapid_mlx.image.minimax_h3_image.quantize import validate_bits
+
+    with pytest.raises(ValueError, match="quantize must be"):
+        validate_bits(bits)
+
+
+@pytest.mark.parametrize(
+    "case,match",
+    [
+        ("empty", "no safetensors"),
+        ("indexes", "multiple checkpoint indexes"),
+        ("duplicate_source", "duplicate checkpoint tensor"),
+        ("wrong_index", "checkpoint index disagrees"),
+        ("missing_index_tensor", "index contains missing tensors"),
+        ("duplicate_parameter", "unexpected or duplicate parameter"),
+    ],
+)
+def test_stream_load_checkpoint_errors(tmp_path, case, match):
+    import json
+
+    import mlx.nn as nn
+
+    from rapid_mlx.image.minimax_h3_image.quantize import stream_load
+
+    model = nn.Linear(2, 2, bias=False)
+    weight = mx.ones((2, 2))
+    kwargs = {}
+    if case != "empty":
+        mx.save_safetensors(str(tmp_path / "a.safetensors"), {"weight": weight})
+    if case == "indexes":
+        for name in ("a", "b"):
+            (tmp_path / f"{name}.safetensors.index.json").write_text("{}")
+    elif case == "duplicate_source":
+        mx.save_safetensors(str(tmp_path / "b.safetensors"), {"weight": weight})
+    elif case in {"wrong_index", "missing_index_tensor"}:
+        mapping = {
+            "weight": "wrong.safetensors" if case == "wrong_index" else "a.safetensors"
+        }
+        if case == "missing_index_tensor":
+            mapping["absent"] = "b.safetensors"
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": mapping})
+        )
+    elif case == "duplicate_parameter":
+        mx.save_safetensors(str(tmp_path / "b.safetensors"), {"other": weight})
+        kwargs["sanitize"] = lambda tensors: {"weight": next(iter(tensors.values()))}
+    with pytest.raises((ValueError, FileNotFoundError), match=match):
+        stream_load(model, tmp_path, **kwargs)
+
+
+def test_stream_load_selection_and_index(tmp_path):
+    import json
+
+    import mlx.nn as nn
+
+    from rapid_mlx.image.minimax_h3_image.quantize import stream_load
+
+    model = nn.Linear(2, 2, bias=False)
+    mx.save_safetensors(
+        str(tmp_path / "a.safetensors"),
+        {"source": mx.ones((2, 2)), "ignored": mx.zeros((1,))},
+    )
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {"weight_map": {"source": "a.safetensors", "ignored": "a.safetensors"}}
+        )
+    )
+    stream_load(
+        model,
+        tmp_path,
+        select=lambda key: key != "ignored",
+        sanitize=lambda w: {"weight": w["source"]},
+        cast=lambda k, v: v.astype(mx.bfloat16),
+    )
+    assert model.weight.dtype == mx.bfloat16
+    np.testing.assert_array_equal(
+        np.array(model.weight.astype(mx.float32)), np.ones((2, 2))
+    )
+    assert not model.training
+
+
+@pytest.mark.parametrize(
+    "change,match",
+    [
+        ({"block_out_channels": ()}, "encoder levels"),
+        ({"spatial_downsample_factors": ()}, "encoder levels"),
+        ({"temporal_downsample_factors": ()}, "encoder levels"),
+        ({"latents_mean": ()}, "latent statistics"),
+        ({"latents_std": ()}, "latent statistics"),
+        ({"latents_std": (0, 1)}, "standard deviations"),
+        ({"decoder_rope_dim_ratio": 0}, "rotary dimension"),
+        ({"decoder_rope_dim_ratio": 0.2}, "rotary dimension"),
+        ({"decoder_rope_dim_ratio": 2}, "rotary dimension"),
+    ],
+)
+def test_vae_config_validation(change, match):
+    from dataclasses import replace
+
+    model, _ = tiny_vae()
+    with pytest.raises(ValueError, match=match):
+        replace(model.config, **change)
+
+
+@pytest.mark.parametrize("dim", [0, 3, -4])
+def test_invalid_image_rope_dimension(dim):
+    from rapid_mlx.image.minimax_h3_image.vae import MiniMaxH3ImageRotaryPosEmbed
+
+    with pytest.raises(ValueError, match="divisible by 4"):
+        MiniMaxH3ImageRotaryPosEmbed(dim)
+
+
+@pytest.mark.parametrize(
+    "change,match",
+    [
+        ({"pdd_step_index": -1}, "PDD head range"),
+        ({"pdd_step_index": 6}, "PDD head range"),
+        ({"position_ids": np.zeros((3,))}, "position_ids"),
+        ({"position_ids": np.zeros((3, 2))}, "position_ids"),
+        ({"token_tags": np.ones(2)}, "sequence length"),
+        ({"timestep_indices": np.ones(2)}, "sequence length"),
+    ],
+)
+def test_transformer_input_validation(change, match):
+    model, _ = tiny_dit()
+    args = dict(
+        hidden_states=mx.zeros((1, 1, 8)),
+        encoder_hidden_states=mx.zeros((1, 2, 32)),
+        timestep=mx.zeros((1,)),
+        timestep_indices=mx.zeros((3,), mx.int32),
+        position_ids=mx.zeros((3, 3)),
+        token_tags=mx.ones((3,), mx.int32),
+        image_indices=mx.array([2]),
+        text_indices=mx.array([0, 1]),
+        pdd_step_index=0,
+    )
+    args.update(
+        {
+            key: mx.array(value) if isinstance(value, np.ndarray) else value
+            for key, value in change.items()
+        }
+    )
+    with pytest.raises(ValueError, match=match):
+        model(**args)
+
+
+def test_transformer_and_vae_load_local_checkpoints(tmp_path):
+    import json
+
+    from mlx.utils import tree_flatten
+
+    from rapid_mlx.image.minimax_h3_image.transformer import (
+        load_transformer,
+        transformer_dtype,
+    )
+    from rapid_mlx.image.minimax_h3_image.vae import load_vae
+
+    for make, folder, loader in [
+        (tiny_dit, "transformer_diffusers", load_transformer),
+        (tiny_vae, "vae_diffusers", load_vae),
+    ]:
+        original, config = make()
+        randomize(original)
+        directory = tmp_path / folder
+        directory.mkdir()
+        (directory / "config.json").write_text(json.dumps(config))
+        weights = dict(tree_flatten(original.parameters()))
+        source = {}
+        for key, value in weights.items():
+            if folder == "vae_diffusers":
+                value = (
+                    value.transpose(0, 4, 1, 2, 3)
+                    if value.ndim == 5
+                    else value.transpose(0, 3, 1, 2)
+                    if value.ndim == 4
+                    else value
+                )
+            source[key] = value
+        mx.save_safetensors(str(directory / "model.safetensors"), source)
+        loaded = loader(tmp_path)
+        actual = dict(tree_flatten(loaded.parameters()))
+        assert actual.keys() == weights.keys()
+        for key, value in actual.items():
+            expected = (
+                transformer_dtype(key, weights[key])
+                if folder == "transformer_diffusers"
+                else weights[key].astype(mx.float32)
+            )
+            assert value.dtype == expected.dtype
+            assert_close(value, np.array(expected.astype(mx.float32)))
+        assert not loaded.training
+
+
+def test_vae_encode_normalize_and_tiled_decode():
+    model, _ = tiny_vae()
+    randomize(model)
+    pixels = mx.zeros((1, 3, 8, 8))
+    model.use_tiling = False
+    posterior = model.encode(pixels)
+    assert posterior.mean.shape == (1, 2, 4, 4)
+    assert posterior.logvar.shape == posterior.mean.shape
+    normalized = model.normalize(posterior.mean)
+    assert_close(model.denormalize(normalized), np.array(posterior.mean))
+    expected = model.decode(posterior.mean)
+    model.use_tiling = True
+    actual = model.decode(posterior.mean)
+    assert_close(actual, np.array(expected))
+    # Force overlapping tiles on both spatial axes; normalization remains NCHW.
+    model.tile_sample_min_height = model.tile_sample_min_width = 6
+    model.tile_sample_min_overlap_height = model.tile_sample_min_overlap_width = 2
+    tiled = model.encode(pixels)
+    assert tiled.mean.shape == posterior.mean.shape
+    output = model.decode(tiled.mean)
+    assert output.shape == pixels.shape
+    assert bool(mx.all(mx.isfinite(output)).item())

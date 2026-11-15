@@ -146,3 +146,29 @@ def test_reference_size_bounds():
     for size in [(31, 64), (32, 129), (8192, 32)]:
         with pytest.raises(ValueError):
             check_reference_size(*size)
+
+
+@pytest.mark.parametrize(
+    "args", [(0, 32, 32, 64), (32, 32, 64, 32), (32, 32, 32, 64, 0)]
+)
+def test_invalid_short_edge_bounds(args):
+    with pytest.raises(ValueError, match="positive and ordered"):
+        bound_short_edge(*args)
+
+
+@pytest.mark.parametrize("patch", [(2, 2, 2), (1, 0, 2), (1, 2, -1)])
+def test_invalid_patch_shape(patch):
+    with pytest.raises(ValueError, match="temporal size 1 and positive"):
+        build_image_packed_sequence(np.ones(2), [], 4, 4, patch_size=patch)
+
+
+def test_too_many_reference_grids():
+    with pytest.raises(ValueError, match="at most 16"):
+        build_image_packed_sequence(np.ones(2), [(2, 2)] * 17, 4, 4)
+
+
+def test_unknown_lazy_export():
+    from rapid_mlx.image import minimax_h3_image
+
+    with pytest.raises(AttributeError, match="unknown_export"):
+        _ = minimax_h3_image.unknown_export

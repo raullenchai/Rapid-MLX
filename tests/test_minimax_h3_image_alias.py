@@ -582,3 +582,26 @@ def test_extreme_reference_aspect_is_400_before_load(client):
     assert response.status_code == 400, response.text
     assert "4:1" in response.text
     assert not calls
+
+
+@pytest.mark.parametrize("bits", [None, 2, 6, 16])
+def test_engine_rejects_unsupported_quantization(bits):
+    with pytest.raises(ImageRequestError, match="quantize must be 4 or 8"):
+        ImageGenerationEngine(REPO, quantize=bits)
+
+
+def test_edit_builder_delegates_to_native_model(monkeypatch):
+    engine = ImageGenerationEngine(REPO)
+    model = object()
+    calls = []
+    monkeypatch.setattr(engine, "_build_model", lambda: calls.append(True) or model)
+    assert engine._build_edit_model() is model
+    assert calls == [True]
+
+
+def test_unprofiled_image_memory_falls_back_to_model_name():
+    from rapid_mlx.runtime.resident_models import measured_image_estimate_bytes
+
+    name = "/local/custom-MiniMax-H3-Image-checkpoint"
+    assert resolve_profile(name) is None
+    assert measured_image_estimate_bytes(name) == 44 * 1024**3
