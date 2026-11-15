@@ -87,7 +87,17 @@ export function classifyTarget(target = {}) {
   // DOM text can be just '22' while its owning AX gridcell names the full date.
   const fullDate = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:[\s,]+(?:\d{1,4}|MON|TUE|WED|THU|FRI|SAT|SUN|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))*$/i;
   const shortDate = /^(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+)?(?:[1-9]|[12]\d|3[01])$/i.test(own);
-  const calendarDate = fullDate.test(own) || (shortDate && (fullDate.test(target.dateCell || '') || (target.dateCell && fullDate.test(target.dateCellAX || '')) || target.datePicker) && !target.form && !target.formName && !target.submitter && !target.action && !target.method && target.type !== 'submit');
+  // Calendar labels can carry fare/availability hints. AX may also append
+  // opaque annotations (r14: 'Sunday, November 22, 2026 ????'). Use its date
+  // prefix as structural evidence, but validate the clicked label separately.
+  const fullDatePrefix = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:3[01]|[12]\d|[1-9])(?:,?\s+\d{4})?(?=$|[\s,])/i;
+  const shortDatePrefix = /^(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+)?(?:3[01]|[12]\d|[1-9])(?=$|[\s,])/i;
+  const datePrefix = own.match(fullDatePrefix)?.[0] || own.match(shortDatePrefix)?.[0];
+  const hint = datePrefix ? own.slice(datePrefix.length) : '';
+  const dateHint = /^(?:[\s,]+|[$€£¥]\s*\d[\d,.]*|\d[\d,.]*\s*(?:US dollars?|dollars?|USD|EUR|GBP|seats?|tickets?)\b|\b(?:lowest|cheapest|price|fare|available|unavailable|availability|sold out|no flights)\b)+$/i;
+  const hintedDate = Boolean(datePrefix && hint && dateHint.test(hint)) && ['button','gridcell'].includes(target.role);
+  const dateEvidence = target.datePicker || (target.dateCell && (fullDatePrefix.test(target.dateCell) || fullDatePrefix.test(target.dateCellAX || '')));
+  const calendarDate = fullDate.test(own) || ((shortDate || hintedDate) && dateEvidence && !target.form && !target.formName && !target.submitter && !target.action && !target.method && target.type !== 'submit');
   // Exact preparatory labels on non-submitting buttons outside forms. Final
   // saves/cancellations and all financial/sensitive context remain gated.
   const preparation = target.type === 'button' && !target.form && !target.formName && !target.action && !target.method && !target.submitter &&
