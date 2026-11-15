@@ -546,3 +546,39 @@ async def test_unload_releases_native_model():
     await lane.stop()
     assert not lane.is_resident
     assert lane._engine._loaded_mode is None
+
+
+def _png(width, height):
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_edit_omitted_size_follows_reference_aspect(client):
+    http, calls = client
+    response = http.post(
+        "/v1/images/edits",
+        data={"prompt": "fox"},
+        files=[("image", ("ref.png", _png(64, 32), "image/png"))],
+    )
+    assert response.status_code == 200, response.text
+    assert (calls[0]["width"], calls[0]["height"]) == (1440, 736)
+    response = http.post(
+        "/v1/images/edits",
+        data={"prompt": "fox", "size": "512x768"},
+        files=[("image", ("ref.png", _png(64, 32), "image/png"))],
+    )
+    assert response.status_code == 200, response.text
+    assert (calls[1]["width"], calls[1]["height"]) == (512, 768)
+
+
+def test_extreme_reference_aspect_is_400_before_load(client):
+    http, calls = client
+    response = http.post(
+        "/v1/images/edits",
+        data={"prompt": "fox"},
+        files=[("image", ("ref.png", _png(32, 8192), "image/png"))],
+    )
+    assert response.status_code == 400, response.text
+    assert "4:1" in response.text
+    assert not calls

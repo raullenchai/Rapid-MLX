@@ -76,6 +76,23 @@ def get_image_canvas_size(
     )
 
 
+MAX_REFERENCE_ASPECT = 4.0
+
+
+def check_reference_size(width: int, height: int) -> None:
+    """Reject references whose short-edge scaling would explode the workload.
+
+    References are scaled so the short edge reaches 1024 px; a 4:1 cap keeps
+    each one at or below 1024x4096 before VAE encoding.
+    """
+    if min(width, height) < 32:
+        raise ValueError("reference image needs at least 32 pixels on each side")
+    if max(width, height) > MAX_REFERENCE_ASPECT * min(width, height):
+        raise ValueError(
+            "reference image aspect ratio must be at most 4:1 for MiniMax-H3-Image"
+        )
+
+
 def bound_short_edge(
     width: int,
     height: int,

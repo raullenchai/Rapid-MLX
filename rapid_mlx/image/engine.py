@@ -1515,6 +1515,16 @@ class ImageGenerationEngine:
                 raise ImageRequestError(
                     "MiniMax-H3-Image dimensions must be positive multiples of 32."
                 )
+            from PIL import Image
+
+            from .minimax_h3_image.layout import check_reference_size
+
+            for path in input_paths:
+                try:
+                    with Image.open(path) as source:
+                        check_reference_size(*source.size)
+                except ValueError as exc:
+                    raise ImageRequestError(str(exc)) from exc
         if self.family == "flux3-klein":
             if any(
                 value is not None and (value <= 0 or value % 16)

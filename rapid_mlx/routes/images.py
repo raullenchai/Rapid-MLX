@@ -658,7 +658,7 @@ async def edit_image(
     prompt: str = Form(...),
     model: str = Form(""),
     n: int = Form(1),
-    size: str = Form("1024x1024"),
+    size: str | None = Form(None),
     response_format: str = Form("b64_json"),
     seed: int | None = Form(None),
     steps: int | None = Form(None),
@@ -780,7 +780,8 @@ async def edit_image(
     # ``size`` is accepted for OpenAI-API compatibility but edit backends own
     # their compatible canvas sizing. Validate malformed input, then discard it.
     try:
-        parse_image_size(size)
+        if size is not None:
+            parse_image_size(size)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

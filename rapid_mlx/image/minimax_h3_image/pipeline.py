@@ -39,6 +39,7 @@ from .layout import (
     SIGMAS,
     bound_short_edge,
     build_image_packed_sequence,
+    check_reference_size,
     get_image_canvas_size,
     row_timestep_plan,
     validate_canvas,
@@ -205,10 +206,7 @@ class MiniMaxH3Image:
         vision_images = []
         for image in references:
             image = ImageOps.exif_transpose(image).convert("RGB")
-            if min(image.size) < 32:
-                raise ValueError(
-                    "reference image needs at least 32 pixels on each side"
-                )
+            check_reference_size(*image.size)
             ref_size = bound_short_edge(*image.size, 1024, 2048)
             vision_size = bound_short_edge(*image.size, 1024, 1024)
             vision_images.append(

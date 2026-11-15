@@ -136,3 +136,13 @@ def test_invalid_canvas_and_grid():
         build_image_packed_sequence(np.ones(2), [], 3, 4)
     with pytest.raises(ValueError, match="tags"):
         build_image_packed_sequence(np.array([2]), [], 4, 4)
+
+
+def test_reference_size_bounds():
+    from rapid_mlx.image.minimax_h3_image.layout import check_reference_size
+
+    check_reference_size(32, 128)
+    check_reference_size(4096, 1024)
+    for size in [(31, 64), (32, 129), (8192, 32)]:
+        with pytest.raises(ValueError):
+            check_reference_size(*size)
