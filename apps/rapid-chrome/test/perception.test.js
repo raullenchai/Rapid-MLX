@@ -126,16 +126,20 @@ test('post-mutation stale observations retry only reading, with a bounded retry 
   hand.executeCore=async()=>{throw Error('stale_ref');};
   await assert.rejects(hand.freshRead({},hand.signal),/stale_ref/);
 });
-test('mutation quiet waits for changes and disconnects at quiet or cap', () => {
+test('mutation quiet waits for changes and disconnects at quiet or cap', async () => {
   for(const continuous of [false,true]) {
     let time=0,next=0,disconnected=0,mutate;const timers=new Map();
     const promise=runInNewContext(`(${mutationQuiet})()`,{
-      document:{},Promise,setTimeout:(fn,ms)=>{timers.set(++next,{fn,at:time+ms});return next;},clearTimeout:id=>timers.delete(id),
+      document:{querySelectorAll:()=>[]},Date:{now:()=>time},Promise,setTimeout:(fn,ms)=>{timers.set(++next,{fn,at:time+ms});return next;},
       MutationObserver:class {constructor(fn){mutate=fn;}observe(){}disconnect(){disconnected++;}}
     });
-    assert.ok(promise);if(continuous){for(time=100;time<1000;time+=100)mutate();}
-    const event=[...timers.values()].sort((a,b)=>a.at-b.at)[0];event.fn();
-    assert.equal(disconnected,1);assert.equal(timers.size,0);assert.ok(event.at<=1000);
+    while(timers.size && time < 3000) {
+      const [id,event]=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];timers.delete(id);time=event.at;
+      if(continuous)mutate();event.fn();
+    }
+    const result = await promise;
+    assert.equal(disconnected,1);assert.equal(timers.size,0);assert.ok(time<=2600);
+    assert.equal(result.ready,!continuous);assert.equal(result.timed_out,continuous);
   }
 });
 test('information-only human checks guide one independent source while preserving URL provenance', () => {

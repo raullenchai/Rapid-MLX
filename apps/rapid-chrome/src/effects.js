@@ -8,7 +8,9 @@ export function watchEffects() {
     const counters = [...document.querySelectorAll('a,button,[role="link"]')].filter(visible)
       .map(e => ({key:e.getAttribute('href') || e.id || clean(e.getAttribute('aria-label')).replace(/\d+/g,'#'), text:clean(`${e.getAttribute('aria-label') || ''} ${e.innerText || e.textContent} ${e.parentElement?.querySelector('[class*="badge"],[class*="count"],[id*="count"]')?.textContent || ''}`)}))
       .filter(e => /\b(cart|bag|basket)\b|购物车|購物車|购物袋/iu.test(e.text)).slice(0,20);
-    return {url:location.href,title:document.title,regions,counters};
+    const controls = [...document.querySelectorAll('input,select,textarea,[role="slider"]')].filter(visible).filter(e => !/password|passwd|cc-|cvv|cvc|card|token|secret|ssn|social.?security|account.?number|bank.?account|routing|iban/i.test([e.type,e.name,e.id,e.autocomplete].join(' '))).slice(0,20)
+      .map((e,i) => ({key:e.id || e.name || e.getAttribute('aria-label') || `${e.type}:${i}`,text:clean(e.value ?? e.getAttribute('aria-valuenow'))}));
+    return {url:location.href,title:document.title,regions,counters,controls};
   };
   globalThis.rapidEffects?.observer.disconnect();
   const before = snapshot(), samples = [];
@@ -33,7 +35,14 @@ export function effectReport(before, samples) {
   for (const sample of samples) for (const c of sample.counters || []) {
     if (counters.get(c.key) !== c.text) changed.set(c.key,{before:counters.get(c.key) ?? null,after:c.text});
   }
+  const compare = field => (before[field] || []).map(b => {
+    const a = (after[field] || []).find(c => c.key === b.key);
+    return {key:b.key,before:b.text,after:a?.text ?? null,status:!a ? 'unverified' : a.text === b.text ? 'unchanged' : 'changed'};
+  }).slice(0,20);
+  const verified = compare('counters').concat(compare('controls'));
   return {
+    state:!samples.length ? 'unverified' : before.url !== after.url || before.title !== after.title || JSON.stringify(before.regions || []) !== JSON.stringify(after.regions || []) || verified.some(v => v.status === 'changed') ? 'changed' : 'unchanged',
+    verified,
     url:before.url === after.url ? null : {before:before.url,after:after.url},
     title:before.title === after.title ? null : {before:before.title,after:after.title},
     regions:[...new Set(samples.flatMap(s => s.regions || []).filter(s => !(before.regions || []).includes(s)))].slice(0,10),

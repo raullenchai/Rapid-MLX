@@ -33,7 +33,7 @@ test('mail paste refusal recovers once, hello and grounded follow-up stay zero t
 });
 test('query miss from charger trace is bounded, actionable, typed; matching products keep card evidence',()=>{
   const nodes=Array.from({length:200},(_,i)=>({nodeId:''+i,backendDOMNodeId:i+1,role:{value:i===0?'searchbox':'StaticText'},name:{value:i===0?'Search Amazon':'Anker charger $29.99 4.7 stars '+i}}));
-  const result=outlineAX(nodes,{query:'65W USB-C wall charger'});
+  const result=outlineAX(nodes,{query:'65W USB-C wall adapter'});
   assert.equal(result.query_matched,false);assert.ok(result.text.length<=2000);assert.equal(result.truncated,true);assert.ok(result.omitted_entries>0);assert.match(result.text,/Search Amazon/);assert.match(result.text,/did not search the website/);
   assert.equal(outlineAX(nodes,{query:'Anker'}).query_matched,true);
   assert.equal(pageProfile(settings),'compact');assert.equal(pageProfile({...settings,pageDetail:'standard'}),'standard');assert.equal(pageProfile({endpointMode:'custom'}),'standard');

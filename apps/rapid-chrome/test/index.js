@@ -36,3 +36,5 @@ import './round-d.test.js';
 import './round-e.test.js';
 
 import './local-tuning.test.js';
+
+import './local-round2.test.js';

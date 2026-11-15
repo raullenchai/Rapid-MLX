@@ -457,4 +457,54 @@ external-site failures.
 
 ## Local-model tuning next
 
-Deferred ranks 6 and 7: token-aware compaction with an action/evidence ledger and semantic no-progress detection. Round 1 adds only a bounded context-overflow recovery, not proactive compaction or a candidate ledger. Offline unit checks do not establish model uplift; frozen Qwen/Opus repeat runs remain to be measured.
+Ranks 6 and 7 are implemented in the local-model round-2 changes below.
+Offline unit checks do not establish model uplift; frozen Qwen/Opus repeat runs
+remain to be measured.
+
+### Local-model round 2: r10 real-site evidence
+
+Source: `/private/tmp/CUA-chrome-ext/review-qwen35-r10.md` and the saved
+`suite-qwen35-r10` artifacts; no network or live model reruns.
+
+- Preparatory classification uses actual DOM tag/type/role, form method/action,
+  nearby landmark/heading and associated autocomplete input. Bounded target
+  context accompanies action traces. Resy location/SF, Instacart browse region/
+  address, Amazon suggestions/Go, Seoul All filters and Uber main menu have
+  fixtures; unknown targets, account writes and transactions retain gates.
+- Navigation and input settle for loading and current suggestions, capped at
+  2.5 seconds. Frame-loss recovery re-resolves the main frame and retries only
+  observations once. Actions are never replayed. Timeout readiness is explicit.
+- `task-state.js` keeps task constraints/history, dated exact source quotations,
+  operation effects, denials and blockers. Conservative character-based token
+  estimates include tool schemas. Compaction triggers around 16K/48K tokens
+  (compact/standard), or 65%/75% of a known context, keeps 3/6 complete protocol
+  rounds with bounded historical result excerpts, and refreshes refs. The final
+  audit distinguishes strict price bounds, applied dates/location, unsupported
+  claims and inferred totals. Memory is bounded and can omit older facts;
+  quoted refs are historical, never an action grant.
+- Semantic retries survive intervening reads and ref churn. After two unchanged
+  attempts, tool results request a strategy change; after four, tools stop for
+  partial synthesis/handover. New candidate evidence or changed relevant state
+  permits progress. Location denials also persist across alternate controls;
+  the global cap remains 60.
+- Focused extraction suppresses map collections/site chrome when results exist;
+  multiword misses rank any-term matches with row/paragraph/card context.
+- Effects distinguish changed, unchanged and unverified state, including slider
+  values and cart counters. Native ranges accept numeric values; custom sliders
+  expose keyboard operations. Protected inputs are excluded from effect values.
+
+Regression coverage: `test/local-round2.test.js`, plus the existing directory
+and security-review suites. No provenance, purchase/booking handover, injection,
+repeat-add or human-check assertion was relaxed. Existing no-match tests now use
+an actually absent phrase; partial-term fallback has separate coverage. The
+settling test uses a deterministic clock for the new bounded readiness polling.
+Strong-model risks remain heuristic early stopping, bounded evidence retention,
+and extra settling latency; real-site/model parity is unmeasured offline.
+
+
+Round-2 validation: `node --test apps/rapid-chrome/test/` → **245 passed,
+0 failed, 0 skipped**; standalone `security-review.test.js` → **22 passed**;
+`git diff --check` → clean. Logs: `/private/tmp/CUA-chrome-ext/round2-tests.log`
+and `/private/tmp/CUA-chrome-ext/round2-security.log`. Fifteen round-2 regression
+tests cover the six priorities, production compaction/stall integration and
+snapshot/denial boundaries. No commit or push.

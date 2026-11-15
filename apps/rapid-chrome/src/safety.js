@@ -35,6 +35,25 @@ function financialContext(target) {
   return financialCommit.test([target.name,target.label,target.form,target.formName,target.submitter].filter(Boolean).join(' ')) ||
     financialCommit.test(path.replace(/[-_/]+/g,' ')) || /(?:^|\/)(?:checkout|order)\b/i.test(path);
 }
+// Positive browse context is required for ambiguous location/Go controls.
+// Account writes, opaque endpoints and explicit effects always keep the gate.
+export function preparatoryContext(t = {}) {
+  const context = [t.landmark,t.heading,t.formName,t.form,t.action,t.id,t.autocomplete].join(' ');
+  const own = String(t.name || t.label || '').trim();
+  const account = /^(?:continue|next|save|submit|confirm)$/i.test(own) || /saved|account|profile|billing|payment|checkout|address[-_/ ]?book|save (?:address|location)|update|delete|reserve|booking|purchase/i.test(context+' '+own);
+  const writes = t.method && !['get','dialog'].includes(t.method.toLowerCase());
+  let path = '';
+  try { path = new URL(t.action || t.href || '/', 'https://page.invalid').pathname; } catch {}
+  const endpoint = !t.action || /(?:^|\/)(?:search|s|browse|discover|find|restaurants?)(?:\/|$)/i.test(path) || path === '/';
+  if (!t.tag || account || writes || !endpoint || t.paymentForm || t.sensitiveForm || t.longName) return false;
+  const browse = /search|browse|discover|find|delivery near|shop(?:ping)?|restaurants?|groceries|filters?|results|autocomplete|(?:choose|select|search|browse).*?(?:location|city|region|area)/i.test(context);
+  const control = ['BUTTON','INPUT','SELECT','A'].includes(t.tag) || ['option','combobox','slider','menuitem','button'].includes(t.role);
+  return control && (
+    (/^(?:main (?:navigation )?menu|menu|navigation)$/i.test(own) && /navigation|menu/i.test(context)) ||
+    (Boolean(t.suggestionQuery) && own.toLocaleLowerCase().includes(t.suggestionQuery.toLocaleLowerCase())) ||
+    (browse && (/^(?:location .+|current address: .+|all filters(?: \(\d+\))?|filters?|go|search|find|apply(?: filters)?|location|change location|region|address|delivery address|select (?:location|city|region)|date|dates|time|party size|guests?|people)$/i.test(own) ||
+      ['option','combobox','slider'].includes(t.role) || (t.choiceContext && /location|region|area|city/i.test(context) && ['button','menuitem'].includes(t.role) && /^(?:choose|select|search|browse|delivery|shop|location)/i.test(t.heading || '')) || ['search','date','time','range'].includes(t.type) || /location|region|city|zip|postal|address|date|time|party|guest/i.test(t.id || ''))));
+}
 export function classifyTarget(target = {}) {
   const text = [target.name, target.form, target.label, target.type, target.autocomplete, target.id].filter(Boolean).join(' ');
   // Form context is scoped to the target's form, never the entire page.
@@ -56,7 +75,7 @@ export function classifyTarget(target = {}) {
   const explicit = consequential.test(filter ? filterName : own.replace(/^add \d+ to order(?=\s*(?:[•·]\s*[$€£¥]\s*[\d.,]+)?$)/i, 'add to cart')) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
   const financial = financialContext(target);
   const cart = isCartAddition(own) && !financial && !target.sensitiveForm && !target.paymentForm;
-  const search = /\b(search|go|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search';
+  const search = /\b(search|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search' || (/^go$/i.test(own) && (!target.tag || preparatoryContext(target)));
   const genericSubmit = /\bsubmit\b|提交/iu.test([target.name,target.label].filter(Boolean).join(' ')) || (target.type === 'submit' && Boolean(target.method || target.action || target.form || target.submitter));
   const calendarDate = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:[\s,]+(?:\d{1,4}|MON|TUE|WED|THU|FRI|SAT|SUN|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))*$/i.test(own);
   // Exact preparatory labels on non-submitting buttons outside forms. Final
@@ -64,8 +83,10 @@ export function classifyTarget(target = {}) {
   const preparation = target.type === 'button' && !target.form && !target.formName && !target.action && !target.method && !target.submitter &&
     /^(?:Create event|[A-Z]{1,3}\d{1,3}\s+[—–-]\s+[$€£¥]\s*\d+(?:[.,]\d{2})?)$/i.test(own);
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
-  const ambiguous = (target.role === 'button' || target.type === 'button') && !(preparation || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
-  return { search, financial, consequential: destructive.test(own) || explicit || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
+  const contextual = preparatoryContext(target);
+  const accountWrite = /saved|account|profile|billing|address[-_/ ]?book/i.test([target.landmark,target.heading,target.formName,target.action].join(' '));
+  const ambiguous = (target.role === 'button' || target.type === 'button') && !(contextual || preparation || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
+  return { search, financial, consequential: destructive.test(own) || explicit || accountWrite || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(contextual || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
 export function isCartAddition(name = '') {

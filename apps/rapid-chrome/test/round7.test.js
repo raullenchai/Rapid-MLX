@@ -23,7 +23,7 @@ async function scenario({tools = [call('read_page')], answer = "I couldn't compl
 test('empty query match returns the normal viewport-first outline and fresh actionable refs', () => {
   const options = {start:20,geometry:new Map([[1,false],[2,true],[3,true],[4,true]])};
   const normal = outlineAX(nodes,options);
-  const missed = outlineAX(nodes,{...options,query:'65W USB-C wall charger'});
+  const missed = outlineAX(nodes,{...options,query:'65W USB-C wall adapter'});
   assert.match(missed.text,/No matching text.*No page text matched/);
   assert.equal(missed.query_matched,false);
   assert.ok(missed.text.length <= 2000);

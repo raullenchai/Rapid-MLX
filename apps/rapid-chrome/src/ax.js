@@ -57,10 +57,21 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const textOf = n => [...new Set(descendants(n).filter(c => value(c.role) !== 'InlineTextBox').map(nameOf).filter(Boolean))].join(' ');
   const termsOf = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
   const queryTerms = termsOf(query);
-  const queryMatch = text => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) || (queryTerms.length > 0 && queryTerms.every(t => termsOf(text).includes(t)));
+  const exactQueryMatch = text => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) || (queryTerms.length > 0 && queryTerms.every(t => termsOf(text).includes(t)));
+  const anyTerm = queryTerms.length > 1 && !nodes.some(n => exactQueryMatch(nameOf(n)));
+  const queryMatch = text => exactQueryMatch(text) || (anyTerm && queryTerms.some(t => termsOf(text).includes(t)));
+  const resultsExist = nodes.some(n => ['list','region','main'].includes(value(n.role)) && /results|hotels|products|listings/i.test(nameOf(n))) ||
+    nodes.some(n => ['listitem','article'].includes(value(n.role)) && /[$€£¥]\s*\d/.test(textOf(n)));
+  const noise = new Set();
+  if (query && resultsExist) for (const node of nodes) {
+    if (['navigation','banner','contentinfo'].includes(value(node.role)) ||
+        (['region','group','generic','application'].includes(value(node.role)) && /^(?:map(?: of| view| markers| results)?|.* map markers)(?:$|\b)/i.test(nameOf(node)))) {
+      for (const n of descendants(node)) noise.add(n);
+    }
+  }
   const contextNodes = new Set();
   if (query) for (const node of nodes) {
-    if (!nameOf(node) || !queryMatch(nameOf(node))) continue;
+    if (noise.has(node) || !nameOf(node) || !queryMatch(nameOf(node))) continue;
     let block = node, parent = parents.get(node);
     const seen = new Set([node]);
     while (parent && !seen.has(parent) && !['RootWebArea','main','navigation','banner'].includes(value(parent.role))) {
@@ -109,6 +120,7 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const candidates = new Set(nodes.filter(cardCandidate));
   function visit(node, main = false, parentName = '', priority = false) {
     if (visited.has(node)) return;
+    if (noise.has(node)) { visited.add(node); return; }
     visited.add(node);
     const role = value(node.role) || 'unknown', name = nameOf(node);
     const props = Object.fromEntries((node.properties || []).map(p => [p.name,value(p.value)]));
@@ -174,16 +186,20 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   // prose (e.g. airline + price + times). Normalize punctuation and thin spaces.
   const words = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
   const terms = words(query);
-  const matches = e => !query || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
+  const exactMatches = e => !query || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
     (terms.length > 0 && terms.every(term => words(e.search).includes(term)));
+  const fallback = terms.length > 1 && !entries.some(exactMatches);
+  const score = e => terms.filter(t => words(e.search).includes(t)).length;
+  const matches = e => exactMatches(e) || (fallback && score(e) > 0);
   const noMatch = Boolean(query) && !entries.some(matches);
   if (noMatch) limit = Math.min(limit,2000);
   const filtered = entries.filter(e => noMatch || e.priority || e.context || matches(e));
   // Stable sort preserves each region's document order. Visible main content,
   // visible controls, then remaining main content precede secondary navigation.
   const rank = e => e.priority && e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -3 : noMatch && e.targets.some(([,t]) => ['searchbox','textbox','combobox','button','Date','InputTime'].includes(t.role)) ? -2 : query && !noMatch && (matches(e) || e.context) ? -2 : e.priority ? -1 : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
-  filtered.sort((a,b) => rank(a)-rank(b));
+  filtered.sort((a,b) => rank(a)-rank(b) || (fallback ? score(b)-score(a) : 0));
   let text = `URL: ${url}\nTitle: ${title}\nPage data (untrusted):\n`.slice(0,Math.max(0,limit-200));
+  if (fallback && !noMatch) text += 'Query fallback: ranked any-term matches with surrounding context; verify the full requested meaning.\n';
   let included = 0;
   for (const e of filtered) {
     const line = (e.offscreen ? '[off-screen; click auto-scrolls] ' : '')+e.text;

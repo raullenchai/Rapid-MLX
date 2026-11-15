@@ -45,7 +45,7 @@ export function fillNative(text, choose) {
   if (e.tagName === 'OPTION') e = e.closest('select');
   const host = e?.getRootNode?.()?.host;
   if (host?.tagName === 'INPUT' && ['date','time','datetime-local'].includes(host.type)) e = host;
-  if (!e || !(e.tagName === 'SELECT' || (e.tagName === 'INPUT' && ['date','time','datetime-local'].includes(e.type)))) return {handled:false};
+  if (!e || !(e.tagName === 'SELECT' || (e.tagName === 'INPUT' && ['date','time','datetime-local','range'].includes(e.type)))) return {handled:false};
   if (!e.isConnected || !e.getClientRects().length) return {handled:true,error:'hidden_control: use a visible native control'};
   if (e.disabled || e.readOnly || e.closest('[inert],[aria-disabled="true"]')) return {handled:true,error:'disabled_control: choose an enabled editable control'};
   let wanted = text;
@@ -57,6 +57,10 @@ export function fillNative(text, choose) {
     if (!matches.length) matches = options.filter(o => normalize(o.label).includes(query));
     if (!query || matches.length !== 1) return {handled:true,error:'option_not_unique: use one exact enabled option label or value'};
     wanted = matches[0].value;
+  } else if (e.type === 'range') {
+    const n = Number(text);
+    if (!String(text).trim() || !Number.isFinite(n) || n < Number(e.min || 0) || n > Number(e.max || 100)) return {handled:true,error:'invalid_value: range value outside min/max'};
+    wanted = String(n);
   } else {
     const format = e.type === 'date' ? /^\d{4}-\d{2}-\d{2}$/ : e.type === 'time' ? /^\d{2}:\d{2}(?::\d{2})?$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
     if (!format.test(text)) return {handled:true,error:`invalid_value: ${e.type} requires ${e.type === 'date' ? 'YYYY-MM-DD' : e.type === 'time' ? 'HH:mm (24-hour)' : 'YYYY-MM-DDTHH:mm'}; fill the whole field, not a segment`};
@@ -91,15 +95,38 @@ export function clickRect() {
   return rect;
 }
 
-// Wait for a short quiet period, capped even on pages with continuous updates.
-export function mutationQuiet() {
+export function suggestionMatches(label, query) {
+  const words = s => String(s).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  const terms = words(query), text = words(label);
+  return terms.length > 0 && terms.every(t => text.some(w => w.startsWith(t)));
+}
+// Runs in the isolated world. Debounced lists must match their controlling input,
+// not merely exist. A timeout returns an explicitly unready observation.
+export function mutationQuiet(expectedText = '') {
   return new Promise(resolve => {
-    let quiet, cap;
-    const finish = () => { clearTimeout(quiet); clearTimeout(cap); observer.disconnect(); resolve(true); };
-    const reset = () => { clearTimeout(quiet); quiet = setTimeout(finish,150); };
-    const observer = new MutationObserver(reset);
+    const start = Date.now();
+    let changed = start, last = '', stableSince = start;
+    const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+    const normalize = s => String(s || '').normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    const observer = new MutationObserver(() => { changed = Date.now(); });
     observer.observe(document,{subtree:true,childList:true,characterData:true,attributes:true});
-    cap = setTimeout(finish,1000); reset();
+    const poll = () => {
+      const now = Date.now();
+      const loading = document.readyState === 'loading' || [...document.querySelectorAll('[aria-busy="true"],[role="progressbar"],[aria-label*="loading" i]')].some(visible);
+      const input = document.activeElement;
+      const query = expectedText || (input?.matches?.('input,[role="combobox"]') ? input.value : '');
+      const options = [...document.querySelectorAll('[role="listbox"] [role="option"]')].filter(visible);
+      const terms = normalize(query);
+      const matches = !options.length || !terms.length || options.every(e => terms.every(t => normalize(e.innerText || e.textContent).some(w => w.startsWith(t))));
+      const expanded = input?.getAttribute?.('aria-expanded') === 'true';
+      const pending = Boolean(terms.length && expanded && !options.length);
+      const signature = options.map(e => e.textContent).join('|');
+      if (signature !== last) { last = signature; stableSince = now; }
+      const ready = !loading && matches && !pending && now-changed >= 200 && now-stableSince >= 300 && now-start >= 350;
+      if (ready || now-start >= 2500) { observer.disconnect(); resolve({ready,loading,suggestions_match:matches && !pending,timed_out:!ready}); }
+      else setTimeout(poll,75);
+    };
+    poll();
   });
 }
 
@@ -123,7 +150,7 @@ export class BrowserHand {
   constructor(adapter, {settings, approve, emit = () => {}, stop = () => {}, takeover = () => {}, challenge = async info => { throw new Error(`needs_human: ${info.message}`); }}) {
     this.a = adapter; this.settings = settings; this.approve = approve; this.emit = emit; this.stop = stop; this.pauseForTakeover = takeover; this.challenge = challenge;
     this.tabs = new Map(); this.active = null; this.nextRef = 1; this.sites = new Set(); this.signal = null;
-    this.navigation = new NavigationPolicy(); this.additions = new Set(); this.denials = new Set(); this.notices = []; this.pendingSites = new Map();
+    this.navigation = new NavigationPolicy(); this.additions = new Set(); this.denials = new Set(); this.deniedGoals = new Set(); this.notices = []; this.pendingSites = new Map();
   }
   check() { this.signal?.throwIfAborted(); if (this.paused) throw new Error('paused: debugger detached by user'); }
   async send(id, method, params) {
@@ -185,7 +212,7 @@ export class BrowserHand {
     this.navigation = new NavigationPolicy([task,...history.filter(m => m.role === 'user').map(m => m.content)].join('\n'));
     this.informationOnly = informationTask([task,...history.filter(m => m.role === 'user').map(m => m.content)].join('\n'));
     this.humanCheckOffered = false;
-    this.signal = signal; this.additions.clear(); this.denials.clear(); this.sites.clear(); this.pendingSites.clear();
+    this.signal = signal; this.additions.clear(); this.denials.clear(); this.deniedGoals.clear(); this.sites.clear(); this.pendingSites.clear();
     if (this.active !== null && this.tabs.has(this.active)) {
       const tab = await this.a.get(this.active);
       const owned = this.tabs.get(this.active);
@@ -344,7 +371,14 @@ export class BrowserHand {
     const snapshot = target.approvedInfo || target.inspectedInfo;
     if (!snapshot) return;
     const latest = await this.inspect(id,target);
-    const mismatch = target.epoch !== this.tabs.get(id)?.epoch ? 'epoch' : JSON.stringify(snapshot) === JSON.stringify(latest) ? null : snapshot.values && JSON.stringify(snapshot.values) !== JSON.stringify(latest.values) ? 'form' : snapshot.value !== latest.value ? 'value' : 'target';
+    // Focus may open an autocomplete list inside an unapproved input form.
+    // Human-approved snapshots and every field/value/action remain strict.
+    const comparable = value => {
+      const copy = {...value};
+      if (!target.approvedInfo && target.editingInput) { delete copy.expanded; delete copy.form; }
+      return copy;
+    };
+    const mismatch = target.epoch !== this.tabs.get(id)?.epoch ? 'epoch' : JSON.stringify(comparable(snapshot)) === JSON.stringify(comparable(latest)) ? null : snapshot.values && JSON.stringify(snapshot.values) !== JSON.stringify(latest.values) ? 'form' : snapshot.value !== latest.value ? 'value' : 'target';
     if (mismatch) {
       const error = new Error('approval_snapshot_changed: stale_ref: form values or target changed after approval; action blocked');
       error.payload = {type:'approval_snapshot_changed',mismatch,action_executed:false,approval_required:true,recovery:'The approved target or form changed; the action was blocked. Use fresh state and request new approval for the corrected action.'};
@@ -387,19 +421,33 @@ export class BrowserHand {
       const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${fields.some(el => (el.name || el.id || '') === v.name && maskedField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
       const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.closest('[role="dialog"],dialog')?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '';
+      const scope = e.closest('[role=listbox],[role=menu],[role=search],dialog,[role=dialog],section,nav,main,header,fieldset');
+      const landmark = scope ? `${scope.tagName} ${scope.getAttribute('role') || ''} ${(scope.getAttribute('aria-label') || '').slice(0,160)}` : '';
+      const heading = scope?.querySelector('h1,h2,h3,legend,[role=heading]')?.textContent?.trim().slice(0,200) || '';
+      const listbox = e.closest('[role=listbox],[role=grid],[id*=suggestion i],[id*=autocomplete i]');
+      const suggestionFor = listbox && [...e.ownerDocument.querySelectorAll('[aria-controls],[aria-owns]')].find(input => [input.getAttribute('aria-controls'),input.getAttribute('aria-owns')].join(' ').split(/\s+/).includes(listbox.id));
+      const searchInput = suggestionFor || (listbox && form?.querySelector('input[type=search],input[role=combobox],input[aria-autocomplete]'));
+      const suggestionQuery = searchInput?.value?.slice(0,200) || '';
+      const choiceContext = Boolean(e.closest('li,[role=option],[role=menuitem]') || listbox);
       const challengeScope = e.closest('[class*=captcha i],[id*=captcha i],[class*=challenge i],[id*=challenge i]');
       const challengeControl = /captcha|recaptcha|hcaptcha|turnstile|datadome/i.test([e.id,e.className,e.getAttribute('aria-label'),e.ownerDocument.location?.href].join(' ')) || Boolean(challengeScope && /captcha|verify.{0,20}human|not a robot|security check/i.test(challengeScope.innerText || ''));
-      return {challengeControl,values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
+      return {value:maskedField(e) ? '[protected]' : e.value,tag:e.tagName,landmark,heading,suggestionQuery,choiceContext,challengeControl,values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }
   async gateTarget(id, target, action, {fill = false, submit = false, always = false} = {}) {
     const info = await this.inspect(id,target);
     if (info.challengeControl || /(?:i.m|i am) not a robot|verify (?:that )?you are human/i.test(info.name || '')) throw new Error('human_check: challenge controls are blocked; ask the user to complete the check');
     if (!info.connected) throw new Error('stale_ref: call read_page');
+    this.lastTargetContext = Object.fromEntries(['tag','type','role','name','method','action','landmark','heading','suggestionQuery'].map(k => [k,String((k === 'role' ? info.role || target.role : info[k]) || '').slice(0,k === 'action' ? 300 : 200)]));
+    target.inspectedInfo = info;
     const classification = classifyTarget({...info,role:target.role || info.role,name:info.name || target.name});
+    if (!fill && info.suggestionQuery && !suggestionMatches(info.name || target.name, info.suggestionQuery)) throw new Error('suggestions_pending: option does not match current typed text; wait for fresh suggestions');
     if (fill && (classification.sensitive || classifyTarget({name:target.name}).sensitive)) throw new Error('blocked_sensitive_field: ask the user to enter passwords or payment details');
     const tab = await this.a.get(id);
     target.additionKey = (!fill || submit) ? additionKey(tab.url,{...info,name:info.name || target.name}) : null;
+    const locationGoal = /location|region|address|zip|postal|city/i.test([info.name,info.id,info.heading].join(' '));
+    const goalKey = locationGoal ? new URL(tab.url).origin+':location' : null;
+    if (goalKey && this.deniedGoals.has(goalKey)) throw new Error('denied: location change was already denied in this task; do not attempt it through another control');
     const repeat = target.additionKey && this.additions.has(target.additionKey);
     const approvalName = submit && info.submitter ? info.submitter : info.name || target.name || 'Focused element';
     if ((!fill || submit) && classification.financial) {
@@ -418,6 +466,7 @@ export class BrowserHand {
       const titleKey = approvalTitleKey(approvalName);
       if (!await this.approve({titleKey:titleKey === 'allowAction' && (submit || info.type === 'submit') ? 'allowSubmit' : titleKey,action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.details ? ` Form values: ${info.details}` : info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
         this.denials.add(denialKey);
+        if (goalKey) this.deniedGoals.add(goalKey);
         throw new Error(`denied: ${action} '${effectName}'`);
       }
       this.check();
@@ -494,6 +543,8 @@ export class BrowserHand {
     // Input handlers often populate a listbox asynchronously. Retry only the
     // observation, never the activation; every candidate still passes click gates.
     for (let attempt=0;attempt<5;attempt++) {
+      const readiness = await this.settle(id);
+      if (readiness?.ready === false) break;
       await delay(100,this.signal);
       const {nodes} = await this.send(id,'Accessibility.getFullAXTree');
       const options = nodes.filter(n => !n.ignored && n.role?.value === 'option' && n.backendDOMNodeId &&
@@ -541,10 +592,11 @@ export class BrowserHand {
     if (r.exceptionDetails) throw new Error('Effect observation unavailable');
     return r.result.value;
   }
-  async settle(id) {
+  async settle(id, expectedText = '') {
     try {
       const contextId = await this.effectWorld(id);
-      await this.send(id,'Runtime.evaluate',{contextId,expression:`(${mutationQuiet.toString()})()`,awaitPromise:true,returnByValue:true});
+      const r = await this.send(id,'Runtime.evaluate',{contextId,expression:`(${mutationQuiet.toString()})(${JSON.stringify(expectedText)})`,awaitPromise:true,returnByValue:true});
+      return r.result?.value;
     } catch { this.check(); await delay(150,this.signal); }
   }
   async freshRead(args, signal) {
@@ -553,12 +605,18 @@ export class BrowserHand {
       try { return await this.executeCore('read_page',args,signal); }
       catch (error) {
         this.check();
-        if (attempt >= 2 || !/stale_ref/.test(error.message)) throw error;
+        if (/No frame for given id/i.test(error.message) && attempt === 0) {
+          const id = args.tabId ?? this.active;
+          const {frameTree} = await this.send(id,'Page.getFrameTree');
+          this.tabs.get(id).mainFrame = frameTree.frame.id;
+          this.invalidate(id);
+        } else if (attempt >= 2 || !/stale_ref/.test(error.message)) throw error;
         await this.settle(args.tabId ?? this.active);
       }
     }
   }
   async execute(name,args,signal) {
+    this.lastTargetContext = null;
     const state = this.tabs.get(args.tabId ?? this.active);
     if (state?.humanCheckHost && ['click','fill','press','scroll'].includes(name))
       throw new Error('human_check: do not interact with the check; use one independent source or ask the user');
@@ -567,7 +625,7 @@ export class BrowserHand {
       const result = await this.executeCore(name,args,signal);
       const id = result.tabId ?? args.tabId ?? this.active;
       if (!this.tabs.has(id)) return result;
-      if (['navigate','open_tab'].includes(name)) await this.settle(id);
+      const readiness = ['navigate','open_tab'].includes(name) ? await this.settle(id) : undefined;
       let observation;
       try { observation = await this.freshRead({tabId:id},signal); }
       catch (error) {
@@ -577,7 +635,7 @@ export class BrowserHand {
       // Navigation can return before commit. Do not present its old URL/title
       // as the final state; the outline is the authoritative fresh observation.
       const meta = await this.meta(id);
-      return {...result,...meta,query_matched:observation.query_matched,truncated:observation.truncated,omitted_entries:observation.omitted_entries,omitted_cards:observation.omitted_cards,text:`${result.text}. Fresh observation:\n${observation.text}`};
+      return {...result,...meta,readiness,query_matched:observation.query_matched,truncated:observation.truncated,omitted_entries:observation.omitted_entries,omitted_cards:observation.omitted_cards,text:`${result.text}. Fresh observation:\n${observation.text}`};
     }
     if (!['click','fill','press'].includes(name)) return this.executeCore(name,args,signal);
     this.signal = signal;
@@ -587,11 +645,11 @@ export class BrowserHand {
       context = await this.effectWorld(id);
       before = await this.effectEval(id,context,watchEffects);
     } catch { this.check(); }
-    let result, actionError;
+    let result, actionError, readiness;
     try {
       result = await this.executeCore(name,args,signal);
       // Bounded settling window; MutationObserver retains transient notifications.
-      await this.settle(id);
+      readiness = await this.settle(id,name === 'fill' && !args.choose && !args.submit ? args.text : '');
     } catch (error) { this.check(); actionError = error; } finally {
       if (context) {
         try { samples = await this.effectEval(id,context,collectEffects); }
@@ -612,9 +670,10 @@ export class BrowserHand {
     try { observation = await this.freshRead({tabId:id},signal); }
     catch (error) { this.check(); observation = {text:`Fresh observation unavailable: ${error.message}. Wait then read_page; do not repeat the action.`}; }
     if (actionError) {
+      actionError.target_context = this.lastTargetContext;
       actionError.effect = effect; actionError.observation = observation; throw actionError;
     }
-    return {effect,...result,query_matched:observation.query_matched,truncated:observation.truncated,omitted_entries:observation.omitted_entries,omitted_cards:observation.omitted_cards,text:`${name} completed. Fresh observation:\n${observation.text}`};
+    return {effect,readiness,target_context:this.lastTargetContext,...result,query_matched:observation.query_matched,truncated:observation.truncated,omitted_entries:observation.omitted_entries,omitted_cards:observation.omitted_cards,text:`${name} completed. Fresh observation:\n${observation.text}`};
   }
   async executeCore(name,args,signal) {
     this.signal = signal; this.check();
@@ -713,13 +772,13 @@ export class BrowserHand {
       for (const target of outline.refs.values()) if (target.href) this.navigation.observe(target.href);
       const forms = new Map(), nativeControls = [];
       for (const [ref, target] of outline.refs) {
-        if (!['button','textbox','searchbox','combobox','Date','DateTime','InputTime','spinbutton'].includes(target.role)) continue;
+        if (!['slider','button','textbox','searchbox','combobox','Date','DateTime','InputTime','spinbutton'].includes(target.role)) continue;
         try {
           const resolved = await this.resolve(id,ref);
           const form = await this.call(id,resolved.objectId,function () {
             const f = this.form || this.closest('form');
             const type = this.tagName === 'SELECT' ? 'select' : this.type;
-            const native = ['select','date','time','datetime-local'].includes(type) || this.getAttribute?.('role') === 'combobox' || /date|departure|return/i.test([this.name,this.id,this.placeholder].join(' ')) ? {type,value:type === 'password' || /^(?:cc-|current-password|new-password)/i.test(this.autocomplete || '') ? '[protected]' : this.value,placeholder:this.getAttribute?.('placeholder'),format:type === 'date' ? 'YYYY-MM-DD' : this.getAttribute?.('aria-description') || this.getAttribute?.('data-format'),valid:this.validity?.valid,commit_state:this.getAttribute?.('aria-expanded') === 'true' ? 'suggestions/picker open; selection or Done/Apply may be required' : document.activeElement === this ? 'focused; commit unverified' : 'blurred; verify applied value'} : null;
+            const native = ['range','select','date','time','datetime-local'].includes(type) || this.getAttribute?.('role') === 'combobox' || /date|departure|return/i.test([this.name,this.id,this.placeholder].join(' ')) ? {type,min:this.min,max:this.max,step:this.step,value:type === 'password' || /^(?:cc-|current-password|new-password)/i.test(this.autocomplete || '') ? '[protected]' : this.value,placeholder:this.getAttribute?.('placeholder'),format:type === 'date' ? 'YYYY-MM-DD' : this.getAttribute?.('aria-description') || this.getAttribute?.('data-format'),valid:this.validity?.valid,commit_state:this.getAttribute?.('aria-expanded') === 'true' ? 'suggestions/picker open; selection or Done/Apply may be required' : document.activeElement === this ? 'focused; commit unverified' : 'blurred; verify applied value'} : null;
             if (!f && !native) return null;
             const recipients = f ? [...f.elements].filter(el => /^(?:to|cc|bcc)$/i.test(el.name || '')).map(el => `${el.name}: ${el.value}`).join('; ').slice(0,500) : '';
             return {index:f ? [...document.forms].indexOf(f) : -1,name:f?.getAttribute('aria-label') || f?.getAttribute('name') || '',method:f?.method || '',native,recipients};
@@ -729,7 +788,7 @@ export class BrowserHand {
               const key = `${form.index}: ${JSON.stringify(form.name)} (${form.method})${form.recipients ? ` Recipients: ${form.recipients}` : ''}`;
               forms.set(key,[...(forms.get(key) || []),`[${ref}]`]);
             }
-            if (form.native) nativeControls.push(`Native [${ref}] ${form.native.type} value=${JSON.stringify(form.native.value)}; fill with ${form.native.type === 'select' ? 'exact option label/value' : form.native.type === 'date' ? 'YYYY-MM-DD' : form.native.type === 'time' ? 'HH:mm (24-hour)' : form.native.type === 'datetime-local' ? 'YYYY-MM-DDTHH:mm' : 'displayed format; select suggestion or commit picker'}; input_type=${form.native.type} placeholder=${JSON.stringify(form.native.placeholder)} format=${JSON.stringify(form.native.format)} valid=${form.native.valid} commit_state=${JSON.stringify(form.native.commit_state)}`);
+            if (form.native) nativeControls.push(`Native [${ref}] ${form.native.type} value=${JSON.stringify(form.native.value)}; fill with ${form.native.type === 'range' ? 'numeric value within min/max; or focus with click then press ArrowLeft/ArrowRight/Home/End, verify value' : form.native.type === 'select' ? 'exact option label/value' : form.native.type === 'date' ? 'YYYY-MM-DD' : form.native.type === 'time' ? 'HH:mm (24-hour)' : form.native.type === 'datetime-local' ? 'YYYY-MM-DDTHH:mm' : 'displayed format; select suggestion or commit picker'}; input_type=${form.native.type} min=${form.native.min} max=${form.native.max} step=${form.native.step} placeholder=${JSON.stringify(form.native.placeholder)} format=${JSON.stringify(form.native.format)} valid=${form.native.valid} commit_state=${JSON.stringify(form.native.commit_state)}`);
           }
         } catch { this.check(); }
       }
@@ -764,6 +823,7 @@ export class BrowserHand {
         const native = await this.call(id,target.objectId,fillNative,[args.text,args.choose]);
         if (native?.error) throw new Error(native.error);
         if (!native?.handled) {
+          target.editingInput = true;
           await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId});
           await this.send(id,'DOM.focus',{backendNodeId:target.backendDOMNodeId});
           await this.verifyFocus(id,target);
@@ -772,8 +832,10 @@ export class BrowserHand {
           await this.send(id,'Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA'});
           await this.verifyFocus(id,target);
           await this.send(id,'Input.insertText',{text:args.text});
+          target.inspectedInfo = await this.inspect(id,target);
           if (args.choose) activation = await this.chooseOption(id,args.choose);
         }
+        if (native?.handled && args.submit) target.inspectedInfo = await this.inspect(id,target);
         if (args.submit) {
           // Recheck after input handlers may have changed the form.
           await this.gateTarget(id,target,'Submit form',{fill:true,submit:true});
@@ -803,7 +865,18 @@ export class BrowserHand {
     }
     return {text:`${name} completed`,...(activation ? {activation} : {}),...await this.meta(id)};
   }
-  async meta(id) { const {tab} = await this.current({tabId:id}); return {url:tab.url,title:tab.title}; }
+  async meta(id) {
+    let current;
+    try { current = await this.current({tabId:id}); }
+    catch (error) {
+      if (!/No frame for given id/i.test(error.message)) throw error;
+      // Metadata is an observation too: never retry the action that preceded it.
+      const {frameTree} = await this.send(id,'Page.getFrameTree');
+      this.tabs.get(id).mainFrame = frameTree.frame.id; this.invalidate(id);
+      current = await this.current({tabId:id});
+    }
+    return {url:current.tab.url,title:current.tab.title};
+  }
 }
 
 export function sensitiveDocument() {
