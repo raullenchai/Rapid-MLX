@@ -194,7 +194,7 @@ test('P2 focus redirects on focus or select-all cannot insert text into a differ
 
 test('P2 current-tab URL tokens and title never enter model messages before explicit sharing', () => {
   const messages = assembleMessages([],'Hi',{id:9,title:'Private document',url:'https://private.test/?token=secret'});
-  assert.match(messages[0].content,/Current composer tab: 9/);
+  assert.match(messages[0].content,/Current composer tab: available to share/);
   assert.doesNotMatch(JSON.stringify(messages),/Private document|private.test|token=secret/);
 });
 

@@ -6,10 +6,11 @@ export function detectChallenge({url = '', title = '', nodes = [], frames = [], 
   if (/chrome-error:|^about:neterror/i.test(url) || /ERR_[A-Z_]+|HTTP[ /](?:4\d\d|5\d\d)|navigation_failed/i.test(error + ' ' + text)) {
     return {kind:'load_error',message:`${site} could not load. Reload or resolve the error in that tab, then press Continue. Rapid will verify the page again.`};
   }
-  const challengeText = /press\s+(?:and|&)\s+hold|verify (?:that )?you(?: are|’re|'re) (?:a )?human|human verification|performing security verification|checking your browser|just a moment|complete the (?:captcha|security check)|\bi am not a robot\b/i.test(text);
+  const challengeText = /press\s+(?:and|&)\s+hold|verify (?:that )?you(?: are|’re|'re) (?:a )?human|human verification|performing security verification|checking your browser|just a moment|complete the (?:captcha|security check)|\bi(?: am|'m|’m) not a robot\b|请完成.{0,10}验证|請完成.{0,10}驗證/i.test(text);
   // Only visible widgets, not background reCAPTCHA telemetry/hidden anchors.
-  const widget = frames.some(f => f.visible && /challenges\.cloudflare\.com|\/turnstile\/|(?:google\.com|recaptcha\.net)\/recaptcha\/|hcaptcha\.com/i.test(f.url));
-  if (challengeText || widget) return {kind:'human_check',message:`${site} requires a human check. Complete the verification in that tab, then press Continue. Rapid will verify that the check is gone.`};
+  const widget = frames.some(f => f.visible && /challenges\.cloudflare\.com|\/turnstile\/|(?:google\.com|recaptcha\.net)\/recaptcha\/|hcaptcha\.com|captcha-delivery\.com|datadome/i.test(f.url));
+  const embedded = nodes.some(n => /checkbox|button/i.test(n.role?.value || '') && /captcha|not a robot|human verification/i.test(n.name?.value || ''));
+  if (challengeText || widget || embedded) return {kind:'human_check',message:`${site} requires a human check. Complete the verification in that tab, then press Continue. Rapid will verify that the check is gone.`};
   return null;
 }
 

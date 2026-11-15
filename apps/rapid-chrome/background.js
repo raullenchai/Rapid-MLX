@@ -6,7 +6,7 @@ import { clip } from './src/transcript.js';
 import { t, localize } from './src/i18n.js';
 import { engineBase, safeURL } from './src/safety.js';
 
-const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60,endpointMode:'local',reasoningEffort:'off',theme:'dark'};
+const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60,endpointMode:'local',reasoningEffort:'off',pageDetail:'auto',theme:'dark'};
 const state = {epoch:crypto.randomUUID(),sequence:0,run:null,error:null,messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',connected:false,settings:{...defaults},models:[],tabs:[],chats:[],resultTab:null,pauseReason:null};
 const ports = new Set(), pending = new Map();
 let snapshotWrite = Promise.resolve();
@@ -171,7 +171,7 @@ async function run(task, tabId) {
     await trace({kind:'start'});
     if (!state.settings.model) await models(signal);
     signal.throwIfAborted();
-    await runAgent({settings:{...state.settings},task,history,currentTab,signal,execute:async (...a) => {
+    await runAgent({settings:{...state.settings},task,history,currentTab:currentTab ? {...currentTab,shared:hand.tabs.has(currentTab.id)} : undefined,signal,execute:async (...a) => {
       if (!browserStarted && currentTab) hand.active = currentTab.id;
       if (currentTab && (a[1]?.tabId ?? hand.active) === currentTab.id && !hand.tabs.has(currentTab.id) && a[0] !== 'open_tab' && a[0] !== 'list_tabs') {
         if (grantDenied) throw new Error('denied: tab grant already denied for this turn');
@@ -203,6 +203,12 @@ async function run(task, tabId) {
       const text = result.observation?.text || result.text || '';
       for (const match of text.matchAll(/^URL:\s*(https?:\/\/\S+)/gm)) visited.add(match[1]);
       if (step?.url) visited.add(step.url);
+      if (currentTab && hand.tabs.has(currentTab.id)) {
+        try {
+          const shared = await chrome.tabs.get(currentTab.id);
+          result.composer_tab = {id:shared.id,title:shared.title,url:shared.url};
+        } catch { signal.throwIfAborted(); } // The shared tab may have closed after the action.
+      }
       return result;
     },emit:event => {
       if (event.kind === 'answer' && browserStarted) {
@@ -270,7 +276,7 @@ async function handle(message) {
     const s = message.settings;
     const base = engineBase(s.base);
     if (s.endpointMode !== 'custom' && !LOCAL_ENDPOINTS.includes(base)) throw new Error('invalidEndpoint');
-    state.settings = {theme:s.theme === 'light' ? 'light' : 'dark',endpointMode:s.endpointMode === 'custom' ? 'custom' : 'local',reasoningEffort:['low','high'].includes(s.reasoningEffort) ? s.reasoningEffort : 'off',base,apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
+    state.settings = {pageDetail:['compact','standard'].includes(s.pageDetail) ? s.pageDetail : 'auto',...(Number.isFinite(s.temperature ?? state.settings.temperature) ? {temperature:s.temperature ?? state.settings.temperature} : {}),theme:s.theme === 'light' ? 'light' : 'dark',endpointMode:s.endpointMode === 'custom' ? 'custom' : 'local',reasoningEffort:['low','high'].includes(s.reasoningEffort) ? s.reasoningEffort : 'off',base,apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
     hand.settings = state.settings;
     await chrome.storage.local.set({settings:state.settings});
     await models(undefined,true,true);

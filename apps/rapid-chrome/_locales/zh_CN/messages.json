@@ -864,5 +864,17 @@
   },
   "allowSignIn": {
     "message": "允许登录？"
+  },
+  "pageDetail": {
+    "message": "页面详情"
+  },
+  "auto": {
+    "message": "自动"
+  },
+  "compact": {
+    "message": "精简"
+  },
+  "standard": {
+    "message": "标准"
   }
 }

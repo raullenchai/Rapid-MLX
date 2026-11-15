@@ -117,7 +117,7 @@ test('chat stays detached; current-page grant targets composer tab; summaries su
   assert.equal(snapshot.approvals.length,1);
   assert.equal(snapshot.approvals[0].action,'Let Rapid control this tab');
   assert.equal(snapshot.approvals[0].tabId,99);
-  assert.match(requests.at(-1).messages[0].content,/Current composer tab: 99/);
+  assert.match(requests.at(-1).messages[0].content,/Current composer tab: available to share/);
   send({type:'approve',id:snapshot.approvals[0].id,allow:true}); await tick(); await settled();
   assert.equal(browserReads,1); assert.equal(hand.attaches,1);
   assert.match(data.conversation.at(-1).browserSummary,/https:\/\/shop.test\/shop/);

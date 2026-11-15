@@ -24,7 +24,7 @@ function connect() {
 function element(tag,text,className) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (className) e.className = className; return e; }
 function button(text,fn) { const b = element('button',text); b.type = 'button'; b.onclick = fn; return b; }
 function populate(s) {
-  $('endpoint-mode').value = s.settings.endpointMode || 'local'; $('reasoning').value = s.settings.reasoningEffort || 'off';
+  $('endpoint-mode').value = s.settings.endpointMode || 'local'; $('page-detail').value = s.settings.pageDetail || 'auto'; $('reasoning').value = s.settings.reasoningEffort || 'off';
   $('base').value = s.settings.base; $('api-key').value = s.settings.apiKey;
   document.body.dataset.theme = s.settings.theme || 'dark'; $('theme').value = s.settings.theme || 'dark';
   $('vision').checked = s.settings.vision; $('step-cap').value = s.settings.stepCap;
@@ -193,7 +193,7 @@ $('settings-form').onsubmit = async e => {
   e.preventDefault();
   try {
     const base = endpoint($('base').value);
-    const settings = {theme:$('theme').value,endpointMode:$('endpoint-mode').value,reasoningEffort:$('reasoning').value,base,apiKey:$('api-key').value,model:$('model').value,vision:$('vision').checked,stepCap:$('step-cap').value};
+    const settings = {pageDetail:$('page-detail').value,theme:$('theme').value,endpointMode:$('endpoint-mode').value,reasoningEffort:$('reasoning').value,base,apiKey:$('api-key').value,model:$('model').value,vision:$('vision').checked,stepCap:$('step-cap').value};
     // These HTTP loopback hosts are granted by the manifest across all ports.
     // Request other origins in the click gesture, before messaging the worker.
     const bundled = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(base);

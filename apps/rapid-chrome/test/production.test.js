@@ -33,7 +33,7 @@ test('connection checks permission before fetch and probes a single non-browser 
   assert.equal(requests.length,2);
   const body = JSON.parse(requests[1].body);
   assert.equal(body.tools.length,1); assert.equal(body.tools[0].function.name,'rapid_connection_test');
-  assert.equal(body.reasoning_effort,'high'); assert.equal(body.chat_template_kwargs.enable_thinking,true);
+  assert.equal(body.reasoning_effort,'high'); assert.equal(body.chat_template_kwargs,undefined);
   assert.equal(requests[1].headers.Authorization,'Bearer secret-key');
   await assert.rejects(testConnection(settings,{permissions:{contains:async () => false},fetchImpl:async () => {throw new Error('must not fetch');}}),/permissionMissing/);
 });
@@ -93,7 +93,7 @@ test('reasoning options omit off effort; agent requests and traces protect crede
     requests.push(JSON.parse(o.body));
     return reply({choices:[{message:{content:'secret-key',tool_calls:[{id:'a',function:{name:'read_page',arguments:'{}'}}]}}]});
   }});
-  assert.equal(requests[0].reasoning_effort,'high'); assert.equal(requests[0].chat_template_kwargs.enable_thinking,true);
+  assert.equal(requests[0].reasoning_effort,'high'); assert.equal(requests[0].chat_template_kwargs,undefined);
   assert.doesNotMatch(JSON.stringify(traces),/secret-key/);
   const value = redact({headers:{Authorization:'Bearer abc','x-api-key':'abc'},nested:['Authorization: Bearer abc','secret-key'],error:'Bearer another-key'},'secret-key');
   assert.doesNotMatch(JSON.stringify(value),/abc|secret-key|another-key/);

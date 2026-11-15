@@ -24,8 +24,9 @@ test('empty query match returns the normal viewport-first outline and fresh acti
   const options = {start:20,geometry:new Map([[1,false],[2,true],[3,true],[4,true]])};
   const normal = outlineAX(nodes,options);
   const missed = outlineAX(nodes,{...options,query:'65W USB-C wall charger'});
-  assert.match(missed.text,/No matching text.*normal viewport-first outline/);
-  assert.equal(missed.text.replace(/\[No matching text[^\n]*\n/,''),normal.text);
+  assert.match(missed.text,/No matching text.*No page text matched/);
+  assert.equal(missed.query_matched,false);
+  assert.ok(missed.text.length <= 2000);
   assert.deepEqual(missed.refs,normal.refs);
   assert.ok(missed.text.indexOf('Search Amazon') < missed.text.indexOf('Departments'));
   assert.equal(missed.refs.get('e21').role,'searchbox');

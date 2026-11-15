@@ -454,3 +454,7 @@ supported itinerary overstates the number of pages read. No new live E2E pass
 rate is claimed. The report lists deferred contextual location/ZIP gating,
 map-vs-result extraction and dynamic settling work separately from model and
 external-site failures.
+
+## Local-model tuning next
+
+Deferred ranks 6 and 7: token-aware compaction with an action/evidence ledger and semantic no-progress detection. Round 1 adds only a bounded context-overflow recovery, not proactive compaction or a candidate ledger. Offline unit checks do not establish model uplift; frozen Qwen/Opus repeat runs remain to be measured.

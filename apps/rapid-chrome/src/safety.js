@@ -97,7 +97,7 @@ export class NavigationPolicy {
     const wikiSearch = url.pathname === '/w/index.php' && Boolean(url.searchParams.get('search')?.trim()) &&
       [...url.searchParams.keys()].every(k => k === 'search');
     if (root || search || wikiSearch) return; // A new origin must then receive site approval.
-    throw new Error('unobserved_url: URL was not supplied by the user or seen as an href in an outline in this task. Click a link from the page or use site search; do not invent product or venue URLs.');
+    throw new Error('unobserved_url: URL was not supplied by the user or seen as an href in an outline in this task. Click a link from the page or use site search. Use an observed link or open the site root and search; this deep URL was not visited. If no link or search ref is available, request a focused read.');
   }
 }
 

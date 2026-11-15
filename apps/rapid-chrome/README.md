@@ -58,7 +58,14 @@ compatibility test.
   sequentially, and continues until final text, Stop, or the tool-step cap (60
   by default, configurable 1–100). Ten tool schemas live in `src/tools.js`.
   Reasoning effort defaults to off; low/high send `reasoning_effort` and enable
-  thinking through `chat_template_kwargs`. Duplicate immediate
+  thinking through `chat_template_kwargs` only for Rapid local endpoints.
+  Page detail (Auto/Compact/Standard) uses 6K-character default outlines for
+  Rapid local and keeps 12K for other endpoints; focused reads allow 12K.
+  Query misses return at most 2K characters plus structured omission counts.
+  Local requests use temperature 0.2 unless explicitly set, 1,024 output
+  tokens for action rounds and 2,048 for final synthesis. HTTP failures retain
+  bounded redacted diagnostics; context overflow and 502 each get one model
+  request retry, without replaying browser actions. Duplicate immediate
   calls and previously failed identical calls return recovery guidance without
   re-execution; successful actions reset failed-call tracking.
 - Created tabs have a visible **Rapid** group. Shared tabs retain their existing

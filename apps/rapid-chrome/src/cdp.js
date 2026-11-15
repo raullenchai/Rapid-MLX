@@ -1,6 +1,7 @@
 import { t } from './i18n.js';
 import { watchEffects, collectEffects, effectReport } from './effects.js';
 import { detectChallenge, informationTask } from './challenge.js';
+import { pageProfile } from './endpoint.js';
 import { outlineAX } from './ax.js';
 import { safeURL, classifyTarget, approvalTitleKey, needsSiteApproval, additionKey, NavigationPolicy, sensitivePage } from './safety.js';
 import { delay } from './agent.js';
@@ -341,8 +342,14 @@ export class BrowserHand {
   async verifyApproval(id,target) {
     await this.current({tabId:id});
     const snapshot = target.approvedInfo || target.inspectedInfo;
-    if (snapshot && (target.epoch !== this.tabs.get(id)?.epoch || JSON.stringify(snapshot) !== JSON.stringify(await this.inspect(id,target))))
-      throw new Error('stale_ref: form values or target changed after approval; request a fresh approval');
+    if (!snapshot) return;
+    const latest = await this.inspect(id,target);
+    const mismatch = target.epoch !== this.tabs.get(id)?.epoch ? 'epoch' : JSON.stringify(snapshot) === JSON.stringify(latest) ? null : snapshot.values && JSON.stringify(snapshot.values) !== JSON.stringify(latest.values) ? 'form' : snapshot.value !== latest.value ? 'value' : 'target';
+    if (mismatch) {
+      const error = new Error('approval_snapshot_changed: stale_ref: form values or target changed after approval; action blocked');
+      error.payload = {type:'approval_snapshot_changed',mismatch,action_executed:false,approval_required:true,recovery:'The approved target or form changed; the action was blocked. Use fresh state and request new approval for the corrected action.'};
+      throw error;
+    }
   }
   async resolve(id, ref) {
     // Accept the outline's display brackets, but only for a current exact ref.
@@ -380,11 +387,14 @@ export class BrowserHand {
       const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${fields.some(el => (el.name || el.id || '') === v.name && maskedField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
       const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.closest('[role="dialog"],dialog')?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '';
-      return {values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
+      const challengeScope = e.closest('[class*=captcha i],[id*=captcha i],[class*=challenge i],[id*=challenge i]');
+      const challengeControl = /captcha|recaptcha|hcaptcha|turnstile|datadome/i.test([e.id,e.className,e.getAttribute('aria-label'),e.ownerDocument.location?.href].join(' ')) || Boolean(challengeScope && /captcha|verify.{0,20}human|not a robot|security check/i.test(challengeScope.innerText || ''));
+      return {challengeControl,values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }
   async gateTarget(id, target, action, {fill = false, submit = false, always = false} = {}) {
     const info = await this.inspect(id,target);
+    if (info.challengeControl || /(?:i.m|i am) not a robot|verify (?:that )?you are human/i.test(info.name || '')) throw new Error('human_check: challenge controls are blocked; ask the user to complete the check');
     if (!info.connected) throw new Error('stale_ref: call read_page');
     const classification = classifyTarget({...info,role:target.role || info.role,name:info.name || target.name});
     if (fill && (classification.sensitive || classifyTarget({name:target.name}).sensitive)) throw new Error('blocked_sensitive_field: ask the user to enter passwords or payment details');
@@ -558,11 +568,16 @@ export class BrowserHand {
       const id = result.tabId ?? args.tabId ?? this.active;
       if (!this.tabs.has(id)) return result;
       if (['navigate','open_tab'].includes(name)) await this.settle(id);
-      const observation = await this.freshRead({tabId:id},signal);
+      let observation;
+      try { observation = await this.freshRead({tabId:id},signal); }
+      catch (error) {
+        this.check();
+        return {...result,...await this.meta(id),observation_failed:true,navigation_status:'requested',recovery:'The tab opened or navigated, but its observation failed during navigation. Wait briefly, then read_page on this tabId; do not open it again.',error:'observation_failed: '+error.message};
+      }
       // Navigation can return before commit. Do not present its old URL/title
       // as the final state; the outline is the authoritative fresh observation.
       const meta = await this.meta(id);
-      return {...result,...meta,text:`${result.text}. Fresh observation:\n${observation.text}`};
+      return {...result,...meta,query_matched:observation.query_matched,truncated:observation.truncated,omitted_entries:observation.omitted_entries,omitted_cards:observation.omitted_cards,text:`${result.text}. Fresh observation:\n${observation.text}`};
     }
     if (!['click','fill','press'].includes(name)) return this.executeCore(name,args,signal);
     this.signal = signal;
@@ -599,7 +614,7 @@ export class BrowserHand {
     if (actionError) {
       actionError.effect = effect; actionError.observation = observation; throw actionError;
     }
-    return {effect,...result,text:`${name} completed. Fresh observation:\n${observation.text}`};
+    return {effect,...result,query_matched:observation.query_matched,truncated:observation.truncated,omitted_entries:observation.omitted_entries,omitted_cards:observation.omitted_cards,text:`${name} completed. Fresh observation:\n${observation.text}`};
   }
   async executeCore(name,args,signal) {
     this.signal = signal; this.check();
@@ -693,7 +708,7 @@ export class BrowserHand {
           !n.properties?.some(p => p.name === 'hidden' && p.value?.value === true);
       }));
       const stableRefs = new Map([...retained].map(([ref,target]) => [target.backendDOMNodeId,ref]));
-      const outline = outlineAX(nodes,{url:tab.url,title:tab.title,start:this.nextRef,query:args.query,geometry,stableRefs});
+      const outline = outlineAX(nodes,{url:tab.url,title:tab.title,start:this.nextRef,query:args.query,limit:pageProfile(this.settings) === 'compact' && !args.query ? 6000 : 12000,geometry,stableRefs});
       t.refs = new Map([...retained,...outline.refs]); this.nextRef = outline.next;
       for (const target of outline.refs.values()) if (target.href) this.navigation.observe(target.href);
       const forms = new Map(), nativeControls = [];
@@ -704,7 +719,7 @@ export class BrowserHand {
           const form = await this.call(id,resolved.objectId,function () {
             const f = this.form || this.closest('form');
             const type = this.tagName === 'SELECT' ? 'select' : this.type;
-            const native = ['select','date','time','datetime-local'].includes(type) ? {type,value:this.value} : null;
+            const native = ['select','date','time','datetime-local'].includes(type) || this.getAttribute?.('role') === 'combobox' || /date|departure|return/i.test([this.name,this.id,this.placeholder].join(' ')) ? {type,value:type === 'password' || /^(?:cc-|current-password|new-password)/i.test(this.autocomplete || '') ? '[protected]' : this.value,placeholder:this.getAttribute?.('placeholder'),format:type === 'date' ? 'YYYY-MM-DD' : this.getAttribute?.('aria-description') || this.getAttribute?.('data-format'),valid:this.validity?.valid,commit_state:this.getAttribute?.('aria-expanded') === 'true' ? 'suggestions/picker open; selection or Done/Apply may be required' : document.activeElement === this ? 'focused; commit unverified' : 'blurred; verify applied value'} : null;
             if (!f && !native) return null;
             const recipients = f ? [...f.elements].filter(el => /^(?:to|cc|bcc)$/i.test(el.name || '')).map(el => `${el.name}: ${el.value}`).join('; ').slice(0,500) : '';
             return {index:f ? [...document.forms].indexOf(f) : -1,name:f?.getAttribute('aria-label') || f?.getAttribute('name') || '',method:f?.method || '',native,recipients};
@@ -714,13 +729,13 @@ export class BrowserHand {
               const key = `${form.index}: ${JSON.stringify(form.name)} (${form.method})${form.recipients ? ` Recipients: ${form.recipients}` : ''}`;
               forms.set(key,[...(forms.get(key) || []),`[${ref}]`]);
             }
-            if (form.native) nativeControls.push(`Native [${ref}] ${form.native.type} value=${JSON.stringify(form.native.value)}; fill with ${form.native.type === 'select' ? 'exact option label/value' : form.native.type === 'date' ? 'YYYY-MM-DD' : form.native.type === 'time' ? 'HH:mm (24-hour)' : 'YYYY-MM-DDTHH:mm'}`);
+            if (form.native) nativeControls.push(`Native [${ref}] ${form.native.type} value=${JSON.stringify(form.native.value)}; fill with ${form.native.type === 'select' ? 'exact option label/value' : form.native.type === 'date' ? 'YYYY-MM-DD' : form.native.type === 'time' ? 'HH:mm (24-hour)' : form.native.type === 'datetime-local' ? 'YYYY-MM-DDTHH:mm' : 'displayed format; select suggestion or commit picker'}; input_type=${form.native.type} placeholder=${JSON.stringify(form.native.placeholder)} format=${JSON.stringify(form.native.format)} valid=${form.native.valid} commit_state=${JSON.stringify(form.native.commit_state)}`);
           }
         } catch { this.check(); }
       }
       if (epoch !== t.epoch) throw new Error('stale_ref: page changed while reading forms; call read_page again');
       const formText = [...forms].map(([form,refs]) => `Form ${form}: ${refs.join(' ')}`).join('\n');
-      return {text:`${formText ? `Form controls (use refs in outline):\n${formText}\n` : ''}${nativeControls.length ? `${nativeControls.join('\n')}\n` : ''}${outline.text}`};
+      return {query_matched:outline.query_matched,truncated:outline.truncated,omitted_entries:outline.omitted_entries,omitted_cards:outline.omitted_cards,text:outline.query_matched === false ? outline.text : (`${formText ? `Form controls (use refs in outline):\n${formText}\n` : ''}${nativeControls.length ? `${nativeControls.join('\n')}\n` : ''}${outline.text}`)};
     }
     if (name === 'screenshot') {
       if (!this.settings.vision) return {note:'Vision is off. Use read_page.',...await this.meta(id)};

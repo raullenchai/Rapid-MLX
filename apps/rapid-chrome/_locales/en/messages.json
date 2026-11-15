@@ -864,5 +864,17 @@
   },
   "allowSignIn": {
     "message": "Allow signing in?"
+  },
+  "pageDetail": {
+    "message": "Page detail"
+  },
+  "auto": {
+    "message": "Auto"
+  },
+  "compact": {
+    "message": "Compact"
+  },
+  "standard": {
+    "message": "Standard"
   }
 }

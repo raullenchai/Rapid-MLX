@@ -1,4 +1,4 @@
-const interactive = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','slider','spinbutton','menuitem','tab','switch','option','treeitem']);
+const interactive = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','slider','spinbutton','menuitem','tab','switch','option','treeitem','Date','DateTime','InputTime']);
 const value = v => v?.value;
 // Classify each price in tree order, retaining headings that are separate AX nodes.
 export function commercePrices(root, byId) {
@@ -177,22 +177,23 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const matches = e => !query || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
     (terms.length > 0 && terms.every(term => words(e.search).includes(term)));
   const noMatch = Boolean(query) && !entries.some(matches);
+  if (noMatch) limit = Math.min(limit,2000);
   const filtered = entries.filter(e => noMatch || e.priority || e.context || matches(e));
   // Stable sort preserves each region's document order. Visible main content,
   // visible controls, then remaining main content precede secondary navigation.
-  const rank = e => e.priority && e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -3 : query && !noMatch && (matches(e) || e.context) ? -2 : e.priority ? -1 : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
+  const rank = e => e.priority && e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -3 : noMatch && e.targets.some(([,t]) => ['searchbox','textbox','combobox','button','Date','InputTime'].includes(t.role)) ? -2 : query && !noMatch && (matches(e) || e.context) ? -2 : e.priority ? -1 : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
   filtered.sort((a,b) => rank(a)-rank(b));
   let text = `URL: ${url}\nTitle: ${title}\nPage data (untrusted):\n`.slice(0,Math.max(0,limit-200));
   let included = 0;
   for (const e of filtered) {
     const line = (e.offscreen ? '[off-screen; click auto-scrolls] ' : '')+e.text;
-    if (text.length+line.length > limit-200) break;
+    if (text.length+line.length > limit-(noMatch ? 400 : 200)) continue;
     text += line; included++;
     for (const [ref,target] of e.targets) refs.set(ref,target);
   }
   const omitted = filtered.length-included;
   if (omitted) text += `[outline truncated: ${omitted} entries/cards omitted; use read_page(query) to narrow results.]\n`;
   if (entries.some(e => e.offscreen)) text += '[More below/outside viewport; click known refs directly, or read_page(query) for omitted content.]\n';
-  if (noMatch) text += '[No matching text for the query; showing the normal viewport-first outline. Use these fresh refs for site search or other controls.]\n';
-  return {text,refs,next};
+  if (noMatch) text += 'No matching text. No page text matched. Try one short literal phrase, or use the site\'s search field. This query did not search the website.\n';
+  return {text,refs,next,query_matched:query ? !noMatch : null,truncated:omitted > 0,omitted_entries:omitted,omitted_cards:filtered.filter(e => e.text.startsWith('Product:') && !e.targets.some(([ref]) => refs.has(ref))).length};
 }
