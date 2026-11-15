@@ -140,3 +140,12 @@ test('overflow recovery keeps complete tool batches and original task without br
   assert.equal(recovered[1].content,'Fill and submit this form');
   for(let i=0;i<recovered.length;i++)if(recovered[i].role==='tool')assert.ok(recovered[i-1].tool_calls?.some(c=>c.id===recovered[i].tool_call_id));
 });
+test('scoped negation keeps the requested action; whole-task negation stays read-only',async()=>{
+  const replies=()=>[{tool_calls:[call('read_page')]},{content:'I request approval to Send this reply to Alex'},{tool_calls:[call('click',{ref:'e19'})]},{content:'Sent'}];
+  for(const task of ['Reply to Alex with the link. Ask me to approve Send. Do not send to anyone else.','回复 Alex 并附上链接，不要发给其他人']){
+    const r=await run(task,replies());assert.equal(r.events.filter(e=>e.kind==='nudge').length,1,task);
+  }
+  for(const task of ['Draft a reply to Alex but do not send it.','Find the deck link. Do not reply or send anything.']){
+    const r=await run(task,[{tool_calls:[call('read_page')]},{content:'I request approval to Send this reply'}]);assert.equal(r.requests.length,2,task);
+  }
+});

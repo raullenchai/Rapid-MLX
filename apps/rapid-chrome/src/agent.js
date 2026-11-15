@@ -88,7 +88,9 @@ export async function runAgent({ settings, task, history = [], currentTab, execu
   const readStates = new Set();
   let researchReads = 0, researchChars = 0, researchDeadline = Infinity;
   let routingRecovery = false, overflowRecovery = false, gatewayRecovery = false, lengthRecovery = false, handover = false;
-  const requestedAction = /\b(?:submit|send|save|add|buy|book|reserve|cancel|fill|reply|delete|update)\b|提交|发送|傳送|保存|购买|購買/i.test(task) && !/\b(?:should|shall|may|can) (?:I|we)\b|\b(?:do not|never|don.t) (?:submit|send|save|buy)\b|不要|是否/i.test(task);
+  // Scope limits ("do not send to anyone else") restrict recipients; they do not cancel the requested action.
+  const scopedTask = task.replace(/\b(?:do not|never|don.t)\s+(?:send|reply|submit|share|forward)\s+(?:it\s+|this\s+|anything\s+)?(?:to|with|for)\s+(?:anyone|anybody|others?|any other|someone)\b[^.;!?\n]*/gi, ' ').replace(/不要(?:发|發|回复|回覆|提交)?给(?:其他|别|別)人[^，。；,.;!?\n]*/g, ' ');
+  const requestedAction = /\b(?:submit|send|save|add|buy|book|reserve|cancel|fill|reply|delete|update)\b|提交|发送|傳送|保存|购买|購買|回复/i.test(scopedTask) && !/\b(?:should|shall|may|can) (?:I|we)\b|\b(?:do not|never|don.t) (?:submit|send|save|buy|reply|book|reserve|delete)\b|不要|是否/i.test(scopedTask);
   let approvalRecovery = false, loopNudged = false, loopWarned = false, deniedAction = false;
   const cap = Math.max(1, Math.min(60, Number(settings.stepCap) || 60));
   const summarize = async (reason, synthesis = false) => {
