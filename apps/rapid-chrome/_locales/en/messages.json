@@ -563,7 +563,7 @@
     "message": "Let Rapid control this tab"
   },
   "tabGranted": {
-    "message": "Control granted · Stop"
+    "message": "Rapid can control this tab · Stop"
   },
   "chatPlaceholder": {
     "message": "Message"
@@ -656,7 +656,7 @@
     "message": "Revise request"
   },
   "newMessages": {
-    "message": "$1 new messages ↓"
+    "message": "$1 new messages ⌄"
   },
   "pageContext": {
     "message": "Page context"
@@ -690,5 +690,149 @@
   },
   "historySaveFailed": {
     "message": "Conversation could not be saved on this device. Check available extension storage."
+  },
+  "oneSite": {
+    "message": "$1 site"
+  },
+  "manySites": {
+    "message": "$1 sites"
+  },
+  "oneStep": {
+    "message": "$1 step"
+  },
+  "manySteps": {
+    "message": "$1 steps"
+  },
+  "browsedSummary": {
+    "message": "Browsed $1 · $2"
+  },
+  "workedSummary": {
+    "message": "Worked for $1s · $2"
+  },
+  "engineReady": {
+    "message": "Engine ready"
+  },
+  "browserIdle": {
+    "message": "Browser idle"
+  },
+  "browserGranted": {
+    "message": "Tab shared"
+  },
+  "browserWorking": {
+    "message": "Controlling tab"
+  },
+  "copyCode": {
+    "message": "Copy code"
+  },
+  "copied": {
+    "message": "✓ Copied"
+  },
+  "modelPicker": {
+    "message": "Choose model"
+  },
+  "handoverTitle": {
+    "message": "Your turn: $1"
+  },
+  "handoverHelp": {
+    "message": "Complete this on the page, then tell Rapid when you’re done."
+  },
+  "handoverDone": {
+    "message": "I'm done"
+  },
+  "cancel": {
+    "message": "Cancel"
+  },
+  "errorUnreachable": {
+    "message": "Start Rapid on your Mac, then test the connection in settings. Your draft is kept."
+  },
+  "errorCors": {
+    "message": "The engine refused this extension origin. Restart it with this exact allowed origin, then reconnect."
+  },
+  "errorNoTools": {
+    "message": "This model did not pass the browser tool test. Choose a tool-capable model in settings and reconnect."
+  },
+  "errorStepCap": {
+    "message": "The step limit was reached. Review the partial answer, then narrow the task or change the limit in settings."
+  },
+  "elapsed": {
+    "message": "$1s elapsed"
+  },
+  "interruptedRun": {
+    "message": "Stopped after the worker restarted. Review the partial result and send a new request to continue."
+  },
+  "approvalEffect": {
+    "message": "Effect: $1"
+  },
+  "pageStarter": {
+    "message": "Summarize $1"
+  },
+  "browserPaused": {
+    "message": "Your control"
+  },
+  "oneNewMessage": {
+    "message": "1 new message ⌄"
+  },
+  "grantEffect": {
+    "message": "Allow browser actions on this tab for this task. You can stop at any time."
+  },
+  "actionEffect": {
+    "message": "Allow this action once. Deny to keep the page unchanged by this action."
+  },
+  "elapsedTime": {
+    "message": "Elapsed: $1s"
+  },
+  "handoverLogin": {
+    "message": "Your turn: sign in on the page, then return here. Rapid will read the page again."
+  },
+  "handoverPayment": {
+    "message": "Your turn: enter payment details on the page. Return here when finished; Rapid will read the page again."
+  },
+  "handoverPermission": {
+    "message": "Your turn: review the browser permission prompt. Return here when finished."
+  },
+  "theme": {
+    "message": "Theme"
+  },
+  "darkTheme": {
+    "message": "Dark"
+  },
+  "lightTheme": {
+    "message": "Light"
+  },
+  "loginHandover": {
+    "message": "sign in on the page"
+  },
+  "paymentHandover": {
+    "message": "complete payment details on the page"
+  },
+  "permissionHandover": {
+    "message": "review the permission prompt"
+  },
+  "sensitiveHandover": {
+    "message": "enter private details on the page"
+  },
+  "checkHandover": {
+    "message": "complete the page check"
+  },
+  "loadHandover": {
+    "message": "resolve the page loading issue"
+  },
+  "handoverSensitive": {
+    "message": "Enter passwords or payment details yourself on the page, then return here. Rapid will read the page again."
+  },
+  "stepFinding": {
+    "message": "Finding “$1” on $2"
+  },
+  "handoverMenu": {
+    "message": "Your turn on the page"
+  },
+  "handoverLoginAction": {
+    "message": "Sign in myself"
+  },
+  "handoverPaymentAction": {
+    "message": "Enter payment details myself"
+  },
+  "handoverPermissionAction": {
+    "message": "Review a permission prompt"
   }
 }

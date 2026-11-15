@@ -10,7 +10,7 @@ export async function until(fn, label, timeout = 15000) {
 export async function launchExtension(chromium, profile, options = {}) {
   const extension = fileURLToPath(new URL('../../',import.meta.url));
   return chromium.launchPersistentContext(profile,{
-    channel:'chromium',headless:process.env.HEADLESS === '1',
+    ...(process.env.CHROME_EXECUTABLE ? {executablePath:process.env.CHROME_EXECUTABLE} : {channel:'chromium'}),headless:process.env.HEADLESS === '1',
     ...options,
     args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]
   });
@@ -25,7 +25,7 @@ export async function connectPanel(context, base, apiKey = '', options = {}) {
   // First-run onboarding is inline, not a modal. Use its connection action;
   // the first submitted task completes the tour and hides it.
   if (await panel.locator('#onboarding').isVisible()) await panel.locator('#onboard-connect').click();
-  else await panel.locator('#settings-toggle').click();
+  else { await panel.locator('#settings-toggle').click(); await panel.locator('#menu-settings').click(); }
   await panel.locator('#endpoint-mode').selectOption('custom');
   await panel.locator('#base').fill(base);
   await panel.locator('#api-key').fill(apiKey);
@@ -33,7 +33,7 @@ export async function connectPanel(context, base, apiKey = '', options = {}) {
   if (process.env.REASONING) await panel.locator('#reasoning').selectOption(process.env.REASONING);
   await panel.getByRole('button',{name:'Save & connect'}).click();
   await until(async () => /^Connected(?:$|\.)/.test(await panel.locator('#status').textContent()),'engine connection');
-  await panel.locator('#settings-toggle').click();
+  await panel.locator('#settings-close').click();
   return panel;
 }
 

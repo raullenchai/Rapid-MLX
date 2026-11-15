@@ -1,3 +1,4 @@
+import * as uiState from '../src/ui-state.js';
 import { markdown, stepLabel } from '../src/ui.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -93,7 +94,7 @@ test('Stop remains enabled and posts immediately through repeated long-task pane
   const {document}=dom();let render;const sent=[];
   const chrome={runtime:{connect:() => ({postMessage:m=>sent.push(m),onMessage:{addListener:f=>{render=f;}},onDisconnect:{addListener(){}}})}};
   const endpoint=await import('../src/endpoint.js');
-  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace(/^export .*;$/gm,''),{document,chrome,markdown,stepLabel,...endpoint,renderSteps,clip,t:k=>k,localize:s=>s,translateDocument(){},displayResult:s=>s,toolLabel:s=>s});
+  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace(/^export .*;$/gm,''),{...uiState,document,chrome,markdown,stepLabel,...endpoint,renderSteps,clip,t:k=>k,localize:s=>s,translateDocument(){},displayResult:s=>s,toolLabel:s=>s});
   const s={settings:{base:'http://localhost:8000'},models:[],messages:[],tabs:[],steps:[],approvals:[],running:true,status:'Working'};
   for(let i=0;i<100;i++) {s.steps.push({id:String(i),name:'read_page',args:{},result:'x'.repeat(14000)});render(s);}
   assert.equal(document.getElementById('stop').disabled,false);

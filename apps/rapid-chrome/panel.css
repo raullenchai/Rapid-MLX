@@ -1,37 +1,35 @@
 :root {
-  color-scheme:light dark;
+  color-scheme:dark;
   font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
   --space:8px;
-  --bg:#f8f9fc;
-  --surface:#fff;
-  --bubble:#edeff4;
-  --field:#eceff5;
-  --text:#202531;
-  --muted:#606b80;
-  --line:#d9deea;
-  --accent:#335bd5;
-  --user:#dce6ff;
-  --user-text:#182e66;
-  --good:#218653;
-  --danger:#a92343;
-  --shadow:0 16px 48px #12234220
+  --bg:#18191d;
+  --surface:#222429;
+  --bubble:#2b2d33;
+  --field:#292b31;
+  --text:#f0f1f5;
+  --muted:#a8acb9;
+  --line:#3e414b;
+  --accent:#9ab6ff;
+  --user:#233e78;
+  --user-text:#f0f4ff;
+  --good:#73d5a4;
+  --danger:#ff9eb0;
+  --shadow:0 16px 48px #0007
 }
-@media(prefers-color-scheme:dark) {
-  :root {
-    --bg:#18191d;
-    --surface:#222429;
-    --bubble:#2b2d33;
-    --field:#292b31;
-    --text:#f0f1f5;
-    --muted:#a8acb9;
-    --line:#3e414b;
-    --accent:#9ab6ff;
-    --user:#233e78;
-    --user-text:#f0f4ff;
-    --good:#73d5a4;
-    --danger:#ff9eb0;
-    --shadow:0 16px 48px #0007
-  }
+body[data-theme=light] {
+    --bg:#f8f9fc;
+    --surface:#fff;
+    --bubble:#edeff4;
+    --field:#eceff5;
+    --text:#202531;
+    --muted:#606b80;
+    --line:#d9deea;
+    --accent:#335bd5;
+    --user:#dce6ff;
+    --user-text:#182e66;
+    --good:#218653;
+    --danger:#a92343;
+    --shadow:0 16px 48px #12234220
 }
 * {
   box-sizing:border-box
@@ -199,7 +197,7 @@ body[data-connected=true] #connection-dot {
   width:fit-content;
   max-width:85%;
   padding:12px 16px;
-  border-radius:18px;
+  border-radius:22px;
   background:var(--bubble);
   margin:8px 0 24px;
   overflow-wrap:anywhere;
@@ -569,3 +567,50 @@ input:not([type=checkbox]),select {
   white-space:nowrap;
   box-shadow:var(--shadow)
 }
+body { color-scheme:dark; font-size:15px }
+body[data-theme=light] { color-scheme:light }
+.bubble,.bubble.user,.bubble.assistant { border-radius:24px; padding:15px 18px; font-size:15px; line-height:1.65; margin-bottom:30px; }
+.system-note { background:none; color:var(--muted); text-align:center; margin:12px auto; font-size:12px; }
+.system-note .message-actions { display:none; }
+.connection-strip { flex-wrap:wrap; gap:5px 8px; padding:6px 12px; }
+#browser-state { font-size:10px; color:var(--muted); }
+#availability { flex:initial; }
+#model-name { margin-left:auto; max-width:27%; }
+#settings-toggle { display:flex; align-items:center; padding:2px; }
+#status.sr-only { margin:0; }
+.thread-head { height:58px; }
+.thread-head button,.composer-actions button { display:flex; align-items:center; justify-content:center; gap:6px; min-height:34px; }
+#send { width:36px; height:36px; padding:6px; }
+#stop { padding:6px 12px; }
+#chat:focus-within { border-color:var(--accent); }
+#message:focus-visible { outline:none; }
+.bubble pre { white-space:pre; max-width:100%; font-size:13px; }
+.code-block { max-width:100%; position:relative; margin:12px 0; }
+.code-block button { font-size:11px; padding:3px 8px; }
+.code-block pre { margin-top:6px; }
+.table-scroll { max-width:100%; overflow-x:auto; }
+table { border-collapse:collapse; white-space:nowrap; }
+th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
+#recovery-command { overflow-x:auto; white-space:pre; background:var(--bg); padding:12px; border-radius:10px; font-size:12px; }
+#tab-icon { width:16px; flex-shrink:0; display:flex; }
+#tab-icon img { width:16px; height:16px; }
+.tab-context { align-items:center; font-size:12px; }
+button.text-button { font-size:11px; max-width:58%; }
+.approval-effect { color:var(--muted); font-size:12px; }
+#steps summary { font-size:12px; }
+#new-messages { background:var(--surface); color:var(--accent); }
+@media(max-width:350px) {
+  #model-name { max-width:24%; }
+  #browser-state { order:5; width:100%; padding-left:14px; }
+  #transcript { padding-left:12px; padding-right:12px; }
+  footer { padding:8px 12px 12px; }
+  .bubble { max-width:90%; }
+  .chips { grid-template-columns:1fr; }
+  #onboarding { padding-top:16px; }
+}
+
+button svg { display:block; flex-shrink:0 }
+#steps details[data-status=running]>summary::after { content:""; display:inline-block; width:5px; height:5px; border-radius:50%; background:var(--accent); margin-left:8px; animation:pulse 1.6s infinite }
+#panel-menu { position:absolute; right:12px; top:42px; z-index:6; width:min(290px,calc(100% - 24px)); padding:16px; border:1px solid var(--line); border-radius:18px; background:var(--surface); box-shadow:var(--shadow) }
+#panel-menu button { display:block; width:100%; margin-top:8px; text-align:left }
+#activity-elapsed { display:block; font-size:11px; margin-top:4px }

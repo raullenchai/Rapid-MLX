@@ -1,3 +1,4 @@
+import * as uiState from '../src/ui-state.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -31,7 +32,7 @@ test('take-over yields all tabs, early Resume waits for detach, and bounded conv
     emit({kind:'answer',text:'Finished with fresh browser ownership.'}); finished = true;
   };
   const source = readFileSync(new URL('../background.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'');
-  runInNewContext(source,{chrome,BrowserHand:Hand,ChromeAdapter:class {},runAgent,clip,LOCAL_ENDPOINTS:['http://localhost:8000'],testConnection:async () => ({base:'http://localhost:8000',model:'fixture',models:['fixture']}),t:k=>k,localize:s=>s,engineBase:s=>s,safeURL:s=>new URL(s),redact:s=>s,crypto:globalThis.crypto,AbortController,DOMException,setInterval,clearInterval});
+  runInNewContext(source,{...uiState,chrome,BrowserHand:Hand,ChromeAdapter:class {},runAgent,clip,LOCAL_ENDPOINTS:['http://localhost:8000'],testConnection:async () => ({base:'http://localhost:8000',model:'fixture',models:['fixture']}),t:k=>k,localize:s=>s,engineBase:s=>s,safeURL:s=>new URL(s),redact:s=>s,crypto:globalThis.crypto,AbortController,DOMException,setInterval,clearInterval});
   const port = {name:'rapid-panel',sender:{url:chrome.runtime.getURL('panel.html')},onDisconnect:event(),onMessage:event(),postMessage:s=>snapshots.push(structuredClone(s))};
   chrome.runtime.onConnect.listeners[0](port); await tick();
   assert.equal(snapshots.at(-1).messages.length,60);
@@ -51,7 +52,7 @@ test('take-over yields all tabs, early Resume waits for detach, and bounded conv
   send({type:'new-chat'}); await tick();
   assert.equal(snapshots.at(-1).messages.length,0); assert.equal(snapshots.at(-1).chats.length,1);
   assert.equal('messages' in snapshots.at(-1).chats[0],false,'Publish history summaries only');
-  const archived = persisted.at(-1).chats[0];
+  const archived = persisted.findLast(value => value.chats).chats[0];
   assert.ok(archived.messages.length <= 60);
   send({type:'restore-chat',id:archived.id}); await tick();
   assert.equal(snapshots.at(-1).messages.at(-1).content,'Finished with fresh browser ownership.');
@@ -83,7 +84,7 @@ test('chat stays detached; current-page grant targets composer tab; summaries su
       const message = mode === 'browser' && !body.messages.some(m=>m.role==='tool') ? {tool_calls:[{id:'read',type:'function',function:{name:'read_page',arguments:'{}'}}]} : {content:mode==='browser'?'Swift is $24.99 and Bolt is $29.99.':mode==='followup'?'Swift is cheaper by $5.00.':'Hello Taylor!'};
       return {ok:true,json:async()=>({choices:[{message}]})};
     };
-    runInNewContext(source,{chrome,BrowserHand:Hand,ChromeAdapter:class {},runAgent:opts=>realRunAgent({...opts,fetchImpl}),clip,LOCAL_ENDPOINTS:['http://localhost:8000'],testConnection:async()=>({base:'http://localhost:8000',model:'fixture',models:['fixture']}),t:k=>k,localize:s=>s,engineBase:s=>s,safeURL:s=>new URL(s),redact:s=>s,crypto:globalThis.crypto,AbortController,DOMException,setInterval,clearInterval});
+    runInNewContext(source,{...uiState,chrome,BrowserHand:Hand,ChromeAdapter:class {},runAgent:opts=>realRunAgent({...opts,fetchImpl}),clip,LOCAL_ENDPOINTS:['http://localhost:8000'],testConnection:async()=>({base:'http://localhost:8000',model:'fixture',models:['fixture']}),t:k=>k,localize:s=>s,engineBase:s=>s,safeURL:s=>new URL(s),redact:s=>s,crypto:globalThis.crypto,AbortController,DOMException,setInterval,clearInterval});
     const port = {name:'rapid-panel',sender:{url:chrome.runtime.getURL('panel.html')},onDisconnect:event(),onMessage:event(),postMessage:s=>{snapshot=structuredClone(s);}};
     chrome.runtime.onConnect.listeners[0](port); await tick();
     return message=>port.onMessage.listeners[0](message);
@@ -112,4 +113,20 @@ test('chat stays detached; current-page grant targets composer tab; summaries su
   assert.equal(JSON.stringify(messages).includes('private-tool-transcript'),false);
   assert.equal(hand.attaches,0); assert.equal(hand.overlays,0); assert.equal(hand.finishes,0);
   assert.equal(snapshot.messages.at(-1).content,'Swift is cheaper by $5.00.');
+});
+
+test('a restarted production worker restores interrupted runs without approvals or executing the old task', async () => {
+  const data = {runState:{version:1,sequence:50,run:{id:'old-run',startedAt:100},messages:[{id:'partial',role:'assistant',content:'Partial answer'}],steps:[{id:'old-step',name:'click',status:'running'}],running:true,paused:true,status:'Working'}};
+  let snapshot, executions = 0;
+  const chrome = {storage:{local:{get:async()=>structuredClone(data),set:async value=>Object.assign(data,structuredClone(value))},session:{get:async()=>({}),set:async()=>{}}},runtime:{getURL:p=>`chrome-extension://unit/${p}`,onConnect:event(),onMessage:event()},tabs:{onRemoved:event(),onUpdated:event()},debugger:{onEvent:event(),onDetach:event()},action:{onClicked:event()},commands:{onCommand:event()}};
+  class Hand { constructor() { this.tabs = new Map(); } }
+  const source = readFileSync(new URL('../background.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'');
+  runInNewContext(source,{...uiState,chrome,BrowserHand:Hand,ChromeAdapter:class {},runAgent:()=>{executions++;},clip,LOCAL_ENDPOINTS:[],t:k=>k,localize:s=>s,engineBase:s=>s,safeURL:s=>s,crypto:globalThis.crypto});
+  const port = {name:'rapid-panel',sender:{url:chrome.runtime.getURL('panel.html')},onMessage:event(),onDisconnect:event(),postMessage:s=>{snapshot=structuredClone(s);}};
+  chrome.runtime.onConnect.listeners[0](port); await tick();
+  assert.equal(snapshot.status,'Stopped'); assert.equal(snapshot.running,false); assert.equal(snapshot.paused,false);
+  assert.equal(snapshot.run.interrupted,true); assert.equal(snapshot.messages[0].content,'Partial answer');
+  assert.equal(snapshot.steps[0].id,'old-step'); assert.equal(snapshot.approvals.length,0);
+  assert.ok(snapshot.sequence > 50); assert.equal(executions,0);
+  assert.equal(data.runState.running,false,'interrupted state is checkpointed after recovery');
 });

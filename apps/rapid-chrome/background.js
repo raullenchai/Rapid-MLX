@@ -1,3 +1,4 @@
+import { errorType, runSnapshot, restoreRun } from './src/ui-state.js';
 import { BrowserHand, ChromeAdapter } from './src/cdp.js';
 import { runAgent } from './src/agent.js';
 import { LOCAL_ENDPOINTS, testConnection, redact } from './src/endpoint.js';
@@ -5,20 +6,25 @@ import { clip } from './src/transcript.js';
 import { t, localize } from './src/i18n.js';
 import { engineBase, safeURL } from './src/safety.js';
 
-const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60,endpointMode:'local',reasoningEffort:'off'};
-const state = {messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',connected:false,settings:{...defaults},models:[],tabs:[],chats:[],resultTab:null,pauseReason:null};
+const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60,endpointMode:'local',reasoningEffort:'off',theme:'dark'};
+const state = {epoch:crypto.randomUUID(),sequence:0,run:null,error:null,messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',connected:false,settings:{...defaults},models:[],tabs:[],chats:[],resultTab:null,pauseReason:null};
 const ports = new Set(), pending = new Map();
+let snapshotWrite = Promise.resolve();
 let controller = null, runPromise = null, resumeGate = null, pausePromise = null, pauseCleanup = null;
 const hand = new BrowserHand(new ChromeAdapter(), {settings:state.settings,approve,emit,stop,challenge,takeover:pauseForTakeover});
 const ready = (async () => {
-  const {settings,conversation,chats} = await chrome.storage.local.get(['settings','conversation','chats']);
+  const {settings,conversation,chats,runState} = await chrome.storage.local.get(['settings','conversation','chats','runState']);
   state.chats = (chats || []).slice(-8);
   if (settings) { try { engineBase(settings.base); state.settings = {...defaults,...settings,endpointMode:settings.endpointMode || (LOCAL_ENDPOINTS.includes(settings.base) ? 'local' : 'custom')}; } catch {} }
   hand.settings = state.settings;
   const saved = await chrome.storage.session.get(['transcript','owned']);
-  state.messages = (conversation || saved.transcript || []).slice(-60);
+  state.messages = (runState?.messages || conversation || saved.transcript || []).slice(-60);
+  Object.assign(state,restoreRun(runState));
+  state.epoch = crypto.randomUUID();
+  state.sequence = runState?.sequence || 0;
   for (const tab of saved.owned || []) {
     try {
+      if (runState?.running) { try { await chrome.debugger.detach?.({tabId:tab.id}); } catch {} }
       const current = await chrome.tabs.get(tab.id);
       safeURL(current.url,state.settings.base);
       if (tab.created && current.groupId !== tab.groupId) continue;
@@ -28,11 +34,14 @@ const ready = (async () => {
   }
   refreshTabs();
   if (settings) {
-    try { await models(undefined,true,true); }
-    catch (e) { state.status = localize(e.message); publish(); }
-  } else { state.status = t('stepConnect'); publish(); }
+    try { await models(undefined,true,true); if (state.run?.interrupted) { state.status = 'Stopped'; publish(); } }
+    catch (e) { state.error = {type:errorType(e.message)}; state.status = localize(e.message); publish(); }
+  } else { state.status = state.run?.interrupted ? 'Stopped' : t('stepConnect'); publish(); }
 })();
 function publish() {
+  state.sequence++;
+  const snapshot = JSON.parse(JSON.stringify(runSnapshot(state)));
+  snapshotWrite = snapshotWrite.then(() => chrome.storage.local.set({runState:snapshot})).catch(() => { state.historyWarning = t('historySaveFailed'); });
   for (const port of ports) { try { port.postMessage({...state,chats:state.chats.map(({id,title}) => ({id,title})),messages:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,12000)})),steps:state.steps.map(s => ({...s,result:clip(s.result)})),status:localize(state.status)}); } catch { ports.delete(port); } }
 }
 function refreshTabs() {
@@ -64,7 +73,7 @@ function emit(event) {
     const detail = {url:state.steps[existing]?.url,targetLabel:state.steps[existing]?.targetLabel,...event,...(targetLabel ? {targetLabel} : {}),result:clip(event.result)};
     if (existing < 0) state.steps.push(detail); else state.steps[existing] = detail;
   } else if (event.kind === 'answer' || event.kind === 'notice' || event.kind === 'progress') {
-    state.messages.push({role:'assistant',kind:event.kind,content:event.text,...(event.browserSummary ? {browserSummary:event.browserSummary} : {}),at:new Date().toISOString()});
+    state.messages.push({id:crypto.randomUUID(),role:'assistant',kind:event.kind,content:event.text,...(event.browserSummary ? {browserSummary:event.browserSummary} : {}),at:new Date().toISOString()});
     if (state.messages.length > 60) state.messages.splice(0,state.messages.length - 60);
     void chrome.storage.session.set({transcript:state.messages.slice(-60)});
     void persistConversation();
@@ -88,6 +97,7 @@ function approve(card) {
 async function challenge(info) {
   controller.signal.throwIfAborted();
   if (!state.paused) pausePromise = new Promise(resolve => { resumeGate = resolve; });
+  state.handover = info;
   state.paused = true; state.pauseReason = 'challenge'; hand.paused = true;
   state.status = info.message;
   emit({kind:'notice',text:info.message});
@@ -113,7 +123,7 @@ async function checkpoint(messages) {
     controller.signal.throwIfAborted();
     hand.paused = false;
     for (const [id,t] of hand.tabs) if (!t.attached) { await hand.own(id); await hand.showOverlay(id,true); }
-    state.paused = false; state.pauseReason = null; state.status = 'Working'; refreshTabs();
+    state.paused = false; state.pauseReason = null; state.handover = null; state.status = 'Working'; refreshTabs();
   }
   if (messages && hand.notices.length) messages.push({role:'user',content:`Browser ownership notice (from extension): ${hand.notices.splice(0).join('\n')}`});
 }
@@ -128,7 +138,9 @@ async function models(signal, probe = true, discover = false) {
       }});
       Object.assign(state.settings,{base:result.base,model:result.model});
       state.models = result.models; state.connected = true;
-      state.status = result.warning ? t(result.warning) : t('connected'); await chrome.storage.local.set({settings:state.settings}); publish(); return;
+      state.error = null;
+      if (!state.run?.interrupted) state.status = result.warning ? t(result.warning) : t('connected');
+      await chrome.storage.local.set({settings:state.settings}); publish(); return;
     } catch (e) { failure = e; if (e.message !== 'unreachable' && e.message !== 'permissionMissing') break; }
   }
   throw failure;
@@ -136,6 +148,7 @@ async function models(signal, probe = true, discover = false) {
 async function run(task, tabId) {
   if (state.running) throw new Error('A task is already running');
   if (!task.trim()) return;
+  state.run = {id:crypto.randomUUID(),startedAt:Date.now(),endedAt:null}; state.error = null; state.handover = null;
   hand.paused = false; state.running = true; state.resultTab = null; state.pauseReason = null; state.steps = []; state.status = 'Working';
   controller = new AbortController();
   const signal = controller.signal;
@@ -149,7 +162,7 @@ async function run(task, tabId) {
     debugTrace.events.push(redact({atMs:Date.now()-started,...event},state.settings.apiKey));
     await chrome.storage.session.set({debugTrace:redact(debugTrace,state.settings.apiKey)});
   };
-  state.messages.push({role:'user',content:task,at:new Date().toISOString()}); void persistConversation(); publish();
+  state.messages.push({id:crypto.randomUUID(),role:'user',content:task,at:new Date().toISOString()}); void persistConversation(); publish();
   // A Chrome API call keeps a waiting approval / local inference run alive.
   const keepAlive = setInterval(() => { void chrome.runtime.getPlatformInfo(); },20000);
   try {
@@ -174,7 +187,18 @@ async function run(task, tabId) {
       const id = a[1]?.tabId ?? hand.active;
       const step = state.steps.findLast(step => step.status === 'running');
       if (step && id != null) { try { step.url = (await chrome.tabs.get(id)).url; publish(); } catch {} }
-      const result = await hand.execute(...a);
+      let result;
+      try { result = await hand.execute(...a); }
+      catch (e) {
+        if (/blocked_sensitive_field|needs_human_permission/.test(e.message)) {
+          const kind = /permission/.test(e.message) ? 'permission' : 'login';
+          await challenge({kind,message:t(kind === 'permission' ? 'handoverPermission' : 'handoverSensitive'),reason:t(kind === 'permission' ? 'permissionHandover' : 'sensitiveHandover')});
+          signal.throwIfAborted();
+          // Never retry a sensitive action after handover; require a fresh read.
+          throw new Error('needs_human: user returned; read_page for a fresh observation');
+        }
+        throw e;
+      }
       const text = result.observation?.text || result.text || '';
       for (const match of text.matchAll(/^URL:\s*(https?:\/\/\S+)/gm)) visited.add(match[1]);
       if (step?.url) visited.add(step.url);
@@ -188,9 +212,13 @@ async function run(task, tabId) {
     },checkpoint,trace});
     await trace({kind:'answer',text:state.messages.at(-1)?.content});
     state.status = 'Ready';
+    const final = state.messages.at(-1)?.content || '';
+    const type = errorType(final);
+    if (type === 'stepCap' || (type === 'noTools' && /completion is unconfirmed|model did not inspect/i.test(final))) state.error = {type};
   } catch (e) {
     await trace({kind:'error',error:e.message,aborted:signal.aborted});
     state.status = signal.aborted ? 'Stopped' : 'Error';
+    state.error = signal.aborted ? null : {type:errorType(e.message),message:redact(e.message,state.settings.apiKey)};
     emit({kind:'notice',text:signal.aborted ? 'Stopped. No further actions will run.' : e.message});
   } finally {
     clearInterval(keepAlive);
@@ -199,19 +227,27 @@ async function run(task, tabId) {
     await persistConversation();
     await chrome.storage.session.set({transcript:state.messages.slice(-60)});
     try { await trace({kind:'end',status:state.status,steps:state.steps.length,ms:Date.now()-started}); }
-    finally { controller = null; state.running = false; state.paused = false; refreshTabs(); }
+    finally { controller = null; state.running = false; state.paused = false; state.handover = null; state.run.endedAt = Date.now();
+      state.steps = state.steps.map(step => step.status === 'running' ? {...step,status:signal.aborted ? 'stopped' : 'error'} : step);
+      refreshTabs(); await snapshotWrite; }
   }
 }
 async function handle(message) {
   if (message.type === 'stop') { stop(); return; }
   await ready;
   if (message.type === 'approve') { pending.get(message.id)?.(message.allow === true); return; }
+  if (message.type === 'handover') {
+    if (!state.running || state.paused || !['login','payment','permission'].includes(message.kind)) return;
+    await pauseForTakeover();
+    state.handover = {kind:message.kind,message:t(({login:'handoverLogin',payment:'handoverPayment',permission:'handoverPermission'})[message.kind])};
+    publish(); return;
+  }
   if (message.type === 'take-over') { await pauseForTakeover(); return; }
   if (message.type === 'result-tab') { if (state.resultTab) { const tab = await chrome.tabs.update(state.resultTab,{active:true}); await chrome.windows.update(tab.windowId,{focused:true}); } return; }
   if (message.type === 'restore-chat') {
     if (state.running) throw new Error('Stop first');
     const chat = state.chats.find(chat => chat.id === message.id);
-    if (chat) { archiveConversation(); state.messages = chat.messages.slice(-60); state.steps = []; state.resultTab = null; state.status = 'Ready'; await persistConversation(); publish(); }
+    if (chat) { archiveConversation(); state.run = null; state.error = null; state.messages = chat.messages.slice(-60); state.steps = []; state.resultTab = null; state.status = 'Ready'; await persistConversation(); publish(); }
     return;
   }
   if (message.type === 'resume') { if (message.allow) resumeGate?.(true); else stop(); return; }
@@ -222,7 +258,7 @@ async function handle(message) {
   if (message.type === 'new-chat') {
     if (state.running) throw new Error('Stop the task before starting a new chat');
     archiveConversation();
-    state.messages = []; state.steps = []; state.resultTab = null; state.status = 'Ready'; hand.notices = [];
+    state.run = null; state.error = null; state.messages = []; state.steps = []; state.resultTab = null; state.status = 'Ready'; hand.notices = [];
     await persistConversation();
     await chrome.storage.session.set({transcript:[]});
     await chrome.storage.session.remove('debugTrace');
@@ -232,7 +268,7 @@ async function handle(message) {
     const s = message.settings;
     const base = engineBase(s.base);
     if (s.endpointMode !== 'custom' && !LOCAL_ENDPOINTS.includes(base)) throw new Error('invalidEndpoint');
-    state.settings = {endpointMode:s.endpointMode === 'custom' ? 'custom' : 'local',reasoningEffort:['low','high'].includes(s.reasoningEffort) ? s.reasoningEffort : 'off',base,apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
+    state.settings = {theme:s.theme === 'light' ? 'light' : 'dark',endpointMode:s.endpointMode === 'custom' ? 'custom' : 'local',reasoningEffort:['low','high'].includes(s.reasoningEffort) ? s.reasoningEffort : 'off',base,apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
     hand.settings = state.settings;
     await chrome.storage.local.set({settings:state.settings});
     await models(undefined,true,true);
@@ -253,7 +289,11 @@ async function handle(message) {
     if (!tab.url?.startsWith('chrome-error://')) safeURL(tab.url,state.settings.base);
     hand.tabs.set(tab.id,{attached:false,created:false,groupId:tab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
     hand.active = tab.id; refreshTabs();
-    emit({kind:'notice',text:`Shared tab: ${tab.title}`});
+    // The tab chip is the grant receipt; keep it out of the conversation.
+  }
+  if (message.type === 'revoke') {
+    if (state.running) { stop(); await runPromise; }
+    await hand.takeover(message.id,'released by user'); refreshTabs(); return;
   }
   if (message.type === 'release') { if (state.running) throw new Error('Stop first'); await hand.takeover(message.id,'released by user'); refreshTabs(); }
   publish();
@@ -264,6 +304,7 @@ chrome.runtime.onConnect.addListener(port => {
   port.onDisconnect.addListener(() => ports.delete(port));
   port.onMessage.addListener(m => { void handle(m).catch(e => {
     if (m.type === 'connect' || m.type === 'settings') state.connected = false;
+    state.error = {type:errorType(e.message),message:redact(e.message,state.settings.apiKey)};
     state.status = localize(redact(e.message,state.settings.apiKey));
     publish();
   }); });

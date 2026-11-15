@@ -14,10 +14,14 @@ debug traces. HTTP endpoints are unencrypted: use a trusted network or HTTPS.
 A remote endpoint may retain data under its own policy; review that policy.
 
 Settings and the API key remain locally until replaced or the extension is
-removed. Conversation, tab ownership, and diagnostic trace are in browser session
-storage and clear with the browser session. New chat clears conversation and
-trace. Debug traces may contain your task, page excerpts, and model output;
-copying them is an explicit local clipboard action. Review them before sharing.
+removed. Recent conversations (up to 60 messages each and eight archived chats)
+and the current run checkpoint remain in local extension storage across browser
+sessions. Checkpoints include partial answers and bounded step details, which
+can contain page excerpts and action arguments. Tab ownership and diagnostic
+traces use browser session storage. New chat clears the current conversation,
+run checkpoint, and trace, and archives the previous conversation locally.
+Debug traces may contain your task, page excerpts, and model output; copying
+them is an explicit local clipboard action. Review them before sharing.
 There is no automatic diagnostic upload. Extension removal clears its storage.
 
 You choose which tabs to share and approve individual consequential actions.

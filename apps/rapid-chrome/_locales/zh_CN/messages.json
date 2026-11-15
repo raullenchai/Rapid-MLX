@@ -563,7 +563,7 @@
     "message": "允许 Rapid 控制此标签页"
   },
   "tabGranted": {
-    "message": "已允许控制 · 停止"
+    "message": "Rapid 可控制此标签页 · 停止"
   },
   "chatPlaceholder": {
     "message": "输入消息"
@@ -656,7 +656,7 @@
     "message": "修改请求"
   },
   "newMessages": {
-    "message": "$1 条新消息 ↓"
+    "message": "$1 条新消息 ⌄"
   },
   "pageContext": {
     "message": "页面上下文"
@@ -690,5 +690,149 @@
   },
   "historySaveFailed": {
     "message": "无法在此设备上保存对话。请检查扩展程序的可用存储空间。"
+  },
+  "oneSite": {
+    "message": "$1 个网站"
+  },
+  "manySites": {
+    "message": "$1 个网站"
+  },
+  "oneStep": {
+    "message": "$1 步"
+  },
+  "manySteps": {
+    "message": "$1 步"
+  },
+  "browsedSummary": {
+    "message": "已浏览 $1 · $2"
+  },
+  "workedSummary": {
+    "message": "用时 $1 秒 · $2"
+  },
+  "engineReady": {
+    "message": "引擎就绪"
+  },
+  "browserIdle": {
+    "message": "浏览器空闲"
+  },
+  "browserGranted": {
+    "message": "已共享标签页"
+  },
+  "browserWorking": {
+    "message": "正在控制标签页"
+  },
+  "copyCode": {
+    "message": "复制代码"
+  },
+  "copied": {
+    "message": "✓ 已复制"
+  },
+  "modelPicker": {
+    "message": "选择模型"
+  },
+  "handoverTitle": {
+    "message": "请操作：$1"
+  },
+  "handoverHelp": {
+    "message": "请在网页上完成操作，然后告知 Rapid。"
+  },
+  "handoverDone": {
+    "message": "我已完成"
+  },
+  "cancel": {
+    "message": "取消"
+  },
+  "errorUnreachable": {
+    "message": "请在 Mac 上启动 Rapid，然后在设置中测试连接。草稿会保留。"
+  },
+  "errorCors": {
+    "message": "引擎拒绝了此扩展来源。请使用以下确切来源重启引擎，然后重新连接。"
+  },
+  "errorNoTools": {
+    "message": "此模型未通过浏览器工具测试。请在设置中选择支持工具调用的模型，然后重新连接。"
+  },
+  "errorStepCap": {
+    "message": "已达到步数上限。请查看已有结果，然后缩小任务范围或在设置中调整上限。"
+  },
+  "elapsed": {
+    "message": "已用时 $1 秒"
+  },
+  "interruptedRun": {
+    "message": "工作进程重启后已停止。请检查部分结果，发送新请求以继续。"
+  },
+  "approvalEffect": {
+    "message": "操作结果：$1"
+  },
+  "pageStarter": {
+    "message": "总结 $1"
+  },
+  "browserPaused": {
+    "message": "由你控制"
+  },
+  "oneNewMessage": {
+    "message": "1 条新消息 ⌄"
+  },
+  "grantEffect": {
+    "message": "允许在此任务中操作此标签页。你可以随时停止。"
+  },
+  "actionEffect": {
+    "message": "仅允许执行此操作一次。拒绝则不会执行此操作。"
+  },
+  "elapsedTime": {
+    "message": "已用时：$1 秒"
+  },
+  "handoverLogin": {
+    "message": "轮到你了：请在页面登录，然后返回这里。Rapid 会重新读取页面。"
+  },
+  "handoverPayment": {
+    "message": "轮到你了：请在页面填写付款信息。完成后返回这里；Rapid 会重新读取页面。"
+  },
+  "handoverPermission": {
+    "message": "轮到你了：请查看浏览器权限提示。完成后返回这里。"
+  },
+  "theme": {
+    "message": "主题"
+  },
+  "darkTheme": {
+    "message": "深色"
+  },
+  "lightTheme": {
+    "message": "浅色"
+  },
+  "loginHandover": {
+    "message": "请在页面登录"
+  },
+  "paymentHandover": {
+    "message": "请在页面填写付款信息"
+  },
+  "permissionHandover": {
+    "message": "请查看权限提示"
+  },
+  "sensitiveHandover": {
+    "message": "请在页面填写隐私信息"
+  },
+  "checkHandover": {
+    "message": "请完成页面验证"
+  },
+  "loadHandover": {
+    "message": "请解决页面加载问题"
+  },
+  "handoverSensitive": {
+    "message": "请自行在页面填写密码或付款信息，然后返回这里。Rapid 会重新读取页面。"
+  },
+  "stepFinding": {
+    "message": "在 $2 查找“$1”"
+  },
+  "handoverMenu": {
+    "message": "由你操作页面"
+  },
+  "handoverLoginAction": {
+    "message": "自行登录"
+  },
+  "handoverPaymentAction": {
+    "message": "自行填写付款信息"
+  },
+  "handoverPermissionAction": {
+    "message": "查看权限提示"
   }
 }

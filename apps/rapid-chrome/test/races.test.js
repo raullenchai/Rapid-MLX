@@ -1,3 +1,4 @@
+import * as uiState from '../src/ui-state.js';
 import { markdown, stepLabel } from '../src/ui.js';
 import { renderSteps, clip } from '../src/transcript.js';
 import test from 'node:test';
@@ -19,7 +20,8 @@ test('shared panel setup uses onboarding and custom mode before filling a readon
         isVisible:async () => {assert.equal(selector,'#onboarding');return firstRun;},
         click:async () => {
           if (selector === '#onboard-connect') {assert.equal(firstRun,true);settingsOpen = true;}
-          else {assert.equal(selector,'#settings-toggle');settingsOpen = !settingsOpen;}
+          else if (selector === '#settings-toggle') {}
+          else { assert.ok(['#menu-settings','#settings-close'].includes(selector)); settingsOpen = !settingsOpen; }
         },
         selectOption:async value => {
           assert.equal(selector,'#endpoint-mode');assert.equal(settingsOpen,true);
@@ -83,9 +85,9 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   const html = readFileSync(new URL('../panel.html',import.meta.url),'utf8');
   assert.match(html,/id="settings-toggle" disabled/);
   const nodes = new Map();
-  const node = () => ({dataset:{},options:[],elements:[],hidden:true,value:'',
+  const node = () => ({dataset:{},children:[],options:[],elements:[],hidden:true,value:'',
     append(...children) { this.options.push(...children); },
-    replaceChildren(...children) { this.options = children; },
+    replaceChildren(...children) { this.children = children; this.options = children; },
     querySelectorAll:() => [],setAttribute() {},focus() {this.focused = true;}});
   const get = id => { if (!nodes.has(id)) nodes.set(id,node()); return nodes.get(id); };
   get('settings-toggle').disabled = true;
@@ -95,7 +97,7 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   const document = {querySelector:get,getElementById:get,createElement:node,body:{dataset:{}}};
   const chrome = {permissions:{request:async grant => {grants.push(grant);return allowPermission;}},runtime:{connect:() => ({postMessage:m => sent.push(m),onMessage:{addListener:fn => {render = fn;}},onDisconnect:{addListener() {}}})}};
   const { endpoint, originPermission, LOCAL_ENDPOINTS, redact } = await import('../src/endpoint.js');
-  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace(/^export .*;$/gm,''),{document,chrome,markdown,stepLabel,endpoint,originPermission,LOCAL_ENDPOINTS,redact,renderSteps,clip,t:k => k,localize:s => s,translateDocument() {},displayResult:s => s,toolLabel:s => s});
+  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace(/^export .*;$/gm,''),{...uiState,document,chrome,markdown,stepLabel,endpoint,originPermission,LOCAL_ENDPOINTS,redact,renderSteps,clip,t:k => k,localize:s => s,translateDocument() {},displayResult:s => s,toolLabel:s => s});
   assert.equal(get('settings-toggle').disabled,true);
   assert.equal(document.body.dataset.ready,undefined);
   const state = {settings:{base:'http://localhost:8000',apiKey:'',model:'',vision:false,stepCap:25},models:[],messages:[],tabs:[],steps:[],approvals:[],running:false,status:'Ready'};

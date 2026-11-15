@@ -10,8 +10,11 @@
   where access permits. The debugger isolated-world path handles other shared pages.
 - `tabGroups`: groups task-created tabs and detects when the user moves a tab out
   of the task group, relinquishing ownership.
-- `storage`: local settings and API key; session transcript, shared-tab ownership,
-  and debug trace. There is no synchronized storage.
+- `storage`: local settings, API key, bounded conversation history and run
+  snapshots; session shared-tab ownership and debug trace. Interrupted runs
+  restore as stopped and approvals expire. There is no synchronized storage.
+- `favicon`: displays Chrome-provided site icons through the extension `_favicon`
+  endpoint. If no icon loads, Rapid keeps a site initial.
 - `sidePanel`: hosts the conversation, settings, approvals, and Stop button.
 - Required `http://127.0.0.1/*` and `http://localhost/*`: connect to local model
   servers on any port without a permission prompt, in either endpoint mode.

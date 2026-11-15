@@ -1,6 +1,5 @@
 import { patterns } from './i18n-patterns.js';
-const keys = new Set(patterns.map(([,key]) => key));
-export const t = (key, substitutions) => keys.has(key) ? globalThis.chrome?.i18n?.getMessage(key,substitutions) || key : key;
+export const t = (key, substitutions) => globalThis.chrome?.i18n?.getMessage(key,substitutions) || key;
 // Runtime diagnostics may contain page labels. Translate extension text while
 // leaving page/model content intact. Catalog templates use $1, $2, ... .
 export function localize(text) {

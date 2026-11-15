@@ -228,7 +228,7 @@ test('worker restores settings and discovers the Desktop port without widening p
     assert.equal(snapshots.at(-1).settings.model,'desktop-model');
     assert.deepEqual(urls,[`${LOCAL_ENDPOINTS[0]}/v1/models`,`${LOCAL_ENDPOINTS[1]}/v1/models`,`${LOCAL_ENDPOINTS[1]}/v1/chat/completions`]);
     assert.equal(origins.every(p => JSON.stringify(p) === JSON.stringify({origins:['http://127.0.0.1:8000/*']}) || JSON.stringify(p) === JSON.stringify({origins:['http://127.0.0.1:7659/*']})),true);
-    assert.equal(saved.at(-1).settings.base,LOCAL_ENDPOINTS[1]);
+    assert.equal(saved.findLast(value => value.settings).settings.base,LOCAL_ENDPOINTS[1]);
     globalThis.chrome.permissions.contains = async () => false;
     port.onMessage.listeners[0]({type:'connect'});
     await new Promise(resolve => setImmediate(resolve));

@@ -9,9 +9,9 @@ export function renderSteps(document, container, steps, {label, result, status, 
   const open = new Set([...container.querySelectorAll('details[open]')].map(e => e.dataset.id));
   const node = (tag, text) => { const e = document.createElement(tag); e.textContent = text; return e; };
   const rows = steps.slice(-VISIBLE_STEPS).map(step => {
-    const d = document.createElement('details'); d.dataset.id = step.id;
+    const d = document.createElement('details'); d.dataset.id = step.id; d.dataset.status = step.status;
     const args = clip(JSON.stringify(step.args),1000), output = clip(result(step.result));
-    d.append(node('summary',stepLabel ? `${stepLabel(step)} · ${status(step.status)}` : `${label(step.name)} · ${status(step.status)} · ${clip(args,160)} · ${clip(output,200)}`));
+    d.append(node('summary',stepLabel ? `${stepLabel(step)}${['ok','running'].includes(step.status) ? '' : ` · ${status(step.status)}`}` : `${label(step.name)} · ${status(step.status)} · ${clip(args,160)} · ${clip(output,200)}`));
     const expand = () => {
       if (d.open && d.children.length === 1) d.append(node('pre',args),node('p',output));
     };

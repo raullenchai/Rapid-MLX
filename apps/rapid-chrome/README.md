@@ -298,3 +298,39 @@ rings, CJK wrapping, and contrast; these images do not prove a live-model task.
 **Resume** waits for that cleanup, reattaches, and continues with invalidated
 element references. **Stop** ends the task. Approvals remain one-time decisions;
 there is no permanent site approval option.
+
+### Panel conversation and recovery
+
+The panel opens in dark mode. Choose light mode in **… → Settings → Appearance**
+and use **Save & connect** to remember it. The same menu offers the engine's
+`/v1/models` list. Engine readiness and tab control are shown separately.
+
+Scrolling up or selecting text pauses following. The new-message button counts
+replies rather than text updates; click it to return to the bottom. Code blocks
+and tables scroll horizontally, and assistant replies and code have copy actions.
+
+Conversation and run checkpoints stay on this device. Closing the panel leaves a
+live task in the worker; reopening reconnects to its sequenced snapshot. If the
+worker itself restarts, Rapid restores the partial conversation and steps as
+**Stopped**, discards old approvals, and never replays browser actions. Review the
+page before sending another task. New chat clears the current run checkpoint.
+
+During a run, **… → Your turn on the page** lets you pause for login, payment
+details, or a browser permission prompt. Rapid releases control until you choose
+**I'm done**; Cancel stops the task. Sensitive-field blocks also offer handover.
+Browser checks are read again after continuing. A human handover never authorizes
+an order or grants a pending consequential action.
+
+Connection errors retain the draft and show recovery instructions. An explicit
+origin refusal includes the exact extension origin for `--cors-origins`; a generic
+fetch failure is reported as unreachable because it cannot establish CORS.
+
+Capture the visual fixtures with an already-installed Playwright and Chromium:
+
+```sh
+HEADLESS=1 node test/e2e/ui-shots.mjs
+```
+
+`SHOTS_OUT` changes the output directory. `PLAYWRIGHT_MODULE` can point to an
+existing local Playwright module and `CHROME_EXECUTABLE` to an installed test
+browser. This command does not install or download a browser.
