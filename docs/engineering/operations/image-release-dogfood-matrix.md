@@ -25,6 +25,8 @@ column.
 | `sdxl-base` | Native SDXL | Generate | Required manually | [SDXL Base dogfood](../performance/2026-09-05-sdxl-base-dogfood.md) |
 | `hidream-o1-dev` | Native HiDream | Generate | Required manually | [HiDream-O1 Dev dogfood](../performance/2026-09-04-hidream-o1-dev-dogfood.md) |
 | `sd35-large-4bit` | Native SD3.5 | Generate | Required manually | [SD3.5 Large dogfood](../performance/2026-09-05-sd35-large-dogfood.md) |
+| `minimax-h3-image` | Native MiniMax-H3-Image (4-bit) | Generate + edit | Required manually | [Measurement worksheet](../performance/2026-11-14-minimax-h3-image.md) |
+| `minimax-h3-image-8bit` | Native MiniMax-H3-Image (8-bit) | Generate + edit | Required manually | [Measurement worksheet](../performance/2026-11-14-minimax-h3-image.md) |
 | `qwen-image-2.1` | mflux / Qwen Image 2.1 full q4 | Generate + img2img | Required manually | [Low-memory qualification](../performance/2026-09-25-qwen-image-2.1-low-memory-spike.md) |
 | `qwen-image` | Same checkpoint and pin as `qwen-image-2.1` | Generate + img2img | Required manually | Covered by the `qwen-image-2.1` qualification |
 | `qwen-image-2.1-bf16` | mflux / Qwen Image 2.1 q8 on load | Generate + img2img | Required manually | [Source-environment real-weight dogfood](../performance/2026-09-21-qwen-image-2.1-dogfood.md) |
@@ -147,3 +149,8 @@ MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile pyproject.toml --extra chat \
 
 The deployment target matches the MLX wheel floor. Both dependency paths must
 retain mflux 0.23 and Pillow below 13.
+
+MiniMax-H3-Image requires prominent “MiniMax-H3-Image” product attribution.
+Commercial use is permitted under its Community License; organizations above
+US$1M annual revenue or hosted services to third parties need separate written
+authorization from MiniMax. See the [model guide](../../models/families/minimax-h3-image.md).

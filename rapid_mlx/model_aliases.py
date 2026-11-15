@@ -227,6 +227,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     _ALLOWED_PROFILE_KEYS = frozenset(
         {
             "hf_path",
+            "image_quantize",
             "revision",  # Immutable artifact identity, never a routing switch.
             "model_type",
             # Directory inside ``hf_path`` holding this alias's checkpoint.
@@ -558,6 +559,16 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"alias {alias!r}: {key} must be a full lowercase 40-character "
                 "Hub commit SHA"
             )
+    image_quantize = value.get("image_quantize")
+    if image_quantize is not None and (
+        type(image_quantize) is not int
+        or image_quantize not in (4, 8)
+        or value.get("modality") != "image-gen"
+    ):
+        raise ValueError(
+            f"alias {alias!r}: image_quantize requires image-gen and 4 or 8"
+        )
+
     checkpoint_revision = value.get("revision")
     if checkpoint_revision is not None:
         if (
@@ -883,6 +894,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         active_params_b=active,
         hf_path=hf_path,
         revision=checkpoint_revision,
+        image_quantize=image_quantize,
         model_type=model_type,
         subfolder=subfolder,
         modality=modality,

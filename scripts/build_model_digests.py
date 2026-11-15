@@ -31,6 +31,8 @@ def selections() -> dict[str, dict]:
         IMAGE_MODEL_DATA_FILES,
         IMAGE_MODEL_REVISIONS,
         IMAGE_MODEL_RUNTIME_ASSETS,
+        MINIMAX_H3_IMAGE_REPO,
+        MINIMAX_H3_TEXT_REPO,
     )
 
     # Load the pure-data artifact contract directly: importing its parent
@@ -58,7 +60,13 @@ def selections() -> dict[str, dict]:
             if not isinstance(value, dict):
                 continue
             repo, revision = value.get(repo_key), value.get("revision")
-            if not repo or not revision or repo in excluded:
+            # MiniMax-H3-Image is unmirrored by license but still needs integrity
+            # coverage for its explicit upstream allowlist.
+            if (
+                not repo
+                or not revision
+                or (repo in excluded and repo != MINIMAX_H3_IMAGE_REPO)
+            ):
                 continue
             if (
                 repo in IMAGE_MODEL_DATA_FILES
@@ -79,7 +87,9 @@ def selections() -> dict[str, dict]:
             }
     for assets in IMAGE_MODEL_RUNTIME_ASSETS.values():
         for repo, revision, patterns in assets:
-            if repo not in excluded:
+            # The video repository is unmirrored as a whole; this image runtime
+            # needs integrity coverage for its explicit text-encoder subset.
+            if repo not in excluded or repo == MINIMAX_H3_TEXT_REPO:
                 result[f"asset/image/{repo}"] = {
                     "repo": repo,
                     "revision": revision,

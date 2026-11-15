@@ -251,3 +251,10 @@ The path descriptions in `rapid_mlx/chat_runtime/tools/files.py` and
 is adapted from OpenCode tool/edit.txt at revision
 148842ef7cb1bc34192b3fff57d0f9721ab9c801. Both use the MIT License reproduced
 in `rapid_mlx/chat_runtime/LICENSE-PROMPTS`.
+
+* rapid_mlx/image/minimax_h3_image/
+  MiniMax-H3-Image native image runtime. The redistributed visual decoder
+  carries the MIT license (Copyright 2025 Prince Canuma) and attribution
+  in that package's LICENSE/NOTICE.
+  Model weights are separate and subject to the MiniMax-H3-Image Community
+  License; products using them must prominently display "MiniMax-H3-Image".

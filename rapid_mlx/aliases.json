@@ -2907,5 +2907,23 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "minimax-h3-image": {
+    "hf_path": "MiniMaxAI/MiniMax-H3-Image",
+    "revision": "5f90473023975e6271b0ed1dd84c4e88e4bbc6d3",
+    "modality": "image-gen",
+    "min_memory_gb": 64,
+    "image_quantize": 4,
+    "supports_spec_decode": false,
+    "is_hybrid": false
+  },
+  "minimax-h3-image-8bit": {
+    "hf_path": "MiniMaxAI/MiniMax-H3-Image",
+    "revision": "5f90473023975e6271b0ed1dd84c4e88e4bbc6d3",
+    "modality": "image-gen",
+    "min_memory_gb": 96,
+    "image_quantize": 8,
+    "supports_spec_decode": false,
+    "is_hybrid": false
   }
 }

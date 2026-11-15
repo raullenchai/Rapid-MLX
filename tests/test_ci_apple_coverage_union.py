@@ -410,3 +410,11 @@ def test_vendored_mllm_coverage_omit_is_file_scoped() -> None:
         assert not any(
             fnmatch.fnmatchcase(guarded_path, pattern) for pattern in omit_patterns
         )
+
+
+def test_minimax_h3_image_coverage_runs_on_apple_silicon() -> None:
+    _, workflow = _workflow()
+    apple_run = _apple_mlx_test_run(workflow)
+    assert "tests/test_minimax_h3_image_alias.py" in apple_run
+    assert "tests/test_minimax_h3_image_parity.py" in apple_run
+    assert "tests/test_minimax_h3_image_pipeline.py" in apple_run

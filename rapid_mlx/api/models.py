@@ -2744,6 +2744,10 @@ class ModelInfo(BaseModel):
     """
 
     max_reference_images: int | None = None
+    attribution: str | None = None
+    license: str | None = None
+    license_url: str | None = None
+    license_notice: str | None = None
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))

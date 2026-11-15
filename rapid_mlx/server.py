@@ -3128,7 +3128,14 @@ def load_model(
         logger.info(
             f"Loading model with ImageEngine (modality=image-gen): {_image_hf_path}"
         )
-        _engine = ImageEngine(model_name=_image_hf_path)
+        _engine = ImageEngine(
+            model_name=_image_hf_path,
+            **(
+                {"image_quantize": _profile.image_quantize}
+                if _profile and _profile.image_quantize is not None
+                else {}
+            ),
+        )
         logger.info(f"Image model ready for lazy generation: {model_name}")
     elif _profile_modality == "text-diffusion":
         from .runtime.diffusion_lane import DiffusionEngine
@@ -3382,7 +3389,14 @@ async def _load_dynamic_resident_model(
     if modality == "image-gen":
         from .runtime.image_lane import ImageEngine
 
-        image_engine = ImageEngine(model_name=resolved_path)
+        image_engine = ImageEngine(
+            model_name=resolved_path,
+            **(
+                {"image_quantize": profile.image_quantize}
+                if profile and profile.image_quantize is not None
+                else {}
+            ),
+        )
         image_engine.validate_residency_mode(image_mode)
     from . import model_downloads
 

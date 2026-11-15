@@ -887,6 +887,7 @@ struct ImagesView: View {
     /// The inline model picker — same composer-embedded chip as chat
     /// (``ModelPickerBar`` in `composerStyle`): borderless, a fill on hover,
     /// a cache glyph per row, scaling to any number of image models.
+    @ViewBuilder
     private var modelPicker: some View {
         Menu {
             if viewModel.selectableModels.isEmpty {
@@ -949,6 +950,11 @@ struct ImagesView: View {
         // invisible to VoiceOver and to the golden-flow harness on 26.
         .accessibilityHint(selectedModelHelp)
         .accessibilityIdentifier("Images.ModelPicker")
+        if let attribution = viewModel.attributionLabel {
+            Text(attribution)
+                .font(.caption)
+                .accessibilityLabel(attribution)
+        }
     }
 
     private var selectedModelHelp: String {

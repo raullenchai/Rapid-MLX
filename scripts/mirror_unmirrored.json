@@ -315,6 +315,11 @@
       "hf_path": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled",
       "reason": "license: Tencent Hunyuan Community License excludes EU, UK and South Korea; upstream Hub direct only (~53 GB)",
       "since": "2026-11-08"
+    },
+    {
+      "hf_path": "MiniMaxAI/MiniMax-H3-Image",
+      "reason": "license: MiniMax-H3-Image Community License restricts redistribution by territory; serve from the upstream Hub only",
+      "since": "2026-11-14"
     }
   ]
 }

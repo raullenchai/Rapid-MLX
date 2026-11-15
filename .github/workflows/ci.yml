@@ -769,6 +769,9 @@ jobs:
             tests/test_glm5_next_runtime_patch.py \
             tests/test_mla_absorbed_verify.py \
             tests/test_mllm_hybrid_probe.py \
+            tests/test_minimax_h3_image_alias.py \
+            tests/test_minimax_h3_image_parity.py \
+            tests/test_minimax_h3_image_pipeline.py \
             tests/test_hidream_o1_alias.py \
             tests/test_sdxl_alias.py \
             tests/test_image_hub_install_hint.py \

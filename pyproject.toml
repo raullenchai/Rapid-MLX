@@ -685,6 +685,9 @@ rapid_mlx = [
     "clef/vendor/NOTICE",
     "audio/sa3/NOTICE",
     "audio/sa3/README.md",
+    # MiniMax-H3-Image visual decoder attribution ships in wheels and sidecars.
+    "image/minimax_h3_image/LICENSE",
+    "image/minimax_h3_image/NOTICE",
     # Vendored HiDream-O1 MLX adapter attribution must ship in wheels and the
     # Desktop sidecar alongside the redistributed MIT source.
     "image/hidream_runtime/LICENSE",

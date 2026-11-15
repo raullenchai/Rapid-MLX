@@ -293,12 +293,21 @@ family default shown below.
 | `sdxl-base` | SDXL compatibility | Generate | 6.5 GiB | 16 GB | 30 |
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
 | `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
+| `minimax-h3-image` | MiniMax-H3-Image, 4-bit at load | Generate + edit (up to 16 references) | 126.1 GiB | 64 GB | 6 |
+| `minimax-h3-image-8bit` | MiniMax-H3-Image, 8-bit at load | Generate + edit (up to 16 references) | 126.1 GiB | 96 GB | 6 |
 | `qwen-image-2.1` | Text-rich images on low-memory Macs | Generate + edit | 8.9 GiB | 8 GB | 40 |
 | `qwen-image` | Same model as `qwen-image-2.1` | Generate + edit | 8.9 GiB | 8 GB | 40 |
 | `qwen-image-2.1-bf16` | Higher-precision Qwen Image 2.1 path | Generate + edit | 30.9 GiB | 32 GB | 40 |
 | `qwen-image-2.1-turbo` | Eight-step distilled Qwen Image 2.1 | Generate | 30.2 GiB | 32 GB | 8 |
 | `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->
+
+[MiniMax-H3-Image](docs/models/families/minimax-h3-image.md) uses the MiniMax-H3-Image
+Community License, which excludes use in the European Union, the United Kingdom,
+the Republic of Korea and the United States. Commercial use is permitted under the license; organizations
+above US$1M annual revenue and providers of hosted services to third parties need
+separate written authorization from MiniMax. Products must prominently display
+**MiniMax-H3-Image**. Desktop currently accepts up to 10 references.
 
 For the next release, `flux3-klein` and `flux3-klein-base` require mflux 0.23 or later and gated
 Hugging Face access under the FLUX Kommunity License. Both accept 1–10 reference

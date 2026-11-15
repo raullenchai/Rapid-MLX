@@ -375,6 +375,8 @@ class ModelProfile:
     agentic_coverage: bool = True
     # Optional immutable checkpoint; lowercase full 40-hex Hub commit SHA.
     revision: str | None = None
+    # Native image load-time quantization; absent means the engine default.
+    image_quantize: int | None = None
 
     @property
     def speedup_dict(self) -> dict[str, float]:

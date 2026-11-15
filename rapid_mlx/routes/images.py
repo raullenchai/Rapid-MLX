@@ -485,6 +485,8 @@ async def create_image(
             logger.warning("image performance telemetry failed", exc_info=True)
 
     response = {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    if getattr(img_engine, "family", None) == "minimax-h3-image":
+        response["attribution"] = "MiniMax-H3-Image"
     _telemetry_inference.emit_completed_request(
         model=telemetry_model,
         endpoint="/v1/images/generations",
@@ -607,7 +609,15 @@ def _validate_edit_image(raw: bytes) -> None:
 
 
 def _generate_edit_one(
-    img_engine, prompt, steps, seed, guidance, negative_prompt, image_path, loras=None
+    img_engine,
+    prompt,
+    steps,
+    seed,
+    guidance,
+    negative_prompt,
+    image_path,
+    loras=None,
+    size=None,
 ) -> bytes:
     """Blocking single instruction-edit render — runs off the event loop.
 
@@ -615,13 +625,20 @@ def _generate_edit_one(
     compatible canvas from the input image. Omitting these keywords is not
     equivalent: the engine's text-to-image defaults are 1024×1024, which would
     silently resize smaller or non-square edit inputs. The request ``size`` is
-    accepted for OpenAI compatibility but deliberately not honored.
+    accepted for OpenAI compatibility but deliberately not honored, except
+    MiniMax-H3-Image, which accepts an explicit canvas in both modes.
     """
+    width, height = (
+        parse_image_size(size)
+        if size is not None
+        and getattr(img_engine, "family", None) == "minimax-h3-image"
+        else (None, None)
+    )
     return img_engine.generate(
         **({"loras": loras} if loras else {}),
         prompt=prompt,
-        width=None,
-        height=None,
+        width=width,
+        height=height,
         num_inference_steps=steps
         if steps is not None
         else getattr(img_engine, "default_edit_steps", _DEFAULT_EDIT_STEPS),
@@ -641,7 +658,7 @@ async def edit_image(
     prompt: str = Form(...),
     model: str = Form(""),
     n: int = Form(1),
-    size: str = Form("1024x1024"),
+    size: str | None = Form(None),
     response_format: str = Form("b64_json"),
     seed: int | None = Form(None),
     steps: int | None = Form(None),
@@ -706,7 +723,9 @@ async def edit_image(
         )
 
     uploads = (image or []) + (image_array or [])
-    limit = min(10, getattr(img_engine, "max_reference_images", 1))
+    limit = getattr(img_engine, "max_reference_images", 1)
+    if getattr(img_engine, "family", None) != "minimax-h3-image":
+        limit = min(10, limit)
     _reject(not uploads, "image requires at least one reference image", "image")
     _reject(
         len(uploads) > limit,
@@ -761,7 +780,8 @@ async def edit_image(
     # ``size`` is accepted for OpenAI-API compatibility but edit backends own
     # their compatible canvas sizing. Validate malformed input, then discard it.
     try:
-        parse_image_size(size)
+        if size is not None:
+            parse_image_size(size)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -863,6 +883,11 @@ async def edit_image(
                     negative_prompt,
                     tmp_paths,
                     parsed_loras,
+                    *(
+                        [size]
+                        if getattr(img_engine, "family", None) == "minimax-h3-image"
+                        else []
+                    ),
                 )
             except ImageGenerationCancelled:
                 # A mid-render cancel is a success, not a 500: return whatever
@@ -908,4 +933,7 @@ async def edit_image(
                     exc,
                 )
 
-    return {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    response = {"created": int(time.time()), "data": data, "cancelled": cancelled}
+    if getattr(img_engine, "family", None) == "minimax-h3-image":
+        response["attribution"] = "MiniMax-H3-Image"
+    return response

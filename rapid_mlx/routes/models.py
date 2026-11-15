@@ -1073,9 +1073,12 @@ def _build_model_info(model_id: str) -> ModelInfo:
     info = _build_model_info_base(model_id)
     profile = resolve_profile(model_id)
     if profile is not None and profile.modality == "image-gen":
-        from ..image.engine import max_reference_images_for_model
+        from ..image.engine import image_license_info, max_reference_images_for_model
 
         info.max_reference_images = max_reference_images_for_model(profile.hf_path)
+        for key, value in image_license_info(profile.hf_path).items():
+            if key in type(info).model_fields:
+                setattr(info, key, value)
 
     # ``reasoning_parser`` on the payload is already the effective one.
     info.always_reasoning = _always_reasoning(model_id, info.reasoning_parser)

@@ -1212,6 +1212,7 @@ from mlx_vlm.models import (
     diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
     qwen3_5, qwen3_5_moe, qwen3_vl, qwen3_vl_moe,
 )
+from rapid_mlx.image.minimax_h3_image import MiniMaxH3Image
 from rapid_mlx.image.hidream_runtime import HiDreamO1
 from rapid_mlx.image.sd35_runtime import SD35Large
 from rapid_mlx.image.sdxl_runtime import SDXL

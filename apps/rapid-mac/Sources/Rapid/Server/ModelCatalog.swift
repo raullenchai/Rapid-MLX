@@ -299,6 +299,12 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var imageCapability: ImageModelCapability? = nil
     var imageDefaultSteps: Int? = nil
     var maxReferenceImages: Int = 1
+    var imageAttribution: String? = nil
+
+    var imageAttributionLabel: String? {
+        guard let imageAttribution else { return nil }
+        return String(localized: "Powered by \(imageAttribution)")
+    }
 
     /// Video-only operation metadata plus the whole-machine memory floor used
     /// by video and image rows. `nil` for older sidecars that omit it.
@@ -1755,12 +1761,14 @@ enum ModelCatalog {
         if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
             let readinessByAlias = parseImageReadinessJSON(json.stdout)
             let referenceLimits = parseImageReferenceLimitsJSON(json.stdout)
+            let attributions = parseImageAttributionsJSON(json.stdout)
             return mergeAtomicAndCached(
                 atomic: atomic, cached: cached, excluded: []
             ).filter { $0.supports(.image) }.map { entry in
                 var enriched = entry
                 enriched.minimumMemoryGB = readinessByAlias[entry.alias]?.minimumMemoryGB
                 enriched.maxReferenceImages = referenceLimits[entry.alias] ?? 1
+                enriched.imageAttribution = attributions[entry.alias]
                 enriched.imageDefaultSteps = readinessByAlias[entry.alias]?.defaultSteps
                 return enriched
             }
@@ -1808,8 +1816,21 @@ enum ModelCatalog {
 
     /// Read image hardware floors from the versioned legacy projection that
     /// accompanies the atomic catalog. The atomic envelope owns capability and
-    /// runtime identity; this projection supplies checked-in sizing metadata
-    /// without teaching Desktop model-name heuristics.
+    /// runtime identity; this projection supplies product attribution.
+    static func parseImageAttributionsJSON(_ output: String) -> [String: String] {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["image"] as? [[String: Any]] else { return [:] }
+        var result: [String: String] = [:]
+        for row in rows {
+            guard let alias = row["alias"] as? String, isSafeAlias(alias),
+                  let attribution = row["attribution"] as? String,
+                  !attribution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            result[alias] = attribution
+        }
+        return result
+    }
+
     static func parseImageReferenceLimitsJSON(_ output: String) -> [String: Int] {
         guard let data = output.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1818,7 +1839,7 @@ enum ModelCatalog {
         for row in rows {
             guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
             let value = row["max_reference_images"] as? Int ?? 1
-            limits[alias] = row["max_reference_images"] as? Bool == nil && (0...10).contains(value) ? value : 1
+            limits[alias] = row["max_reference_images"] as? Bool == nil && (0...16).contains(value) ? min(10, value) : 1
         }
         return limits
     }
