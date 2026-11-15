@@ -28,6 +28,8 @@ terms before commercial use:
   30-step, dual-CLIP + UNet + VAE pipeline (OpenRAIL++)
 * ``bonsai-image``     — text→image (ternary ``FLUX.2-klein-4B``), 4-step,
   prepacked MLX 2-bit transformer with a 4-bit Qwen3 encoder (Apache-2.0)
+* ``minimax-h3-image`` — generation + up to 16-reference editing, fixed 6-step
+  schedule; MiniMax-H3-Image Community License and required product attribution.
 * ``sd35-large``       — text→image (``Stable Diffusion 3.5 Large``), 28-step,
   triple-encoder MMDiT pipeline (Stability AI Community License)
 
@@ -269,6 +271,8 @@ def _detect_family(model_name: str) -> str:
             "image runtime yet. Only Qwen-Image 2.1 text-to-image and img2img "
             "are available."
         )
+    if "minimax-h3-image" in name or "minimax_h3_image" in name:
+        return "minimax-h3-image"
     if "bonsai-image" in name or "bonsai_image" in name:
         return "bonsai-image"
     if "hidream-o1" in name or "hidream_o1" in name:
@@ -304,7 +308,7 @@ def _detect_family(model_name: str) -> str:
     raise ImageRuntimeError(
         f"Unsupported image model '{model_name}'. Supported families: "
         "flux3-klein, flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
-        "hidream-o1-dev, sdxl-base, bonsai-image, sd35-large."
+        "hidream-o1-dev, sdxl-base, bonsai-image, sd35-large, minimax-h3-image."
     )
 
 
@@ -312,7 +316,7 @@ def _detect_family(model_name: str) -> str:
 # FLUX.2 Klein omits it (Flux1 / Qwen-Image / Z-Image all accept it), and
 # passing an unknown kwarg raises — so the engine drops it for these.
 _NO_NEGATIVE_PROMPT_FAMILIES = frozenset(
-    {"flux2-klein", "flux3-klein", "hidream-o1-dev", "bonsai-image"}
+    {"flux2-klein", "flux3-klein", "hidream-o1-dev", "bonsai-image", "minimax-h3-image"}
 )
 
 # Per-family default denoise steps when the request pins none. Distilled/turbo
@@ -330,6 +334,7 @@ _DEFAULT_STEPS_BY_FAMILY = {
     "sdxl-base": 30,
     "bonsai-image": 4,
     "sd35-large": 28,
+    "minimax-h3-image": 6,
 }
 
 
@@ -371,6 +376,8 @@ def _qwen21_max_references() -> int:
 
 def max_reference_images_for_model(model_name: str) -> int:
     family = _detect_family(model_name)
+    if family == "minimax-h3-image":
+        return 16
     if family == "flux3-klein":
         return 10
     if family == "qwen-image-2.1" and not is_qwen_image_21_turbo(model_name):
@@ -379,6 +386,20 @@ def max_reference_images_for_model(model_name: str) -> int:
 
 
 def image_license_info(model_name: str) -> dict:
+    if _detect_family(model_name) == "minimax-h3-image":
+        return {
+            "license": "MiniMax-H3-Image Community License",
+            "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/LICENSE",
+            "attribution": "MiniMax-H3-Image",
+            "license_notice": (
+                "Licensed only outside the European Union, the United Kingdom, the "
+                "Republic of Korea and the United States (excluded territories). "
+                "Commercial use is permitted under the license. Separate written "
+                "authorization from MiniMax is required for organizations above "
+                "US$1M annual revenue or for offering a hosted service to third parties. "
+                'Products using it must prominently display "MiniMax-H3-Image"; see the license.'
+            ),
+        }
     if _detect_family(model_name) != "flux3-klein":
         return {}
     return {
@@ -431,6 +452,7 @@ class ImageGenerationEngine:
         self.supports_editing = (
             self.family
             in {
+                "minimax-h3-image",
                 "flux2-klein",
                 "flux3-klein",
                 "qwen-image-edit",
@@ -463,6 +485,9 @@ class ImageGenerationEngine:
             self.default_edit_guidance = (
                 3.5 if "base" in model_name.casefold() else None
             )
+        if self.family == "minimax-h3-image":
+            self.default_edit_steps = 6
+            self.default_edit_guidance = 1.0
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
         self._prequantized = self.family in {
             "hidream-o1-dev",
@@ -492,6 +517,10 @@ class ImageGenerationEngine:
         if quantize is _UNSET_QUANTIZE:
             quantize = 8 if self.family == "qwen-image-2.1" else _DEFAULT_QUANTIZE
         self._quantize = None if self._packaged_checkpoint else quantize
+        if self.family == "minimax-h3-image":
+            if quantize not in (4, 8):
+                raise ImageRequestError("MiniMax-H3-Image quantize must be 4 or 8.")
+            self._quantize = quantize
         self._model = None
         self._prompt_tokenizer = None
         # FLUX.2 uses distinct mflux classes for generation and editing. Only
@@ -577,6 +606,7 @@ class ImageGenerationEngine:
         if not self._packaged_checkpoint and self.family not in {
             "qwen-image-2.1",
             "flux3-klein",
+            "minimax-h3-image",
         }:
             return None
         from .._download_gate import (
@@ -636,6 +666,25 @@ class ImageGenerationEngine:
 
     def _build_model(self, *, for_edit: bool = False):
         """Instantiate the backing mflux model (import-lazy)."""
+        if self.family == "minimax-h3-image":
+            from .._download_gate import MINIMAX_H3_TEXT_REPO, pinned_image_snapshot
+            from .minimax_h3_image import MiniMaxH3Image
+
+            model_path = self._model_path_for_mflux()
+            text_path = pinned_image_snapshot(MINIMAX_H3_TEXT_REPO)
+            if not model_path or not text_path:
+                raise ImageRuntimeError(
+                    "MiniMax-H3-Image requires its pinned model and text-encoder assets. "
+                    "Re-run the model download to finish them."
+                )
+            model = MiniMaxH3Image(
+                model_path,
+                text_path,
+                quantize=self._quantize,
+                on_step=self._report_native_step,
+            )
+            model.load()
+            return model
         if self.family == "bonsai-image":
             from .bonsai_runtime import BONSAI_IMAGE_REPO, BonsaiImage
 
@@ -846,11 +895,19 @@ class ImageGenerationEngine:
         finally:
             Qwen21WeightDefinition.get_components = staticmethod(original_components)
 
+    def _check_native_cancel(self) -> None:
+        if self._is_cancelled():
+            raise ImageGenerationCancelled("Generation cancelled.")
+
     def _report_native_step(self, step: int, total: int) -> None:
         """Bridge a vendored runtime into the shared progress/cancel contract."""
+        if self.family == "minimax-h3-image" and step == 0:
+            self._start_denoise(total)
         self._progress["running"] = True
         self._progress["step"] = int(step)
         self._progress["total"] = int(total)
+        if self.family == "minimax-h3-image" and step == total:
+            self._finish_denoise(total)
         if self._is_cancelled():
             raise ImageGenerationCancelled("Generation cancelled.")
 
@@ -924,6 +981,8 @@ class ImageGenerationEngine:
 
     def _build_edit_model(self):
         """Instantiate the edit variant for a model that accepts input images."""
+        if self.family == "minimax-h3-image":
+            return self._build_model()
         if self.family == "flux3-klein":
             return self._build_flux3_model(for_edit=True)
         if self.family in {"qwen-image-edit", "qwen-image-2.1"}:
@@ -991,11 +1050,22 @@ class ImageGenerationEngine:
 
     def _ensure_runtime_assets(self) -> None:
         """Fetch pinned auxiliary image data needed by a vendored runtime."""
-        if Path(self.model_name).expanduser().is_dir():
+        if (
+            Path(self.model_name).expanduser().is_dir()
+            and self.family != "minimax-h3-image"
+        ):
             return
-        from .._download_gate import image_runtime_assets_for, pinned_image_snapshot
+        from .._download_gate import (
+            MINIMAX_H3_IMAGE_REPO,
+            image_runtime_assets_for,
+            pinned_image_snapshot,
+        )
 
-        assets = image_runtime_assets_for(self.model_name)
+        assets = image_runtime_assets_for(
+            MINIMAX_H3_IMAGE_REPO
+            if self.family == "minimax-h3-image"
+            else self.model_name
+        )
         if not assets:
             return
         from .. import model_downloads
@@ -1294,6 +1364,8 @@ class ImageGenerationEngine:
             self.family == "qwen-image-2.1" and reference_count > 1
         )
         desired_mode = "edit" if for_edit else "generation"
+        if self.family == "minimax-h3-image":
+            desired_mode = "generation"
         if self.family == "qwen-image-2.1":
             desired_mode = "references" if self._qwen21_references else "generation"
         if self._model is not None and (
@@ -1402,7 +1474,7 @@ class ImageGenerationEngine:
         prompt: str,
         width: int | None = 1024,
         height: int | None = 1024,
-        num_inference_steps: int = 4,
+        num_inference_steps: int | None = None,
         seed: int = 0,
         guidance: float | None = None,
         negative_prompt: str | None = None,
@@ -1410,6 +1482,8 @@ class ImageGenerationEngine:
         loras: ImageLoras | None = None,
     ) -> None:
         """Validate before lazy loading; accept the unused seed for call parity."""
+        if num_inference_steps is None:
+            num_inference_steps = 6 if self.family == "minimax-h3-image" else 4
         self._resolve_loras(loras)
         input_paths = image_paths or []
         editing = bool(input_paths)
@@ -1421,6 +1495,26 @@ class ImageGenerationEngine:
             raise ImageRequestError(
                 f"{self.family} accepts at most {self.max_reference_images} reference images."
             )
+        if self.family == "minimax-h3-image":
+            if num_inference_steps not in (None, 6):
+                raise ImageRequestError(
+                    "MiniMax-H3-Image supports only 6 steps; omit steps or set 6."
+                )
+            if guidance not in (None, 1.0):
+                raise ImageRequestError(
+                    "MiniMax-H3-Image guidance must be 1.0 or omitted."
+                )
+            if negative_prompt is not None:
+                raise ImageRequestError(
+                    "MiniMax-H3-Image does not support negative_prompt."
+                )
+            if any(
+                value is not None and (value <= 0 or value % 32)
+                for value in (width, height)
+            ):
+                raise ImageRequestError(
+                    "MiniMax-H3-Image dimensions must be positive multiples of 32."
+                )
         if self.family == "flux3-klein":
             if any(
                 value is not None and (value <= 0 or value % 16)
@@ -1573,7 +1667,7 @@ class ImageGenerationEngine:
         prompt: str,
         width: int | None = 1024,
         height: int | None = 1024,
-        num_inference_steps: int = 4,
+        num_inference_steps: int | None = None,
         seed: int = 0,
         guidance: float | None = None,
         negative_prompt: str | None = None,
@@ -1586,6 +1680,8 @@ class ImageGenerationEngine:
         required by edit-only checkpoints. Unsupported combinations fail loud
         instead of silently ignoring the conditioning image.
         """
+        if num_inference_steps is None:
+            num_inference_steps = 6 if self.family == "minimax-h3-image" else 4
         self.validate_request(
             prompt=prompt,
             width=width,
@@ -1647,7 +1743,37 @@ class ImageGenerationEngine:
                 # commit to the denoise loop.
                 if self._is_cancelled():
                     raise ImageGenerationCancelled("Generation cancelled.")
-                if editing and self.family == "qwen-image-edit":
+                if self.family == "minimax-h3-image":
+                    from types import SimpleNamespace
+
+                    from PIL import Image, ImageOps
+
+                    references = []
+                    for path in input_paths:
+                        with Image.open(path) as source:
+                            references.append(
+                                ImageOps.exif_transpose(source).convert("RGB")
+                            )
+                    if (width is None or height is None) and references:
+                        # Follow the first reference's aspect ratio at ~1 MP
+                        # instead of squaring a non-square edit input.
+                        ref_w, ref_h = references[0].size
+                        scale = math.sqrt(1024**2 / (ref_w * ref_h))
+                        width = width or max(256, round(ref_w * scale / 32) * 32)
+                        height = height or max(256, round(ref_h * scale / 32) * 32)
+                    result = model.generate_image(
+                        prompt,
+                        width=width if width is not None else 2048,
+                        height=height if height is not None else 2048,
+                        seed=seed,
+                        references=references,
+                        min_generation_area=2048 * 2048,
+                        num_inference_steps=num_inference_steps,
+                        guidance_scale=1.0,
+                        cancel_check=self._check_native_cancel,
+                    )
+                    result = SimpleNamespace(image=result)
+                elif editing and self.family == "qwen-image-edit":
                     # Edit derives its output canvas from the input image and
                     # must NOT be given an explicit width/height. mflux fixes the
                     # VAE conditioning latents to a 1024²-area canvas of the input

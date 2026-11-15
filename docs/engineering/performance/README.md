@@ -77,3 +77,5 @@ links to the report. When new evidence supersedes a report, retain or replace it
 with an explicit pointer to the newer qualification. Abandoned experiments with
 no live product contract may be removed after their durable conclusions move to
 current documentation or tests.
+
+- [MiniMax-H3-Image operator measurement worksheet](2026-11-14-minimax-h3-image.md)

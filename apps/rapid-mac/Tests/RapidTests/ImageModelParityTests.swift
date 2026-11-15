@@ -21,6 +21,8 @@ struct ImageModelParityTests {
         "qwen-image-2.1": "qwen-image-2.1",
         "qwen-image-2.1-bf16": "qwen-image-2.1",
         "qwen-image-edit": "qwen-image-edit",
+        "minimax-h3-image": "minimax-h3-image",
+        "minimax-h3-image-8bit": "minimax-h3-image",
         "hidream-o1-dev": "hidream-o1-dev",
         "sdxl-base": "sdxl-base",
         "sd35-large-4bit": "sd35-large"

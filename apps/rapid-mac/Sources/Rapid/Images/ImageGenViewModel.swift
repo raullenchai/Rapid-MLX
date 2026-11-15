@@ -207,6 +207,7 @@ final class ImageGenViewModel {
         if alias.lowercased() == "qwen-image"
             || alias.localizedCaseInsensitiveContains("qwen-image-2.1") { return 40 }
         if alias.localizedCaseInsensitiveContains("qwen-image") { return 20 }
+        if alias.localizedCaseInsensitiveContains("minimax-h3-image") { return 6 }
         if alias.localizedCaseInsensitiveContains("hidream-o1") { return 28 }
         if alias.localizedCaseInsensitiveContains("sd35")
             || alias.localizedCaseInsensitiveContains("stable-diffusion-3.5") { return 28 }
@@ -230,6 +231,10 @@ final class ImageGenViewModel {
     private(set) var additionalReferences: [GeneratedImage] = []
     private(set) var pendingReferenceImports = 0
     private var editSessionID = UUID()
+    var attributionLabel: String? {
+        imageModels.first { $0.alias == selectedAlias }?.imageAttributionLabel
+    }
+
     var maxReferenceImages: Int {
         max(1, min(10, imageModels.first { $0.alias == selectedAlias }?.maxReferenceImages ?? 1))
     }

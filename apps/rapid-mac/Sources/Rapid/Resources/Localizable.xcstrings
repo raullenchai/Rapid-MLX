@@ -2,6 +2,13 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Powered by %@" : {
+      "comment" : "Image model attribution beside the model picker.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Powered by %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "由 %@ 提供支持" } }
+      }
+    },
     "%gB total · %gB active" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "%gB total · %gB active" } },

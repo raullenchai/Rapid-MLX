@@ -35,6 +35,8 @@ extension ModelDisplayName {
         "qwen-image-2.1-bf16": "Qwen Image 2.1 · BF16",
         "qwen-image-2.1-turbo": "Qwen Image 2.1 Turbo",
         "qwen-image-edit": "Qwen Image Edit",
+        "minimax-h3-image": "MiniMax-H3-Image (4-bit)",
+        "minimax-h3-image-8bit": "MiniMax-H3-Image (8-bit)",
         "hidream-o1-dev": "HiDream O1 Dev",
         "sdxl-base": "SDXL Base",
         "sd35-large-4bit": "Stable Diffusion 3.5 Large"

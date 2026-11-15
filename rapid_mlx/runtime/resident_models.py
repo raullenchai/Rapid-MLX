@@ -538,6 +538,13 @@ def measured_image_estimate_bytes(model_name: str) -> int | None:
     """Return the known image admission charge, if one matches."""
     from ..model_aliases import catalog_identity, resolve_profile
 
+    # MiniMax-H3-Image whole-process peak footprint, M3 Ultra, 2048x2048
+    # canvas, t2i and one-reference edit: 43.8 GiB (4-bit), 70.5 GiB (8-bit).
+    profile = resolve_profile(model_name)
+    if profile is not None and "minimax-h3-image" in profile.hf_path.casefold():
+        return int((71 if profile.image_quantize == 8 else 44) * _GIB)
+    if "minimax-h3-image" in model_name.casefold():
+        return int(44 * _GIB)
     alias = catalog_identity(model_name)
     if alias is not None:
         measured = _measured_image_estimate_for_spelling(alias)

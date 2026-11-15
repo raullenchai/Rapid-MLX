@@ -84,6 +84,7 @@ struct SidecarBuildScriptTests {
             #expect(script.contains(architecture),
                     "Every Desktop-advertised vision architecture needs a bundled import smoke.")
         }
+        #expect(script.contains("from rapid_mlx.image.minimax_h3_image import MiniMaxH3Image"))
         #expect(script.contains("from rapid_mlx.image.hidream_runtime import HiDreamO1"),
                 "The bundled sidecar must include the HiDream image adapter, not only mlx-vlm.")
         #expect(script.contains("from rapid_mlx.image.sd35_runtime import SD35Large"),

@@ -1830,7 +1830,61 @@ BONSAI_IMAGE_DATA_FILES = (
     "vae/diffusion_pytorch_model.safetensors",
 )
 
+# Share the video text encoder pin and shard inventory so warm caches are reused.
+from .video.minimax_h3 import FILES as _H3_FILES
+from .video.minimax_h3 import REPO as MINIMAX_H3_TEXT_REPO
+from .video.minimax_h3 import REVISION as MINIMAX_H3_TEXT_REVISION
+
+MINIMAX_H3_IMAGE_REPO = "MiniMaxAI/MiniMax-H3-Image"
+MINIMAX_H3_IMAGE_REVISION = "5f90473023975e6271b0ed1dd84c4e88e4bbc6d3"
+MINIMAX_H3_IMAGE_DATA_FILES = (
+    "LICENSE",
+    "model_index.json",
+    "pdd_config.json",
+    "scheduler/scheduler_config.json",
+    *(
+        f"tokenizer/{name}"
+        for name in (
+            "merges.txt",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json",
+        )
+    ),
+    *(
+        f"processor/{name}"
+        for name in (
+            "chat_template.json",
+            "merges.txt",
+            "preprocessor_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "video_preprocessor_config.json",
+            "vocab.json",
+        )
+    ),
+    "transformer_diffusers/config.json",
+    "transformer_diffusers/diffusion_pytorch_model.safetensors.index.json",
+    *(
+        f"transformer_diffusers/diffusion_pytorch_model-{i:05d}-of-00012.safetensors"
+        for i in range(1, 13)
+    ),
+    "vae_diffusers/config.json",
+    "vae_diffusers/diffusion_pytorch_model.safetensors",
+)
+# Tokenization comes from the primary snapshot; only config and weights are read here.
+MINIMAX_H3_IMAGE_TEXT_FILES = tuple(
+    name
+    for name in _H3_FILES
+    if name.startswith("text_encoder/")
+    and (
+        name == "text_encoder/config.json"
+        or name.endswith((".safetensors", ".safetensors.index.json"))
+    )
+)
+
 IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
+    MINIMAX_H3_IMAGE_REPO: MINIMAX_H3_IMAGE_DATA_FILES,
     HIDREAM_O1_REPO: HIDREAM_O1_DATA_FILES,
     SDXL_REPO: SDXL_DATA_FILES,
     BONSAI_IMAGE_REPO: BONSAI_IMAGE_DATA_FILES,
@@ -1851,6 +1905,7 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
 # names the repository directly still gets a vouched-for commit. A snapshot
 # cached at an old pin is not vouched for, so it downloads the new pin once.
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
+    MINIMAX_H3_IMAGE_REPO: MINIMAX_H3_IMAGE_REVISION,
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/flux-1-schnell-mflux-q4": "df1dada0a0e25bb8df6e1f7e4664959bf9ab86ce",
     "mflux-community/flux2-klein-4b-mflux-bf16": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67",
@@ -1871,6 +1926,9 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
 # assets. Each dependency is pinned and allowlisted exactly like the primary;
 # runtime code receives only verified local snapshot directories.
 IMAGE_MODEL_RUNTIME_ASSETS: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+    MINIMAX_H3_IMAGE_REPO: (
+        (MINIMAX_H3_TEXT_REPO, MINIMAX_H3_TEXT_REVISION, MINIMAX_H3_IMAGE_TEXT_FILES),
+    ),
     SD35_REPO: (
         (SD35_SHARED_REPO, SD35_SHARED_REVISION, SD35_SHARED_DATA_FILES),
         (
@@ -1878,7 +1936,7 @@ IMAGE_MODEL_RUNTIME_ASSETS: dict[str, tuple[tuple[str, str, tuple[str, ...]], ..
             SD35_T5_TOKENIZER_REVISION,
             SD35_T5_TOKENIZER_DATA_FILES,
         ),
-    )
+    ),
 }
 
 

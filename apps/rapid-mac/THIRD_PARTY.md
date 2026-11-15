@@ -276,3 +276,11 @@ Two notes on reading that table:
   that happens to share the prefix; they are not vendored.
 
 Paths are relative to the monorepo root, two levels above this file.
+
+* **MiniMax-H3-Image native runtime** — MiniMax and contributors; visual decoder
+  portions Copyright 2025 Prince Canuma, under MIT.
+  See `rapid_mlx/image/minimax_h3_image/LICENSE` and `NOTICE`.
+  Model weights: [MiniMax-H3-Image Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/LICENSE).
+  Commercial use is permitted under the license; organizations above US$1M annual
+  revenue and providers of hosted services to third parties need separate written
+  authorization from MiniMax. Products must prominently display "MiniMax-H3-Image".

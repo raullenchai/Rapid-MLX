@@ -99,7 +99,7 @@ def image_runtime_issue(model_name: str | None = None) -> str | None:
     family = _detect_family(model_name) if model_name else ""
     runtime_module = (
         "mlx_vlm"
-        if family == "hidream-o1-dev"
+        if family in {"hidream-o1-dev", "minimax-h3-image"}
         else "PIL"
         if family in {"sdxl-base", "sd35-large"}
         else "mflux"
@@ -144,9 +144,10 @@ class ImageEngine:
     is_mllm = False
     _loaded = True
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, *, image_quantize: int | None = None) -> None:
         self.model_name = model_name
-        self._engine = ImageGenerationEngine(model_name)
+        kwargs = {"quantize": image_quantize} if image_quantize is not None else {}
+        self._engine = ImageGenerationEngine(model_name, **kwargs)
 
     @property
     def is_resident(self) -> bool:
@@ -260,7 +261,7 @@ class ImageEngine:
         prompt: str,
         width: int = 1024,
         height: int = 1024,
-        num_inference_steps: int = 4,
+        num_inference_steps: int | None = None,
         seed: int = 0,
         guidance: float | None = None,
         negative_prompt: str | None = None,
@@ -287,7 +288,7 @@ class ImageEngine:
         prompt: str,
         width: int,
         height: int,
-        num_inference_steps: int,
+        num_inference_steps: int | None,
         seed: int,
         guidance: float | None,
         negative_prompt: str | None,

@@ -185,3 +185,24 @@ struct ImageReferencesTests {
         #expect(model.pendingReferenceImports == 0)
     }
 }
+
+@Suite("Image model attribution")
+struct ImageAttributionTests {
+    @Test func decodesOptionalAttributionAndProducesLabel() {
+        let values = ModelCatalog.parseImageAttributionsJSON("""
+        {"image":[
+          {"alias":"minimax-h3-image","attribution":"MiniMax-H3-Image"},
+          {"alias":"old-server"},
+          {"alias":"empty","attribution":" "}
+        ]}
+        """)
+        #expect(values == ["minimax-h3-image": "MiniMax-H3-Image"])
+        var entry = ModelEntry(alias: "minimax-h3-image", hfRepo: "MiniMaxAI/MiniMax-H3-Image", sizeOnDisk: nil, cached: true)
+        #expect(entry.imageAttributionLabel == nil)
+        entry.imageAttribution = values[entry.alias]
+        #expect(entry.imageAttributionLabel == "Powered by MiniMax-H3-Image")
+        #expect(ModelCatalog.parseImageReferenceLimitsJSON(
+            "{\"image\":[{\"alias\":\"minimax-h3-image\",\"max_reference_images\":16}]}"
+        )["minimax-h3-image"] == 10)
+    }
+}

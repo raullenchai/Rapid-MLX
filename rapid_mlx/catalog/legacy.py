@@ -27,6 +27,8 @@ def _image_operations(repo_id: str) -> list[str]:
     folded = repo_id.casefold().replace("_", "-")
     if is_qwen_image_21_turbo(repo_id):
         return ["text_to_image"]
+    if "minimax-h3-image" in folded:
+        return ["text_to_image", "image_to_image"]
     if "qwen-image-2.1" in folded:
         return ["text_to_image", "image_to_image"]
     if "flux2" in folded or "flux.2" in folded or "klein" in folded:
@@ -40,7 +42,9 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
     modality = getattr(profile, "modality", "text") or "text"
     if modality == "image-gen":
         folded_hf_path = profile.hf_path.casefold()
-        if "hidream-o1" in folded_hf_path:
+        if "minimax-h3-image" in folded_hf_path:
+            adapter = "rapid_mlx/minimax_h3_image"
+        elif "hidream-o1" in folded_hf_path:
             adapter = "rapid_mlx/hidream_o1"
         elif "stable-diffusion-3.5" in folded_hf_path:
             adapter = "rapid_mlx/sd35"
@@ -164,13 +168,15 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
     # Two built-in image aliases may name one checkpoint (``qwen-image`` is
     # the short spelling of ``qwen-image-2.1``). Both keep resolving in the
     # CLI and server, but Desktop's picker shows one row per checkpoint: the
-    # alias listed first in aliases.json.
-    image_artifact_owner: dict[tuple[str, str | None], str] = {}
+    # alias listed first in aliases.json. Explicit load-time image quantization
+    # keeps distinct execution variants selectable even when weights are shared.
+    image_artifact_owner: dict[tuple[str, str | None, int | None], str] = {}
     for alias in builtin_paths:
         profile = profiles[alias]
         if (getattr(profile, "modality", None) or "text") == "image-gen":
             image_artifact_owner.setdefault(
-                (profile.hf_path.casefold(), profile.subfolder), alias
+                (profile.hf_path.casefold(), profile.subfolder, profile.image_quantize),
+                alias,
             )
     models: dict[str, dict[str, Any]] = {}
     aliases: list[dict[str, Any]] = []
@@ -202,7 +208,12 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
                 _main_capabilities(profile),
                 origin="builtin" if alias in builtin else "user",
                 desktop=image_artifact_owner.get(
-                    (profile.hf_path.casefold(), profile.subfolder), alias
+                    (
+                        profile.hf_path.casefold(),
+                        profile.subfolder,
+                        profile.image_quantize,
+                    ),
+                    alias,
                 )
                 == alias
                 or alias not in builtin,
