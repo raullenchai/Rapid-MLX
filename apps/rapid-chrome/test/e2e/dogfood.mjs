@@ -10,7 +10,7 @@ export function approvalDecision(text) {
   return /\b(add another one|checkout|place order|pay|buy now|book|reserve|submit order|confirm purchase)\b/i.test(text) ? 'denied' : 'approved';
 }
 
-async function runTask(chromium, task, out, base) {
+export async function runTask(chromium, task, out, base, options = {}) {
   const dir = join(out,task.id);
   await mkdir(dir,{recursive:true});
   const profile = await mkdtemp(join(out,'.profile-'));
@@ -25,7 +25,7 @@ async function runTask(chromium, task, out, base) {
   };
   try {
     context = await launchExtension(chromium,profile,{viewport:{width:1440,height:900}});
-    panel = await connectPanel(context,base,process.env.RAPID_API_KEY || '');
+    panel = await connectPanel(context,base,process.env.RAPID_API_KEY || '',options);
     page = await context.newPage();
     // DOMContentLoaded avoids waiting for every ad/resource on live storefronts.
     await capture(() => page.goto(task.start_url,{waitUntil:'domcontentloaded'}));
@@ -44,6 +44,10 @@ async function runTask(chromium, task, out, base) {
         result.status = 'timeout';
         break;
       }
+      if (options.maxSteps && ((await readTrace(panel))?.events?.filter(e => e.kind === 'tool').length || 0) > options.maxSteps) {
+        result.status = 'step_limit';
+        break;
+      }
       if (await panel.locator('#paused').isVisible()) {
         result.status = 'needs_human';
         result.final_answer = await panel.locator('#status').innerText();
@@ -53,7 +57,7 @@ async function runTask(chromium, task, out, base) {
         const id = await card.getAttribute('data-id');
         if (handled.has(id)) continue;
         const text = await card.innerText();
-        const decision = approvalDecision(text);
+        const decision = (options.approvalDecision || approvalDecision)(text);
         const approval = {id,text,decision,at_seconds:(Date.now()-started)/1000};
         result.approvals.push(approval);
         // Persist the full card and policy decision before clicking.
@@ -89,6 +93,7 @@ async function runTask(chromium, task, out, base) {
     result.steps = trace?.events?.filter(event => event.kind === 'tool').length || 0;
     await capture(() => context?.close());
     await capture(() => rm(profile,{recursive:true,force:true}));
+    await writeFile(join(dir,'approvals.json'),JSON.stringify(result.approvals,null,2));
     await writeFile(join(dir,'trace.json'),JSON.stringify(trace ?? null,null,2));
     await writeFile(join(dir,'result.json'),JSON.stringify(result,null,2));
   }

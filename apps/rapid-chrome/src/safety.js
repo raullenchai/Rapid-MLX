@@ -1,19 +1,13 @@
 // Fail closed: exact origins are intentionally stricter than registrable domains.
-export function engineBase(value) {
-  const u = new URL(value);
-  if (u.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(u.hostname) ||
-      u.username || u.password || u.search || u.hash || !['', '/'].includes(u.pathname)) {
-    throw new Error('Engine URL must be an HTTP loopback origin, e.g. http://127.0.0.1:8000');
-  }
-  return u.origin;
-}
+import { endpoint } from './endpoint.js';
+export const engineBase = endpoint;
 export function safeURL(value, base) {
   let u;
-  try { u = new URL(value); } catch { throw new Error('blocked_url: malformed URL or host; use an absolute HTTP(S) URL, e.g. https://resy.com/cities (no spaces in the host)'); }
+  try { u = new URL(value); } catch { throw new Error('blocked_url: malformed URL or host; use an absolute HTTP(S) URL without spaces in the host'); }
   const authority = String(value).match(/^https?:\/\/([^/?#]*)/i)?.[1] || '';
   if (!authority || /[%\s\\]/.test(authority) || (!u.hostname.startsWith('[') &&
       u.hostname.replace(/\.$/, '').split('.').some(label => !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label)))) {
-    throw new Error('blocked_url: malformed host; use https://resy.com/cities, not resy.com%20cities');
+    throw new Error('blocked_url: malformed host; use a valid HTTP(S) hostname without encoded spaces');
   }
   const engine = new URL(base);
   const local = h => ['127.0.0.1', 'localhost', '[::1]'].includes(h);

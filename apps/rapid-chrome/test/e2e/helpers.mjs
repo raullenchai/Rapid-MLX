@@ -16,7 +16,7 @@ export async function launchExtension(chromium, profile, options = {}) {
   });
 }
 
-export async function connectPanel(context, base, apiKey = '') {
+export async function connectPanel(context, base, apiKey = '', options = {}) {
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   const id = new URL(worker.url()).host;
   const panel = await context.newPage();
@@ -25,6 +25,7 @@ export async function connectPanel(context, base, apiKey = '') {
   await panel.locator('#settings-toggle').click();
   await panel.locator('#base').fill(base);
   await panel.locator('#api-key').fill(apiKey);
+  if (options.maxSteps) await panel.locator('#step-cap').fill(String(options.maxSteps));
   await panel.getByRole('button',{name:'Save & connect'}).click();
   await until(async () => (await panel.locator('#status').textContent()) === 'Connected','engine connection');
   await panel.locator('#settings-toggle').click();

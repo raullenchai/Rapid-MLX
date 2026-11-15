@@ -1,0 +1,24 @@
+name: rapid-chrome CI
+on:
+  push:
+    branches: [main]
+    paths: ['apps/rapid-chrome/**', '.github/workflows/rapid-chrome-ci.yml']
+  pull_request:
+    branches: [main]
+    paths: ['apps/rapid-chrome/**', '.github/workflows/rapid-chrome-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rapid-chrome-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-build:
+    runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v4.4.0
+        with:
+          node-version: '22'
+      - run: node --test apps/rapid-chrome/test/
+      - run: npm run build --prefix apps/rapid-chrome

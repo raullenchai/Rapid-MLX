@@ -1,0 +1,71 @@
+[
+  {
+    "nodeId": "card",
+    "role": {
+      "value": "listitem"
+    },
+    "childIds": [
+      "link",
+      "price",
+      "old",
+      "offers-heading",
+      "offer",
+      "unit"
+    ]
+  },
+  {
+    "nodeId": "link",
+    "backendDOMNodeId": 1,
+    "role": {
+      "value": "link"
+    },
+    "name": {
+      "value": "Compact desk charger"
+    }
+  },
+  {
+    "nodeId": "price",
+    "role": {
+      "value": "StaticText"
+    },
+    "name": {
+      "value": "$29.99"
+    }
+  },
+  {
+    "nodeId": "old",
+    "role": {
+      "value": "deletion"
+    },
+    "name": {
+      "value": "$39.99"
+    }
+  },
+  {
+    "nodeId": "offers-heading",
+    "role": {
+      "value": "StaticText"
+    },
+    "name": {
+      "value": "More Buying Choices"
+    }
+  },
+  {
+    "nodeId": "offer",
+    "role": {
+      "value": "StaticText"
+    },
+    "name": {
+      "value": "$22.49"
+    }
+  },
+  {
+    "nodeId": "unit",
+    "role": {
+      "value": "StaticText"
+    },
+    "name": {
+      "value": "$1.25 / count"
+    }
+  }
+]

@@ -1,3 +1,4 @@
+import { scenarioSites } from './sites/index.mjs';
 import http from 'node:http';
 export async function listen(handler) {
   const server = http.createServer(handler);
@@ -34,7 +35,7 @@ export async function fixtures() {
   return {...app,counts};
 }
 function escapeHTML(s) { return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'); }
-export async function fakeEngine() {
+export async function fakeEngine({script} = {}) {
   const state = {requests:[],outlines:[],held:false,aborted:false};
   const app = await listen(async (req,res) => {
     res.setHeader('Access-Control-Allow-Origin','*');
@@ -46,6 +47,12 @@ export async function fakeEngine() {
     let raw = ''; for await (const chunk of req) raw += chunk;
     try {
       const body = JSON.parse(raw); state.requests.push(body);
+      if (script) {
+        const step = script[state.requests.length-1];
+        if (!step) throw Error('Script exhausted');
+        const message = typeof step === 'function' ? await step(body) : step;
+        res.end(JSON.stringify({choices:[{message}]}));return;
+      }
       const task = body.messages.filter(m => m.role === 'user' && typeof m.content === 'string').at(-1).content;
       if (task === 'Stop test') {
         state.held = true; res.on('close',() => {state.aborted = true;}); return;
@@ -92,3 +99,5 @@ export function searchResultReply(results, outline, tool) {
   const last = JSON.parse(results.at(-1).content);
   return last.text?.startsWith('Waited ') ? tool('read_page',{}) : tool('wait',{ms:50});
 }
+
+export const scenarioFixtures = () => scenarioSites(listen);

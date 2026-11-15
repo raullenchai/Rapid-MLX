@@ -33,7 +33,7 @@ test('URL blocklist, engine alias guard, loopback settings and conservative site
   for (const url of ['chrome://settings','chrome-extension://abc/panel.html','file:///etc/passwd','javascript:alert(1)','https://chromewebstore.google.com/detail/x','https://chrome.google.com/webstore/detail/x',base, 'http://localhost:8000/v1/models','http://[::1]:8000/','https://user:pass@example.org']) assert.throws(() => safeURL(url,base),/blocked_url/);
   assert.equal(safeURL('https://example.org',base).origin,'https://example.org');
   assert.equal(engineBase('http://localhost:9000/'),'http://localhost:9000');
-  for (const url of ['https://localhost:8000','http://evil.org','http://localhost:8000/proxy','http://localhost.evil.org']) assert.throws(() => engineBase(url));
+  for (const url of ['http://evil.org','http://localhost:8000/proxy','http://localhost.evil.org']) assert.throws(() => engineBase(url));
   const sites = new Set(['https://example.org']);
   assert.equal(needsSiteApproval('https://example.org/path',sites),false);
   assert.equal(needsSiteApproval('https://sub.example.org',sites),true);

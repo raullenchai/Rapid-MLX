@@ -1,5 +1,41 @@
 const interactive = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','slider','spinbutton','menuitem','tab','switch','option','treeitem']);
 const value = v => v?.value;
+// Classify each price in tree order, retaining headings that are separate AX nodes.
+export function commercePrices(root, byId) {
+  const labels = new Map(), seen = new Set();
+  const money = /[$€£¥]\s*\d[\d,.]*(?:\s*\d{2}\b)?|\d[.,]\d{2}\s*(?:USD|EUR)/g;
+  const hint = text => /more buying choices|other (?:offers|sellers)|used\s*(?:&|and)\s*new|new\s*(?:&|and)\s*used|offers? from/i.test(text) ? 'other offers from' : /unit price|\/\s*(?:count|ounce|oz|lb|kg|g|ml|l|each)\b|per (?:count|ounce|item|unit)/i.test(text) ? 'unit price' : /list price|was\b|original price|typical price|previous price/i.test(text) ? 'was' : /^(?:price|current price|our price|buy box)\b/i.test(text) ? 'price' : '';
+  function walk(n, inherited = '') {
+    if (seen.has(n) || (n.properties || []).some(p => p.name === 'hidden' && value(p.value) === true)) return;
+    seen.add(n);
+    const text = String(value(n.name) || '');
+    const struck = ['deletion','strikethrough'].includes(value(n.role));
+    const role = struck ? 'was' : inherited;
+    const children = (n.childIds || []).map(id => byId.get(id)).filter(Boolean);
+    const ownPrices = [...text.matchAll(money)];
+    // Aggregate container names often duplicate every price below them.
+    if (ownPrices.length && !children.some(c => /[$€£¥]\s*\d|\d[.,]\d{2}\s*(?:USD|EUR)/.test(String(value(c.name) || '')))) {
+      labels.set(n,ownPrices.map(m => {
+        const previous = ownPrices[ownPrices.indexOf(m)-1];
+        const before = text.slice(previous ? previous.index+previous[0].length : 0,m.index);
+        const after = text.slice(m.index + m[0].length);
+        const local = hint(before) || (/^\s*\//.test(after) ? 'unit price' : '') || (ownPrices.length === 1 ? hint(text) : '') || role || 'price';
+        return `${local}: ${m[0].trim()}`;
+      }).join(' | '));
+    }
+    let context = role || (!ownPrices.length ? hint(text) : '');
+    for (const c of children) {
+      const name = String(value(c.name) || '');
+      const cue = hint(name);
+      if (cue && !(c.childIds || []).length && !/[$€£¥]\s*\d/.test(name)) context = cue;
+      walk(c,context);
+      // Leaf offer headings may cover several seller prices. Keep that role
+      // until another heading; never promote a later alternate offer to main.
+    }
+  }
+  walk(root);
+  return labels;
+}
 export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000, query = '', geometry = new Map()} = {}) {
   const refs = new Map(), byId = new Map(nodes.filter(n => n.nodeId).map(n => [n.nodeId,n]));
   const visited = new Set(), entries = [];
@@ -8,7 +44,7 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const linkText = n => hrefOf(n) ? ` href=${JSON.stringify(hrefOf(n))}` : '';
   const nameOf = n => String(value(n.name) || '').replace(/\s+/g,' ').trim();
   function descendants(n, seen = new Set()) {
-    if (seen.has(n)) return [];
+    if (seen.has(n) || (n.properties || []).some(p => p.name === 'hidden' && value(p.value) === true)) return [];
     seen.add(n);
     return [n,...(n.childIds || []).flatMap(id => byId.has(id) ? descendants(byId.get(id),seen) : [])];
   }
@@ -19,28 +55,32 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
     const props = Object.fromEntries((node.properties || []).map(p => [p.name,value(p.value)]));
     main ||= role === 'main';
     priority ||= ['dialog','alertdialog','alert','status'].includes(role) || Boolean(props.live && props.live !== 'off');
-    if (props.hidden === true) { for (const child of descendants(node)) visited.add(child); return; }
+    if (props.hidden === true) {
+      const hide = n => { for (const id of n.childIds || []) { const child = byId.get(id); if (child && !visited.has(child)) { visited.add(child); hide(child); } } };
+      hide(node); return;
+    }
     // Compact a semantic product card as a unit: retain prices/ratings and all
     // actionable refs, omit repeated image/link/static text copies of its name.
     const children = ['listitem','article'].includes(role) ? descendants(node) : [];
     const product = children.length && children.some(n => value(n.role) === 'link') && children.some(n => /[$€£¥]\s*\d|\d[.,]\d{2}\s*(?:USD|EUR)/.test(nameOf(n)));
     if (product) {
       const parts = [], targets = [], names = new Set();
+      const prices = commercePrices(node,byId);
       const usable = children.filter(n => !n.ignored && value(n.role) !== 'InlineTextBox' && nameOf(n));
       const links = usable.filter(n => value(n.role) === 'link' && n.backendDOMNodeId);
       // Name/link first, then price/rating, then other controls. Long cards cannot
       // consume the entire outline budget before any product becomes visible.
-      const primary = links.find(n => nameOf(n).length > 12) || links[0];
-      const details = usable.filter(n => !interactive.has(value(n.role)) && /[$€£¥]\s*\d|\d[.,]\d{2}|\bstars?\b|\bratings?\b|\breviews?\b/i.test(nameOf(n)));
+      const primary = links.find(n => !/[$€£¥]|more buying choices|other (?:offers|sellers)|used.*new/i.test(nameOf(n))) || links[0];
+      const details = usable.filter(n => (prices.has(n) || (!interactive.has(value(n.role)) && !/[$€£¥]/.test(nameOf(n)))) && /[$€£¥]\s*\d|\d[.,]\d{2}|\bstars?\b|\bratings?\b|\breviews?\b/i.test(nameOf(n)));
       const controls = usable.filter(n => interactive.has(value(n.role)) && n !== primary && n.backendDOMNodeId);
       let shortened = false, size = 0;
       for (const n of [primary,...details,...controls].filter(Boolean)) {
-        const label = nameOf(n);
+        const label = prices.get(n) || nameOf(n);
         if (names.has(label)) continue;
         const control = interactive.has(value(n.role)) && n.backendDOMNodeId;
         const part = control ? `[e${next}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}${linkText(n)}` : label.slice(0,300);
         if (size+part.length > 1400) { shortened = true; continue; }
-        if (control) targets.push([`e${next++}`,{backendDOMNodeId:n.backendDOMNodeId,name:label,role:value(n.role),href:hrefOf(n)}]);
+        if (control) targets.push([`e${next++}`,{backendDOMNodeId:n.backendDOMNodeId,name:nameOf(n),role:value(n.role),href:hrefOf(n)}]);
         parts.push(part); size += part.length+3; names.add(label);
       }
       for (const n of children) visited.add(n);

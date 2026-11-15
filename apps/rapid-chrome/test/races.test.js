@@ -37,7 +37,7 @@ test('harness waits for URL commit and result DOM after server request receipt',
   resultDOM(); await waiting; assert.equal(done,true);
 });
 
-test('settings cannot be edited until first state snapshot; later snapshots preserve edits', () => {
+test('settings cannot be edited until first state snapshot; later snapshots preserve edits', async () => {
   const html = readFileSync(new URL('../panel.html',import.meta.url),'utf8');
   assert.match(html,/id="settings-toggle" disabled/);
   const nodes = new Map();
@@ -48,10 +48,12 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   const get = id => { if (!nodes.has(id)) nodes.set(id,node()); return nodes.get(id); };
   get('settings-toggle').disabled = true;
   let render;
-  const sent = [];
+  const sent = [], grants = [];
+  let allowPermission = true;
   const document = {getElementById:get,createElement:node,body:{dataset:{}}};
-  const chrome = {runtime:{connect:() => ({postMessage:m => sent.push(m),onMessage:{addListener:fn => {render = fn;}},onDisconnect:{addListener() {}}})}};
-  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8'),{document,chrome});
+  const chrome = {permissions:{request:async grant => {grants.push(grant);return allowPermission;}},runtime:{connect:() => ({postMessage:m => sent.push(m),onMessage:{addListener:fn => {render = fn;}},onDisconnect:{addListener() {}}})}};
+  const { endpoint, originPermission, LOCAL_ENDPOINTS, redact } = await import('../src/endpoint.js');
+  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,''),{document,chrome,endpoint,originPermission,LOCAL_ENDPOINTS,redact,t:k => k,localize:s => s,translateDocument() {},displayResult:s => s,toolLabel:s => s});
   assert.equal(get('settings-toggle').disabled,true);
   assert.equal(document.body.dataset.ready,undefined);
   const state = {settings:{base:'http://localhost:8000',apiKey:'',model:'',vision:false,stepCap:25},models:[],messages:[],tabs:[],steps:[],approvals:[],running:false,status:'Ready'};
@@ -62,6 +64,13 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   get('base').value = 'http://localhost:9000';
   render(state);
   assert.equal(get('base').value,'http://localhost:9000');
-  get('settings-form').onsubmit({preventDefault() {}});
+  get('endpoint-mode').value = 'custom';
+  await get('settings-form').onsubmit({preventDefault() {}});
   assert.equal(sent.at(-1).settings.base,'http://localhost:9000');
+  assert.equal(JSON.stringify(grants),JSON.stringify([{origins:['http://localhost:9000/*']}]));
+  allowPermission = false;
+  const count = sent.length;
+  await get('settings-form').onsubmit({preventDefault() {}});
+  assert.equal(sent.length,count);
+  assert.equal(get('status').textContent,'permissionMissing');
 });

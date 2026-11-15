@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { watchEffects, collectEffects, effectReport } from './effects.js';
 import { detectChallenge } from './challenge.js';
 import { outlineAX } from './ax.js';
@@ -64,7 +65,7 @@ export class ChromeAdapter {
     await this.api.tabGroups.update(groupId, {title:'Rapid',color:'blue'});
     return groupId;
   }
-  inject(id, show) { return this.api.scripting.executeScript({target:{tabId:id},func:overlay,args:[show]}); }
+  inject(id, show, labels) { return this.api.scripting.executeScript({target:{tabId:id},func:overlay,args:[show,'',labels]}); }
 }
 
 // All browser operations pass through the adapter; no model-provided JS is evaluated.
@@ -137,14 +138,14 @@ export class BrowserHand {
     for (const [id] of this.tabs) { await this.own(id); this.invalidate(id); await this.showOverlay(id,true); }
   }
   async showOverlay(id, show) {
-    try { await this.a.inject(id,show); return; } catch { /* Host permission is deliberately absent for arbitrary sites. */ }
+    try { await this.a.inject(id,show,[t('overlayWorking'),t('stop')]); return; } catch { /* Host permission is deliberately absent for arbitrary sites. */ }
     try {
       const {frameTree} = await this.a.send(id,'Page.getFrameTree');
       const {executionContextId} = await this.a.send(id,'Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'Rapid isolated overlay'});
       const binding = this.tabs.get(id)?.binding;
       if (!binding) return;
       await this.a.send(id,'Runtime.addBinding',{name:binding,executionContextId});
-      await this.a.send(id,'Runtime.evaluate',{contextId:executionContextId,expression:`(${overlay.toString()})(${JSON.stringify(show)},${JSON.stringify(binding)})`});
+      await this.a.send(id,'Runtime.evaluate',{contextId:executionContextId,expression:`(${overlay.toString()})(${JSON.stringify(show)},${JSON.stringify(binding)},${JSON.stringify([t('overlayWorking'),t('stop')])})`});
     } catch (e) { if (show) this.emit({kind:'notice',text:`Overlay unavailable: ${e.message}. Panel Stop remains available.`}); }
   }
   async release(id) {

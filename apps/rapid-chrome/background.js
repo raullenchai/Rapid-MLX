@@ -1,15 +1,17 @@
 import { BrowserHand, ChromeAdapter } from './src/cdp.js';
-import { runAgent, headers } from './src/agent.js';
+import { runAgent } from './src/agent.js';
+import { LOCAL_ENDPOINTS, testConnection, redact } from './src/endpoint.js';
+import { t, localize } from './src/i18n.js';
 import { engineBase, safeURL } from './src/safety.js';
 
-const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60};
-const state = {messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',settings:{...defaults},models:[],tabs:[]};
+const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60,endpointMode:'local',reasoningEffort:'off'};
+const state = {messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',connected:false,settings:{...defaults},models:[],tabs:[]};
 const ports = new Set(), pending = new Map();
 let controller = null, runPromise = null, resumeGate = null, pausePromise = null;
 const hand = new BrowserHand(new ChromeAdapter(), {settings:state.settings,approve,emit,stop,challenge});
 const ready = (async () => {
   const {settings} = await chrome.storage.local.get('settings');
-  if (settings) { try { engineBase(settings.base); state.settings = {...defaults,...settings}; } catch {} }
+  if (settings) { try { engineBase(settings.base); state.settings = {...defaults,...settings,endpointMode:settings.endpointMode || (LOCAL_ENDPOINTS.includes(settings.base) ? 'local' : 'custom')}; } catch {} }
   hand.settings = state.settings;
   const saved = await chrome.storage.session.get(['transcript','owned']);
   state.messages = saved.transcript || [];
@@ -23,9 +25,13 @@ const ready = (async () => {
     } catch {}
   }
   refreshTabs();
+  if (settings) {
+    try { await models(undefined,true,true); }
+    catch (e) { state.status = localize(e.message); publish(); }
+  } else { state.status = t('stepConnect'); publish(); }
 })();
 function publish() {
-  for (const port of ports) { try { port.postMessage(state); } catch { ports.delete(port); } }
+  for (const port of ports) { try { port.postMessage({...state,status:localize(state.status)}); } catch { ports.delete(port); } }
 }
 function refreshTabs() {
   state.tabs = [...hand.tabs].map(([id,t]) => ({id,attached:t.attached})); publish();
@@ -85,14 +91,21 @@ async function checkpoint(messages) {
   }
   if (messages && hand.notices.length) messages.push({role:'user',content:`Browser ownership notice (from extension): ${hand.notices.splice(0).join('\n')}`});
 }
-async function models(signal) {
-  const response = await fetch(`${engineBase(state.settings.base)}/v1/models`,{headers:headers(state.settings.apiKey),credentials:'omit',redirect:'error',signal:signal ? AbortSignal.any([signal,AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000)});
-  if (!response.ok) throw new Error(`HTTP ${response.status}; check API key and --cors-origins chrome-extension://${chrome.runtime.id}`);
-  const data = await response.json();
-  state.models = (data.data || []).map(m => m.id).filter(id => typeof id === 'string');
-  if (!state.models.includes(state.settings.model)) state.settings.model = state.models[0] || '';
-  if (!state.settings.model) throw new Error('Engine has no loaded models');
-  state.status = 'Connected'; await chrome.storage.local.set({settings:state.settings}); publish();
+async function models(signal, probe = true, discover = false) {
+  state.connected = false; state.status = t('connecting'); publish();
+  const candidates = discover && state.settings.endpointMode === 'local' ? [...new Set([state.settings.base,...LOCAL_ENDPOINTS])] : [state.settings.base];
+  let failure;
+  for (const base of candidates) {
+    try {
+      const result = await testConnection({...state.settings,base},{signal,probe,onModels:info => {
+        state.models = info.models; Object.assign(state.settings,{base:info.base,model:info.model}); publish();
+      }});
+      Object.assign(state.settings,{base:result.base,model:result.model});
+      state.models = result.models; state.connected = true;
+      state.status = t('connected'); await chrome.storage.local.set({settings:state.settings}); publish(); return;
+    } catch (e) { failure = e; if (e.message !== 'unreachable' && e.message !== 'permissionMissing') break; }
+  }
+  throw failure;
 }
 async function run(task) {
   if (state.running) throw new Error('A task is already running');
@@ -104,8 +117,8 @@ async function run(task) {
   const debugTrace = {version:1,id:crypto.randomUUID(),task,startedAt:new Date().toISOString(),events:[]};
   const started = Date.now();
   const trace = async event => {
-    debugTrace.events.push({atMs:Date.now()-started,...event});
-    await chrome.storage.session.set({debugTrace});
+    debugTrace.events.push(redact({atMs:Date.now()-started,...event},state.settings.apiKey));
+    await chrome.storage.session.set({debugTrace:redact(debugTrace,state.settings.apiKey)});
   };
   state.messages.push({role:'user',content:task}); publish();
   // A Chrome API call keeps a waiting approval / local inference run alive.
@@ -148,12 +161,22 @@ async function handle(message) {
   if (message.type === 'settings') {
     if (state.running) throw new Error('Stop the task before changing settings');
     const s = message.settings;
-    state.settings = {base:engineBase(s.base),apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
+    const base = engineBase(s.base);
+    if (s.endpointMode !== 'custom' && !LOCAL_ENDPOINTS.includes(base)) throw new Error('invalidEndpoint');
+    state.settings = {endpointMode:s.endpointMode === 'custom' ? 'custom' : 'local',reasoningEffort:['low','high'].includes(s.reasoningEffort) ? s.reasoningEffort : 'off',base,apiKey:String(s.apiKey || ''),model:String(s.model || ''),vision:s.vision === true,stepCap:Math.max(1,Math.min(100,Math.floor(Number(s.stepCap) || 60)))};
     hand.settings = state.settings;
     await chrome.storage.local.set({settings:state.settings});
-    await models();
+    await models(undefined,true,true);
   }
-  if (message.type === 'connect') await models();
+  if (message.type === 'connect') {
+    if (state.running) throw new Error('Stop first');
+    await models(undefined,true,true);
+  }
+  if (message.type === 'open-tab') {
+    if (state.running) throw new Error('Stop first');
+    await chrome.tabs.create({url:'about:blank'});
+    state.status = t('openTabHelp'); publish();
+  }
   if (message.type === 'share') {
     if (state.running) throw new Error('Stop the task before sharing another tab');
     const [tab] = await chrome.tabs.query({active:true,lastFocusedWindow:true});
@@ -171,7 +194,8 @@ chrome.runtime.onConnect.addListener(port => {
   ports.add(port); void ready.then(publish);
   port.onDisconnect.addListener(() => ports.delete(port));
   port.onMessage.addListener(m => { void handle(m).catch(e => {
-    state.status = m.type === 'connect' || m.type === 'settings' ? `Rapid engine not reachable at ${state.settings.base} — start it with rapid-mlx serve <model>. ${e.message}` : e.message;
+    if (m.type === 'connect' || m.type === 'settings') state.connected = false;
+    state.status = localize(redact(e.message,state.settings.apiKey));
     publish();
   }); });
 });

@@ -1,25 +1,29 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rapid MLX for Chrome</title><link rel="stylesheet" href="panel.css"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="extensionName"></title><link rel="stylesheet" href="panel.css"></head>
 <body>
-<header><div><strong>Rapid MLX</strong><small>Your local browser assistant</small></div><button id="settings-toggle" disabled aria-label="Settings" aria-expanded="false">Settings</button></header>
-<p id="status" role="status">Connecting to extension…</p>
+<header><div><strong>Rapid MLX</strong><small data-i18n="tagline"></small></div><button id="settings-toggle" disabled data-i18n="settings" data-i18n-aria-label="settings" aria-expanded="false" aria-controls="settings"></button></header>
+<p id="status" role="status" aria-live="polite" data-i18n="connecting"></p>
+<section id="onboarding" aria-labelledby="welcome"><h2 id="welcome" data-i18n="welcome"></h2><ol><li><button id="onboard-connect" data-i18n="stepConnect"></button></li><li data-i18n="stepShare"></li><li data-i18n="stepTry"></li></ol><div id="examples" class="chips"></div><p data-i18n="approvalsHelp"></p><p data-i18n="stopHelp"></p></section>
 <section id="settings" hidden>
-  <h2>Local engine</h2>
+  <h2 data-i18n="connection"></h2>
   <form id="settings-form">
-    <label>Base URL<input id="base" type="url" required placeholder="http://127.0.0.1:8000"></label>
-    <label>API key (optional)<input id="api-key" type="password" autocomplete="off"></label>
-    <label>Model<select id="model"><option value="">First available model</option></select></label>
-    <label class="inline"><input id="vision" type="checkbox"> Model supports vision</label>
-    <label>Maximum tool steps<input id="step-cap" type="number" min="1" max="100" value="60"></label>
-    <button type="submit">Save & connect</button><button id="refresh" type="button">Refresh models</button>
-  </form><small>Keys stay in local extension storage. Page data goes only to your configured local engine.</small>
+    <label><span data-i18n="endpointChoice"></span><select id="endpoint-mode"><option value="local" data-i18n="localEndpoint"></option><option value="custom" data-i18n="customEndpoint"></option></select></label>
+    <label><span data-i18n="baseURL"></span><input id="base" type="url" required placeholder="http://127.0.0.1:8000"></label>
+    <p id="http-warning" role="note" hidden data-i18n="httpWarning"></p>
+    <label><span data-i18n="apiKey"></span><input id="api-key" type="password" autocomplete="off"></label>
+    <label><span data-i18n="model"></span><select id="model"><option value="" data-i18n="firstModel"></option></select></label>
+    <label><span data-i18n="reasoning"></span><select id="reasoning"><option value="off" data-i18n="off"></option><option value="low" data-i18n="low"></option><option value="high" data-i18n="high"></option></select></label>
+    <label class="inline"><input id="vision" type="checkbox"><span data-i18n="vision"></span></label>
+    <label><span data-i18n="stepCap"></span><input id="step-cap" type="number" min="1" max="100" value="60"></label>
+    <button type="submit" data-i18n="save"></button><button id="refresh" type="button" data-i18n="testConnection"></button>
+  </form><small data-i18n="storageHelp"></small>
 </section>
-<div class="toolbar"><button id="share">Use this tab</button><button id="stop" class="danger" disabled>Stop</button></div>
-<div id="owned" aria-label="Shared tabs"></div>
-<div class="toolbar"><button id="new-chat">New chat</button><button id="copy-trace">Copy debug trace</button></div>
-<main id="transcript" aria-label="Conversation" aria-live="polite"><div id="messages"></div><section id="steps" aria-label="Tool steps"></section></main>
-<section id="approvals" aria-label="Approvals" aria-live="assertive"></section>
-<section id="paused" hidden><p>Complete the check or resolve the page problem in the tab, then continue.</p><button id="resume">Continue</button><button id="pause-stop">Stop</button></section>
-<form id="chat"><label class="sr-only" for="message">Message Rapid</label><textarea id="message" rows="3" placeholder="Ask Rapid to help with your tabs…" required></textarea><button id="send" type="submit">Send</button></form>
+<div class="toolbar"><button id="share" data-i18n="share"></button><button id="open-tab" data-i18n="openTab"></button><button id="stop" class="danger" disabled data-i18n="stop"></button></div>
+<div id="owned" data-i18n-aria-label="sharedTabs"></div>
+<div class="toolbar"><button id="new-chat" data-i18n="newChat"></button><button id="copy-trace" data-i18n="copyTrace"></button></div>
+<main id="transcript" data-i18n-aria-label="conversation" aria-live="polite"><div id="messages"></div><section id="steps" data-i18n-aria-label="toolSteps"></section></main>
+<section id="approvals" role="region" data-i18n-aria-label="approvals" aria-live="assertive" aria-atomic="true"></section>
+<section id="paused" hidden><p data-i18n="pausedHelp"></p><button id="resume" data-i18n="continueTask"></button><button id="pause-stop" data-i18n="stop"></button></section>
+<form id="chat"><label class="sr-only" for="message" data-i18n="messageLabel"></label><textarea id="message" rows="3" data-i18n-placeholder="messagePlaceholder" required></textarea><button id="send" type="submit" data-i18n="send"></button></form>
 <script src="panel.js" type="module"></script>
 </body></html>

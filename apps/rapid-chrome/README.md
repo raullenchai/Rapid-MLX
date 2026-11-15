@@ -1,8 +1,8 @@
 # Rapid MLX for Chrome
 
-An unpacked Chrome MV3 extension that connects your local Rapid engine to tabs
+An unpacked Chrome MV3 extension that connects your chosen model endpoint to tabs
 that you explicitly share or that the agent creates. Plain JavaScript, HTML and
-CSS; no build step, dependencies, analytics, or remote assets. Chrome 125+.
+CSS; no runtime dependencies, analytics, or remote assets. Chrome 125+.
 
 ## Load and connect
 
@@ -17,7 +17,7 @@ CSS; no build step, dependencies, analytics, or remote assets. Chrome 125+.
    Replace the angle-bracket placeholders. If you enable engine API-key auth,
    enter that same key in extension settings. Do not put keys in the base URL.
 3. Click the extension action or press **Alt+Shift+R** to open the panel. Open
-   **Settings**, set the base URL (default `http://127.0.0.1:8000`), and choose
+   **Settings**, choose **Rapid on this Mac** (detects ports 8000 and 7659) or a custom endpoint, and choose
    **Save & connect**. The model dropdown comes from `GET /v1/models`, defaulting
    to its first entry. Enable vision only for an image-capable model.
 4. With the intended website active, select **Use this tab**. Ask a task in the
@@ -28,8 +28,10 @@ CSS; no build step, dependencies, analytics, or remote assets. Chrome 125+.
    revokes ownership; detaching Chrome's debugger pauses the task and presents
    **Keep working** / **Stop**.
 
-Only `http://127.0.0.1` and `http://localhost` engine origins are configurable
-(any port). API keys/settings use `chrome.storage.local`. A bounded transcript
+HTTPS origins are supported. HTTP is limited to loopback, private LAN IPv4,
+and 100.64.0.0/10 addresses, with an unencrypted-transport warning. Save requests
+only the configured host permission; the browser grants that host across ports.
+The connection test lists `/v1/models` and performs one harmless tool probe. API keys/settings use `chrome.storage.local`. A bounded transcript
 and owned-tab IDs use `chrome.storage.session`; they do not survive a browser
 restart. An interrupted worker does not resume a task automatically. Task
 history sent on a new turn includes recent conversation text, not old refs.
@@ -44,8 +46,8 @@ above (also `RAPID_MLX_CORS_ALLOW_ORIGINS`). The configured CORS defaults allow
 POST and Authorization. `rapid_mlx/middleware/auth.py` accepts the Bearer token
 sent by this extension. Requests omit cookies, refuse redirects, and run in the
 extension worker rather than page content. No wildcard origin or global
-extension exemption is added to the engine. A connection error includes the
-origin needed for configuration. This is a source review, not a live-engine
+extension exemption is added to the engine. Connection diagnostics distinguish missing permissions, authentication, and
+model/tool support. Network errors explain reachability and CORS checks. This is a source review, not a live-engine
 compatibility test.
 
 ## Behavior and safety boundaries
@@ -53,7 +55,8 @@ compatibility test.
 - The worker sends OpenAI function tools to `/v1/chat/completions`, executes them
   sequentially, and continues until final text, Stop, or the tool-step cap (60
   by default, configurable 1–100). Ten tool schemas live in `src/tools.js`.
-  Thinking is explicitly disabled for these tool requests. Duplicate immediate
+  Reasoning effort defaults to off; low/high send `reasoning_effort` and enable
+  thinking through `chat_template_kwargs`. Duplicate immediate
   calls and previously failed identical calls return recovery guidance without
   re-execution; successful actions reset failed-call tracking.
 - Created tabs have a visible **Rapid** group. Shared tabs retain their existing
@@ -255,3 +258,14 @@ unrelated form purchase text; explicit purchase/delete/send names remain gated.
 The fake browser harness includes a cart-counter test that denies a second add
 and checks that the counter remains one. Unit tests cover the observer, transient
 notifications, dialog priority, repeated activation and English/Chinese filters.
+
+## Package and store submission
+
+Run `npm run build` in this directory. The dependency-free Node script validates
+manifest references and translations, then writes
+`dist/rapid-mlx-chrome-0.1.0.zip` with deterministic entries and timestamps.
+Tests and local artifacts are excluded. CI runs the full Node suite and build.
+The store listing, permission justifications, privacy policy, and manual browser
+checklist are in `store/`. Publish the privacy policy and capture screenshots
+before store submission. The panel follows the browser language (English and
+Simplified Chinese) and includes a three-step onboarding flow.
