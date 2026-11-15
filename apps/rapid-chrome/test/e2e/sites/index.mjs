@@ -1,3 +1,4 @@
+import { perceptionPage } from './perception.mjs';
 // Deterministic account fixtures. All mutations are POSTs and recorded on the server.
 export const products = [
   {id:'bolt',name:'Bolt 65W charger',price:29.99,other:12.99,rating:4.7,stock:true,category:'Electronics'},
@@ -30,6 +31,7 @@ function shell(title,body) {
   </script></html>`;
 }
 export function page(path,url,s) {
+  if (path === '/perception/grid' || path === '/perception/cart') return shell('Per-item grocery cards',perceptionPage(products,s.cart));
   if (path === '/mail') {
     const q = (url.searchParams.get('q') || '').toLowerCase(), label = url.searchParams.get('label');
     const message = emails.find(m=>m.id===url.searchParams.get('id'));

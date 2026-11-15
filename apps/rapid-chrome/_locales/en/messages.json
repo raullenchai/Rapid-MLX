@@ -846,5 +846,23 @@
   },
   "deleteAllChats": {
     "message": "Delete all chats and activity"
+  },
+  "allowCart": {
+    "message": "Allow adding to cart?"
+  },
+  "allowSubmit": {
+    "message": "Allow submitting the form?"
+  },
+  "allowSend": {
+    "message": "Allow sending?"
+  },
+  "allowPurchase": {
+    "message": "Allow purchasing?"
+  },
+  "allowDelete": {
+    "message": "Allow deleting?"
+  },
+  "allowSignIn": {
+    "message": "Allow signing in?"
   }
 }

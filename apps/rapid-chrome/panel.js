@@ -1,3 +1,4 @@
+import { approvalTitleKey } from './src/safety.js';
 import { ScrollFollow, acceptsSnapshot, activityLabels, quietSteps, errorType } from './src/ui-state.js';
 import { markdown, stepLabel } from './src/ui.js';
 import { renderSteps, clip } from './src/transcript.js';
@@ -115,7 +116,7 @@ function render(s, force = false) {
     $('approvals').dataset.ids = ids;
     $('approvals').replaceChildren(...s.approvals.map(a => {
       const card = element('article',undefined,'approval'); card.dataset.id = a.id;
-      card.append(element('p',t('approvalEyebrow'),'eyebrow'),element('h2',t(/order|buy|purchase|checkout/i.test(a.action) ? 'allowOrder' : 'allowAction')),element('p',localize(a.action)),element('small',a.site));
+      card.append(element('p',t('approvalEyebrow'),'eyebrow'),element('h2',t(a.titleKey || approvalTitleKey(a.target))),element('p',localize(a.action)),element('small',a.site));
       const allow = button(t('allowOnce'),() => send({type:'approve',id:a.id,allow:true})); allow.className = 'primary';
       card.append(allow,button(t('deny'),() => send({type:'approve',id:a.id,allow:false}))); card.append(element('p',a.effect ? t('approvalEffect',[localize(a.effect)]) : t(a.kind === 'grant' ? 'grantEffect' : 'actionEffect'),'approval-effect')); return card;
     }));

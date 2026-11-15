@@ -846,5 +846,23 @@
   },
   "deleteAllChats": {
     "message": "删除所有对话和活动"
+  },
+  "allowCart": {
+    "message": "允许加入购物车？"
+  },
+  "allowSubmit": {
+    "message": "允许提交表单？"
+  },
+  "allowSend": {
+    "message": "允许发送？"
+  },
+  "allowPurchase": {
+    "message": "允许购买？"
+  },
+  "allowDelete": {
+    "message": "允许删除？"
+  },
+  "allowSignIn": {
+    "message": "允许登录？"
   }
 }

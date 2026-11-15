@@ -1,3 +1,4 @@
+import { approvalTitleKey } from '../src/safety.js';
 import * as uiState from '../src/ui-state.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,7 +33,7 @@ const t = (key,args = []) => `${key}${args.length ? ': '+args.join(', ') : ''}`;
 function panel() {
   const {document,nodes} = dom(); const sent = []; let render;
   const chrome = {runtime:{connect:() => ({postMessage:m => sent.push(m),onMessage:{addListener:f => {render = f;}},onDisconnect:{addListener(){}}})}};
-  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace(/^export .*;$/gm,''),{...uiState,document,chrome,...endpoint,markdown,stepLabel,renderSteps,clip,t,localize:s=>s,translateDocument(){},displayResult:s=>s,toolLabel:s=>s});
+  runInNewContext(readFileSync(new URL('../panel.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace(/^export .*;$/gm,''),{...uiState,approvalTitleKey,document,chrome,...endpoint,markdown,stepLabel,renderSteps,clip,t,localize:s=>s,translateDocument(){},displayResult:s=>s,toolLabel:s=>s});
   return {document,nodes,sent,render,get:document.getElementById};
 }
 const snapshot = extra => ({settings:{base:'http://localhost:8000',model:'test'},models:[],messages:[],tabs:[],steps:[],approvals:[],running:false,connected:true,status:'Ready',...extra});

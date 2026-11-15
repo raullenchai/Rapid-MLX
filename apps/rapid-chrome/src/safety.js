@@ -36,23 +36,24 @@ export function classifyTarget(target = {}) {
   const disclosure = /^(?:flight details|view details|show details|details about|expand|collapse|show more|load more)\b/i.test(own);
   const pagination = /^(?:next(?: page)?|previous(?: page)?|page \d+)$/i.test(own);
   const filterControl = /^(?:filters?|filter by .+|apply(?: filters)?|clear filters|price(?: filter)?|nonstop|airlines|stops)$/i.test(own);
+  const browsing = /^(?:clear|reply|compose|list|grid|arrow (?:left|right)|cart options|(?:view )?cart(?:[., ]+\d+ unique items in your cart)?|\d+ items?|\d\+ rating, Guest rating, (?:Not selected|Selected))$/i.test(own);
   const harmless = /^(?:done|close(?: dialog| modal)?|dismiss|cancel|not now|back|got it|acknowledge|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
   const filter = ['checkbox','radio','tab','option','menuitem','switch'].includes(target.role);
   // Filter and dismissal controls do not inherit unrelated form submitters.
   // Explicit destructive/purchase names still win (including close account).
   const filterName = /^(?:order by|order history|confirm filters?|订单记录|訂單記錄|确认筛选|確認篩選)/iu.test(own)
     ? own.replace(/\b(?:order|confirm)\b|订单|訂單|确认|確認/giu,'') : own;
-  const explicit = consequential.test(filter ? filterName : own) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
+  const explicit = consequential.test(filter ? filterName : own.replace(/^add \d+ to order(?=\s*(?:[•·]\s*[$€£¥]\s*[\d.,]+)?$)/i, 'add to cart')) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
   const search = /\b(search|go|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search';
   const genericSubmit = /\bsubmit\b|提交/iu.test([target.name,target.label].filter(Boolean).join(' ')) || (target.type === 'submit' && Boolean(target.method || target.action || target.form || target.submitter));
   const calendarDate = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:[\s,]+(?:\d{1,4}|MON|TUE|WED|THU|FRI|SAT|SUN|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))*$/i.test(own);
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
-  const ambiguous = (target.role === 'button' || target.type === 'button') && !(disclosure || pagination || filterControl || harmless || calendarDate || filter || isCartAddition(own) || search);
-  return { search, consequential: explicit || ambiguous || Boolean(target.longName || target.sensitiveForm) || (!(disclosure || pagination || filterControl || harmless || calendarDate || filter || isCartAddition(own)) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
+  const ambiguous = (target.role === 'button' || target.type === 'button') && !(disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || isCartAddition(own) || search);
+  return { search, consequential: explicit || ambiguous || Boolean(target.longName || target.sensitiveForm) || (!(disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || isCartAddition(own)) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
 export function isCartAddition(name = '') {
-  return /\b(?:add(?:[ -]+to)?[ -]+(?:cart|bag|basket)|quick[ -]+add|increase(?:[ -]+quantity)?|increment(?:[ -]+quantity)?|add another)\b|^(?:\+|plus)$|加入(?:购物车|購物車|购物袋)|添加到(?:购物车|購物車)|快速添加|增加(?:数量|數量)/iu.test(name);
+  return /^add \d+ to order(?:\s*[•·]\s*[$€£¥]\s*[\d.,]+)?$/i.test(name.trim()) || /^add \d+ (?:ct|count|pack) .+/i.test(name.trim()) || /\b(?:add(?:[ -]+to)?[ -]+(?:cart|bag|basket)|quick[ -]+add|increase(?:[ -]+quantity)?|increment(?:[ -]+quantity)?|add another)\b|^(?:\+|plus)$|加入(?:购物车|購物車|购物袋)|添加到(?:购物车|購物車)|快速添加|增加(?:数量|數量)/iu.test(name);
 }
 export function additionKey(url, target) {
   if (!isCartAddition(target.name)) return null;
@@ -90,4 +91,15 @@ export function sensitivePage(url) {
       (host !== 'proton.me' && !host.endsWith('.proton.me') || /pass|vault/.test(host+u.pathname))) return true;
   const banks = ['chase.com','bankofamerica.com','wellsfargo.com','citi.com','capitalone.com','paypal.com'];
   return banks.some(d => host === d || host.endsWith('.'+d)) && /login|logon|signin|sign-in|auth|banking|secure/i.test(host+u.pathname);
+}
+
+// Classify only the bound target name, never arbitrary form values in the card.
+export function approvalTitleKey(name = '') {
+  if (/\b(?:buy|pay|purchase|checkout|book|reserve|(?:place|confirm|submit) (?:an? )?order)\b|^order$|购买|購買|支付|付款|下单|下單|结账|結帳/iu.test(name)) return 'allowPurchase';
+  if (/\b(?:delete|remove|close account)\b|删除|刪除|移除|削除/iu.test(name)) return 'allowDelete';
+  if (/\b(?:send|publish|post)\b|发送|發送|发布|發佈|送信/iu.test(name)) return 'allowSend';
+  if (/\b(?:sign in|log in|login|sign up)\b|登录|登入|登錄/iu.test(name)) return 'allowSignIn';
+  if (/\bsubmit\b|提交/iu.test(name)) return 'allowSubmit';
+  if (isCartAddition(name)) return 'allowCart';
+  return 'allowAction';
 }

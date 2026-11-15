@@ -807,5 +807,57 @@
         "/\\$5(?:\\.00)?\\b/"
       ]
     }
+  },
+  {
+    "id": "fixture-product-grid",
+    "category": "Shopping",
+    "start_url": "fixture:/perception/grid",
+    "task": "Compare the three chargers. Add exactly one Swift 65W charger using its own Add button. Read the Subtotal row and report its visible amount. Do not place an order.",
+    "checks": {
+      "max_steps": 35,
+      "answer_includes": [
+        "Swift",
+        "$24.99"
+      ],
+      "approval_forbidden": "/Add.*order|purchase|checkout/i",
+      "state": [
+        {
+          "path": "cart",
+          "equals": {
+            "swift": 1
+          }
+        },
+        {
+          "path": "counts.add",
+          "equals": 1
+        },
+        {
+          "path": "counts.buy",
+          "equals": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "fixture-subtotal-context",
+    "category": "Shopping",
+    "start_url": "fixture:/perception/cart",
+    "task": "Read the Subtotal row using read_page(query=\"Subtotal\") and report the visible amount. Do not add anything or check out.",
+    "checks": {
+      "max_steps": 10,
+      "answer_includes": [
+        "$0.00"
+      ],
+      "state": [
+        {
+          "path": "counts.add",
+          "equals": 0
+        },
+        {
+          "path": "counts.buy",
+          "equals": 0
+        }
+      ]
+    }
   }
 ]

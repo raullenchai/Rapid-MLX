@@ -2,7 +2,7 @@ import { t } from './i18n.js';
 import { watchEffects, collectEffects, effectReport } from './effects.js';
 import { detectChallenge } from './challenge.js';
 import { outlineAX } from './ax.js';
-import { safeURL, classifyTarget, needsSiteApproval, additionKey, NavigationPolicy, sensitivePage } from './safety.js';
+import { safeURL, classifyTarget, approvalTitleKey, needsSiteApproval, additionKey, NavigationPolicy, sensitivePage } from './safety.js';
 import { delay } from './agent.js';
 import { overlay, overlayPointer } from './overlay.js';
 
@@ -88,6 +88,18 @@ export function clickRect() {
     view = frame.ownerDocument.defaultView;
   }
   return rect;
+}
+
+// Wait for a short quiet period, capped even on pages with continuous updates.
+export function mutationQuiet() {
+  return new Promise(resolve => {
+    let quiet, cap;
+    const finish = () => { clearTimeout(quiet); clearTimeout(cap); observer.disconnect(); resolve(true); };
+    const reset = () => { clearTimeout(quiet); quiet = setTimeout(finish,150); };
+    const observer = new MutationObserver(reset);
+    observer.observe(document,{subtree:true,childList:true,characterData:true,attributes:true});
+    cap = setTimeout(finish,1000); reset();
+  });
 }
 
 export class ChromeAdapter {
@@ -382,7 +394,8 @@ export class BrowserHand {
       if (this.denials.has(denialKey)) throw new Error(`denied: '${effectName}' was already denied in this task; approval will not be requested again`);
       if (info.values && !info.values.length && /\b(?:buy|pay|purchase|place order|transfer|book|reserve)\b/i.test(approvalName))
         throw new Error('blocked_sensitive_page: transaction values are opaque; complete this transaction yourself');
-      if (!await this.approve({action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.details ? ` Form values: ${info.details}` : info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
+      const titleKey = approvalTitleKey(approvalName);
+      if (!await this.approve({titleKey:titleKey === 'allowAction' && (submit || info.type === 'submit') ? 'allowSubmit' : titleKey,action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.details ? ` Form values: ${info.details}` : info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
         this.denials.add(denialKey);
         throw new Error(`denied: ${action} '${effectName}'`);
       }
@@ -507,11 +520,29 @@ export class BrowserHand {
     if (r.exceptionDetails) throw new Error('Effect observation unavailable');
     return r.result.value;
   }
+  async settle(id) {
+    try {
+      const contextId = await this.effectWorld(id);
+      await this.send(id,'Runtime.evaluate',{contextId,expression:`(${mutationQuiet.toString()})()`,awaitPromise:true,returnByValue:true});
+    } catch { this.check(); await delay(150,this.signal); }
+  }
+  async freshRead(args, signal) {
+    // Retry observations only. Never replay a mutation after navigation churn.
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.executeCore('read_page',args,signal); }
+      catch (error) {
+        this.check();
+        if (attempt >= 2 || !/stale_ref/.test(error.message)) throw error;
+        await this.settle(args.tabId ?? this.active);
+      }
+    }
+  }
   async execute(name,args,signal) {
+    if (name === 'read_page') { this.signal = signal; return this.freshRead(args,signal); }
     if (['wait','scroll'].includes(name)) {
       const result = await this.executeCore(name,args,signal);
       if (!this.tabs.has(args.tabId ?? this.active)) return result;
-      const observation = await this.executeCore('read_page',{tabId:args.tabId ?? this.active},signal);
+      const observation = await this.freshRead({tabId:args.tabId ?? this.active},signal);
       return {...result,text:`${result.text}. Fresh observation:\n${observation.text}`};
     }
     if (!['click','fill','press'].includes(name)) return this.executeCore(name,args,signal);
@@ -526,7 +557,7 @@ export class BrowserHand {
     try {
       result = await this.executeCore(name,args,signal);
       // Bounded settling window; MutationObserver retains transient notifications.
-      await delay(350,signal);
+      await this.settle(id);
     } catch (error) { this.check(); actionError = error; } finally {
       if (context) {
         try { samples = await this.effectEval(id,context,collectEffects); }
@@ -544,7 +575,7 @@ export class BrowserHand {
     }
     const effect = before ? effectReport(before,[...samples,{...(samples.at(-1) || before),...meta}]) : {note:'Effect observation unavailable; verify in the cart before adding again.'};
     if (result?.activation) effect.activation = result.activation;
-    try { observation = await this.executeCore('read_page',{tabId:id},signal); }
+    try { observation = await this.freshRead({tabId:id},signal); }
     catch (error) { this.check(); observation = {text:`Fresh observation unavailable: ${error.message}. Wait then read_page; do not repeat the action.`}; }
     if (actionError) {
       actionError.effect = effect; actionError.observation = observation; throw actionError;
@@ -576,7 +607,6 @@ export class BrowserHand {
     const {id,tab,t} = await this.current(args);
     if (name === 'read_page') {
       t.agentInputUntil = 0;
-      this.invalidate(id);
       const epoch = t.epoch;
       const tree = await this.send(id,'Accessibility.getFullAXTree');
       const nodes = [...tree.nodes];
@@ -618,8 +648,17 @@ export class BrowserHand {
         const observation = await this.execute('read_page',args,signal);
         return {...observation,note:'The user pressed Continue after a page check/error. This is a fresh observation; do not solve or bypass checks.'};
       }
-      const outline = outlineAX(nodes,{url:tab.url,title:tab.title,start:this.nextRef,query:args.query,geometry});
-      t.refs = outline.refs; this.nextRef = outline.next;
+      // Retain refs only for the same live backend node, name and role. Resolving
+      // and inspecting again at action time still binds approval to current DOM.
+      const live = new Map(nodes.filter(n => !n.ignored && n.backendDOMNodeId).map(n => [n.backendDOMNodeId,n]));
+      const retained = new Map([...t.refs].filter(([,target]) => {
+        const n = live.get(target.backendDOMNodeId);
+        return n && n.role?.value === target.role && String(n.name?.value || '').replace(/\s+/g,' ').trim() === target.name &&
+          !n.properties?.some(p => p.name === 'hidden' && p.value?.value === true);
+      }));
+      const stableRefs = new Map([...retained].map(([ref,target]) => [target.backendDOMNodeId,ref]));
+      const outline = outlineAX(nodes,{url:tab.url,title:tab.title,start:this.nextRef,query:args.query,geometry,stableRefs});
+      t.refs = new Map([...retained,...outline.refs]); this.nextRef = outline.next;
       for (const target of outline.refs.values()) if (target.href) this.navigation.observe(target.href);
       const forms = new Map(), nativeControls = [];
       for (const [ref, target] of outline.refs) {

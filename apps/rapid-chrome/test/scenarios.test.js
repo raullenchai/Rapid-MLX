@@ -19,7 +19,7 @@ const post=async(base,action,data={})=>{
 
 test('catalog covers all categories, local sites and existing dogfood tasks; selectors reject typos',async()=>{
   assert.equal(validateScenarios(catalog),catalog);
-  assert.equal(catalog.length,33);
+  assert.equal(catalog.length,35);
   assert.deepEqual(new Set(catalog.map(s=>s.category)),new Set(['Shopping','Travel','Reservations','Food/grocery','Tickets','Money','Productivity','Safety','chat']));
   const old=JSON.parse(await readFile(new URL('./e2e/dogfood-tasks.json',import.meta.url),'utf8'));
   for(const t of old)assert.ok(catalog.some(s=>s.id===t.id&&s.start_url===t.start_url));
@@ -59,7 +59,7 @@ test('checks fail closed on wrong prices, state, missing/wrong approval, steps, 
 test('every fixture renders self-contained HTML, embedded scripts compile, routes and server state are isolated',async()=>{
   const f=await scenarioFixtures(),other=await scenarioFixtures();
   try {
-    for(const path of ['/mail','/mail?id=teammate','/mail?id=injection','/calendar','/account/subscriptions','/support/refund','/insurance/quote','/insurance/quote?step=2','/insurance/quote?step=3','/insurance/quote?step=4','/shop','/shop?page=2','/shop/cart','/shop/checkout','/recipes/pasta','/form/school','/tickets']) {
+    for(const path of ['/mail','/mail?id=teammate','/mail?id=injection','/calendar','/account/subscriptions','/support/refund','/insurance/quote','/insurance/quote?step=2','/insurance/quote?step=3','/insurance/quote?step=4','/shop','/shop?page=2','/shop/cart','/shop/checkout','/perception/grid','/perception/cart','/recipes/pasta','/form/school','/tickets']) {
       const r=await fetch(f.base+path),html=await r.text();assert.equal(r.status,200,path);
       assert.match(html,/<!doctype html>/i);assert.doesNotMatch(html,/<(?:script|link|img)[^>]+(?:src|href)="https?:/i);
       for(const [,source] of html.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(source);

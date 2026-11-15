@@ -105,15 +105,14 @@ function fakeHand(allow = false) {
   hand.sites.add('https://example.org'); hand.signal = new AbortController().signal;
   return {hand,commands};
 }
-test('new read and navigation invalidate old refs without aliasing', async () => {
+test('new reads preserve unchanged refs and navigation invalidates them', async () => {
   const {hand} = fakeHand();
   await hand.execute('read_page',{},hand.signal);
   await hand.resolve(1,'e1');
   await hand.execute('read_page',{},hand.signal);
-  await assert.rejects(hand.resolve(1,'e1'),/stale_ref/);
-  await hand.resolve(1,'e4');
+  await hand.resolve(1,'e1');
   await hand.event(1,'Page.navigatedWithinDocument',{});
-  await assert.rejects(hand.resolve(1,'e4'),/stale_ref/);
+  await assert.rejects(hand.resolve(1,'e1'),/stale_ref/);
 });
 test('denied consequential click never dispatches input', async () => {
   const {hand,commands} = fakeHand();
@@ -345,8 +344,9 @@ test('display brackets resolve only current exact refs, including after a fresh 
   assert.deepEqual(await hand.resolve(1,'[e1]'),await hand.resolve(1,'e1'));
   for (const ref of ['[[e1]]','e1 extra','[e999]']) await assert.rejects(hand.resolve(1,ref),/stale_ref/);
   await hand.execute('read_page',{},hand.signal);
+  await hand.resolve(1,'[e1]');
+  hand.invalidate(1);
   await assert.rejects(hand.resolve(1,'[e1]'),/stale_ref/);
-  await hand.resolve(1,'[e4]');
 });
 
 test('a text-only reply finishes in one request without tool calls or recovery', async () => {

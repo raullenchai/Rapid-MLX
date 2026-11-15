@@ -1,6 +1,6 @@
 # Consumer browser-agent scenarios
 
-`scenarios.json` defines 33 scenarios. Local account sites use one random-port loopback
+`scenarios.json` defines 35 scenarios. Local account sites use one random-port loopback
 server per run with fresh seeded state. They use no external resources or real
 accounts. Fixture dates are fixed to November 2026; relative dates in live tasks
 are relative to the day you run them.

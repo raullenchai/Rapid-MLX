@@ -28,3 +28,5 @@ import './ui-round2.test.js';
 import './round-c.test.js';
 
 import './security-review.test.js';
+
+import './perception.test.js';

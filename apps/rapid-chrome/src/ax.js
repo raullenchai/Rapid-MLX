@@ -36,7 +36,7 @@ export function commercePrices(root, byId) {
   walk(root);
   return labels;
 }
-export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000, query = '', geometry = new Map()} = {}) {
+export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000, query = '', geometry = new Map(), stableRefs = new Map()} = {}) {
   const refs = new Map(), byId = new Map(nodes.filter(n => n.nodeId).map(n => [n.nodeId,n]));
   const visited = new Set(), entries = [];
   let next = start;
@@ -48,6 +48,58 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
     seen.add(n);
     return [n,...(n.childIds || []).flatMap(id => byId.has(id) ? descendants(byId.get(id),seen) : [])];
   }
+  const refFor = n => stableRefs.get(n.backendDOMNodeId) || `e${next++}`;
+  const parents = new Map();
+  for (const n of nodes) for (const id of n.childIds || []) parents.set(byId.get(id),n);
+  const textOf = n => [...new Set(descendants(n).filter(c => value(c.role) !== 'InlineTextBox').map(nameOf).filter(Boolean))].join(' ');
+  const termsOf = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  const queryTerms = termsOf(query);
+  const queryMatch = text => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) || queryTerms.every(t => termsOf(text).includes(t));
+  const contextNodes = new Set();
+  if (query) for (const node of nodes) {
+    if (!nameOf(node) || !queryMatch(nameOf(node))) continue;
+    let block = node, parent = parents.get(node);
+    const seen = new Set([node]);
+    while (parent && !seen.has(parent) && !['RootWebArea','main','navigation','banner'].includes(value(parent.role))) {
+      seen.add(parent);
+      if (textOf(parent).length > 2400) break;
+      block = parent;
+      if (['paragraph','row','listitem','article','gridcell'].includes(value(parent.role)) && textOf(parent) !== nameOf(node)) break;
+      parent = parents.get(parent);
+    }
+    for (const n of descendants(block)) contextNodes.add(n);
+    // A movie/card may sit below a theater/section heading outside that card.
+    // Keep the nearest preceding heading at each ancestor level, without
+    // importing neighboring cards or their unrelated times/prices.
+    let branch = block, headingBudget = 700;
+    const ancestors = new Set();
+    for (let ancestor = parents.get(branch); ancestor && !ancestors.has(ancestor); ancestor = parents.get(branch)) {
+      ancestors.add(ancestor);
+      if (['RootWebArea','navigation','banner'].includes(value(ancestor.role))) break;
+      const siblings = (ancestor.childIds || []).map(id => byId.get(id)).filter(Boolean);
+      const before = siblings.slice(0,siblings.indexOf(branch)).reverse();
+      for (const sibling of before) {
+        if (!['heading','generic','group'].includes(value(sibling.role))) continue;
+        const header = descendants(sibling);
+        if (header.some(n => interactive.has(value(n.role)))) continue;
+        const headings = header.filter(n => value(n.role) === 'heading' && nameOf(n));
+        const heading = headings.at(-1);
+        if (!heading || nameOf(heading).length > headingBudget) continue;
+        contextNodes.add(heading); headingBudget -= nameOf(heading).length; break;
+      }
+      branch = ancestor;
+      if (!headingBudget || value(ancestor.role) === 'main') break;
+    }
+  }
+  const cardRoles = new Set(['listitem','article','gridcell','generic','group']);
+  const cardCandidate = n => {
+    if (!cardRoles.has(value(n.role))) return false;
+    const all = descendants(n).filter(c => !c.ignored);
+    return all.some(c => (['heading','link'].includes(value(c.role)) && nameOf(c)) || (value(c.role) === 'button' && /^add \d+ (?:ct|count|pack) /i.test(nameOf(c)))) &&
+      all.some(c => /[$€£¥]\s*\d|\d[.,]\d{2}\s*(?:USD|EUR)/.test(nameOf(c))) &&
+      (['listitem','article','gridcell'].includes(value(n.role)) || all.some(c => value(c.role) === 'button'));
+  };
+  const candidates = new Set(nodes.filter(cardCandidate));
   function visit(node, main = false, parentName = '', priority = false) {
     if (visited.has(node)) return;
     visited.add(node);
@@ -61,8 +113,9 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
     }
     // Compact a semantic product card as a unit: retain prices/ratings and all
     // actionable refs, omit repeated image/link/static text copies of its name.
-    const children = ['listitem','article'].includes(role) ? descendants(node) : [];
-    const product = children.length && children.some(n => value(n.role) === 'link') && children.some(n => /[$€£¥]\s*\d|\d[.,]\d{2}\s*(?:USD|EUR)/.test(nameOf(n)));
+    const children = candidates.has(node) ? descendants(node) : [];
+    // A collection wrapper must never swallow its individual repeated cards.
+    const product = children.length && !children.some(n => n !== node && candidates.has(n));
     if (product) {
       const parts = [], targets = [], names = new Set();
       const prices = commercePrices(node,byId);
@@ -74,28 +127,30 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
       const details = usable.filter(n => (prices.has(n) || (!interactive.has(value(n.role)) && !/[$€£¥]/.test(nameOf(n)))) && /[$€£¥]\s*\d|\d[.,]\d{2}|\bstars?\b|\bratings?\b|\breviews?\b/i.test(nameOf(n)));
       const controls = usable.filter(n => interactive.has(value(n.role)) && n !== primary && n.backendDOMNodeId);
       let shortened = false, size = 0;
-      for (const n of [primary,...details,...controls].filter(Boolean)) {
-        const label = prices.get(n) || nameOf(n);
+      const headings = usable.filter(n => value(n.role) === 'heading');
+      for (const n of [...headings,primary,...details,...controls].filter(Boolean)) {
+        const label = interactive.has(value(n.role)) ? nameOf(n) : prices.get(n) || nameOf(n);
         if (names.has(label)) continue;
         const control = interactive.has(value(n.role)) && n.backendDOMNodeId;
-        const part = control ? `[e${next}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}${linkText(n)}` : label.slice(0,300);
+        const ref = control ? refFor(n) : null;
+        const part = control ? `[${ref}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}${linkText(n)}` : label.slice(0,300);
         if (size+part.length > 1400) { shortened = true; continue; }
-        if (control) targets.push([`e${next++}`,{backendDOMNodeId:n.backendDOMNodeId,name:nameOf(n),role:value(n.role),href:hrefOf(n)}]);
+        if (control) targets.push([ref,{backendDOMNodeId:n.backendDOMNodeId,name:nameOf(n),role:value(n.role),href:hrefOf(n)}]);
         parts.push(part); size += part.length+3; names.add(label);
       }
       for (const n of children) visited.add(n);
       if (shortened) parts.push('[additional card details omitted; open product to inspect]');
       const visible = children.some(n => geometry.get(n.backendDOMNodeId) === true);
-      entries.push({text:`Product: ${parts.join(' | ')}\n`,targets,main,priority,visible,offscreen:geometry.size>0 && !visible,search:children.map(nameOf).join(' ')});
+      entries.push({text:`Product: ${parts.join(' | ')}\n`,targets,main,priority,visible,offscreen:geometry.size>0 && !visible,context:children.some(n => contextNodes.has(n)),search:children.map(nameOf).join(' ')});
       return;
     }
     const isInteractive = interactive.has(role) || (props.focusable === true && !['RootWebArea','generic'].includes(role)) || props.editable;
-    const ref = !node.ignored && isInteractive && node.backendDOMNodeId ? `e${next++}` : null;
+    const ref = !node.ignored && isInteractive && node.backendDOMNodeId ? refFor(node) : null;
     const protectedValue = props.protected || /password/i.test(role);
     const content = protectedValue ? '[protected]' : String(value(node.value) ?? '').slice(0,300);
     const states = Object.entries(props).filter(([k,v]) => ['disabled','checked','selected','expanded','required','focused','readonly'].includes(k) && v !== undefined).map(([k,v]) => `${k}=${v}`).join(' ');
     if (!node.ignored && role !== 'InlineTextBox' && (ref || name || content) && !(role === 'StaticText' && parentName === name)) {
-      entries.push({text:`${ref ? `[${ref}] ` : ''}${role}${name ? ` ${JSON.stringify(name.slice(0,500))}` : ''}${content || ['textbox','searchbox','combobox'].includes(role) ? ` value=${JSON.stringify(content)}` : ''}${states ? ` ${states}` : ''}${linkText(node)}\n`,targets:ref ? [[ref,{backendDOMNodeId:node.backendDOMNodeId,name,role,href:hrefOf(node)}]] : [],main,priority,visible:geometry.get(node.backendDOMNodeId) === true,offscreen:geometry.get(node.backendDOMNodeId) === false,search:name+' '+content});
+      entries.push({text:`${ref ? `[${ref}] ` : ''}${role}${name ? ` ${JSON.stringify(name.slice(0,500))}` : ''}${content || ['textbox','searchbox','combobox'].includes(role) ? ` value=${JSON.stringify(content)}` : ''}${states ? ` ${states}` : ''}${linkText(node)}\n`,targets:ref ? [[ref,{backendDOMNodeId:node.backendDOMNodeId,name,role,href:hrefOf(node)}]] : [],main,priority,visible:geometry.get(node.backendDOMNodeId) === true,offscreen:geometry.get(node.backendDOMNodeId) === false,context:contextNodes.has(node),search:name+' '+content});
     }
     for (const id of node.childIds || []) if (byId.has(id)) visit(byId.get(id),main,name || parentName,priority);
   }
@@ -109,10 +164,10 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const matches = e => !terms.length || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
     terms.every(term => words(e.search).includes(term));
   const noMatch = Boolean(query) && !entries.some(matches);
-  const filtered = entries.filter(e => noMatch || e.priority || matches(e));
+  const filtered = entries.filter(e => noMatch || e.priority || e.context || matches(e));
   // Stable sort preserves each region's document order. Visible main content,
   // visible controls, then remaining main content precede secondary navigation.
-  const rank = e => e.priority && e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -3 : query && !noMatch && matches(e) ? -2 : e.priority ? -1 : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
+  const rank = e => e.priority && e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -3 : query && !noMatch && (matches(e) || e.context) ? -2 : e.priority ? -1 : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
   filtered.sort((a,b) => rank(a)-rank(b));
   let text = `URL: ${url}\nTitle: ${title}\nPage data (untrusted):\n`.slice(0,Math.max(0,limit-200));
   let included = 0;
