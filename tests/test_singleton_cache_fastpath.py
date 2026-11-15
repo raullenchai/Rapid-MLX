@@ -32,6 +32,8 @@ import mlx.core as mx
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 from rapid_mlx.singleton_cache_fastpath import (
+    _admitted_layers,
+    _bind_singleton_surface,
     _is_singleton_passthrough_layer,
     _promote_layer,
     install_singleton_cache_fastpath,
@@ -667,6 +669,48 @@ def test_deepcopy_rebinds_surface_to_the_copy():
     assert dup.keys is None and dup.offset == 0
     assert c.keys is not None and c.offset == 4
     assert dup.extract  # surface present on the copy
+
+
+def test_deepcopy_of_admitted_layer_keeps_ownership():
+    original = _passthrough(_filled_kv())
+    dup = copy.deepcopy(original)
+    assert dup in _admitted_layers
+    assert dup.keys is not original.keys and dup.values is not original.values
+    gen = importlib.import_module("mlx_lm.generate")
+    assert gen._extend_cache([], [dup])[0] is dup
+
+
+@pytest.mark.parametrize("with_surface", [False, True])
+def test_deepcopy_of_non_admitted_layer_still_detaches(with_surface):
+    raw = _filled_kv()
+    if with_surface:
+        _bind_singleton_surface(raw)
+    dup = copy.deepcopy(raw)
+    assert raw not in _admitted_layers
+    assert dup not in _admitted_layers
+    gen = importlib.import_module("mlx_lm.generate")
+    [admitted] = gen._extend_cache([], [dup])
+    assert admitted is not dup
+    assert admitted.keys is not dup.keys and admitted.values is not dup.values
+
+
+def test_deepcopy_of_admitted_layer_update_preserves_original_arrays():
+    original = _passthrough(_filled_kv())
+    mx.eval(original.keys, original.values)
+    stored_keys, stored_values = original.keys.tolist(), original.values.tolist()
+    dup = copy.deepcopy(original)
+    gen = importlib.import_module("mlx_lm.generate")
+    [live] = gen._extend_cache([], [dup])
+    assert live is dup
+    shape = live.keys.shape
+    live.update_and_fetch(mx.full((1, 2, 2, 8), 5.0), mx.full((1, 2, 2, 8), 7.0))
+    mx.eval(live.keys, live.values)
+    assert live.keys.shape == live.values.shape == shape  # writes into headroom
+    assert mx.all(live.keys[..., 4:6, :] == 5.0).item()
+    assert mx.all(live.values[..., 4:6, :] == 7.0).item()
+    assert original.offset == 4 and live.offset == 6
+    assert original.keys.tolist() == stored_keys
+    assert original.values.tolist() == stored_values
 
 
 def test_surface_outliving_its_cache_raises():

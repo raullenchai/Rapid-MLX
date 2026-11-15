@@ -65,18 +65,18 @@ def fastpath(monkeypatch):
     spec.loader.exec_module(module)
     gen = types.SimpleNamespace(_merge_caches=lambda c: c, _extend_cache=lambda a, b: b)
     assert module._install_locked(gen)
-    return gen, NativeLayer, KVCache
+    return gen, NativeLayer, KVCache, module
 
 
 def test_owned_layers_keep_identity_at_extend(fastpath):
-    gen, native, kv = fastpath
+    gen, native, kv, _ = fastpath
     for raw in (native(), kv(), native([native()])):
         [owned] = gen._merge_caches([[raw]])
         assert gen._extend_cache([], [owned])[0] is owned
 
 
 def test_raw_and_copied_payloads_are_detached(fastpath):
-    gen, native, _ = fastpath
+    gen, native, _, _ = fastpath
     [owned] = gen._merge_caches([[native()]])
     for raw in (native(), owned.extract(0), copy.copy(owned)):
         [admitted] = gen._extend_cache([], [raw])
@@ -85,7 +85,7 @@ def test_raw_and_copied_payloads_are_detached(fastpath):
 
 
 def test_unknown_wrapper_with_owned_child_still_detaches(fastpath):
-    gen, native, _ = fastpath
+    gen, native, _, _ = fastpath
     [child] = gen._merge_caches([[native()]])
     wrapper = native([child])
     [admitted] = gen._extend_cache([], [wrapper])
@@ -95,7 +95,7 @@ def test_unknown_wrapper_with_owned_child_still_detaches(fastpath):
 
 
 def test_ownership_does_not_keep_layers_alive(fastpath):
-    gen, native, _ = fastpath
+    gen, native, _, _ = fastpath
     [owned] = gen._merge_caches([[native()]])
     ref = weakref.ref(owned)
     del owned
@@ -104,7 +104,7 @@ def test_ownership_does_not_keep_layers_alive(fastpath):
 
 
 def test_value_equal_layers_cannot_inherit_ownership(fastpath):
-    gen, native, _ = fastpath
+    gen, native, _, _ = fastpath
 
     class EqualLayer(native):
         def __eq__(self, other):
@@ -120,7 +120,7 @@ def test_value_equal_layers_cannot_inherit_ownership(fastpath):
 
 
 def test_slots_wrapper_without_weakref_keeps_copy_on_admit(fastpath):
-    gen, native, _ = fastpath
+    gen, native, _, _ = fastpath
 
     class Wrapper:
         __slots__ = ("caches",)
@@ -135,3 +135,49 @@ def test_slots_wrapper_without_weakref_keeps_copy_on_admit(fastpath):
     [admitted] = gen._extend_cache([], [owned])
     assert admitted is not owned
     assert admitted.caches[0] is not owned.caches[0]
+
+
+def test_deepcopy_of_owned_exact_layer_keeps_ownership(fastpath, monkeypatch):
+    gen, _, kv, module = fastpath
+    [owned] = gen._merge_caches([[kv()]])
+    owned.keys, owned.values = [1, 2], [3, 4]
+    owned.offset = 2
+    dup = copy.deepcopy(owned)
+    assert dup in module._admitted_layers
+    assert dup.keys is not owned.keys and dup.values is not owned.values
+
+    def unexpected_detach(cache):
+        pytest.fail("an owned deepcopy must not be detached again")
+
+    monkeypatch.setattr(module, "_detach_layer", unexpected_detach)
+    assert gen._extend_cache([], [dup])[0] is dup
+    dup.keys[0], dup.values[0] = 9, 10
+    assert owned.keys == [1, 2] and owned.values == [3, 4]
+
+
+def test_deepcopy_of_unowned_exact_layer_still_detaches(fastpath, monkeypatch):
+    gen, _, kv, module = fastpath
+    raw = kv()
+    raw.keys, raw.values = [1, 2], [3, 4]
+    raw.offset = 2
+    # A surface alone does not confer ownership (e.g. a shallow copy).
+    module._bind_singleton_surface(raw)
+    dup = copy.deepcopy(raw)
+    assert raw not in module._admitted_layers
+    assert dup not in module._admitted_layers
+    detached = []
+
+    def copy_layer(cache, *, headroom=0):
+        detached.append(cache)
+        clone = kv()
+        clone.keys = copy.deepcopy(cache.keys)
+        clone.values = copy.deepcopy(cache.values)
+        clone.offset = cache.offset
+        return clone
+
+    kv.step = 256
+    monkeypatch.setattr(module, "_copy_exact_layer", copy_layer)
+    [admitted] = gen._extend_cache([], [dup])
+    assert detached == [dup]
+    assert admitted is not dup
+    assert admitted.keys is not dup.keys and admitted.values is not dup.values

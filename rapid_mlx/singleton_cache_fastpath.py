@@ -266,6 +266,18 @@ def _detach_layer(cache_obj: Any) -> Any:
     return copy.deepcopy(cache_obj)
 
 
+def _mark_owned(cache_obj: Any) -> None:
+    """Track ownership only for identity-comparing, weakrefable layers."""
+    if (
+        type(cache_obj).__eq__ is object.__eq__
+        and type(cache_obj).__hash__ is object.__hash__
+    ):
+        try:
+            _admitted_layers.add(cache_obj)
+        except TypeError:
+            pass  # Non-weakrefable or unhashable native wrappers remain untracked.
+
+
 def _admit_layer(cache_obj: Any, *, reuse_owned: bool = False) -> Any:
     # WeakSet uses equality: only identity-comparing layers may be tracked.
     # Foreign wrappers with value equality or without weakref support keep
@@ -277,11 +289,7 @@ def _admit_layer(cache_obj: Any, *, reuse_owned: bool = False) -> Any:
     if not (reuse_owned and identity_equality and cache_obj in _admitted_layers):
         cache_obj = _detach_layer(cache_obj)
     _bind_singleton_surface(cache_obj)
-    if identity_equality:
-        try:
-            _admitted_layers.add(cache_obj)
-        except TypeError:
-            pass  # Non-weakrefable or unhashable native wrappers remain untracked.
+    _mark_owned(cache_obj)
     return cache_obj
 
 
@@ -354,6 +362,13 @@ class _WeakBoundSurface:
         owned = id(cache_obj) in memo
         cache_copy = copy.deepcopy(cache_obj, memo)
         if owned:
+            # Whole-layer deepcopy already gives an admitted layer independent
+            # arrays; prompt-to-generation handoff must not detach it again.
+            if (
+                type(cache_obj) in _SINGLETON_EXACT_TYPES
+                and cache_obj in _admitted_layers
+            ):
+                _mark_owned(cache_copy)
             return _WeakBoundSurface(self._fn, cache_copy)
         return types.MethodType(self._fn, cache_copy)
 
