@@ -1,29 +1,40 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="extensionName"></title><link rel="stylesheet" href="panel.css"></head>
 <body>
-<header><div><strong>Rapid MLX</strong><small data-i18n="tagline"></small></div><button id="settings-toggle" disabled data-i18n="settings" data-i18n-aria-label="settings" aria-expanded="false" aria-controls="settings"></button></header>
+<header class="connection-strip"><span id="connection-dot" aria-hidden="true"></span><span id="availability" data-i18n="notConnected"></span><span id="model-name"></span><button id="settings-toggle" disabled data-i18n-aria-label="settings" aria-expanded="false" aria-controls="settings">…</button></header>
+<div class="thread-head"><button id="history-toggle" data-i18n-aria-label="history" aria-expanded="false" aria-controls="history">☰</button><span class="identity"><img src="icons/32.png" alt="" width="24" height="24"><strong>Rapid</strong></span><button id="new-chat" data-i18n-aria-label="newChat">＋</button></div>
+<aside id="history" hidden><h2 data-i18n="history"></h2><div id="history-list"></div><p id="history-warning" role="status" hidden></p></aside>
+<main id="transcript" data-i18n-aria-label="conversation" tabindex="0">
+<section id="onboarding" aria-labelledby="welcome"><img src="icons/48.png" alt="" width="40" height="40"><h1 id="welcome" data-i18n="greeting"></h1><p id="setup-hint" data-i18n="setupHint"></p><button id="onboard-connect" data-i18n="stepConnect"></button><div id="examples" class="chips"></div></section>
+<div id="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+<div id="work-card" class="work-card" hidden><details id="activity"><summary id="activity-summary"></summary><section id="steps" data-i18n-aria-label="toolSteps"></section></details><p id="current-step" role="status" aria-live="polite"></p></div>
+<section id="approvals" role="region" data-i18n-aria-label="approvals" aria-live="polite"></section>
+<section id="paused" class="state-card" hidden><h2 id="pause-title"></h2><p id="pause-help"></p><button id="resume" class="primary" data-i18n="continueTask"></button><button id="pause-stop" data-i18n="stop"></button></section>
+<section id="recovery" class="state-card" hidden><h2 data-i18n="needsAttention"></h2><p id="recovery-help"></p><button id="recover" data-i18n="reviewSettings"></button></section>
+<button id="result-tab" hidden data-i18n="openTab"></button>
 <p id="status" role="status" aria-live="polite" data-i18n="connecting"></p>
-<section id="onboarding" aria-labelledby="welcome"><h2 id="welcome" data-i18n="welcome"></h2><ol><li><button id="onboard-connect" data-i18n="stepConnect"></button></li><li data-i18n="stepShare"></li><li data-i18n="stepTry"></li></ol><div id="examples" class="chips"></div><p data-i18n="approvalsHelp"></p><p data-i18n="stopHelp"></p></section>
-<section id="settings" hidden>
-  <h2 data-i18n="connection"></h2>
-  <form id="settings-form">
-    <label><span data-i18n="endpointChoice"></span><select id="endpoint-mode"><option value="local" data-i18n="localEndpoint"></option><option value="custom" data-i18n="customEndpoint"></option></select></label>
-    <label><span data-i18n="baseURL"></span><input id="base" type="url" required placeholder="http://127.0.0.1:8000"></label>
-    <p id="http-warning" role="note" hidden data-i18n="httpWarning"></p>
-    <label><span data-i18n="apiKey"></span><input id="api-key" type="password" autocomplete="off"></label>
-    <label><span data-i18n="model"></span><select id="model"><option value="" data-i18n="firstModel"></option></select></label>
-    <label><span data-i18n="reasoning"></span><select id="reasoning"><option value="off" data-i18n="off"></option><option value="low" data-i18n="low"></option><option value="high" data-i18n="high"></option></select></label>
-    <label class="inline"><input id="vision" type="checkbox"><span data-i18n="vision"></span></label>
-    <label><span data-i18n="stepCap"></span><input id="step-cap" type="number" min="1" max="100" value="60"></label>
-    <button type="submit" data-i18n="save"></button><button id="refresh" type="button" data-i18n="testConnection"></button>
-  </form><small data-i18n="storageHelp"></small>
+</main>
+<footer>
+<button id="new-messages" hidden></button>
+<div class="tab-context"><span id="tab-icon" aria-hidden="true">▤</span><span id="tab-title" data-i18n="noTab"></span><button id="share" class="text-button" data-i18n="grantTab"></button></div>
+<div id="owned" class="owned" data-i18n-aria-label="sharedTabs"></div>
+<form id="chat"><label class="sr-only" for="message" data-i18n="messageLabel"></label><textarea id="message" rows="1" data-i18n-placeholder="chatPlaceholder" required></textarea><div class="composer-actions"><button id="add-context" type="button" data-i18n-aria-label="addContext" data-i18n-title="addContext">＋</button><span id="context-hint"></span><button id="voice" type="button" disabled data-i18n-title="voiceSoon" data-i18n-aria-label="voiceSoon">♩</button><button id="send" class="primary" type="submit" data-i18n="send"></button><button id="stop" type="button" class="danger" disabled hidden data-i18n="stop"></button></div></form>
+</footer>
+<section id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden tabindex="-1">
+<div class="settings-head"><h1 id="settings-title" data-i18n="settings"></h1><button id="settings-close" data-i18n-aria-label="close">×</button></div>
+<form id="settings-form">
+<fieldset><legend data-i18n="connection"></legend>
+<label><span data-i18n="endpointChoice"></span><select id="endpoint-mode"><option value="local" data-i18n="localEndpoint"></option><option value="custom" data-i18n="customEndpoint"></option></select></label>
+<label><span data-i18n="baseURL"></span><input id="base" type="url" required placeholder="http://127.0.0.1:8000"></label><p id="http-warning" role="note" hidden data-i18n="httpWarning"></p>
+<label><span data-i18n="apiKey"></span><input id="api-key" type="password" autocomplete="off"></label>
+<label><span data-i18n="model"></span><select id="model"><option value="" data-i18n="firstModel"></option></select></label></fieldset>
+<fieldset><legend data-i18n="modelBehavior"></legend>
+<label><span data-i18n="reasoning"></span><select id="reasoning"><option value="off" data-i18n="off"></option><option value="low" data-i18n="low"></option><option value="high" data-i18n="high"></option></select></label>
+<label class="inline"><input id="vision" type="checkbox"><span data-i18n="vision"></span></label>
+<label><span data-i18n="stepCap"></span><input id="step-cap" type="number" min="1" max="100" value="60"></label></fieldset>
+<fieldset><legend data-i18n="privacy"></legend><p data-i18n="historyPrivacy"></p><small data-i18n="storageHelp"></small></fieldset>
+<div class="settings-actions"><button type="submit" class="primary" data-i18n="save"></button><button id="refresh" type="button" data-i18n="testConnection"></button></div><p id="settings-status" role="status" aria-live="polite"></p>
+</form><div class="settings-tools"><button id="open-tab" data-i18n="openTab"></button><button id="copy-trace" data-i18n="copyTrace"></button><button id="help" data-i18n="help"></button></div><p id="help-text" hidden data-i18n="productHelp"></p>
 </section>
-<div class="toolbar"><button id="share" data-i18n="share"></button><button id="open-tab" data-i18n="openTab"></button><button id="stop" class="danger" disabled data-i18n="stop"></button></div>
-<div id="owned" data-i18n-aria-label="sharedTabs"></div>
-<div class="toolbar"><button id="new-chat" data-i18n="newChat"></button><button id="copy-trace" data-i18n="copyTrace"></button></div>
-<main id="transcript" data-i18n-aria-label="conversation" aria-live="polite"><div id="messages"></div><section id="steps" data-i18n-aria-label="toolSteps"></section></main>
-<section id="approvals" role="region" data-i18n-aria-label="approvals" aria-live="assertive" aria-atomic="true"></section>
-<section id="paused" hidden><p data-i18n="pausedHelp"></p><button id="resume" data-i18n="continueTask"></button><button id="pause-stop" data-i18n="stop"></button></section>
-<form id="chat"><label class="sr-only" for="message" data-i18n="messageLabel"></label><textarea id="message" rows="3" data-i18n-placeholder="messagePlaceholder" required></textarea><button id="send" type="submit" data-i18n="send"></button></form>
 <script src="panel.js" type="module"></script>
 </body></html>

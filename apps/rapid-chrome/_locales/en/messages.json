@@ -165,13 +165,13 @@
     "message": "Could not copy debug trace. Check clipboard access."
   },
   "shopping": {
-    "message": "Shopping"
+    "message": "Compare products"
   },
   "travel": {
     "message": "Travel"
   },
   "reservations": {
-    "message": "Reservations"
+    "message": "Book a restaurant"
   },
   "mail": {
     "message": "Mail"
@@ -399,7 +399,7 @@
     "message": "stale_ref: page changed while reading forms; call read_page again"
   },
   "noHistory": {
-    "message": "No history entry"
+    "message": "Your earlier chats will appear here."
   },
   "waited": {
     "message": "Waited $1ms"
@@ -543,5 +543,152 @@
         "content": "$1"
       }
     }
+  },
+  "notConnected": {
+    "message": "Not connected"
+  },
+  "browserAvailable": {
+    "message": "Rapid can use this browser"
+  },
+  "history": {
+    "message": "Conversations"
+  },
+  "greeting": {
+    "message": "What would you like to do?"
+  },
+  "setupHint": {
+    "message": "Connect your engine to get started. You choose which tabs Rapid can control."
+  },
+  "grantTab": {
+    "message": "Let Rapid control this tab"
+  },
+  "tabGranted": {
+    "message": "Control granted · Stop"
+  },
+  "chatPlaceholder": {
+    "message": "Message"
+  },
+  "addContext": {
+    "message": "Add this page as context"
+  },
+  "voiceSoon": {
+    "message": "Voice coming soon"
+  },
+  "close": {
+    "message": "Close settings"
+  },
+  "modelBehavior": {
+    "message": "Model behavior"
+  },
+  "privacy": {
+    "message": "Privacy"
+  },
+  "historyPrivacy": {
+    "message": "Recent conversations are saved on this device (60 messages each, 8 previous chats). Browser observations and page context you attach are sent to your chosen engine. New chat starts a fresh conversation."
+  },
+  "help": {
+    "message": "Help"
+  },
+  "productHelp": {
+    "message": "Connect an engine, grant a tab, then describe your task. Rapid asks before consequential actions. Stop ends the task; Take over pauses browser control until you resume."
+  },
+  "needsAttention": {
+    "message": "A little help is needed"
+  },
+  "reviewSettings": {
+    "message": "Review connection"
+  },
+  "copyMessage": {
+    "message": "Copy"
+  },
+  "messageCopied": {
+    "message": "Message copied"
+  },
+  "activitySummary": {
+    "message": "Browsed $1 sites · $2 steps"
+  },
+  "stepLooking": {
+    "message": "Looking at $1"
+  },
+  "stepReading": {
+    "message": "Reading the page"
+  },
+  "stepClicking": {
+    "message": "Clicking “$1”"
+  },
+  "stepClick": {
+    "message": "Clicking a page control"
+  },
+  "stepTyping": {
+    "message": "Typing…"
+  },
+  "approvalEyebrow": {
+    "message": "Your approval is needed"
+  },
+  "allowOrder": {
+    "message": "Allow placing the order?"
+  },
+  "allowAction": {
+    "message": "Allow this action?"
+  },
+  "challengeTitle": {
+    "message": "Your turn"
+  },
+  "challengeHelp": {
+    "message": "Complete the check on the page, then Continue. Rapid will check the page again."
+  },
+  "takeoverTitle": {
+    "message": "You’re in control"
+  },
+  "takeoverHelp": {
+    "message": "Use the page freely. Resume when you want Rapid to continue."
+  },
+  "resumeTask": {
+    "message": "Resume"
+  },
+  "incompleteHelp": {
+    "message": "The task is unfinished. Review the answer and adjust your request or step limit before trying again."
+  },
+  "connectionHelp": {
+    "message": "Check that the engine is running and the selected model supports browser tools."
+  },
+  "reviseTask": {
+    "message": "Revise request"
+  },
+  "newMessages": {
+    "message": "$1 new messages ↓"
+  },
+  "pageContext": {
+    "message": "Page context"
+  },
+  "contextAdded": {
+    "message": "Page context added"
+  },
+  "summarize": {
+    "message": "Summarize this page"
+  },
+  "summarizeExample": {
+    "message": "Summarize this page in five key points and include the source link."
+  },
+  "formTask": {
+    "message": "Help fill a form"
+  },
+  "formTaskExample": {
+    "message": "Help me fill out the form on this page. Ask me for any missing details before submitting."
+  },
+  "thinking": {
+    "message": "Working on your request…"
+  },
+  "takeOver": {
+    "message": "Take over"
+  },
+  "moreActions": {
+    "message": "More"
+  },
+  "useAsPrompt": {
+    "message": "Use as a prompt"
+  },
+  "historySaveFailed": {
+    "message": "Conversation could not be saved on this device. Check available extension storage."
   }
 }

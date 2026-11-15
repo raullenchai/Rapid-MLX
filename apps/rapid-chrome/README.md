@@ -205,7 +205,10 @@ real-engine or browser pass is claimed by the unit suite.
 
 **Copy debug trace** copies the latest task trace from the single
 `chrome.storage.session.debugTrace` key. A new task replaces it; **New chat**
-clears it and conversation history while keeping shared tabs. Read it from the
+clears it and starts a fresh conversation while keeping shared tabs. The previous
+conversation moves to the history menu. Conversations persist in local extension
+storage (60 messages in the current chat, eight previous chats with shorter text
+limits); debug traces remain session-only. Read it from the
 extension panel's DevTools context (also used by e2e):
 
 ```js
@@ -216,8 +219,8 @@ Events include elapsed timestamps, request roles and character sizes, full model
 content/tool calls, each tool result capped at 2,000 characters, response/tool
 durations, the final answer, errors, and completion status. Request headers and
 settings/API keys are not recorded. The trace does contain task/page/model text.
-Collapsed tool summaries remain visible inside `#transcript`, including arguments
-and a short result; expanding a step shows the full displayed result.
+Browser activity appears as one collapsed summary inside `#transcript`. Expanding
+it shows a step timeline; expanding a step reveals its arguments and bounded result.
 
 ### Commerce dogfood
 
@@ -270,4 +273,28 @@ Tests and local artifacts are excluded. CI runs the full Node suite and build.
 The store listing, permission justifications, privacy policy, and manual browser
 checklist are in `store/`. Publish the privacy policy and capture screenshots
 before store submission. The panel follows the browser language (English and
-Simplified Chinese) and includes a three-step onboarding flow.
+Simplified Chinese), supports light/dark appearance and reduced motion, and offers
+connection onboarding and example tasks.
+
+## UI screenshots
+
+With Playwright and Chromium already installed, run from this directory:
+
+```sh
+HEADLESS=1 node test/e2e/ui-shots.mjs
+```
+
+The runner uses loopback fixtures and the fake engine; it never needs a model or
+an external site. PNGs go to `$SHOTS_OUT`, defaulting to
+`/private/tmp/chrome-extension-e2e/ui-shots`. It captures onboarding, empty chat,
+settings, running activity, page overlay, take-over, approval, completion, dark
+mode, 320px dark layout, challenge pause, and connection error. Challenge/error
+shots use deterministic state fixtures passed to the production panel renderer;
+the other states exercise the worker and fake engine. Screenshots show the panel
+as an extension tab at side-panel dimensions. Review them for clipping, focus
+rings, CJK wrapping, and contrast; these images do not prove a live-model task.
+
+**Take over** pauses execution and releases debugger control on shared tabs.
+**Resume** waits for that cleanup, reattaches, and continues with invalidated
+element references. **Stop** ends the task. Approvals remain one-time decisions;
+there is no permanent site approval option.

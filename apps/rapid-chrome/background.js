@@ -6,16 +6,17 @@ import { t, localize } from './src/i18n.js';
 import { engineBase, safeURL } from './src/safety.js';
 
 const defaults = {base:'http://127.0.0.1:8000',apiKey:'',model:'',vision:false,stepCap:60,endpointMode:'local',reasoningEffort:'off'};
-const state = {messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',connected:false,settings:{...defaults},models:[],tabs:[]};
+const state = {messages:[],steps:[],approvals:[],running:false,paused:false,status:'Ready',connected:false,settings:{...defaults},models:[],tabs:[],chats:[],resultTab:null,pauseReason:null};
 const ports = new Set(), pending = new Map();
-let controller = null, runPromise = null, resumeGate = null, pausePromise = null;
-const hand = new BrowserHand(new ChromeAdapter(), {settings:state.settings,approve,emit,stop,challenge});
+let controller = null, runPromise = null, resumeGate = null, pausePromise = null, pauseCleanup = null;
+const hand = new BrowserHand(new ChromeAdapter(), {settings:state.settings,approve,emit,stop,challenge,takeover:pauseForTakeover});
 const ready = (async () => {
-  const {settings} = await chrome.storage.local.get('settings');
+  const {settings,conversation,chats} = await chrome.storage.local.get(['settings','conversation','chats']);
+  state.chats = (chats || []).slice(-8);
   if (settings) { try { engineBase(settings.base); state.settings = {...defaults,...settings,endpointMode:settings.endpointMode || (LOCAL_ENDPOINTS.includes(settings.base) ? 'local' : 'custom')}; } catch {} }
   hand.settings = state.settings;
   const saved = await chrome.storage.session.get(['transcript','owned']);
-  state.messages = saved.transcript || [];
+  state.messages = (conversation || saved.transcript || []).slice(-60);
   for (const tab of saved.owned || []) {
     try {
       const current = await chrome.tabs.get(tab.id);
@@ -32,20 +33,41 @@ const ready = (async () => {
   } else { state.status = t('stepConnect'); publish(); }
 })();
 function publish() {
-  for (const port of ports) { try { port.postMessage({...state,messages:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,12000)})),steps:state.steps.map(s => ({...s,result:clip(s.result)})),status:localize(state.status)}); } catch { ports.delete(port); } }
+  for (const port of ports) { try { port.postMessage({...state,chats:state.chats.map(({id,title}) => ({id,title})),messages:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,12000)})),steps:state.steps.map(s => ({...s,result:clip(s.result)})),status:localize(state.status)}); } catch { ports.delete(port); } }
 }
 function refreshTabs() {
   state.tabs = [...hand.tabs].map(([id,t]) => ({id,attached:t.attached})); publish();
   void chrome.storage.session.set({owned:[...hand.tabs].map(([id,t]) => ({id,created:t.created,groupId:t.groupId,binding:t.binding}))});
 }
+function persistConversation() {
+  return chrome.storage.local.set({conversation:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,12000)})),chats:state.chats.slice(-8)}).then(() => { state.historyWarning = ''; },() => { state.historyWarning = t('historySaveFailed'); publish(); });
+}
+function archiveConversation() {
+  if (!state.messages.some(m => m.role === 'user')) return;
+  state.chats.push({id:crypto.randomUUID(),title:clip(state.messages.find(m => m.role === 'user').content,80),messages:state.messages.slice(-60).map(m => ({...m,content:clip(m.content,4000)}))});
+  state.chats = state.chats.slice(-8);
+}
+async function pauseForTakeover() {
+  if (!state.running || state.paused) return;
+  pausePromise = new Promise(resolve => { resumeGate = resolve; });
+  state.paused = true; state.pauseReason = 'takeover'; hand.paused = true;
+  state.status = t('takeoverTitle');
+  for (const finish of [...pending.values()]) finish(false);
+  pauseCleanup = hand.finish();
+  publish(); await pauseCleanup; refreshTabs();
+}
 function emit(event) {
   if (event.kind === 'step') {
     const existing = state.steps.findIndex(s => s.id === event.id);
-    if (existing < 0) state.steps.push({...event,result:clip(event.result)}); else state.steps[existing] = {...event,result:clip(event.result)};
+    const tabId = event.args?.tabId ?? hand.active;
+    const targetLabel = hand.tabs.get(tabId)?.refs.get(event.args?.ref)?.name;
+    const detail = {url:state.steps[existing]?.url,targetLabel:state.steps[existing]?.targetLabel,...event,...(targetLabel ? {targetLabel} : {}),result:clip(event.result)};
+    if (existing < 0) state.steps.push(detail); else state.steps[existing] = detail;
   } else if (event.kind === 'answer' || event.kind === 'notice' || event.kind === 'progress') {
-    state.messages.push({role:'assistant',kind:event.kind,content:event.text});
+    state.messages.push({role:'assistant',kind:event.kind,content:event.text,at:new Date().toISOString()});
     if (state.messages.length > 60) state.messages.splice(0,state.messages.length - 60);
     void chrome.storage.session.set({transcript:state.messages.slice(-60)});
+    void persistConversation();
   }
   publish();
 }
@@ -66,7 +88,7 @@ function approve(card) {
 async function challenge(info) {
   controller.signal.throwIfAborted();
   if (!state.paused) pausePromise = new Promise(resolve => { resumeGate = resolve; });
-  state.paused = true; hand.paused = true;
+  state.paused = true; state.pauseReason = 'challenge'; hand.paused = true;
   state.status = info.message;
   emit({kind:'notice',text:info.message});
   // Release debugger and overlay so the human can interact with the check.
@@ -87,9 +109,11 @@ async function checkpoint(messages) {
     const allowed = await pausePromise;
     resumeGate = null;
     if (!allowed) { controller.signal.throwIfAborted(); throw new Error('Stopped'); }
+    await pauseCleanup; pauseCleanup = null;
+    controller.signal.throwIfAborted();
     hand.paused = false;
     for (const [id,t] of hand.tabs) if (!t.attached) { await hand.own(id); await hand.showOverlay(id,true); }
-    state.paused = false; publish();
+    state.paused = false; state.pauseReason = null; state.status = 'Working'; refreshTabs();
   }
   if (messages && hand.notices.length) messages.push({role:'user',content:`Browser ownership notice (from extension): ${hand.notices.splice(0).join('\n')}`});
 }
@@ -112,7 +136,7 @@ async function models(signal, probe = true, discover = false) {
 async function run(task) {
   if (state.running) throw new Error('A task is already running');
   if (!task.trim()) return;
-  hand.paused = false; state.running = true; state.steps = []; state.status = 'Working';
+  hand.paused = false; state.running = true; state.resultTab = null; state.pauseReason = null; state.steps = []; state.status = 'Working';
   controller = new AbortController();
   const signal = controller.signal;
   const history = state.messages.filter(m => m.kind !== 'progress').slice(-20);
@@ -122,7 +146,7 @@ async function run(task) {
     debugTrace.events.push(redact({atMs:Date.now()-started,...event},state.settings.apiKey));
     await chrome.storage.session.set({debugTrace:redact(debugTrace,state.settings.apiKey)});
   };
-  state.messages.push({role:'user',content:task}); publish();
+  state.messages.push({role:'user',content:task,at:new Date().toISOString()}); void persistConversation(); publish();
   // A Chrome API call keeps a waiting approval / local inference run alive.
   const keepAlive = setInterval(() => { void chrome.runtime.getPlatformInfo(); },20000);
   try {
@@ -130,7 +154,12 @@ async function run(task) {
     if (!state.settings.model) await models(signal);
     signal.throwIfAborted();
     await hand.begin(signal, task, history); refreshTabs();
-    await runAgent({settings:{...state.settings},task,history,signal,execute:(...a) => hand.execute(...a),emit,checkpoint,trace});
+    await runAgent({settings:{...state.settings},task,history,signal,execute:async (...a) => {
+      const id = a[1]?.tabId ?? hand.active;
+      const step = state.steps.findLast(step => step.status === 'running');
+      if (step && id != null) { try { step.url = (await chrome.tabs.get(id)).url; publish(); } catch {} }
+      return hand.execute(...a);
+    },emit,checkpoint,trace});
     await trace({kind:'answer',text:state.messages.at(-1)?.content});
     state.status = 'Ready';
   } catch (e) {
@@ -139,7 +168,9 @@ async function run(task) {
     emit({kind:'notice',text:signal.aborted ? 'Stopped. No further actions will run.' : e.message});
   } finally {
     clearInterval(keepAlive);
+    state.resultTab = hand.active;
     await hand.finish();
+    await persistConversation();
     await chrome.storage.session.set({transcript:state.messages.slice(-60)});
     try { await trace({kind:'end',status:state.status,steps:state.steps.length,ms:Date.now()-started}); }
     finally { controller = null; state.running = false; state.paused = false; refreshTabs(); }
@@ -149,6 +180,14 @@ async function handle(message) {
   if (message.type === 'stop') { stop(); return; }
   await ready;
   if (message.type === 'approve') { pending.get(message.id)?.(message.allow === true); return; }
+  if (message.type === 'take-over') { await pauseForTakeover(); return; }
+  if (message.type === 'result-tab') { if (state.resultTab) { const tab = await chrome.tabs.update(state.resultTab,{active:true}); await chrome.windows.update(tab.windowId,{focused:true}); } return; }
+  if (message.type === 'restore-chat') {
+    if (state.running) throw new Error('Stop first');
+    const chat = state.chats.find(chat => chat.id === message.id);
+    if (chat) { archiveConversation(); state.messages = chat.messages.slice(-60); state.steps = []; state.resultTab = null; state.status = 'Ready'; await persistConversation(); publish(); }
+    return;
+  }
   if (message.type === 'resume') { if (message.allow) resumeGate?.(true); else stop(); return; }
   if (message.type === 'send') {
     if (state.running) throw new Error('A task is already running');
@@ -156,7 +195,9 @@ async function handle(message) {
   }
   if (message.type === 'new-chat') {
     if (state.running) throw new Error('Stop the task before starting a new chat');
-    state.messages = []; state.steps = []; hand.notices = [];
+    archiveConversation();
+    state.messages = []; state.steps = []; state.resultTab = null; state.status = 'Ready'; hand.notices = [];
+    await persistConversation();
     await chrome.storage.session.set({transcript:[]});
     await chrome.storage.session.remove('debugTrace');
   }
@@ -201,8 +242,11 @@ chrome.runtime.onConnect.addListener(port => {
     publish();
   }); });
 });
-chrome.runtime.onMessage.addListener((m,sender) => {
-  if (m.type === 'stop' && sender.tab && hand.tabs.has(sender.tab.id)) stop();
+chrome.runtime.onMessage.addListener((m,sender,respond) => {
+  if (m.type === 'overlay-heartbeat') { respond(!!(sender.tab && hand.tabs.get(sender.tab.id)?.attached && state.running && !state.paused)); return; }
+  if (!sender.tab || !hand.tabs.has(sender.tab.id)) return;
+  if (m.type === 'stop') stop();
+  if (m.type === 'take-over') void pauseForTakeover();
 });
 chrome.debugger.onEvent.addListener((source,method,p) => { void hand.event(source.tabId,method,p).catch(e => emit({kind:'notice',text:e.message})); });
 chrome.debugger.onDetach.addListener((source,reason) => {
@@ -212,7 +256,8 @@ chrome.debugger.onDetach.addListener((source,reason) => {
   if (reason === 'canceled_by_user' && state.running) {
     for (const finish of [...pending.values()]) finish(false);
     if (!state.paused) pausePromise = new Promise(resolve => { resumeGate = resolve; });
-    state.paused = true; hand.paused = true;
+    state.paused = true; state.pauseReason = 'takeover'; hand.paused = true;
+    pauseCleanup = hand.finish();
     state.status = 'Debugger detached. Keep working or stop?';
     hand.notices.push(`User detached debugger from tab ${source.tabId}; execution paused.`); publish();
   } else { void hand.takeover(source.tabId,`detached (${reason})`).then(refreshTabs); }

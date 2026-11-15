@@ -165,13 +165,13 @@
     "message": "无法复制调试记录，请检查剪贴板权限。"
   },
   "shopping": {
-    "message": "购物"
+    "message": "比较商品"
   },
   "travel": {
     "message": "旅行"
   },
   "reservations": {
-    "message": "预订"
+    "message": "预订餐厅"
   },
   "mail": {
     "message": "邮件"
@@ -399,7 +399,7 @@
     "message": "读取表单期间页面已改变：请重新读取页面"
   },
   "noHistory": {
-    "message": "没有历史记录"
+    "message": "历史对话将显示在这里。"
   },
   "waited": {
     "message": "已等待 $1 毫秒"
@@ -543,5 +543,152 @@
         "content": "$1"
       }
     }
+  },
+  "notConnected": {
+    "message": "未连接"
+  },
+  "browserAvailable": {
+    "message": "Rapid 可以使用此浏览器"
+  },
+  "history": {
+    "message": "对话记录"
+  },
+  "greeting": {
+    "message": "今天想做些什么？"
+  },
+  "setupHint": {
+    "message": "连接推理引擎即可开始。由你选择 Rapid 可以控制的标签页。"
+  },
+  "grantTab": {
+    "message": "允许 Rapid 控制此标签页"
+  },
+  "tabGranted": {
+    "message": "已允许控制 · 停止"
+  },
+  "chatPlaceholder": {
+    "message": "输入消息"
+  },
+  "addContext": {
+    "message": "将此页面添加为上下文"
+  },
+  "voiceSoon": {
+    "message": "语音功能即将推出"
+  },
+  "close": {
+    "message": "关闭设置"
+  },
+  "modelBehavior": {
+    "message": "模型行为"
+  },
+  "privacy": {
+    "message": "隐私"
+  },
+  "historyPrivacy": {
+    "message": "近期对话保存在此设备上（每次 60 条消息，保留 8 次历史对话）。浏览器观察结果和你添加的页面上下文会发送到所选引擎。新建对话会开始新的会话。"
+  },
+  "help": {
+    "message": "帮助"
+  },
+  "productHelp": {
+    "message": "连接引擎，授权标签页，然后描述任务。重要操作前 Rapid 会请求确认。停止会结束任务；接管会暂停浏览器控制，直到你继续。"
+  },
+  "needsAttention": {
+    "message": "需要你的帮助"
+  },
+  "reviewSettings": {
+    "message": "检查连接"
+  },
+  "copyMessage": {
+    "message": "复制"
+  },
+  "messageCopied": {
+    "message": "消息已复制"
+  },
+  "activitySummary": {
+    "message": "已浏览 $1 个网站 · $2 个步骤"
+  },
+  "stepLooking": {
+    "message": "正在查看 $1"
+  },
+  "stepReading": {
+    "message": "正在阅读页面"
+  },
+  "stepClicking": {
+    "message": "正在点击“$1”"
+  },
+  "stepClick": {
+    "message": "正在点击页面控件"
+  },
+  "stepTyping": {
+    "message": "正在输入…"
+  },
+  "approvalEyebrow": {
+    "message": "需要你的确认"
+  },
+  "allowOrder": {
+    "message": "允许提交订单吗？"
+  },
+  "allowAction": {
+    "message": "允许此操作吗？"
+  },
+  "challengeTitle": {
+    "message": "轮到你了"
+  },
+  "challengeHelp": {
+    "message": "请在页面上完成验证，然后点击继续。Rapid 将重新检查页面。"
+  },
+  "takeoverTitle": {
+    "message": "你已接管控制"
+  },
+  "takeoverHelp": {
+    "message": "你可以自由操作页面。准备好后点击恢复，让 Rapid 继续。"
+  },
+  "resumeTask": {
+    "message": "恢复"
+  },
+  "incompleteHelp": {
+    "message": "任务尚未完成。请查看回答，调整请求或步数上限后重试。"
+  },
+  "connectionHelp": {
+    "message": "请检查引擎是否正在运行，以及所选模型是否支持浏览器工具。"
+  },
+  "reviseTask": {
+    "message": "修改请求"
+  },
+  "newMessages": {
+    "message": "$1 条新消息 ↓"
+  },
+  "pageContext": {
+    "message": "页面上下文"
+  },
+  "contextAdded": {
+    "message": "已添加页面上下文"
+  },
+  "summarize": {
+    "message": "总结此页面"
+  },
+  "summarizeExample": {
+    "message": "请用五个要点总结此页面，并附上来源链接。"
+  },
+  "formTask": {
+    "message": "帮助填写表单"
+  },
+  "formTaskExample": {
+    "message": "请帮我填写此页面上的表单。提交前请向我询问缺少的信息。"
+  },
+  "thinking": {
+    "message": "正在处理你的请求…"
+  },
+  "takeOver": {
+    "message": "接管"
+  },
+  "moreActions": {
+    "message": "更多"
+  },
+  "useAsPrompt": {
+    "message": "用作提示词"
+  },
+  "historySaveFailed": {
+    "message": "无法在此设备上保存对话。请检查扩展程序的可用存储空间。"
   }
 }

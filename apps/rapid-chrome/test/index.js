@@ -18,3 +18,7 @@ import './production.test.js';
 import './round-a.test.js';
 
 import './round-b.test.js';
+
+import './ui.test.js';
+
+import './ui-lifecycle.test.js';

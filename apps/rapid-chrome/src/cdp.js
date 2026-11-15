@@ -4,7 +4,7 @@ import { detectChallenge } from './challenge.js';
 import { outlineAX } from './ax.js';
 import { safeURL, classifyTarget, needsSiteApproval, additionKey, NavigationPolicy } from './safety.js';
 import { delay } from './agent.js';
-import { overlay } from './overlay.js';
+import { overlay, overlayPointer } from './overlay.js';
 
 // Executed on the approved node, never on a replacement hit-test node.
 export function sameClickControl(other, x, y) {
@@ -107,8 +107,8 @@ export class ChromeAdapter {
 
 // All browser operations pass through the adapter; no model-provided JS is evaluated.
 export class BrowserHand {
-  constructor(adapter, {settings, approve, emit = () => {}, stop = () => {}, challenge = async info => { throw new Error(`needs_human: ${info.message}`); }}) {
-    this.a = adapter; this.settings = settings; this.approve = approve; this.emit = emit; this.stop = stop; this.challenge = challenge;
+  constructor(adapter, {settings, approve, emit = () => {}, stop = () => {}, takeover = () => {}, challenge = async info => { throw new Error(`needs_human: ${info.message}`); }}) {
+    this.a = adapter; this.settings = settings; this.approve = approve; this.emit = emit; this.stop = stop; this.pauseForTakeover = takeover; this.challenge = challenge;
     this.tabs = new Map(); this.active = null; this.nextRef = 1; this.sites = new Set(); this.signal = null;
     this.navigation = new NavigationPolicy(); this.additions = new Set(); this.denials = new Set(); this.notices = []; this.pendingSites = new Map();
   }
@@ -175,14 +175,16 @@ export class BrowserHand {
     for (const [id] of this.tabs) { await this.own(id); this.invalidate(id); await this.showOverlay(id,true); }
   }
   async showOverlay(id, show) {
-    try { await this.a.inject(id,show,[t('overlayWorking'),t('stop')]); return; } catch { /* Host permission is deliberately absent for arbitrary sites. */ }
+    try { await this.a.inject(id,show,[t('overlayWorking'),t('stop'),t('takeOver')]); return; } catch { /* Host permission is deliberately absent for arbitrary sites. */ }
     try {
       const {frameTree} = await this.a.send(id,'Page.getFrameTree');
       const {executionContextId} = await this.a.send(id,'Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'Rapid isolated overlay'});
-      const binding = this.tabs.get(id)?.binding;
+      const owned = this.tabs.get(id);
+      const binding = owned?.binding;
+      if (owned) owned.overlayContext = executionContextId;
       if (!binding) return;
       await this.a.send(id,'Runtime.addBinding',{name:binding,executionContextId});
-      await this.a.send(id,'Runtime.evaluate',{contextId:executionContextId,expression:`(${overlay.toString()})(${JSON.stringify(show)},${JSON.stringify(binding)},${JSON.stringify([t('overlayWorking'),t('stop')])})`});
+      await this.a.send(id,'Runtime.evaluate',{contextId:executionContextId,expression:`(${overlay.toString()})(${JSON.stringify(show)},${JSON.stringify(binding)},${JSON.stringify([t('overlayWorking'),t('stop'),t('takeOver')])})`});
     } catch (e) { if (show) this.emit({kind:'notice',text:`Overlay unavailable: ${e.message}. Panel Stop remains available.`}); }
   }
   async release(id) {
@@ -202,6 +204,12 @@ export class BrowserHand {
   async event(id, method, p) {
     const t = this.tabs.get(id); if (!t?.attached) return;
     if (method === 'Runtime.bindingCalled' && p.name === t.binding && p.payload === 'stop') { this.stop(); return; }
+    if (method === 'Runtime.bindingCalled' && p.name === t.binding) {
+      if (p.payload === 'take-over') { await this.pauseForTakeover(); return; }
+      if (p.payload === 'heartbeat' && !this.paused && !this.signal?.aborted) {
+        await this.a.send(id,'Runtime.evaluate',{contextId:t.overlayContext,expression:'globalThis.__rapidOverlay?.heartbeat()'}); return;
+      }
+    }
     if (method === 'Page.frameNavigated') {
       if (!p.frame.parentId) {
         t.mainFrame = p.frame.id; this.invalidate(id);
@@ -317,6 +325,11 @@ export class BrowserHand {
     const {left,top,right,bottom} = await this.call(id,target.objectId,clickRect);
     if (right <= left || bottom <= top) throw new Error('offscreen_target: no visible area; inspect dialogs or choose another control');
     const x = Math.round((left+right)/2), y = Math.round((top+bottom)/2);
+    try {
+      const contextId = this.tabs.get(id)?.overlayContext;
+      if (contextId) await this.a.send(id,'Runtime.evaluate',{contextId,expression:`(${overlayPointer.toString()})(${x},${y})`});
+      else if (this.a.api?.scripting) await this.a.api.scripting.executeScript({target:{tabId:id},func:overlayPointer,args:[x,y]});
+    } catch { /* A visual hint never blocks the browser action. */ }
     let accepted = false;
     try {
       const hit = await this.send(id,'DOM.getNodeForLocation',{x,y,includeUserAgentShadowDOM:true});
