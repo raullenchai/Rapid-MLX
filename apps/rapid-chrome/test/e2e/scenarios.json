@@ -13,7 +13,8 @@
       ],
       "max_steps": 60,
       "answer_excludes": [
-        "$9.99"
+        "/(?:\\b(?:list |main |chosen )?price\\s*(?:is|of|:|=)|\\b(?:costs?|subtotal)\\s*(?:is|of|:|=)?)\\s*[*_]*\\$\\s*9\\.99\\b/i",
+        "/\\bSwift(?:\\s+65W)?(?:\\s+charger)?[*_]*\\s*(?:[|:—–-]\\s*|(?:at|is|for)\\s*)?[*_]*\\$\\s*9\\.99\\b/i"
       ],
       "state": [
         {

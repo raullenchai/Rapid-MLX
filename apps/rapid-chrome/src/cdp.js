@@ -428,10 +428,14 @@ export class BrowserHand {
       const suggestionFor = listbox && [...e.ownerDocument.querySelectorAll('[aria-controls],[aria-owns]')].find(input => [input.getAttribute('aria-controls'),input.getAttribute('aria-owns')].join(' ').split(/\s+/).includes(listbox.id));
       const searchInput = suggestionFor || (listbox && form?.querySelector('input[type=search],input[role=combobox],input[aria-autocomplete]'));
       const suggestionQuery = searchInput?.value?.slice(0,200) || '';
+      const queryFields = fields.filter(el => !el.disabled && !['hidden','submit','button','reset','image'].includes(el.type));
+      const singleQuery = queryFields.length === 1 && ['text','search','textarea'].includes(queryFields[0].type);
+      const dateCell = accessibleName(e.closest('[role=gridcell],td')).slice(0,200);
+      const datePicker = Boolean(listbox && /calendar|choose dates?|select dates?|date picker/i.test(accessibleName(listbox).slice(0,200)));
       const choiceContext = Boolean(e.closest('li,[role=option],[role=menuitem]') || listbox);
       const challengeScope = e.closest('[class*=captcha i],[id*=captcha i],[class*=challenge i],[id*=challenge i]');
       const challengeControl = /captcha|recaptcha|hcaptcha|turnstile|datadome/i.test([e.id,e.className,e.getAttribute('aria-label'),e.ownerDocument.location?.href].join(' ')) || Boolean(challengeScope && /captcha|verify.{0,20}human|not a robot|security check/i.test(challengeScope.innerText || ''));
-      return {value:maskedField(e) ? '[protected]' : e.value,tag:e.tagName,landmark,heading,suggestionQuery,choiceContext,challengeControl,values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
+      return {value:maskedField(e) ? '[protected]' : e.value,tag:e.tagName,landmark,heading,suggestionQuery,singleQuery,dateCell,datePicker,choiceContext,challengeControl,values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }
   async gateTarget(id, target, action, {fill = false, submit = false, always = false} = {}) {
@@ -439,8 +443,9 @@ export class BrowserHand {
     if (info.challengeControl || /(?:i.m|i am) not a robot|verify (?:that )?you are human/i.test(info.name || '')) throw new Error('human_check: challenge controls are blocked; ask the user to complete the check');
     if (!info.connected) throw new Error('stale_ref: call read_page');
     this.lastTargetContext = Object.fromEntries(['tag','type','role','name','method','action','landmark','heading','suggestionQuery'].map(k => [k,String((k === 'role' ? info.role || target.role : info[k]) || '').slice(0,k === 'action' ? 300 : 200)]));
+    Object.assign(this.lastTargetContext,{singleQuery:Boolean(info.singleQuery),dateCell:info.dateCell || '',dateCellAX:info.dateCell ? String(target.name || '').slice(0,200) : '',datePicker:Boolean(info.datePicker)});
     target.inspectedInfo = info;
-    const classification = classifyTarget({...info,role:target.role || info.role,name:info.name || target.name});
+    const classification = classifyTarget({...info,dateCellAX:info.dateCell ? target.name : '',role:target.role || info.role,name:info.name || target.name});
     if (!fill && info.suggestionQuery && !suggestionMatches(info.name || target.name, info.suggestionQuery)) throw new Error('suggestions_pending: option does not match current typed text; wait for fresh suggestions');
     if (fill && (classification.sensitive || classifyTarget({name:target.name}).sensitive)) throw new Error('blocked_sensitive_field: ask the user to enter passwords or payment details');
     const tab = await this.a.get(id);
