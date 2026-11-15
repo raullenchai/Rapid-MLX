@@ -40,11 +40,11 @@ export function markdown(doc, parent, text, {t = key => key, copy = async () => 
       table.append(row); list = null; continue;
     }
     table = null;
-    const item = line.match(/^\s*(?:([-*])|\d+\.)\s+(.+)/);
+    const item = line.match(/^\s*(?:([-*])|(\d+)\.)\s+(.+)/);
     if (item) {
       const tag = item[1] ? 'ul' : 'ol';
       if (!list || list.tagName.toLowerCase() !== tag) { list = doc.createElement(tag); parent.append(list); }
-      const li = doc.createElement('li'); inline(doc,li,item[2]); list.append(li);
+      const li = doc.createElement('li'); if (item[2]) li.value = Number(item[2]); inline(doc,li,item[3]); list.append(li);
     } else { list = null; const p = doc.createElement('p'); inline(doc,p,line.replace(/^#{1,6}\s+/,'')); parent.append(p); }
   }
 }

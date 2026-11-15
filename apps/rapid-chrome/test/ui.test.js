@@ -86,7 +86,7 @@ test('updates preserve a scrolled-up reader and count new messages; pause states
   render(snapshot({status:'Error',connected:false})); assert.equal(get('recovery').hidden,false);
   get('recover').onclick(); assert.equal(get('settings').hidden,false);
   get('settings').onkeydown({key:'Escape',preventDefault(){}}); assert.equal(get('settings').hidden,true);
-  get('result-tab').onclick(); assert.equal(sent.at(-1).type,'result-tab');
+  assert.equal(readFileSync(new URL('../panel.html',import.meta.url),'utf8').includes('id="result-tab"'),false);
 });
 
 test('page overlay has a closed shadow, action-only controls, moving pointer, expiry, and cleanup', () => {
@@ -137,4 +137,20 @@ test('finished text-only chat hides recovery and displays grant cards through ex
   allow.onclick();
   assert.equal(p.sent.at(-1).type,'approve');
   assert.equal(p.sent.at(-1).id,'grant');assert.equal(p.sent.at(-1).allow,true);
+});
+
+
+test('numbered Markdown retains numbering across blank lines and nested bullets', () => {
+  const {document} = dom(), root = document.createElement('div');
+  markdown(document,root,'1. First\n\n2. Second\n   - Link\n\n3. Third');
+  assert.deepEqual(walk(root).filter(n => n.tagName === 'LI' && n.value).map(n => n.value),[1,2,3]);
+});
+
+test('running elapsed time belongs to the activity summary and completion has no extra tab button', () => {
+  const p = panel();
+  p.render(snapshot({running:true,run:{startedAt:Date.now()-5000},steps:[{name:'read_page',args:{},status:'running'}]}));
+  assert.match(p.get('activity-summary').textContent,/elapsedTime/);
+  p.render(snapshot({resultTab:7,messages:[{role:'assistant',content:'Done'}],run:{startedAt:1000,endedAt:6000}}));
+  const html = readFileSync(new URL('../panel.html',import.meta.url),'utf8');
+  assert.doesNotMatch(html,/id="(?:activity-elapsed|error-elapsed|result-tab)"/);
 });

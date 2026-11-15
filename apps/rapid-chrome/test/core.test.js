@@ -212,7 +212,7 @@ test('tool replay keeps null content, normalizes args, and repairs missing or du
   assert.ok(replay.filter(m => m.tool_calls).every(m => m.content === null));
   assert.equal(requests[0].chat_template_kwargs.enable_thinking,false);
   assert.deepEqual(trace.filter(e => e.kind === 'request')[0].messages.map(m => m.role),['system','user']);
-  assert.ok(trace.filter(e => e.kind === 'tool').every(e => e.text.length === 2000 && e.chars > 2000 && e.ms >= 0));
+  assert.ok(trace.filter(e => e.kind === 'tool').every(e => e.text.length === e.chars && e.chars > 2000 && !e.truncated && e.ms >= 0));
   assert.equal(trace.filter(e => e.kind === 'response').length,3);
 });
 

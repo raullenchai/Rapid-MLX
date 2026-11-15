@@ -1,3 +1,4 @@
+import { turnOutcome } from './e2e/helpers.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
@@ -193,13 +194,13 @@ test('multi-turn browser runner keeps one session, records each turn, and checks
   const scratch='/private/tmp/chrome-extension-chat';await mkdir(scratch,{recursive:true});
   const out=await mkdtemp(join(scratch,'runner-'));
   const s=byId('chat-shop-followup'),submitted=[];
-  let launches=0,shares=0;
+  let launches=0,shares=0,secondError=false;
   const answers=['Bolt $29.99; Swift $24.99.','Swift is cheaper by $5.00.'];
-  const trace=()=>({events:submitted.length===1?[{kind:'tool'}]:[]});
-  const panel={locator:selector=>selector==='#stop'?{isDisabled:async()=>true}:selector==='#messages .assistant'?{count:async()=>submitted.length,last:()=>({innerText:async()=>answers[submitted.length-1]})}:{innerText:async()=>answers.join('\n')}};
+  const trace=()=>secondError && submitted.length===2 ? {events:[{kind:'error',error:'Rapid engine HTTP 502.'},{kind:'end',status:'Error'}]} : ({events:[...(submitted.length===1?[{kind:'tool'}]:[]),{kind:'answer',text:answers[submitted.length-1]},{kind:'end',status:'Ready'}]});
+  const panel={screenshot:async()=>{},locator:selector=>selector==='#stop'?{isDisabled:async()=>true}:selector==='#messages .assistant'?{count:async()=>submitted.length,last:()=>({innerText:async()=>answers[submitted.length-1]})}:{innerText:async()=>answers.join('\n')}};
   const page={goto:async()=>{},bringToFront:async()=>{},screenshot:async()=>{},url:()=>s.start_url};
   const source=(await readFile(new URL('./e2e/dogfood.mjs',import.meta.url),'utf8')).split('const cell =')[0].replace(/^import .*;$/gm,'').replace(/export /g,'');
-  const context=vm.createContext({mkdir,mkdtemp,rm,writeFile,join,Date,JSON,Set,process:{env:{}},launchExtension:async()=>{launches++;return {newPage:async()=>page,close:async()=>{}};},connectPanel:async()=>panel,shareTab:async()=>{shares++;},submitTask:async(_,task)=>submitted.push(task),readTrace:async()=>trace(),sleep:async()=>{},until:async()=>{}});
+  const context=vm.createContext({mkdir,mkdtemp,rm,writeFile,join,Date,JSON,Set,process:{env:{}},launchExtension:async()=>{launches++;return {newPage:async()=>page,close:async()=>{}};},connectPanel:async()=>panel,shareTab:async()=>{shares++;},submitTask:async(_,task)=>submitted.push(task),readTrace:async()=>trace(),turnOutcome,sleep:async()=>{},until:async()=>{}});
   vm.runInContext(source,context);
   try {
     const r=await context.runTask({},s,out,'http://localhost:8000');
@@ -210,5 +211,11 @@ test('multi-turn browser runner keeps one session, records each turn, and checks
     r.turns[1].steps=1;
     assert.ok(evaluate(s,r,{}).failures.some(f=>/Turn 2: Steps/.test(f)));
     assert.equal(JSON.parse(await readFile(join(out,s.id,'trace.json'),'utf8')).turns.length,2);
+    submitted.length=0; secondError=true;
+    const failed=await context.runTask({},s,out,'http://localhost:8000');
+    assert.equal(failed.status,'error'); assert.equal(failed.final_answer,'');
+    assert.equal(failed.turns[1].status,'error');
+    assert.deepEqual(Array.from(failed.turns[1].errors),['Rapid engine HTTP 502.']);
+    assert.equal(evaluate(s,failed,{}).pass,false);
   } finally {await rm(out,{recursive:true,force:true});}
 });

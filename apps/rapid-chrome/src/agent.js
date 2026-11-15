@@ -122,7 +122,7 @@ export async function runAgent({ settings, task, history = [], currentTab, execu
     }
     if (!response.ok) {
       await trace({kind:'response_error',round,status:response.status,ms:Date.now()-started,text:'Endpoint request failed'});
-      throw new Error(`Rapid engine HTTP ${response.status}. Check API key and --cors-origins.`);
+      throw new Error(`Rapid engine HTTP ${response.status}. The endpoint request failed.`);
     }
     const body = await response.json();
     await checkpoint(messages);
@@ -224,7 +224,7 @@ export async function runAgent({ settings, task, history = [], currentTab, execu
       if (repeats >= 4 && !loopWarned) { loopNudged = true; loopWarned = true; }
       emit({kind:'step',id:call.id,name:call.function.name,args:args || {},status:result.error ? 'error' : 'ok',result:result.error || result.text || result.note || 'Done'});
       const [tool, ...imageParts] = toolMessages(call, result, settings.vision);
-      await trace({kind:'tool',round,id:call.id,name:call.function.name,args:args ?? call.function.arguments,text:tool.content.slice(0,2000),chars:tool.content.length,ms:Date.now()-toolStarted});
+      await trace({kind:'tool',round,id:call.id,name:call.function.name,args:args ?? call.function.arguments,text:tool.content.slice(0,24000),truncated:tool.content.length > 24000,chars:tool.content.length,ms:Date.now()-toolStarted});
       messages.push(tool); images.push(...imageParts);
       researchStopped = steps >= researchDeadline;
       if (loopStopped || researchStopped || /^denied:/i.test(result.error || '')) {

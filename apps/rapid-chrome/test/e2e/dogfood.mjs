@@ -2,7 +2,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launchExtension, connectPanel, shareTab, submitTask, readTrace, sleep, until } from './helpers.mjs';
+import { launchExtension, connectPanel, shareTab, submitTask, readTrace, sleep, until, turnOutcome } from './helpers.mjs';
 
 export function approvalDecision(text) {
   // Site navigation is always allowed, even when the hostname contains "book".
@@ -27,7 +27,7 @@ export async function runTask(chromium, task, out, base, options = {}) {
   };
   try {
     context = await launchExtension(chromium,profile,{viewport:{width:1440,height:900}});
-    panel = await connectPanel(context,base,process.env.RAPID_API_KEY || '',options);
+    panel = await connectPanel(context,base,process.env.RAPID_API_KEY || '',{...options,onPanel:value => { panel = value; }});
     page = await context.newPage();
     // DOMContentLoaded avoids waiting for every ad/resource on live storefronts.
     await capture(() => page.goto(task.start_url,{waitUntil:'domcontentloaded'}));
@@ -72,11 +72,15 @@ export async function runTask(chromium, task, out, base, options = {}) {
       }
       const turnTrace = await readTrace(panel);
       traces.push(turnTrace);
-      const answers = panel.locator('#messages .assistant');
-      result.turns.push({status:result.status,steps:turnTrace?.events?.filter(e => e.kind === 'tool').length || 0,final_answer:await answers.last().innerText(),approvals:[...result.approvals],errors:[]});
+      const outcome = turnOutcome(turnTrace);
+      if (result.status === 'finished') result.status = outcome.status;
+      result.final_answer = outcome.final_answer || (result.status === 'needs_human' ? result.final_answer : '');
+      result.errors.push(...outcome.errors);
+      result.turns.push({...outcome,status:result.status,approvals:result.approvals.filter(a => handled.has(a.id))});
       if (result.status !== 'finished') break;
     }
   } catch (error) {
+    result.status = 'error';
     result.errors.push(error.message);
   } finally {
     if (panel) {
@@ -89,9 +93,9 @@ export async function runTask(chromium, task, out, base, options = {}) {
         }
       });
       await capture(async () => writeFile(join(dir,'transcript.txt'),await panel.locator('body').innerText()));
+      await capture(() => panel.screenshot({path:join(dir,'panel-end.png'),timeout:5000}));
       await capture(async () => {
-        const answers = panel.locator('#messages .assistant');
-        if (await answers.count()) if (!result.final_answer) result.final_answer = await answers.last().innerText();
+        if (!result.final_answer) result.final_answer = turnOutcome(trace).final_answer;
       });
     }
     if (page) {

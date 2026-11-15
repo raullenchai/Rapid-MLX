@@ -20,6 +20,7 @@ export async function connectPanel(context, base, apiKey = '', options = {}) {
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   const id = new URL(worker.url()).host;
   const panel = await context.newPage();
+  options.onPanel?.(panel);
   await panel.goto(`chrome-extension://${id}/panel.html`);
   await panel.waitForFunction(() => document.body.dataset.ready === 'true');
   // First-run onboarding is inline, not a modal. Use its connection action;
@@ -32,7 +33,7 @@ export async function connectPanel(context, base, apiKey = '', options = {}) {
   if (options.maxSteps) await panel.locator('#step-cap').fill(String(options.maxSteps));
   if (process.env.REASONING) await panel.locator('#reasoning').selectOption(process.env.REASONING);
   await panel.getByRole('button',{name:'Save & connect'}).click();
-  await until(async () => /^Connected(?:$|\.)/.test(await panel.locator('#status').textContent()),'engine connection');
+  await waitForConnection(panel);
   await panel.locator('#settings-close').click();
   return panel;
 }
@@ -54,4 +55,19 @@ export async function submitTask(panel, text) {
     const trace = await readTrace(panel);
     return trace?.id !== previous && trace?.task === text;
   },'new task accepted');
+}
+
+// /models and the optional tool probe each have a 15s bound. A probe timeout
+// is a connected-with-warning result, not a particular English status string.
+export async function waitForConnection(panel, wait = until) {
+  await wait(async () => (await panel.locator('body').getAttribute('data-connected')) === 'true', 'engine connection', 35000);
+}
+
+export function turnOutcome(trace) {
+  const events = trace?.events || [];
+  const end = events.findLast(e => e.kind === 'end');
+  const errors = events.filter(e => e.kind === 'error' && !e.aborted).map(e => e.error);
+  return {status:errors.length || end?.status === 'Error' ? 'error' : 'finished',
+    steps:events.filter(e => e.kind === 'tool').length,
+    final_answer:events.findLast(e => e.kind === 'answer')?.text || '', errors};
 }

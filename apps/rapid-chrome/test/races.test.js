@@ -32,9 +32,9 @@ test('shared panel setup uses onboarding and custom mode before filling a readon
           if (selector === '#base') assert.equal(custom,true,'Local URL is readonly until custom is selected');
           values[selector] = value;
         },
-        textContent:async () => {
-          assert.equal(selector,'#status');assert.equal(saved,true);
-          return ++statusReads > 1 ? 'Connected' : 'Connecting…';
+        getAttribute:async name => {
+          assert.equal(selector,'body');assert.equal(name,'data-connected');assert.equal(saved,true);
+          return ++statusReads > 1 ? 'true' : 'false';
         }
       }),
       getByRole:(role,{name}) => ({click:async () => {

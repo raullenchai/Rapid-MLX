@@ -584,14 +584,14 @@ body[data-theme=light] { color-scheme:light }
 #stop { padding:6px 12px; }
 #chat:focus-within { border-color:var(--accent); }
 #message:focus-visible { outline:none; }
-.bubble pre { white-space:pre; max-width:100%; font-size:13px; }
+.bubble pre { white-space:pre-wrap; overflow-wrap:anywhere; max-width:100%; font-size:13px; }
 .code-block { max-width:100%; position:relative; margin:12px 0; }
 .code-block button { font-size:11px; padding:3px 8px; }
 .code-block pre { margin-top:6px; }
 .table-scroll { max-width:100%; overflow-x:auto; }
 table { border-collapse:collapse; white-space:nowrap; }
 th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
-#recovery-command { overflow-x:auto; white-space:pre; background:var(--bg); padding:12px; border-radius:10px; font-size:12px; }
+#recovery-command { overflow-x:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); padding:12px; border-radius:10px; font-size:12px; }
 #tab-icon { width:16px; flex-shrink:0; display:flex; }
 #tab-icon img { width:16px; height:16px; }
 .tab-context { align-items:center; font-size:12px; }
@@ -613,4 +613,13 @@ button svg { display:block; flex-shrink:0 }
 #steps details[data-status=running]>summary::after { content:""; display:inline-block; width:5px; height:5px; border-radius:50%; background:var(--accent); margin-left:8px; animation:pulse 1.6s infinite }
 #panel-menu { position:absolute; right:12px; top:42px; z-index:6; width:min(290px,calc(100% - 24px)); padding:16px; border:1px solid var(--line); border-radius:18px; background:var(--surface); box-shadow:var(--shadow) }
 #panel-menu button { display:block; width:100%; margin-top:8px; text-align:left }
-#activity-elapsed { display:block; font-size:11px; margin-top:4px }
+
+/* Floating conversation controls leave the connection strip as the only header. */
+.thread-head { position:absolute; top:42px; left:12px; right:12px; height:auto; padding:0; background:transparent; box-shadow:none; pointer-events:none; }
+.thread-head .identity { display:none; }
+.thread-head button { pointer-events:auto; background:var(--surface); border:1px solid var(--line); border-radius:50%; }
+#transcript { padding-top:56px; }
+@media(max-width:350px) {
+  #browser-state { order:initial; width:auto; padding-left:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:28%; }
+  .connection-strip { flex-wrap:nowrap; gap:4px; padding-inline:8px; }
+}

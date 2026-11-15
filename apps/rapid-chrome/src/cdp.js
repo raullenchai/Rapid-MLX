@@ -207,11 +207,21 @@ export class BrowserHand {
     if (method === 'Runtime.bindingCalled' && p.name === t.binding) {
       if (p.payload === 'take-over') { await this.pauseForTakeover(); return; }
       if (p.payload === 'heartbeat' && !this.paused && !this.signal?.aborted) {
-        await this.a.send(id,'Runtime.evaluate',{contextId:t.overlayContext,expression:'globalThis.__rapidOverlay?.heartbeat()'}); return;
+        const contextId = t.overlayContext;
+        if (contextId === undefined) return;
+        try { await this.a.send(id,'Runtime.evaluate',{contextId,expression:'globalThis.__rapidOverlay?.heartbeat()'}); }
+        catch (error) {
+          // A navigation can destroy the isolated world while its last heartbeat
+          // is in flight. The next page load installs a fresh overlay.
+          if (!/Cannot find context with specified id|Execution context was destroyed/i.test(error.message)) throw error;
+          if (t.overlayContext === contextId) delete t.overlayContext;
+        }
+        return;
       }
     }
     if (method === 'Page.frameNavigated') {
       if (!p.frame.parentId) {
+        delete t.overlayContext;
         t.mainFrame = p.frame.id; this.invalidate(id);
         if (p.frame.url?.startsWith('chrome-error://')) { t.loadError = p.frame.url; return; }
         delete t.loadError;
@@ -283,7 +293,7 @@ export class BrowserHand {
       const submitters = form ? [...form.elements].filter(el => ['submit','image'].includes(el.type)) : [];
       const recipients = form ? [...form.elements].filter(el => /^(?:to|cc|bcc)$/i.test(el.name || '')).map(el => `${el.name}: ${el.value}`).join('; ').slice(0,500) : '';
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
-      const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.ownerDocument?.querySelector?.('h1')?.textContent || '';
+      const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.closest('[role="dialog"],dialog')?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '';
       return {expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }

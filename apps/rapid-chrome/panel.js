@@ -99,9 +99,8 @@ function render(s, force = false) {
   }));
   $('work-card').hidden = !s.steps.length && !s.running;
   const elapsed = Math.max(0,Math.round(((s.run?.endedAt || Date.now()) - (s.run?.startedAt || Date.now())) / 1000));
-  $('activity-summary').textContent = activityLabels(s.steps,t,s.running,elapsed);
+  $('activity-summary').textContent = activityLabels(s.steps,t,s.running,elapsed) + (s.running ? ` · ${t('elapsedTime',[String(elapsed)])}` : '');
   $('activity-summary').title = activityLabels(s.steps,t,true,elapsed);
-  $('activity-elapsed').textContent = s.running ? t('elapsedTime',[String(elapsed)]) : '';
   const current = s.steps.findLast(step => step.status === 'running');
   $('current-step').textContent = s.running && !s.paused ? (current ? stepLabel(current,t,toolLabel) : t('thinking')) : '';
   renderSteps(document,$('steps'),quietSteps(s.steps),{label:toolLabel,result:displayResult,status:localize,older:n => t('olderSteps',[String(n)]),stepLabel:step => stepLabel(step,t,toolLabel)});
@@ -137,10 +136,8 @@ function render(s, force = false) {
   const model = s.settings.model || 'qwen3.5-4b-4bit';
   const extensionId = chrome.runtime.id || '';
   $('recovery-command').textContent = type === 'cors' ? `rapid-mlx serve ${model} --cors-origins chrome-extension://${extensionId}` : `rapid-mlx serve ${model}`;
-  $('error-elapsed').textContent = t('elapsed',[String(elapsed)]);
   $('recover').textContent = t(incomplete || s.run?.interrupted ? 'reviseTask' : 'reviewSettings');
   $('recover').onclick = () => { if (incomplete || s.run?.interrupted) { $('message').value = s.messages.findLast(m => m.role === 'user')?.content || ''; grow(); $('message').focus(); } else openSettings(); };
-  $('result-tab').hidden = s.running || !s.resultTab;
   if (!s.messages.length) scrollBottom();
   const shouldFollow = follow.update(s.messages,selected());
   unread = follow.unread;
@@ -203,6 +200,7 @@ $('settings-form').onsubmit = async e => {
     if (!allowed) throw new Error('permissionMissing');
     editing = false;
     $('status').textContent = t('connecting');
+    document.body.dataset.connected = 'false';
     send({type:'settings',settings});
   } catch (e) { $('status').textContent = localize(e.message); }
 };
@@ -234,7 +232,6 @@ thread.onpointerdown = () => { follow.follow = false; };
 document.onselectionchange = () => { if (selected()) follow.follow = false; else if (state) { messageSignature = ''; render(state,true); } };
 $('history-toggle').onclick = () => { $('history').hidden = !$('history').hidden; $('history-toggle').setAttribute('aria-expanded',String(!$('history').hidden)); };
 $('help').onclick = () => { $('help-text').hidden = !$('help-text').hidden; };
-$('result-tab').onclick = () => send({type:'result-tab'});
 $('add-context').onclick = () => { contextAdded = !contextAdded; $('context-hint').textContent = contextAdded ? t('contextAdded') : ''; $('add-context').setAttribute('aria-pressed',String(contextAdded)); $('message').focus(); };
 async function activeTab() {
   try {
@@ -268,6 +265,9 @@ function copiedControl(control) {
   setTimeout(() => { control.textContent = original; control.setAttribute('aria-label',original); },1600);
 }
 globalThis.setInterval?.(() => {
-  if (state?.running && state.run?.startedAt) $('activity-elapsed').textContent = t('elapsedTime',[String(Math.max(0,Math.floor((Date.now()-state.run.startedAt)/1000)))]);
+  if (state?.running && state.run?.startedAt) {
+    const seconds = Math.max(0,Math.floor((Date.now()-state.run.startedAt)/1000));
+    $('activity-summary').textContent = `${activityLabels(state.steps,t,true,seconds)} · ${t('elapsedTime',[String(seconds)])}`;
+  }
 },1000);
 export { render };
