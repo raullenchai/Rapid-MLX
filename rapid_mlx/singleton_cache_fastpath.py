@@ -202,6 +202,7 @@ def _copy_exact_layer(cache_obj: Any, *, headroom: int = 0) -> Any:
     """
     if isinstance(cache_obj, RotatingKVCache):
         clone = copy.deepcopy(cache_obj)
+        _admitted_layers.discard(clone)
         for name in _SURFACE_NAMES:
             clone.__dict__.pop(name, None)
         return clone

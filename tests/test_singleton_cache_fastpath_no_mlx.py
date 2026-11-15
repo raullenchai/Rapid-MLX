@@ -84,6 +84,47 @@ def test_raw_and_copied_payloads_are_detached(fastpath):
         assert admitted.state is not raw.state
 
 
+@pytest.mark.parametrize("rotating", [False, True], ids=["kv", "rotating"])
+def test_extracted_exact_layer_is_unowned_and_detached(fastpath, monkeypatch, rotating):
+    gen, _, kv, module = fastpath
+
+    class Array(list):
+        dtype = "float32"
+
+        @property
+        def shape(self):
+            return (1, 1, len(self), 1)
+
+        def __getitem__(self, index):
+            if isinstance(index, tuple):
+                return Array(super().__getitem__(index[1]))
+            return super().__getitem__(index)
+
+    monkeypatch.setattr(module.mx, "contiguous", Array, raising=False)
+    monkeypatch.setattr(
+        module.mx, "zeros", lambda shape, dtype: Array([0] * shape[2]), raising=False
+    )
+    monkeypatch.setattr(
+        module.mx,
+        "concatenate",
+        lambda arrays, axis: Array(value for array in arrays for value in array),
+        raising=False,
+    )
+    kv.step = 256
+    cache_type = module.RotatingKVCache if rotating else kv
+    [owned] = gen._merge_caches([[cache_type()]])
+    owned.keys, owned.values = Array([1, 2]), Array([3, 4])
+    owned.offset = 2
+
+    payload = owned.extract(0)
+    assert payload not in module._admitted_layers
+    [admitted] = gen._extend_cache([], [payload])
+    assert admitted is not payload
+    assert admitted in module._admitted_layers
+    admitted.keys[0], admitted.values[0] = 9, 10
+    assert payload.keys == [1, 2] and payload.values == [3, 4]
+
+
 def test_unknown_wrapper_with_owned_child_still_detaches(fastpath):
     gen, native, _, _ = fastpath
     [child] = gen._merge_caches([[native()]])
