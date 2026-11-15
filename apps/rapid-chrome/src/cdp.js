@@ -544,11 +544,16 @@ export class BrowserHand {
   }
   async execute(name,args,signal) {
     if (name === 'read_page') { this.signal = signal; return this.freshRead(args,signal); }
-    if (['wait','scroll'].includes(name)) {
+    if (['wait','scroll','navigate','open_tab'].includes(name)) {
       const result = await this.executeCore(name,args,signal);
-      if (!this.tabs.has(args.tabId ?? this.active)) return result;
-      const observation = await this.freshRead({tabId:args.tabId ?? this.active},signal);
-      return {...result,text:`${result.text}. Fresh observation:\n${observation.text}`};
+      const id = result.tabId ?? args.tabId ?? this.active;
+      if (!this.tabs.has(id)) return result;
+      if (['navigate','open_tab'].includes(name)) await this.settle(id);
+      const observation = await this.freshRead({tabId:id},signal);
+      // Navigation can return before commit. Do not present its old URL/title
+      // as the final state; the outline is the authoritative fresh observation.
+      const meta = await this.meta(id);
+      return {...result,...meta,text:`${result.text}. Fresh observation:\n${observation.text}`};
     }
     if (!['click','fill','press'].includes(name)) return this.executeCore(name,args,signal);
     this.signal = signal;

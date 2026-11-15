@@ -59,8 +59,12 @@ export function classifyTarget(target = {}) {
   const search = /\b(search|go|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search';
   const genericSubmit = /\bsubmit\b|提交/iu.test([target.name,target.label].filter(Boolean).join(' ')) || (target.type === 'submit' && Boolean(target.method || target.action || target.form || target.submitter));
   const calendarDate = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:[\s,]+(?:\d{1,4}|MON|TUE|WED|THU|FRI|SAT|SUN|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))*$/i.test(own);
+  // Exact preparatory labels on non-submitting buttons outside forms. Final
+  // saves/cancellations and all financial/sensitive context remain gated.
+  const preparation = target.type === 'button' && !target.form && !target.formName && !target.action && !target.method && !target.submitter &&
+    /^(?:Create event|[A-Z]{1,3}\d{1,3}\s+[—–-]\s+[$€£¥]\s*\d+(?:[.,]\d{2})?)$/i.test(own);
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
-  const ambiguous = (target.role === 'button' || target.type === 'button') && !(disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
+  const ambiguous = (target.role === 'button' || target.type === 'button') && !(preparation || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
   return { search, financial, consequential: destructive.test(own) || explicit || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
@@ -90,7 +94,9 @@ export class NavigationPolicy {
     const root = url.pathname === '/' && !url.search;
     const searchPath = /^(?:\/s|\/search|\/search\/|\/site\/searchpage\.jsp|\/travel\/flights)$/i.test(url.pathname);
     const search = searchPath && ['q','k','st','query','search'].some(k => url.searchParams.get(k)?.trim());
-    if (root || search) return; // A new origin must then receive site approval.
+    const wikiSearch = url.pathname === '/w/index.php' && Boolean(url.searchParams.get('search')?.trim()) &&
+      [...url.searchParams.keys()].every(k => k === 'search');
+    if (root || search || wikiSearch) return; // A new origin must then receive site approval.
     throw new Error('unobserved_url: URL was not supplied by the user or seen as an href in an outline in this task. Click a link from the page or use site search; do not invent product or venue URLs.');
   }
 }

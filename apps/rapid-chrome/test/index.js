@@ -30,3 +30,5 @@ import './round-c.test.js';
 import './security-review.test.js';
 
 import './perception.test.js';
+
+import './round-d.test.js';

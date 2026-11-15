@@ -11,7 +11,10 @@ export function commercePrices(root, byId) {
     const text = String(value(n.name) || '');
     const struck = ['deletion','strikethrough'].includes(value(n.role));
     const role = struck ? 'was' : inherited;
-    const children = (n.childIds || []).map(id => byId.get(id)).filter(Boolean);
+    // InlineTextBox is Chromium's layout copy of its StaticText parent, not
+    // another semantic price. Otherwise every real price is assigned only to
+    // a layout node which the outline deliberately omits.
+    const children = (n.childIds || []).map(id => byId.get(id)).filter(c => c && value(c.role) !== 'InlineTextBox');
     const ownPrices = [...text.matchAll(money)];
     // Aggregate container names often duplicate every price below them.
     if (ownPrices.length && !children.some(c => /[$€£¥]\s*\d|\d[.,]\d{2}\s*(?:USD|EUR)/.test(String(value(c.name) || '')))) {
@@ -54,7 +57,7 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const textOf = n => [...new Set(descendants(n).filter(c => value(c.role) !== 'InlineTextBox').map(nameOf).filter(Boolean))].join(' ');
   const termsOf = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
   const queryTerms = termsOf(query);
-  const queryMatch = text => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) || queryTerms.every(t => termsOf(text).includes(t));
+  const queryMatch = text => text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) || (queryTerms.length > 0 && queryTerms.every(t => termsOf(text).includes(t)));
   const contextNodes = new Set();
   if (query) for (const node of nodes) {
     if (!nameOf(node) || !queryMatch(nameOf(node))) continue;
@@ -64,7 +67,7 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
       seen.add(parent);
       if (textOf(parent).length > 2400) break;
       block = parent;
-      if (['paragraph','row','listitem','article','gridcell'].includes(value(parent.role)) && textOf(parent) !== nameOf(node)) break;
+      if (['paragraph','row','cell','listitem','article','gridcell'].includes(value(parent.role)) && textOf(parent) !== nameOf(node)) break;
       parent = parents.get(parent);
     }
     for (const n of descendants(block)) contextNodes.add(n);
@@ -95,6 +98,10 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const cardCandidate = n => {
     if (!cardRoles.has(value(n.role))) return false;
     const all = descendants(n).filter(c => !c.ignored);
+    // A page/section containing a promotion is not a product. In particular,
+    // never hide address/search fields or document editing controls in a card.
+    if (all.some(c => ['main','navigation','banner','contentinfo','textbox','searchbox','combobox','dialog','alertdialog'].includes(value(c.role))) ||
+        all.filter(c => value(c.role) === 'heading').length > 1 || textOf(n).length > 6000) return false;
     return all.some(c => (['heading','link'].includes(value(c.role)) && nameOf(c)) || (value(c.role) === 'button' && /^add \d+ (?:ct|count|pack) /i.test(nameOf(c)))) &&
       all.some(c => /[$€£¥]\s*\d|\d[.,]\d{2}\s*(?:USD|EUR)/.test(nameOf(c))) &&
       (['listitem','article','gridcell'].includes(value(n.role)) || all.some(c => value(c.role) === 'button'));
@@ -126,14 +133,20 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
       const primary = links.find(n => !/[$€£¥]|more buying choices|other (?:offers|sellers)|used.*new/i.test(nameOf(n))) || links[0];
       const details = usable.filter(n => (prices.has(n) || (!interactive.has(value(n.role)) && !/[$€£¥]/.test(nameOf(n)))) && /[$€£¥]\s*\d|\d[.,]\d{2}|\bstars?\b|\bratings?\b|\breviews?\b/i.test(nameOf(n)));
       const controls = usable.filter(n => interactive.has(value(n.role)) && n !== primary && n.backendDOMNodeId);
+      // Keep stock, usage dates, sender/body text and offer qualifications too.
+      // Search must not find text in a card and then silently omit that text.
+      const prose = usable.filter(n => !interactive.has(value(n.role)) &&
+        !(n.childIds || []).some(id => byId.get(id) && value(byId.get(id).role) !== 'InlineTextBox'));
       let shortened = false, size = 0;
       const headings = usable.filter(n => value(n.role) === 'heading');
-      for (const n of [...headings,primary,...details,...controls].filter(Boolean)) {
-        const label = interactive.has(value(n.role)) ? nameOf(n) : prices.get(n) || nameOf(n);
+      for (const n of [...headings,primary,...details,...controls,...prose].filter(Boolean)) {
+        const price = interactive.has(value(n.role)) ? '' : prices.get(n);
+        const label = price ? `${price} — ${nameOf(n)}` : nameOf(n);
         if (names.has(label)) continue;
         const control = interactive.has(value(n.role)) && n.backendDOMNodeId;
         const ref = control ? refFor(n) : null;
-        const part = control ? `[${ref}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}${linkText(n)}` : label.slice(0,300);
+        const content = (n.properties || []).some(p => p.name === 'protected' && value(p.value)) ? '[protected]' : String(value(n.value) ?? '').slice(0,300);
+        const part = control ? `[${ref}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}${content ? ` value=${JSON.stringify(content)}` : ''}${linkText(n)}` : label.slice(0,300);
         if (size+part.length > 1400) { shortened = true; continue; }
         if (control) targets.push([ref,{backendDOMNodeId:n.backendDOMNodeId,name:nameOf(n),role:value(n.role),href:hrefOf(n)}]);
         parts.push(part); size += part.length+3; names.add(label);
@@ -161,8 +174,8 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   // prose (e.g. airline + price + times). Normalize punctuation and thin spaces.
   const words = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
   const terms = words(query);
-  const matches = e => !terms.length || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
-    terms.every(term => words(e.search).includes(term));
+  const matches = e => !query || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
+    (terms.length > 0 && terms.every(term => words(e.search).includes(term)));
   const noMatch = Boolean(query) && !entries.some(matches);
   const filtered = entries.filter(e => noMatch || e.priority || e.context || matches(e));
   // Stable sort preserves each region's document order. Visible main content,
