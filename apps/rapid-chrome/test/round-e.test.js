@@ -80,11 +80,66 @@ test('shared tabs, transactional tasks, unknown intent and transactional history
   }
 });
 
+test('shared information tab navigated by the agent gets one check fallback, reset each turn', async () => {
+  const {hand,signal,pauses,task,setChecked} = setup({created:false});
+  hand.settle = async () => {};
+  await hand.begin(signal,task);
+  const first = await hand.execute('navigate',{url:'https://search.test/search?q=weather'},signal);
+  assert.match(first.text,/human_check:.*one independent source/);
+  assert.equal(pauses.length,0);
+  assert.equal(hand.tabs.get(1).refs.size,0);
+  await assert.rejects(hand.execute('press',{key:'Enter'},signal),/human_check/);
+  await hand.execute('navigate',{url:'https://weather.test/'},signal);
+  assert.equal(pauses.length,1,'a second source check must pause');
+  setChecked(true);
+  await hand.begin(signal,task);
+  await hand.execute('read_page',{},signal);
+  assert.equal(pauses.length,2,'last turn navigation must not grant a new fallback');
+});
+
+test('agent navigation does not grant a transactional task a check fallback', async () => {
+  const {hand,signal,pauses,task} = setup({created:false,task:'Find and cancel a subscription'});
+  hand.settle = async () => {};
+  await hand.begin(signal,task);
+  await hand.execute('navigate',{url:'https://search.test/search?q=subscriptions'},signal);
+  assert.equal(pauses.length,1);
+  assert.equal(hand.humanCheckOffered,false);
+});
+
+test('only agent-attributed input navigation grants a shared tab check fallback', async () => {
+  for (const agent of [false,true]) {
+    const {hand,signal,pauses,task} = setup({created:false});
+    await hand.begin(signal,task);
+    const tab = hand.tabs.get(1);
+    tab.mainFrame = 'main';
+    tab.agentInputUntil = agent ? Date.now()+1500 : 0;
+    await hand.event(1,'Page.frameRequestedNavigation',{frameId:'main',reason:'anchorClick',url:'https://search.test/'});
+    const result = await hand.execute('read_page',{},signal);
+    assert.equal(result.human_check === true,agent);
+    assert.equal(pauses.length,agent ? 0 : 1);
+  }
+});
+
+test('denied navigation cannot grant a shared tab check fallback', async () => {
+  const {hand,signal,pauses,task} = setup({created:false});
+  await hand.begin(signal,task);
+  hand.approve = async () => false;
+  await assert.rejects(hand.execute('navigate',{url:'https://other.test/'},signal),/denied/);
+  hand.approve = async () => true;
+  await hand.execute('read_page',{},signal);
+  assert.equal(pauses.length,1);
+  assert.equal(hand.humanCheckOffered,false);
+});
+
 test('subscription harness permits only exact expected cancellation cards', () => {
   const scenario = {id:'fixture-subscriptions',checks:{approval_expected:'/Confirm cancellation/i',approval_decision:'allow'}};
   for (const label of ['Cancel StreamPlus','Confirm cancellation'])
     assert.equal(scenarioApproval(scenario,`Your approval is needed\nClick '${label}' on 127.0.0.1?\nAllow onceDeny`),'approved');
+  for (const value of ['[masked]','streamplus'])
+    assert.equal(scenarioApproval(scenario,`Your approval is needed\n\nAllow submitting the form?\n\nClick 'Confirm cancellation' on 127.0.0.1? Form values: id: ${value}\n\nhttp://127.0.0.1:52078\nAllow onceDeny`),'approved');
   for (const card of ["Click 'Cancel MusicNow' on 127.0.0.1?", "Click 'Cancel StreamPlus and delete account' on 127.0.0.1?", "Click 'Cancel StreamPlus' on evil.test?", 'Confirm cancellation', "Click 'Keep subscription' on 127.0.0.1?\nConfirm cancellation", 'Add to cart', 'Send'])
+    assert.equal(scenarioApproval(scenario,card),'denied',card);
+  for (const card of ["Click 'Confirm cancellation' on evil.test? Form values: id: streamplus", "Click 'Cancel MusicNow' on 127.0.0.1? Form values: id: streamplus", "Click 'Keep subscription' on 127.0.0.1? Form values: id: Confirm cancellation", "Click 'Confirm cancellation and delete account' on 127.0.0.1? Form values: id: streamplus", "Click 'Confirm cancellation' on 127.0.0.1? and delete account"])
     assert.equal(scenarioApproval(scenario,card),'denied',card);
 });
 

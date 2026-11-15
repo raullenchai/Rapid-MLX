@@ -130,6 +130,8 @@ export class BrowserHand {
     if (!this.tabs.get(id)?.attached) throw new Error('tab_taken_over: user owns this tab now');
     const value = await this.a.send(id, method, params);
     this.check();
+    if (['Page.navigate','Page.reload','Page.navigateToHistoryEntry'].includes(method) && !value.errorText)
+      this.tabs.get(id).navigatedThisTurn = true;
     if (method === 'Page.navigate' && value.errorText) {
       await this.challenge(detectChallenge({url:params.url,error:`navigation_failed: ${value.errorText}`}));
       await this.executeCore('read_page',{tabId:id},this.signal);
@@ -188,7 +190,7 @@ export class BrowserHand {
       const owned = this.tabs.get(this.active);
       if (owned.grantedOrigin && owned.grantedOrigin === new URL(tab.url).origin) this.sites.add(owned.grantedOrigin);
     }
-    for (const [id] of this.tabs) { await this.own(id); this.invalidate(id); await this.showOverlay(id,true); }
+    for (const [id,tab] of this.tabs) { tab.navigatedThisTurn = false; await this.own(id); this.invalidate(id); await this.showOverlay(id,true); }
   }
   async showOverlay(id, show) {
     try { await this.a.inject(id,show,[t('overlayWorking'),t('stop'),t('takeOver')]); return; } catch { /* Host permission is deliberately absent for arbitrary sites. */ }
@@ -249,6 +251,7 @@ export class BrowserHand {
     if (method === 'Page.frameRequestedNavigation' && p.frameId === t.mainFrame &&
         t.agentInputUntil > Date.now() && (['anchorClick','formSubmissionGet','formSubmissionPost'].includes(p.reason) || (p.reason === 'scriptInitiated' && t.dispatchingInput))) {
       t.agentNavigation = p.url;
+      t.navigatedThisTurn = true;
       t.agentInputUntil = 0;
     }
     if (method === 'Page.loadEventFired' && this.signal && !this.signal.aborted) await this.showOverlay(id,true);
@@ -373,7 +376,8 @@ export class BrowserHand {
       const sensitiveField = el => el.type === 'password' || /^(?:cc-|current-password|new-password)/i.test(el.autocomplete || '') || /password|cvv|cvc|card.?number|security.?code/i.test(el.name+' '+el.id);
       const sensitiveForm = fields.some(sensitiveField);
       const paymentForm = fields.some(el => /(?:^|\s)cc-|credit.?card|card.?number|card.?holder|security.?code|\bcvv\b|\bcvc\b|routing|bank.?account|iban|信用卡|银行卡|銀行卡|卡号|卡號/i.test([el.name,el.id,el.autocomplete].join(' ')));
-      const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${(v.type === 'hidden' && !/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(v.name)) || /password|cc-|cvv|cvc|card|token|secret|account|routing|iban/i.test(v.name+' '+v.type) || fields.some(el => (el.name || el.id || '') === v.name && sensitiveField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
+      const maskedField = el => sensitiveField(el) || /password|passwd|cc-|cvv|cvc|card|token|secret|ssn|social.?security|account[\s_-]*(?:number|num|no)|bank[\s_-]*account|routing|iban/i.test([el.name,el.id,el.autocomplete,el.type].join(' '));
+      const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${fields.some(el => (el.name || el.id || '') === v.name && maskedField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
       const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.closest('[role="dialog"],dialog')?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '';
       return {values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
@@ -668,7 +672,7 @@ export class BrowserHand {
         this.invalidate(id);
         if (blocked.kind === 'human_check') {
           t.humanCheckHost = new URL(tab.url).hostname;
-          if (t.created && this.informationOnly && !this.humanCheckOffered) {
+          if ((t.created || t.navigatedThisTurn) && this.informationOnly && !this.humanCheckOffered) {
             this.humanCheckOffered = true;
             return {text:`human_check: ${t.humanCheckHost} requires a human check. Do not interact with, solve, or bypass it. Leave this site alone. You may try one independent source using a site root/search or an observed/user-supplied URL (URL provenance and site approval still apply), or ask the user. If that source is also blocked or insufficient, ask the user.`,human_check:true};
           }

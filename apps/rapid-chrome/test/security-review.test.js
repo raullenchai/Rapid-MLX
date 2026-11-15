@@ -120,6 +120,26 @@ function formFixture() {
   return {fields,node};
 }
 
+test('approval form details show ordinary hidden ids and mask only sensitive-looking fields', async () => {
+  const {fields,node} = formFixture();
+  const ordinary = ['id','subscription_id','customer_id','account_id'];
+  const sensitive = ['card_number','cvv','password','ssn','account_number','routing_number','csrf_token','access_token','secret'];
+  for (const name of [...ordinary,...sensitive]) fields.push({tagName:'INPUT',name,type:'hidden',value:`value-${name}`});
+  fields.push({tagName:'INPUT',name:'credential',type:'password',value:'private-password'});
+  const {hand} = setup();
+  delete hand.inspect;
+  hand.call = async (_,__,fn) => runInNewContext(`(${fn}).call(node)`,{node});
+  const info = await hand.inspect(1,{objectId:'submit'});
+  for (const name of ordinary) assert.ok(info.details.includes(`${name}: value-${name}`),name);
+  for (const name of sensitive) {
+    assert.ok(info.details.includes(`${name}: [masked]`),name);
+    assert.ok(!info.details.includes(`value-${name}`),name);
+  }
+  assert.ok(info.details.includes('credential: [masked]'));
+  assert.ok(!info.details.includes('private-password'));
+  assert.equal(info.values.find(v => v.name === 'id').value,'value-id','approval binding retains raw ids');
+});
+
 test('P1 actual inspection binds hidden, input and select transaction values and masks sensitive card details', async () => {
   for (const index of [0,1,2,3,4,5,6,'selected']) {
     const {fields,node} = formFixture();
