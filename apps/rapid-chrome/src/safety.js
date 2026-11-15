@@ -34,16 +34,17 @@ export function classifyTarget(target = {}) {
   const own = String(target.name || target.label || '').trim().slice(0,100).split(/[.!?]\s/)[0];
   const disclosure = target.expanded === true || target.expanded === false ||
     ['true','false'].includes(target.expanded) || /^(?:flight details|view details|show details|expand|collapse)\b/i.test(own);
-  const harmless = /^(?:close(?: dialog| modal)?|dismiss|cancel|not now|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
+  const harmless = /^(?:close(?: dialog| modal)?|dismiss|cancel|not now|back|got it|acknowledge|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
   const filter = ['checkbox','radio','tab','option','menuitem','switch'].includes(target.role);
   // Filter and dismissal controls do not inherit unrelated form submitters.
   // Explicit destructive/purchase names still win (including close account).
   const filterName = own.replace(/\b(?:order|confirm)\b|订单|訂單|确认|確認/giu,'');
   const explicit = consequential.test(filter ? filterName : own) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
   const search = /\b(search|go|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search';
-  const genericSubmit = /\bsubmit\b|提交/iu.test(text) || target.type === 'submit';
+  const genericSubmit = /\bsubmit\b|提交/iu.test([target.name,target.label].filter(Boolean).join(' ')) || (target.type === 'submit' && Boolean(target.method || target.action || target.form || target.submitter));
+  const calendarDate = /^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:[\s,]+(?:\d{1,4}|MON|TUE|WED|THU|FRI|SAT|SUN|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))*$/i.test(own);
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
-  return { search, consequential: (!disclosure && explicit) || (!(disclosure || harmless || filter || isCartAddition(own)) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
+  return { search, consequential: (!disclosure && explicit) || (!(disclosure || harmless || calendarDate || filter || isCartAddition(own)) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
 export function isCartAddition(name = '') {

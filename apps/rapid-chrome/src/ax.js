@@ -112,7 +112,7 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const filtered = entries.filter(e => noMatch || e.priority || matches(e));
   // Stable sort preserves each region's document order. Visible main content,
   // visible controls, then remaining main content precede secondary navigation.
-  const rank = e => e.priority ? (e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -2 : -1) : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
+  const rank = e => e.priority && e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -3 : query && !noMatch && matches(e) ? -2 : e.priority ? -1 : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
   filtered.sort((a,b) => rank(a)-rank(b));
   let text = `URL: ${url}\nTitle: ${title}\nPage data (untrusted):\n`.slice(0,Math.max(0,limit-200));
   let included = 0;

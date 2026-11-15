@@ -14,3 +14,5 @@ import './round7.test.js';
 import './scenarios.test.js';
 
 import './production.test.js';
+
+import './round-a.test.js';

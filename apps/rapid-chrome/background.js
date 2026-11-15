@@ -102,7 +102,7 @@ async function models(signal, probe = true, discover = false) {
       }});
       Object.assign(state.settings,{base:result.base,model:result.model});
       state.models = result.models; state.connected = true;
-      state.status = t('connected'); await chrome.storage.local.set({settings:state.settings}); publish(); return;
+      state.status = result.warning ? t(result.warning) : t('connected'); await chrome.storage.local.set({settings:state.settings}); publish(); return;
     } catch (e) { failure = e; if (e.message !== 'unreachable' && e.message !== 'permissionMissing') break; }
   }
   throw failure;

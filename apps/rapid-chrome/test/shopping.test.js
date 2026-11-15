@@ -78,7 +78,7 @@ function shoppingHand() {
   return {hand,approvals,commands,count:() => additions,allow:() => {allowed = true;}};
 }
 
-test('fresh-ref repeated add requires approval before dispatch; approval is one-shot; new task resets', async () => {
+test('fresh-ref repeated add denial persists; new task resets denial and addition history', async () => {
   const {hand,approvals,count,allow} = shoppingHand();
   await hand.execute('read_page',{},hand.signal);
   const result = await hand.execute('click',{ref:'e1'},hand.signal);
@@ -86,15 +86,16 @@ test('fresh-ref repeated add requires approval before dispatch; approval is one-
   assert.match(result.text,/e2/); assert.deepEqual(result.effect.counters,[{before:'Cart 0',after:'Cart 1'}]);
   await assert.rejects(hand.execute('click',{ref:'e2'},hand.signal),/denied/);
   assert.equal(count(),1); assert.equal(approvals[0].action,'Add another one? (already added once)');
-  allow(); await hand.execute('click',{ref:'e2'},hand.signal);
-  assert.equal(count(),2); assert.equal(approvals.length,2);
-  await hand.execute('click',{ref:'e3'},hand.signal);
-  assert.equal(approvals.length,3);
+  allow(); await assert.rejects(hand.execute('click',{ref:'e3'},hand.signal),/already denied/);
+  assert.equal(count(),1); assert.equal(approvals.length,1);
   hand.own = async () => {}; hand.showOverlay = async () => {};
   await hand.begin(hand.signal);
   await hand.execute('read_page',{},hand.signal);
   await hand.execute('click',{ref:'e5'},hand.signal);
-  assert.equal(approvals.length,3);
+  assert.equal(count(),2); assert.equal(approvals.length,1);
+  await hand.execute('click',{ref:'e6'},hand.signal);
+  await hand.execute('click',{ref:'e7'},hand.signal);
+  assert.equal(count(),4); assert.equal(approvals.length,3);
 });
 
 test('keyboard activation cannot bypass the add guard', async () => {
@@ -104,7 +105,7 @@ test('keyboard activation cannot bypass the add guard', async () => {
   const send = hand.a.send;
   hand.a.send = async (id,method,params) => method === 'Runtime.evaluate' ? {result:{objectId:'button'}} : send(id,method,params);
   for (const key of ['Enter','Space']) await assert.rejects(hand.execute('press',{key},hand.signal),/denied/);
-  assert.equal(count(),1); assert.equal(approvals.length,2);
+  assert.equal(count(),1); assert.equal(approvals.length,1);
 });
 
 test('dialogs and their controls outrank page clutter and survive product queries', () => {

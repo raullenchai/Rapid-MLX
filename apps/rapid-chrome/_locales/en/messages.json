@@ -218,6 +218,9 @@
   "noModels": {
     "message": "The endpoint has no loaded models. Load a model and test again."
   },
+  "toolProbeTimeout": {
+    "message": "Connected. Warning: the tool-calling test timed out; tool support is unverified."
+  },
   "noTools": {
     "message": "No tool-calling support detected: the model did not return the requested test tool call. Choose a model with tool support."
   },

@@ -7,6 +7,7 @@ import { scenarioFixtures, fakeEngine } from './e2e/fixtures.mjs';
 import { initialState, mutate } from './e2e/sites/index.mjs';
 import { validateScenarios, selectScenarios, scenarioApproval, evaluate, runSuite, scorecard, pattern } from './e2e/scenarios.mjs';
 import { runAgent } from '../src/agent.js';
+import { testConnection } from '../src/endpoint.js';
 const catalog=JSON.parse(await readFile(new URL('./e2e/scenarios.json',import.meta.url),'utf8'));
 const byId=id=>catalog.find(s=>s.id===id);
 const result=(extra={})=>({status:'finished',steps:4,seconds:2,final_answer:'Done',approvals:[],errors:[],...extra});
@@ -100,11 +101,32 @@ test('fixture effects enforce conflicts, required fields, stock and multi-step f
 });
 
 const tool=(name,args,id)=>({role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]});
+
+test('fake engines answer repeated connection probes without consuming tasks or outlines',async()=>{
+  for(const script of [undefined,[{role:'assistant',content:'First scripted task'}]]) {
+    const engine=await fakeEngine({script});
+    try {
+      const settings={base:engine.base,model:'fixture-model'};
+      for(let i=0;i<2;i++)await testConnection(settings,{permissions:{contains:async()=>true}});
+      assert.deepEqual(engine.state,{requests:[],outlines:[],held:false,aborted:false});
+      const response=await fetch(engine.base+'/v1/chat/completions',{method:'POST',body:JSON.stringify({messages:[{role:'user',content:'Deny test'}]})});
+      assert.equal(response.status,200);
+      const {choices:[{message}]}=await response.json();
+      if(script)assert.equal(message.content,'First scripted task');
+      else assert.equal(message.tool_calls[0].function.name,'read_page');
+      assert.equal(engine.state.requests.length,1);
+      await testConnection(settings,{permissions:{contains:async()=>true}});
+      assert.equal(engine.state.requests.length,1);
+      assert.deepEqual(engine.state.outlines,[]);
+    } finally {await engine.close();}
+  }
+});
 // A small HTTP-backed hand replaces CDP only. The real agent protocol, engine
 // transport, approvals, fixtures, suite orchestration and checks run normally.
 function scriptedExecutor(engine,actions) {
   return async(task,out,options)=>{
     const approvals=[],events=[],started=Date.now();
+    await testConnection({base:engine.base,model:'fixture-model'},{permissions:{contains:async()=>true}});
     const final_answer=await runAgent({settings:{base:engine.base,model:'fixture-model',stepCap:options.maxSteps},task:task.task,signal:new AbortController().signal,
       trace:async e=>events.push(e),execute:async(name,args)=>{
         if(name==='read_page')return {text:await (await fetch(task.start_url)).text()};

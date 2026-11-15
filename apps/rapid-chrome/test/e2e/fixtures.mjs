@@ -46,7 +46,12 @@ export async function fakeEngine({script} = {}) {
     if (req.url !== '/v1/chat/completions') {res.writeHead(404);res.end('{}');return;}
     let raw = ''; for await (const chunk of req) raw += chunk;
     try {
-      const body = JSON.parse(raw); state.requests.push(body);
+      const body = JSON.parse(raw);
+      if (body.tools?.length === 1 && body.tools[0]?.function?.name === 'rapid_connection_test') {
+        res.end(JSON.stringify({choices:[{message:{role:'assistant',content:null,tool_calls:[{id:'connection-test',type:'function',function:{name:'rapid_connection_test',arguments:'{"ok":true}'}}]}}]}));
+        return;
+      }
+      state.requests.push(body);
       if (script) {
         const step = script[state.requests.length-1];
         if (!step) throw Error('Script exhausted');

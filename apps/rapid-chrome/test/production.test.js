@@ -19,7 +19,7 @@ test('endpoint origins allow HTTPS and only specified private HTTP ranges', () =
   assert.deepEqual(LOCAL_ENDPOINTS,['http://127.0.0.1:8000','http://127.0.0.1:7659']);
   const manifest = JSON.parse(read('manifest.json'));
   assert.deepEqual(manifest.optional_host_permissions,['https://*/*','http://*/*']);
-  assert.equal(manifest.host_permissions,undefined);
+  assert.deepEqual(manifest.host_permissions,['http://127.0.0.1/*','http://localhost/*']);
 });
 
 test('connection checks permission before fetch and probes a single non-browser tool', async () => {
@@ -49,6 +49,40 @@ test('connection failures identify auth, access, invalid payloads, empty models 
   for (const calls of [[],[{function:{name:'wrong',arguments:'{"ok":true}'}}],[{function:{name:'rapid_connection_test',arguments:'not JSON'}}]]) {
     await assert.rejects(testConnection(settings,{permissions,fetchImpl:async url => reply(url.endsWith('/models') ? {data:[{id:'m'}]} : {choices:[{message:{tool_calls:calls}}]})}),/noTools/);
   }
+});
+
+test('connection accepts tool calls alongside content without a tool_choice acknowledgement', async () => {
+  const result = await testConnection(settings,{permissions,fetchImpl:async url => reply(url.endsWith('/models') ? {data:[{id:'m'}]} : {choices:[{finish_reason:'stop',message:{content:'Here is the test call.',tool_calls:[{function:{name:'rapid_connection_test',arguments:'{"ok":true}'}}]}}]})});
+  assert.equal(result.model,'m');
+  assert.equal(result.warning,undefined);
+});
+
+test('probe timeouts warn after model discovery; discovery failures and cancellation still reject', async () => {
+  const originalTimeout = AbortSignal.timeout;
+  try {
+    // Expire only the probe signal, including while reading the response body.
+    for (const phase of ['fetch','json']) {
+      let n = 0;
+      AbortSignal.timeout = ms => {
+        assert.equal(ms,15000);
+        return ++n === 2 ? AbortSignal.abort(new DOMException('Timed out','TimeoutError')) : new AbortController().signal;
+      };
+      const result = await testConnection(settings,{permissions,fetchImpl:async (url,{signal}) => {
+        if (url.endsWith('/models')) return reply({data:[{id:'m'}]});
+        if (phase === 'fetch') signal.throwIfAborted();
+        return {ok:true,status:200,json:async () => {signal.throwIfAborted();}};
+      }});
+      assert.equal(result.model,'m');
+      assert.equal(result.warning,'toolProbeTimeout');
+    }
+    AbortSignal.timeout = () => AbortSignal.abort(new DOMException('Timed out','TimeoutError'));
+    await assert.rejects(testConnection(settings,{permissions,fetchImpl:async (_url,{signal}) => {signal.throwIfAborted();}}),/unreachable/);
+    const controller = new AbortController();
+    await assert.rejects(testConnection(settings,{permissions,signal:controller.signal,fetchImpl:async url => {
+      if (url.endsWith('/models')) return reply({data:[{id:'m'}]});
+      controller.abort(); controller.signal.throwIfAborted();
+    }}),/unreachable/);
+  } finally {AbortSignal.timeout = originalTimeout;}
 });
 
 test('reasoning options omit off effort; agent requests and traces protect credentials', async () => {
@@ -153,6 +187,12 @@ test('build produces a deterministic installable archive and rejects missing ref
     }
     assert.deepEqual(entries,[...entries].sort()); assert.ok(entries.includes('manifest.json'));assert.ok(entries.includes('_locales/zh_CN/messages.json'));
     assert.equal(entries.some(e => /test|store|scripts|dist/.test(e)),false);
+    const manifestPath = path.join(scratch,'manifest.json');
+    const manifestText = fs.readFileSync(manifestPath,'utf8');
+    const wider = JSON.parse(manifestText);wider.host_permissions.push('http://*/*');
+    fs.writeFileSync(manifestPath,JSON.stringify(wider));
+    assert.match(build().stderr,/Required hosts must be limited to HTTP loopback/);
+    fs.writeFileSync(manifestPath,manifestText);
     fs.appendFileSync(path.join(scratch,'panel.js'),"\nimport './missing.js';\n");
     const broken = build();assert.notEqual(broken.status,0);assert.match(broken.stderr,/Missing referenced file: missing.js/);
     fs.rmSync(path.join(scratch,'icons/16.png'));

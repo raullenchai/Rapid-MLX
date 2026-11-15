@@ -35,6 +35,43 @@ export function canActivate() {
     r.width > 0 && r.height > 0;
 }
 
+// Fixed browser code, executed only on the resolved and gated control. Native
+// selects/options and segmented date inputs cannot be edited with insertText.
+export function fillNative(text, choose) {
+  let e = this;
+  if (text === undefined && e.tagName !== 'OPTION') return {handled:false};
+  if (e.tagName === 'OPTION' && text === undefined) text = e.value;
+  if (e.tagName === 'OPTION') e = e.closest('select');
+  const host = e?.getRootNode?.()?.host;
+  if (host?.tagName === 'INPUT' && ['date','time','datetime-local'].includes(host.type)) e = host;
+  if (!e || !(e.tagName === 'SELECT' || (e.tagName === 'INPUT' && ['date','time','datetime-local'].includes(e.type)))) return {handled:false};
+  if (!e.isConnected || !e.getClientRects().length) return {handled:true,error:'hidden_control: use a visible native control'};
+  if (e.disabled || e.readOnly || e.closest('[inert],[aria-disabled="true"]')) return {handled:true,error:'disabled_control: choose an enabled editable control'};
+  let wanted = text;
+  if (e.tagName === 'SELECT') {
+    const normalize = s => String(s).normalize('NFKC').trim().toLocaleLowerCase();
+    const query = normalize(choose || text);
+    const options = [...e.options].filter(o => !o.disabled && !o.parentElement?.disabled);
+    let matches = options.filter(o => normalize(o.value) === query || normalize(o.label) === query);
+    if (!matches.length) matches = options.filter(o => normalize(o.label).includes(query));
+    if (!query || matches.length !== 1) return {handled:true,error:'option_not_unique: use one exact enabled option label or value'};
+    wanted = matches[0].value;
+  } else {
+    const format = e.type === 'date' ? /^\d{4}-\d{2}-\d{2}$/ : e.type === 'time' ? /^\d{2}:\d{2}(?::\d{2})?$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
+    if (!format.test(text)) return {handled:true,error:`invalid_value: ${e.type} requires ${e.type === 'date' ? 'YYYY-MM-DD' : e.type === 'time' ? 'HH:mm (24-hour)' : 'YYYY-MM-DDTHH:mm'}; fill the whole field, not a segment`};
+  }
+  const proto = e.tagName === 'SELECT' ? e.ownerDocument.defaultView.HTMLSelectElement.prototype : e.ownerDocument.defaultView.HTMLInputElement.prototype;
+  const previous = e.value;
+  Object.getOwnPropertyDescriptor(proto,'value').set.call(e,wanted);
+  if (e.value !== wanted) {
+    Object.getOwnPropertyDescriptor(proto,'value').set.call(e,previous);
+    return {handled:true,error:'invalid_value: browser rejected the value; use a valid date/time or enabled option'};
+  }
+  e.dispatchEvent(new Event('input',{bubbles:true}));
+  e.dispatchEvent(new Event('change',{bubbles:true}));
+  return {handled:true,value:e.value};
+}
+
 export function clickRect() {
   const r = this.getBoundingClientRect();
   const rect = {left:Math.max(0,r.left),top:Math.max(0,r.top),
@@ -73,7 +110,7 @@ export class BrowserHand {
   constructor(adapter, {settings, approve, emit = () => {}, stop = () => {}, challenge = async info => { throw new Error(`needs_human: ${info.message}`); }}) {
     this.a = adapter; this.settings = settings; this.approve = approve; this.emit = emit; this.stop = stop; this.challenge = challenge;
     this.tabs = new Map(); this.active = null; this.nextRef = 1; this.sites = new Set(); this.signal = null;
-    this.navigation = new NavigationPolicy(); this.additions = new Set(); this.notices = []; this.pendingSites = new Map();
+    this.navigation = new NavigationPolicy(); this.additions = new Set(); this.denials = new Set(); this.notices = []; this.pendingSites = new Map();
   }
   check() { this.signal?.throwIfAborted(); if (this.paused) throw new Error('paused: debugger detached by user'); }
   async send(id, method, params) {
@@ -130,7 +167,7 @@ export class BrowserHand {
   }
   async begin(signal, task = '', history = []) {
     this.navigation = new NavigationPolicy([task,...history.filter(m => m.role === 'user').map(m => m.content)].join('\n'));
-    this.signal = signal; this.additions.clear(); this.sites.clear(); this.pendingSites.clear();
+    this.signal = signal; this.additions.clear(); this.denials.clear(); this.sites.clear(); this.pendingSites.clear();
     if (this.active !== null && this.tabs.has(this.active)) {
       const tab = await this.a.get(this.active);
       if (!tab.url?.startsWith('chrome-error://')) this.sites.add(safeURL(tab.url,this.settings.base).origin);
@@ -236,9 +273,10 @@ export class BrowserHand {
       const label = [e.getAttribute('aria-label'),e.labels ? [...e.labels].map(l => l.textContent).join(' ') : '', e.textContent].filter(Boolean).join(' ').slice(0,1000);
       const accessibleName = node => node ? (node.getAttribute('aria-label') || (node.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => node.ownerDocument.getElementById(id)?.textContent || '').join(' ').trim() || node.innerText || node.value || '') : '';
       const submitters = form ? [...form.elements].filter(el => ['submit','image'].includes(el.type)) : [];
+      const recipients = form ? [...form.elements].filter(el => /^(?:to|cc|bcc)$/i.test(el.name || '')).map(el => `${el.name}: ${el.value}`).join('; ').slice(0,500) : '';
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
       const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.ownerDocument?.querySelector?.('h1')?.textContent || '';
-      return {expanded:e.getAttribute('aria-expanded'),product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
+      return {expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }
   async gateTarget(id, target, action, {fill = false, submit = false, always = false} = {}) {
@@ -251,7 +289,16 @@ export class BrowserHand {
     const repeat = target.additionKey && this.additions.has(target.additionKey);
     const approvalName = submit && info.submitter ? info.submitter : info.name || target.name || 'Focused element';
     if (repeat || always || ((!fill || submit) && classification.consequential)) {
-      if (!await this.approve({action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?`,target:approvalName,site:new URL(tab.url).origin})) throw new Error(`denied: ${action} '${info.name || target.name || 'Focused element'}'`);
+      // Submission via Enter, fill+submit, and a submit button represents the
+      // same effect. Keys exclude refs, field values, and input method so a
+      // refreshed outline or edited form cannot re-request a denied effect.
+      const effectName = (submit || info.type === 'submit') && info.submitter ? info.submitter : approvalName;
+      const denialKey = JSON.stringify([new URL(tab.url).origin,info.action || new URL(tab.url).pathname,effectName.trim().toLocaleLowerCase()]);
+      if (this.denials.has(denialKey)) throw new Error(`denied: '${effectName}' was already denied in this task; approval will not be requested again`);
+      if (!await this.approve({action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
+        this.denials.add(denialKey);
+        throw new Error(`denied: ${action} '${effectName}'`);
+      }
       this.check();
       if (target.epoch !== this.tabs.get(id)?.epoch || JSON.stringify(info) !== JSON.stringify(await this.inspect(id,target))) throw new Error('stale_ref: target changed during approval; call read_page');
     }
@@ -259,6 +306,11 @@ export class BrowserHand {
     return info;
   }
   async click(id,target) {
+    if (target.role === 'option') {
+      const native = await this.call(id,target.objectId,fillNative,[]);
+      if (native?.error) throw new Error(native.error);
+      if (native?.handled) return 'native option selection';
+    }
     await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId});
     // Use client rects directly: CDP input/hit tests and CSSOM client rects
     // share viewport coordinates. Subtracting pageY again rejects scrolled nodes.
@@ -396,7 +448,6 @@ export class BrowserHand {
     }
     const effect = before ? effectReport(before,[...samples,{...(samples.at(-1) || before),...meta}]) : {note:'Effect observation unavailable; verify in the cart before adding again.'};
     if (result?.activation) effect.activation = result.activation;
-    if (actionError && !args.choose) { actionError.effect = effect; throw actionError; }
     try { observation = await this.executeCore('read_page',{tabId:id},signal); }
     catch (error) { this.check(); observation = {text:`Fresh observation unavailable: ${error.message}. Wait then read_page; do not repeat the action.`}; }
     if (actionError) {
@@ -469,25 +520,31 @@ export class BrowserHand {
       const outline = outlineAX(nodes,{url:tab.url,title:tab.title,start:this.nextRef,query:args.query,geometry});
       t.refs = outline.refs; this.nextRef = outline.next;
       for (const target of outline.refs.values()) if (target.href) this.navigation.observe(target.href);
-      const forms = new Map();
+      const forms = new Map(), nativeControls = [];
       for (const [ref, target] of outline.refs) {
-        if (!['button','textbox','searchbox','combobox'].includes(target.role)) continue;
+        if (!['button','textbox','searchbox','combobox','Date','DateTime','InputTime','spinbutton'].includes(target.role)) continue;
         try {
           const resolved = await this.resolve(id,ref);
           const form = await this.call(id,resolved.objectId,function () {
             const f = this.form || this.closest('form');
-            if (!f) return null;
-            return {index:[...document.forms].indexOf(f),name:f.getAttribute('aria-label') || f.getAttribute('name') || '',method:f.method};
+            const type = this.tagName === 'SELECT' ? 'select' : this.type;
+            const native = ['select','date','time','datetime-local'].includes(type) ? {type,value:this.value} : null;
+            if (!f && !native) return null;
+            const recipients = f ? [...f.elements].filter(el => /^(?:to|cc|bcc)$/i.test(el.name || '')).map(el => `${el.name}: ${el.value}`).join('; ').slice(0,500) : '';
+            return {index:f ? [...document.forms].indexOf(f) : -1,name:f?.getAttribute('aria-label') || f?.getAttribute('name') || '',method:f?.method || '',native,recipients};
           });
           if (form) {
-            const key = `${form.index}: ${JSON.stringify(form.name)} (${form.method})`;
-            forms.set(key,[...(forms.get(key) || []),`[${ref}]`]);
+            if (form.index >= 0) {
+              const key = `${form.index}: ${JSON.stringify(form.name)} (${form.method})${form.recipients ? ` Recipients: ${form.recipients}` : ''}`;
+              forms.set(key,[...(forms.get(key) || []),`[${ref}]`]);
+            }
+            if (form.native) nativeControls.push(`Native [${ref}] ${form.native.type} value=${JSON.stringify(form.native.value)}; fill with ${form.native.type === 'select' ? 'exact option label/value' : form.native.type === 'date' ? 'YYYY-MM-DD' : form.native.type === 'time' ? 'HH:mm (24-hour)' : 'YYYY-MM-DDTHH:mm'}`);
           }
         } catch { this.check(); }
       }
       if (epoch !== t.epoch) throw new Error('stale_ref: page changed while reading forms; call read_page again');
       const formText = [...forms].map(([form,refs]) => `Form ${form}: ${refs.join(' ')}`).join('\n');
-      return {text:`${formText ? `Form controls (use refs in outline):\n${formText}\n` : ''}${outline.text}`};
+      return {text:`${formText ? `Form controls (use refs in outline):\n${formText}\n` : ''}${nativeControls.length ? `${nativeControls.join('\n')}\n` : ''}${outline.text}`};
     }
     if (name === 'screenshot') {
       if (!this.settings.vision) return {note:'Vision is off. Use read_page.',...await this.meta(id)};
@@ -513,13 +570,17 @@ export class BrowserHand {
       await this.gateTarget(id,target,name,{fill:name === 'fill'});
       if (name === 'click') activation = await this.click(id,target);
       else {
-        await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId});
-        await this.send(id,'DOM.focus',{backendNodeId:target.backendDOMNodeId});
-        // CDP editing command is platform independent (unlike Ctrl/Command+A).
-        await this.send(id,'Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',commands:['selectAll']});
-        await this.send(id,'Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA'});
-        await this.send(id,'Input.insertText',{text:args.text});
-        if (args.choose) activation = await this.chooseOption(id,args.choose);
+        const native = await this.call(id,target.objectId,fillNative,[args.text,args.choose]);
+        if (native?.error) throw new Error(native.error);
+        if (!native?.handled) {
+          await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId});
+          await this.send(id,'DOM.focus',{backendNodeId:target.backendDOMNodeId});
+          // CDP editing command is platform independent (unlike Ctrl/Command+A).
+          await this.send(id,'Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',commands:['selectAll']});
+          await this.send(id,'Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA'});
+          await this.send(id,'Input.insertText',{text:args.text});
+          if (args.choose) activation = await this.chooseOption(id,args.choose);
+        }
         if (args.submit) {
           // Recheck after input handlers may have changed the form.
           await this.gateTarget(id,target,'Submit form',{fill:true,submit:true});

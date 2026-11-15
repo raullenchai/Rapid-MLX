@@ -30,14 +30,17 @@ export async function testConnection(settings, {fetchImpl = fetch, permissions =
   const base = endpoint(settings.base);
   if (!await permissions.contains({origins:[originPermission(base)]})) throw new Error('permissionMissing');
   async function request(path, body) {
+    const timeout = AbortSignal.timeout(15000);
+    const requestSignal = signal ? AbortSignal.any([signal,timeout]) : timeout;
+    const failure = fallback => new Error(body && !signal?.aborted && requestSignal.reason?.name === 'TimeoutError' ? 'connectionTimeout' : fallback);
     let response;
     try {
-      response = await fetchImpl(`${base}${path}`, {method:body ? 'POST' : 'GET',headers:{'Content-Type':'application/json',...(settings.apiKey ? {Authorization:`Bearer ${settings.apiKey}`} : {})},credentials:'omit',redirect:'error',signal:signal ? AbortSignal.any([signal,AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),...(body ? {body:JSON.stringify(body)} : {})});
-    } catch { throw new Error('unreachable'); }
+      response = await fetchImpl(`${base}${path}`, {method:body ? 'POST' : 'GET',headers:{'Content-Type':'application/json',...(settings.apiKey ? {Authorization:`Bearer ${settings.apiKey}`} : {})},credentials:'omit',redirect:'error',signal:requestSignal,...(body ? {body:JSON.stringify(body)} : {})});
+    } catch { throw failure('unreachable'); }
     if (response.status === 401) throw new Error('unauthorized');
     if (response.status === 403) throw new Error('forbidden');
     if (!response.ok) throw new Error('endpointHTTP', {cause:response.status});
-    try { return await response.json(); } catch { throw new Error('invalidResponse'); }
+    try { return await response.json(); } catch { throw failure('invalidResponse'); }
   }
   const data = await request('/v1/models');
   if (!data || !Array.isArray(data.data)) throw new Error('invalidResponse');
@@ -45,13 +48,19 @@ export async function testConnection(settings, {fetchImpl = fetch, permissions =
   if (!models.length) throw new Error('noModels');
   const model = models.includes(settings.model) ? settings.model : models[0];
   await onModels({models,model,base});
+  let warning;
   if (probe) {
-    const body = await request('/v1/chat/completions',{model,messages:[{role:'user',content:'Call rapid_connection_test with ok=true.'}],tools:[{type:'function',function:{name:'rapid_connection_test',description:'Connection test; no browser action.',parameters:{type:'object',properties:{ok:{type:'boolean'}},required:['ok'],additionalProperties:false}}}],tool_choice:{type:'function',function:{name:'rapid_connection_test'}},stream:false,...reasoningOptions(settings.reasoningEffort)});
-    const calls = body?.choices?.[0]?.message?.tool_calls;
-    const call = Array.isArray(calls) ? calls.find(c => c?.function?.name === 'rapid_connection_test') : undefined;
-    let valid = false;
-    try { valid = JSON.parse(call?.function?.arguments).ok === true; } catch {}
-    if (!valid) throw new Error('noTools');
+    try {
+      const body = await request('/v1/chat/completions',{model,messages:[{role:'user',content:'Call rapid_connection_test with ok=true.'}],tools:[{type:'function',function:{name:'rapid_connection_test',description:'Connection test; no browser action.',parameters:{type:'object',properties:{ok:{type:'boolean'}},required:['ok'],additionalProperties:false}}}],tool_choice:{type:'function',function:{name:'rapid_connection_test'}},stream:false,...reasoningOptions(settings.reasoningEffort)});
+      const calls = body?.choices?.[0]?.message?.tool_calls;
+      const call = Array.isArray(calls) ? calls.find(c => c?.function?.name === 'rapid_connection_test') : undefined;
+      let valid = false;
+      try { valid = JSON.parse(call?.function?.arguments).ok === true; } catch {}
+      if (!valid) throw new Error('noTools');
+    } catch (e) {
+      if (e.message !== 'connectionTimeout') throw e;
+      warning = 'toolProbeTimeout';
+    }
   }
-  return {models,model,base};
+  return {models,model,base,...(warning ? {warning} : {})};
 }

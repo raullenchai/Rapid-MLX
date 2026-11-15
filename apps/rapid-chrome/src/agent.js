@@ -12,6 +12,7 @@ Use the already shared page first rather than opening a duplicate tab. For large
 If a human check is reported, never solve or evade it, or switch sites to bypass it.
 Do not repeat an identical failed call. Read fresh refs or correct the arguments. The listed browser tools are available. An empty text filter is not a missing tool; use site search or another observed control to continue. When done, answer in plain text without tool calls.
 Actions are sequential. Approval is for one action only; denial rejects that action only. Do not retry it via another tool; continue another way or finish and explain. Only Stop cancels the task. Ask the user to enter passwords or payment details themselves.
+Approvals appear when you call the action tool; do not stop with a textual request for approval. For mail, distinguish the sender asking for a link from the sender supplying it. Before Send, verify the actual To field against the user-requested recipient. For native selects use fill with the exact option label/value. For native dates/times use the whole field in YYYY-MM-DD / HH:mm (24-hour).
 Verify outcomes with fresh observations before claiming success. Keep final answers concise and honest.`;
 export const headers = key => ({ 'Content-Type':'application/json', ...(key ? {Authorization:`Bearer ${key}`} : {}) });
 export function assembleMessages(history, task) {
@@ -22,7 +23,7 @@ export function assembleMessages(history, task) {
     if (m.role === 'assistant' && !conversation.length) continue;
     conversation.push({role:m.role,content:m.content});
   }
-  return [{role:'system',content:SYSTEM_PROMPT}, ...conversation, {role:'user',content:task}];
+  return [{role:'system',content:`${SYSTEM_PROMPT}\nCurrent browser date/time: ${new Date().toString()}. Resolve relative dates such as next Friday from this date, using the requested timezone when specified.`}, ...conversation, {role:'user',content:task}];
 }
 export function toolMessages(call, result, vision) {
   const { image, ...data } = result;
@@ -67,7 +68,32 @@ export async function runAgent({ settings, task, history = [], execute, signal, 
   let steps = 0, round = 0, emptyReplies = 0, initialRecovery = false, successfulAction = false;
   const observations = [];
   const guard = new RepeatGuard(), ids = new Set();
+  const recentStates = [], progress = [];
+  let approvalRecovery = false, loopNudged = false, loopWarned = false, deniedAction = false;
   const cap = Math.max(1, Math.min(100, Number(settings.stepCap) || 60));
+  const summarize = async reason => {
+    const fallback = `Task completion is unconfirmed: ${reason}.\nObserved progress (page data, not a completion claim):\n${progress.slice(-4).join('\n').slice(0,6000) || 'No browser result was recorded.'}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(),15000);
+    let answer = fallback;
+    try {
+      const summaryMessages = [...messages,{role:'user',content:`Browser actions are now disabled: ${reason}. Give your final answer now using only observed evidence. Summarize useful partial results and source URLs, what remains incomplete, and denied actions. Do not claim unverified completion, invent prices or offer more tool calls.`}];
+      await trace({kind:'summary_request',steps,reason});
+      const response = await fetchImpl(`${engineBase(settings.base)}/v1/chat/completions`,{
+        method:'POST',headers:headers(settings.apiKey),credentials:'omit',redirect:'error',signal:AbortSignal.any([signal,controller.signal]),
+        body:JSON.stringify({model:settings.model,messages:summaryMessages,stream:false,...reasoningOptions(settings.reasoningEffort)})
+      });
+      if (response.ok) {
+        const message = (await response.json()).choices?.[0]?.message;
+        if (!message?.tool_calls?.length && message?.content?.trim()) answer = `Task completion is unconfirmed: ${reason}.\n${message.content.trim()}`;
+      }
+    } catch { signal.throwIfAborted(); }
+    finally { clearTimeout(timer); }
+    signal.throwIfAborted();
+    await trace({kind:'summary',steps,reason,content:answer});
+    emit({kind:'answer',text:answer});
+    return 'step_cap';
+  };
   while (true) {
     signal.throwIfAborted();
     await checkpoint(messages);
@@ -116,7 +142,7 @@ export async function runAgent({ settings, task, history = [], execute, signal, 
         const answer = 'Task completion is unconfirmed: the model did not inspect or act on the browser.';
         emit({kind:'answer',text:answer}); return answer;
       }
-      if (steps <= 3 && !initialRecovery && !successfulAction && !hasPageAnswer(message.content || '', observations)) {
+      if (steps <= 3 && !initialRecovery && !successfulAction && !deniedAction && !hasPageAnswer(message.content || '', observations)) {
         initialRecovery = true;
         const search = observations.some(text => /\bsearchbox\b|(?:textbox|combobox)[^\n]*search/i.test(text));
         const text = `You have tools: read_page, fill, click, press, navigate, open_tab, scroll, wait, list_tabs, screenshot; ${search ? 'the page has a search box — use its fresh ref to continue the task' : 'inspect the page and use observed controls to continue the task'}. An empty read_page query is not a site search or a missing tool. Respect denied actions and human checks.`;
@@ -128,13 +154,20 @@ export async function runAgent({ settings, task, history = [], execute, signal, 
         messages.push({role:'user',content:'Give a concise plain-text final answer describing the observed result or what prevented completion.'});
         continue;
       }
+      if (!approvalRecovery && /(?:needs?|requires?|waiting for|awaiting).{0,60}(?:approval|permission)|(?:approve|allow).{0,50}(?:so I can|to (?:submit|send|save|click))|(?:approval|permission).{0,40}(?:so I can|before I)/i.test(message.content || '') && !deniedAction) {
+        approvalRecovery = true;
+        messages.push({role:'assistant',content:message.content},{role:'user',content:'To request approval, call the intended action tool with a fresh observed ref. The browser will show an approval card and wait for the decision. Do not claim completion before the outcome is observed. Respect previous denials.'});
+        await trace({kind:'nudge',round,steps,text:'Call the action tool to request approval.'});
+        continue;
+      }
       const answer = message.content?.trim() || 'The model returned no final answer; task completion is unconfirmed.';
       emit({kind:'answer',text:answer}); return answer;
     }
     if (message.content?.trim()) emit({kind:'progress',text:message.content});
-    if (steps + calls.length > cap) { emit({kind:'answer',text:`Stopped at step cap (${cap}). Review progress before continuing.`}); return 'step_cap'; }
+    if (steps + calls.length > cap) return summarize(`step cap (${cap}); next batch would exceed the remaining budget`);
     messages.push({role:'assistant',content:message.content || null,tool_calls:calls});
     const images = [];
+    let loopStopped = false;
     for (const call of calls) {
       signal.throwIfAborted();
       await checkpoint();
@@ -155,19 +188,34 @@ export async function runAgent({ settings, task, history = [], execute, signal, 
       }
       signal.throwIfAborted();
       steps++;
+      if (/^denied:/i.test(result.error || '')) deniedAction = true;
       if (!result.error) {
         if (!['read_page','list_tabs','screenshot','wait'].includes(call.function.name)) successfulAction = true;
         const text = result.observation?.text || result.text;
         if (text && steps <= 3) observations.push(text);
       }
+      const observed = result.observation?.text || result.text || result.error || result.note || '';
+      const excerpt = observed.length > 1400 ? `${observed.slice(0,1200)}\n[...observation excerpt...]\n${observed.slice(-200)}` : observed;
+      progress.push(`${call.function.name}: ${result.error ? `${result.error}\n` : ''}${excerpt}`);
+      if (progress.length > 8) progress.shift();
+      // Ignore ref churn and focus while retaining values, selected/checked
+      // state, URLs, and substantive page text. A short rolling window permits
+      // delayed loading and normal revisits without allowing endless cycles.
+      const state = observed.replace(/\b[e]\d+\b/g,'REF').replace(/ focused=(?:true|false)/g,'').replace(/^(?:click|fill|press|scroll) completed\. Fresh observation:|^Waited \d+ms\. Fresh observation:/,'').trim();
+      recentStates.push(['list_tabs','screenshot'].includes(call.function.name) ? '' : state);
+      if (recentStates.length > 24) recentStates.shift();
+      const repeats = state ? recentStates.filter(s => s === state).length : 0;
+      if (repeats >= 8) loopStopped = true;
+      if (repeats >= 4 && !loopWarned) { loopNudged = true; loopWarned = true; }
       emit({kind:'step',id:call.id,name:call.function.name,args:args || {},status:result.error ? 'error' : 'ok',result:result.error || result.text || result.note || 'Done'});
       const [tool, ...imageParts] = toolMessages(call, result, settings.vision);
       await trace({kind:'tool',round,id:call.id,name:call.function.name,args:args ?? call.function.arguments,text:tool.content.slice(0,2000),chars:tool.content.length,ms:Date.now()-toolStarted});
       messages.push(tool); images.push(...imageParts);
-      if (/^denied:/i.test(result.error || '')) {
+      if (loopStopped || /^denied:/i.test(result.error || '')) {
         // Discard the stale batch plan, then let the model plan around the denial.
         for (const skipped of calls.slice(calls.indexOf(call)+1)) {
-          const [tool] = toolMessages(skipped,{error:'denied: batch stopped after user denial'},false);
+          steps++;
+          const [tool] = toolMessages(skipped,{error:loopStopped ? 'loop_stopped: batch stopped without progress' : 'denied: batch stopped after user denial'},false);
           messages.push(tool);
           await trace({kind:'tool',round,id:skipped.id,name:skipped.function.name,args:skipped.function.arguments,text:tool.content,chars:tool.content.length,ms:0,skipped:true});
         }
@@ -175,7 +223,13 @@ export async function runAgent({ settings, task, history = [], execute, signal, 
       }
     }
     messages.push(...images);
-    if (steps >= cap) { emit({kind:'answer',text:`Stopped at step cap (${cap}). Review progress before continuing.`}); return 'step_cap'; }
+    if (steps >= cap) return summarize(`step cap (${cap})`);
+    if (loopStopped) return summarize('repeated observations without progress');
+    if (loopNudged) {
+      messages.push({role:'user',content:'Repeated observations show no progress despite fresh refs. Do not retry the same target or date values, reread unchanged content, or wait in a loop. Use a different observed control, commit the date picker with Done/Apply, dismiss an overlay, or give an honest final answer with partial results and blockers.'});
+      await trace({kind:'nudge',round,steps,text:'Repeated observations without progress; change strategy or finish.'});
+      loopNudged = false;
+    }
   }
 }
 export function delay(ms, signal) {

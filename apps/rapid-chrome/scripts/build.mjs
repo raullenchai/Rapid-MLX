@@ -12,7 +12,7 @@ check(/^\d+\.\d+\.\d+$/.test(manifest.version),'Invalid version');
 check(manifest.default_locale === 'en','Missing default locale');
 check(manifest.background?.type === 'module','Background must be a module');
 check(manifest.permissions?.every(p => ['debugger','tabs','tabGroups','storage','sidePanel','scripting'].includes(p)),'Unexpected permission');
-check(!manifest.host_permissions?.length,'Required hosts must be empty');
+check(JSON.stringify(manifest.host_permissions) === JSON.stringify(['http://127.0.0.1/*','http://localhost/*']),'Required hosts must be limited to HTTP loopback');
 check(JSON.stringify(manifest.optional_host_permissions) === JSON.stringify(['https://*/*','http://*/*']),'Optional hosts must be declared');
 const files = [];
 async function collect(dir = '') {

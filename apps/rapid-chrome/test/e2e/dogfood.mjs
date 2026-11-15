@@ -30,7 +30,7 @@ export async function runTask(chromium, task, out, base, options = {}) {
     // DOMContentLoaded avoids waiting for every ad/resource on live storefronts.
     await capture(() => page.goto(task.start_url,{waitUntil:'domcontentloaded'}));
     await page.bringToFront();
-    await page.screenshot({path:join(dir,'start.png')});
+    await capture(() => page.screenshot({path:join(dir,'start.png'),timeout:5000}));
     await shareTab(panel);
     const deadline = Date.now()+(task.timeout_s ?? 300)*1000;
     await submitTask(panel,task.task);
@@ -87,7 +87,7 @@ export async function runTask(chromium, task, out, base, options = {}) {
     }
     if (page) {
       result.final_url = page.url();
-      await capture(() => page.screenshot({path:join(dir,'end.png')}));
+      await capture(() => page.screenshot({path:join(dir,'end.png'),timeout:5000}));
     }
     result.seconds = Number(((Date.now()-started)/1000).toFixed(1));
     result.steps = trace?.events?.filter(event => event.kind === 'tool').length || 0;

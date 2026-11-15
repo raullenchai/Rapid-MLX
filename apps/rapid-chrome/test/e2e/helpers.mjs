@@ -22,12 +22,16 @@ export async function connectPanel(context, base, apiKey = '', options = {}) {
   const panel = await context.newPage();
   await panel.goto(`chrome-extension://${id}/panel.html`);
   await panel.waitForFunction(() => document.body.dataset.ready === 'true');
-  await panel.locator('#settings-toggle').click();
+  // First-run onboarding is inline, not a modal. Use its connection action;
+  // the first submitted task completes the tour and hides it.
+  if (await panel.locator('#onboarding').isVisible()) await panel.locator('#onboard-connect').click();
+  else await panel.locator('#settings-toggle').click();
+  await panel.locator('#endpoint-mode').selectOption('custom');
   await panel.locator('#base').fill(base);
   await panel.locator('#api-key').fill(apiKey);
   if (options.maxSteps) await panel.locator('#step-cap').fill(String(options.maxSteps));
   await panel.getByRole('button',{name:'Save & connect'}).click();
-  await until(async () => (await panel.locator('#status').textContent()) === 'Connected','engine connection');
+  await until(async () => /^Connected(?:$|\.)/.test(await panel.locator('#status').textContent()),'engine connection');
   await panel.locator('#settings-toggle').click();
   return panel;
 }

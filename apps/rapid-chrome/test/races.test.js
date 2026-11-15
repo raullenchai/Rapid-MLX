@@ -4,6 +4,46 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { searchResultReply } from './e2e/fixtures.mjs';
 import { waitForSearchResult } from './e2e/run.mjs';
+import { connectPanel } from './e2e/helpers.mjs';
+
+test('shared panel setup uses onboarding and custom mode before filling a readonly local URL', async () => {
+  for (const firstRun of [true,false]) {
+    let settingsOpen = false, custom = false, saved = false, statusReads = 0;
+    const values = {};
+    const panel = {
+      goto:async url => assert.equal(url,'chrome-extension://test-extension/panel.html'),
+      waitForFunction:async () => {},
+      locator:selector => ({
+        isVisible:async () => {assert.equal(selector,'#onboarding');return firstRun;},
+        click:async () => {
+          if (selector === '#onboard-connect') {assert.equal(firstRun,true);settingsOpen = true;}
+          else {assert.equal(selector,'#settings-toggle');settingsOpen = !settingsOpen;}
+        },
+        selectOption:async value => {
+          assert.equal(selector,'#endpoint-mode');assert.equal(settingsOpen,true);
+          assert.equal(value,'custom');custom = true;
+        },
+        fill:async value => {
+          assert.equal(settingsOpen,true);
+          if (selector === '#base') assert.equal(custom,true,'Local URL is readonly until custom is selected');
+          values[selector] = value;
+        },
+        textContent:async () => {
+          assert.equal(selector,'#status');assert.equal(saved,true);
+          return ++statusReads > 1 ? 'Connected' : 'Connecting…';
+        }
+      }),
+      getByRole:(role,{name}) => ({click:async () => {
+        assert.equal(role,'button');assert.equal(name,'Save & connect');saved = true;
+      }})
+    };
+    const worker = {url:() => 'chrome-extension://test-extension/background.js'};
+    const context = {serviceWorkers:() => firstRun ? [] : [worker],waitForEvent:async name => {assert.equal(name,'serviceworker');return worker;},newPage:async () => panel};
+    assert.equal(await connectPanel(context,'http://127.0.0.1:43210',firstRun ? 'test-key' : '',firstRun ? {maxSteps:17} : {}),panel);
+    assert.equal(settingsOpen,false);assert.equal(statusReads,2);
+    assert.deepEqual(values,{'#base':'http://127.0.0.1:43210','#api-key':firstRun ? 'test-key' : '',...(firstRun ? {'#step-cap':'17'} : {})});
+  }
+});
 
 test('fake engine waits for committed search results, including interrupted reads', () => {
   const tool = (name,args) => ({name,args});
@@ -44,7 +84,7 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   const node = () => ({dataset:{},options:[],elements:[],hidden:true,value:'',
     append(...children) { this.options.push(...children); },
     replaceChildren(...children) { this.options = children; },
-    querySelectorAll:() => [],setAttribute() {}});
+    querySelectorAll:() => [],setAttribute() {},focus() {this.focused = true;}});
   const get = id => { if (!nodes.has(id)) nodes.set(id,node()); return nodes.get(id); };
   get('settings-toggle').disabled = true;
   let render;
@@ -60,17 +100,44 @@ test('settings cannot be edited until first state snapshot; later snapshots pres
   render(state);
   assert.equal(get('settings-toggle').disabled,false);
   assert.equal(document.body.dataset.ready,'true');
-  get('settings-toggle').onclick();
+  assert.equal(get('onboarding').hidden,false);
+  assert.equal(get('base').readOnly,true);
+  get('onboard-connect').onclick();
+  assert.equal(get('settings').hidden,false);
+  assert.equal(get('endpoint-mode').focused,true);
+  get('endpoint-mode').value = 'custom';
+  get('endpoint-mode').onchange();
+  assert.equal(get('base').readOnly,false);
   get('base').value = 'http://localhost:9000';
   render(state);
   assert.equal(get('base').value,'http://localhost:9000');
   get('endpoint-mode').value = 'custom';
   await get('settings-form').onsubmit({preventDefault() {}});
   assert.equal(sent.at(-1).settings.base,'http://localhost:9000');
-  assert.equal(JSON.stringify(grants),JSON.stringify([{origins:['http://localhost:9000/*']}]));
+  assert.equal(grants.length,0,'Bundled loopback must never request permission');
+  get('base').value = 'http://127.0.0.1:43210';
+  await get('settings-form').onsubmit({preventDefault() {}});
+  assert.equal(sent.at(-1).settings.base,'http://127.0.0.1:43210');
+  assert.equal(grants.length,0);
+  get('endpoint-mode').value = 'local';
+  get('endpoint-mode').onchange();
+  assert.equal(get('base').readOnly,true);
+  assert.equal(get('base').value,LOCAL_ENDPOINTS[0]);
+  await get('settings-form').onsubmit({preventDefault() {}});
+  assert.equal(sent.at(-1).settings.endpointMode,'local');
+  assert.equal(grants.length,0);
+  get('endpoint-mode').value = 'custom';get('endpoint-mode').onchange();
+  for (const base of ['https://model.example','http://192.168.1.2:8000','https://localhost:9000','http://127.0.0.2:9000']) {
+    get('base').value = base;
+    await get('settings-form').onsubmit({preventDefault() {}});
+    assert.equal(sent.at(-1).settings.base,base);
+    assert.equal(JSON.stringify(grants.at(-1)),JSON.stringify({origins:[`${base}/*`]}));
+  }
   allowPermission = false;
   const count = sent.length;
   await get('settings-form').onsubmit({preventDefault() {}});
   assert.equal(sent.length,count);
   assert.equal(get('status').textContent,'permissionMissing');
+  render({...state,messages:[{role:'user',content:'Inspect this page'}]});
+  assert.equal(get('onboarding').hidden,true,'First task completes inline onboarding');
 });

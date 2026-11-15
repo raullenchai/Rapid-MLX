@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { BrowserHand, clickRect, canActivate, sameClickControl } from '../src/cdp.js';
+import { BrowserHand, clickRect, canActivate, sameClickControl, fillNative } from '../src/cdp.js';
 import { NavigationPolicy } from '../src/safety.js';
 import { outlineAX } from '../src/ax.js';
 import { RepeatGuard } from '../src/agent.js';
@@ -99,6 +99,7 @@ test('successful repeated navigation keys and wheels are allowed; failed repeats
 
 test('fill choose types once and selects a unique observed option through the usual click gate', async () => {
   const {hand,commands} = setup(async (method,p) => {
+    if (method === 'Runtime.callFunctionOn' && p.functionDeclaration === fillNative.toString()) return {result:{value:{handled:false}}};
     if (method === 'DOM.resolveNode') return {object:{objectId:String(p.backendNodeId)}};
     if (method === 'Accessibility.getFullAXTree') return {nodes:[ax(10,'option','John F. Kennedy International Airport JFK'),ax(11,'option','LaGuardia LGA')]};
     return {};

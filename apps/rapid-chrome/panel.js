@@ -69,8 +69,10 @@ $('settings-form').onsubmit = async e => {
   try {
     const base = endpoint($('base').value);
     const settings = {endpointMode:$('endpoint-mode').value,reasoningEffort:$('reasoning').value,base,apiKey:$('api-key').value,model:$('model').value,vision:$('vision').checked,stepCap:$('step-cap').value};
-    // Request in the click gesture, before messaging the service worker.
-    const allowed = await chrome.permissions.request({origins:[originPermission(base)]});
+    // These HTTP loopback hosts are granted by the manifest across all ports.
+    // Request other origins in the click gesture, before messaging the worker.
+    const bundled = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(base);
+    const allowed = bundled || await chrome.permissions.request({origins:[originPermission(base)]});
     if (!allowed) throw new Error('permissionMissing');
     editing = false;
     $('status').textContent = t('connecting');

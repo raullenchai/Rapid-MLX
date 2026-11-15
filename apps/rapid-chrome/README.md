@@ -29,8 +29,10 @@ CSS; no runtime dependencies, analytics, or remote assets. Chrome 125+.
    **Keep working** / **Stop**.
 
 HTTPS origins are supported. HTTP is limited to loopback, private LAN IPv4,
-and 100.64.0.0/10 addresses, with an unencrypted-transport warning. Save requests
-only the configured host permission; the browser grants that host across ports.
+and 100.64.0.0/10 addresses, with an unencrypted-transport warning. HTTP on
+`127.0.0.1` and `localhost` is covered by required host permissions on all ports.
+For other endpoints, Save requests only the configured host permission; the
+browser grants that host across ports.
 The connection test lists `/v1/models` and performs one harmless tool probe. API keys/settings use `chrome.storage.local`. A bounded transcript
 and owned-tab IDs use `chrome.storage.session`; they do not survive a browser
 restart. An interrupted worker does not resume a task automatically. Task

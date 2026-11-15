@@ -13,8 +13,11 @@
 - `storage`: local settings and API key; session transcript, shared-tab ownership,
   and debug trace. There is no synchronized storage.
 - `sidePanel`: hosts the conversation, settings, approvals, and Stop button.
+- Required `http://127.0.0.1/*` and `http://localhost/*`: connect to local model
+  servers on any port without a permission prompt, in either endpoint mode.
 - Optional `https://*/*` and `http://*/*`: declare support for user-selected model
-  hosts. Save requests only the selected origin, never a wildcard host. The
+  hosts. For hosts outside the required loopback grants, Save requests only the
+  selected origin, never a wildcard host. The
   browser's host grants cover all ports on that host. Local discovery checks
   ports 8000 and 7659 on 127.0.0.1. HTTP is limited to loopback, private IPv4 LAN,
   and 100.64.0.0/10 addresses, with a visible unencrypted-transport warning.

@@ -509,7 +509,7 @@ test('read_page waits for human Continue and takes a fresh observation; Stop abo
 test('default step budget is 60', async () => {
   let executed = 0;
   const answer = await runAgent({settings:{...settings,stepCap:undefined},task:'Read',signal:new AbortController().signal,
-    fetchImpl:async () => response({tool_calls:[call('wait',{ms:executed})]}),execute:async () => {executed++; return {text:'waited'};}});
+    fetchImpl:async () => response({tool_calls:[call('wait',{ms:executed})]}),execute:async () => {executed++; return {text:`observed progress ${executed}`};}});
   assert.equal(answer,'step_cap'); assert.equal(executed,60);
 });
 
