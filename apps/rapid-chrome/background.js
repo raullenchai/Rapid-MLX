@@ -1,4 +1,4 @@
-import { errorType, runSnapshot, restoreRun, boundedStored } from './src/ui-state.js';
+import { errorType, runSnapshot, restoreRun, boundedStored, boundedTrace } from './src/ui-state.js';
 import { BrowserHand, ChromeAdapter } from './src/cdp.js';
 import { runAgent } from './src/agent.js';
 import { LOCAL_ENDPOINTS, testConnection, redact } from './src/endpoint.js';
@@ -159,7 +159,7 @@ async function run(task, tabId) {
   const debugTrace = {version:1,id:crypto.randomUUID(),task:boundedStored(redact(task,state.settings.apiKey)),startedAt:new Date().toISOString(),events:[]};
   const started = Date.now();
   const trace = async event => {
-    debugTrace.events.push(boundedStored(redact({atMs:Date.now()-started,...event},state.settings.apiKey),16384));
+    debugTrace.events.push(boundedTrace(redact({atMs:Date.now()-started,...event},state.settings.apiKey)));
     debugTrace.events = debugTrace.events.slice(-200);
     await chrome.storage.session.set({debugTrace:redact(debugTrace,state.settings.apiKey)});
   };

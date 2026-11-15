@@ -65,3 +65,16 @@ function storedStep(step) {
     url:step.url?.slice(0,2000),targetLabel:step.targetLabel?.slice(0,1000),
     args:boundedStored(step.args,4096),result:typeof result === 'string' ? result : JSON.stringify(result)};
 }
+
+// Keep event identity/counting usable even when the diagnostic body is clipped.
+// Redaction happens before this function at the trace boundary.
+export function boundedTrace(event) {
+  const stored = boundedStored(event, 16384);
+  if (!stored?.truncated) return stored;
+  const meta = {};
+  for (const key of ['kind','name','id'])
+    if (typeof event[key] === 'string') meta[key] = event[key].slice(0,128);
+  for (const key of ['round','atMs','ms','chars','steps'])
+    if (Number.isFinite(event[key])) meta[key] = event[key];
+  return {...stored,...meta};
+}

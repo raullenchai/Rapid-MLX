@@ -382,3 +382,75 @@ Round D validation: `node --test apps/rapid-chrome/test/` → **201 passed,
 `/private/tmp/chrome-extension-e2e/round-d-tests.log` and
 `/private/tmp/chrome-extension-e2e/round-d-security.log`.
 The nine new tests are imported by `test/index.js` for the directory command.
+
+## Opus r5: cancellation harness, weather handoff, and real-site review
+
+Offline review of `52ad0b9a3`, with uncommitted fixes. Evidence root:
+`/private/tmp/chrome-extension-e2e/suite-claude-opus-5-5-r5/`.
+Full real-site review: `/private/tmp/CUA-chrome-ext/review-r5.md`.
+No network, live model reruns, commits or pushes.
+
+- **fixture-subscriptions:** `approvals.json` denies exactly `Click 'Cancel
+  StreamPlus' on 127.0.0.1?` at 8.291s. The destructive/ambiguous-action gate
+  correctly requires approval before opening the cancellation flow. The old
+  scenario only allowed `Confirm cancellation`, so the harness prevented the
+  requested task. `scenarioApproval` now allows only the exact StreamPlus entry
+  card and exact final confirmation card on the loopback fixture. Other
+  subscription names, hosts, extended action labels and unrelated actions are
+  denied. Navigation keeps its existing approval policy. The required final
+  approval check and state checks (only `stream` cancelled, one cancellation,
+  other subscriptions active) remain unchanged. This fixes the harness, not the
+  destructive classifier. A generic final confirmation is safe here because
+  the only approved cancellation entry is StreamPlus and the fixture owns the
+  confirmation flow.
+- **chat-weather:** r1 requests `open_tab` for Google weather; the run is stopped
+  while awaiting the human check, before any tool observation returns or any
+  subsequent model request occurs. Prompt guidance alone cannot help. For an
+  agent-created tab and a conservatively recognized information task,
+  `read_page` now clears refs and returns a `human_check` observation: never
+  interact with the check, use one independent source under existing URL
+  provenance/site approval, or ask the user. The allowance is shared across
+  tabs for the task. A second check pauses and Continue reobserves. Shared
+  tabs, transactional/mixed/unknown requests, and load errors keep the immediate
+  pause. Known checked tabs reject input, scrolling, reload/history navigation
+  and navigation/open_tab back to the challenged hostname. Asking the user in
+  the model's answer ends the turn normally; it does not claim verification
+  succeeded. Intent uses user task/history only, never page text; unrecognized
+  language/request forms conservatively keep the pause.
+- **Small real-site extension fixes:** exact `Price, Not selected/Selected`,
+  `View Cart. Items in cart: N, View cart`, `Reject Optional` and `Reject All
+  Non-Essential Cookies` labels no longer generate false consequential prompts.
+  Added purchase/destructive verbs and sensitive/payment form context still
+  gate; financial endpoints still require handover. Location/ZIP labels and
+  generic Continue remain gated pending contextual evidence.
+- **Trace accounting:** flight r13/r14 tool events were replaced by anonymous
+  `{truncated, preview}` objects when over 16 KiB. The runner counted 12 steps
+  while the extension's end event recorded 14. Fandango also has an anonymous
+  clipped tool event. Bounded trace storage now retains kind, tool name, ID,
+  round, timing, original character count and end-step count after redaction,
+  while preserving the 16 KiB bound. This cannot restore missing r5 bodies;
+  the review uses the saved end screenshots and explicitly records that limit.
+
+Regression coverage is in `test/round-e.test.js`, imported by `test/index.js`.
+It covers returning the check to an actual scripted model turn, alternate-source
+navigation, no challenge interaction, second-check pause/reobservation, shared
+and transactional/history paths, load errors, exact subscription approval
+positive/negative cases, preparatory-label security boundaries and clipped
+trace identity. The old CDP/harness/classifier behavior fails the new regression
+cases in an isolated local copy; no live task is replayed.
+
+Round E validation: `node --test apps/rapid-chrome/test/` → **210 passed,
+0 failed, 0 skipped** (8.11s); standalone
+`node --test apps/rapid-chrome/test/security-review.test.js` → **21 passed,
+0 failed**; `git diff --check` → clean. Nine new Round E tests and the
+production trace-storage assertion in `ui-lifecycle.test.js` pass. Logs:
+`/private/tmp/chrome-extension-e2e/round-e-tests.log`,
+`/private/tmp/chrome-extension-e2e/round-e-security.log`, and the expected-failure
+old-behavior control at
+`/private/tmp/chrome-extension-e2e/round-e-negative-control.log`.
+The real-site review is **5 pass / 6 fail** using strict task/claim checks;
+flight's supported itinerary has an unsupported “high prices” aside, and Kyoto's
+supported itinerary overstates the number of pages read. No new live E2E pass
+rate is claimed. The report lists deferred contextual location/ZIP gating,
+map-vs-result extraction and dynamic settling work separately from model and
+external-site failures.

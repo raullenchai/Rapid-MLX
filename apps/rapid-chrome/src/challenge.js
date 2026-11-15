@@ -12,3 +12,12 @@ export function detectChallenge({url = '', title = '', nodes = [], frames = [], 
   if (challengeText || widget) return {kind:'human_check',message:`${site} requires a human check. Complete the verification in that tab, then press Continue. Rapid will verify that the check is gone.`};
   return null;
 }
+
+// Conservative: unknown or action-bearing requests keep the human pause. Only
+// user text determines task intent; page content must never opt into this path.
+export function informationTask(task = '') {
+  const text = task.replace(/https?:\/\/[^\s]+/gi,'')
+    .replace(/\b(?:do not|don't|never)\s+(?:buy|bid|book|reserve|purchase|pay|checkout)\b/gi,'');
+  return /\b(?:what|when|where|how|weather|find|research|read|summarize|compare|tell|list|look up)\b/i.test(text) &&
+    !/\b(?:add|cart|buy|bid|purchase|pay|order|book|reserve|cancel|subscribe|unsubscribe|send|reply|submit|save|delete|remove|change|update|fill|sign|log|schedule|refund|transfer|checkout)\b/i.test(text);
+}

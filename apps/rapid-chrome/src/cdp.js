@@ -1,6 +1,6 @@
 import { t } from './i18n.js';
 import { watchEffects, collectEffects, effectReport } from './effects.js';
-import { detectChallenge } from './challenge.js';
+import { detectChallenge, informationTask } from './challenge.js';
 import { outlineAX } from './ax.js';
 import { safeURL, classifyTarget, approvalTitleKey, needsSiteApproval, additionKey, NavigationPolicy, sensitivePage } from './safety.js';
 import { delay } from './agent.js';
@@ -180,6 +180,8 @@ export class BrowserHand {
   }
   async begin(signal, task = '', history = []) {
     this.navigation = new NavigationPolicy([task,...history.filter(m => m.role === 'user').map(m => m.content)].join('\n'));
+    this.informationOnly = informationTask([task,...history.filter(m => m.role === 'user').map(m => m.content)].join('\n'));
+    this.humanCheckOffered = false;
     this.signal = signal; this.additions.clear(); this.denials.clear(); this.sites.clear(); this.pendingSites.clear();
     if (this.active !== null && this.tabs.has(this.active)) {
       const tab = await this.a.get(this.active);
@@ -543,6 +545,9 @@ export class BrowserHand {
     }
   }
   async execute(name,args,signal) {
+    const state = this.tabs.get(args.tabId ?? this.active);
+    if (state?.humanCheckHost && ['click','fill','press','scroll'].includes(name))
+      throw new Error('human_check: do not interact with the check; use one independent source or ask the user');
     if (name === 'read_page') { this.signal = signal; return this.freshRead(args,signal); }
     if (['wait','scroll','navigate','open_tab'].includes(name)) {
       const result = await this.executeCore(name,args,signal);
@@ -603,6 +608,12 @@ export class BrowserHand {
       return {tabs};
     }
     if (name === 'wait') { await delay(args.ms,signal); return {text:`Waited ${args.ms}ms`,...(this.tabs.has(this.active) ? await this.meta(this.active) : {})}; }
+    if (['navigate','open_tab'].includes(name) && args.url) {
+      const url = safeURL(args.url,this.settings.base);
+      this.navigation.check(url);
+      if ([...this.tabs.values()].some(tab => tab.humanCheckHost === url.hostname))
+        throw new Error('human_check: leave the challenged site alone; use one independent source or ask the user');
+    }
     if (name === 'open_tab') {
       this.navigation.check(safeURL(args.url,this.settings.base));
       const url = await this.site(args.url,'Open tab');
@@ -615,6 +626,8 @@ export class BrowserHand {
     }
     if (name === 'navigate' && args.url) this.navigation.check(safeURL(args.url,this.settings.base));
     const {id,tab,t} = await this.current(args);
+    if (t.humanCheckHost && !['read_page','screenshot'].includes(name) && !(name === 'navigate' && args.url))
+      throw new Error('human_check: do not interact with the check; use one independent source or ask the user');
     if (name === 'read_page') {
       t.agentInputUntil = 0;
       const epoch = t.epoch;
@@ -652,12 +665,21 @@ export class BrowserHand {
       const blocked = detectChallenge({url:t.loadError || tab.url,title:tab.title,nodes,frames:visibleFrames});
       if (blocked) {
         delete t.loadError;
+        this.invalidate(id);
+        if (blocked.kind === 'human_check') {
+          t.humanCheckHost = new URL(tab.url).hostname;
+          if (t.created && this.informationOnly && !this.humanCheckOffered) {
+            this.humanCheckOffered = true;
+            return {text:`human_check: ${t.humanCheckHost} requires a human check. Do not interact with, solve, or bypass it. Leave this site alone. You may try one independent source using a site root/search or an observed/user-supplied URL (URL provenance and site approval still apply), or ask the user. If that source is also blocked or insufficient, ask the user.`,human_check:true};
+          }
+        }
         await this.challenge(blocked);
         this.check();
         // Continue always takes a fresh observation; never reuse pre-pause refs.
         const observation = await this.execute('read_page',args,signal);
         return {...observation,note:'The user pressed Continue after a page check/error. This is a fresh observation; do not solve or bypass checks.'};
       }
+      delete t.humanCheckHost;
       // Retain refs only for the same live backend node, name and role. Resolving
       // and inspecting again at action time still binds approval to current DOM.
       const live = new Map(nodes.filter(n => !n.ignored && n.backendDOMNodeId).map(n => [n.backendDOMNodeId,n]));

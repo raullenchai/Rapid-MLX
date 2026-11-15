@@ -45,9 +45,9 @@ export function classifyTarget(target = {}) {
   // Page-owned ARIA is not evidence that a control merely discloses content.
   const disclosure = /^(?:flight details|view details|show details|details about|expand|collapse|show more|load more)\b/i.test(own);
   const pagination = /^(?:next(?: page)?|previous(?: page)?|page \d+)$/i.test(own);
-  const filterControl = /^(?:filters?|filter by .+|apply(?: filters)?|clear filters|price(?: filter)?|nonstop|airlines|stops)$/i.test(own);
-  const browsing = /^(?:clear|reply|compose|list|grid|arrow (?:left|right)|cart options|(?:view )?cart(?:[., ]+\d+ unique items in your cart)?|\d+ items?|\d\+ rating, Guest rating, (?:Not selected|Selected))$/i.test(own);
-  const harmless = /^(?:done|close(?: dialog| modal)?|dismiss|cancel|not now|back|got it|acknowledge|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
+  const filterControl = /^(?:filters?|filter by .+|apply(?: filters)?|clear filters|price(?: filter)?(?:, (?:Not selected|Selected))?|nonstop|airlines|stops)$/i.test(own);
+  const browsing = /^(?:clear|reply|compose|list|grid|arrow (?:left|right)|cart options|view cart\. Items in cart: \d+, View cart|(?:view )?cart(?:[., ]+\d+ unique items in your cart)?|\d+ items?|\d\+ rating, Guest rating, (?:Not selected|Selected))$/i.test(own);
+  const harmless = /^(?:done|reject optional|reject all non-essential cookies|close(?: dialog| modal)?|dismiss|cancel|not now|back|got it|acknowledge|stops(?:,.*)?|sort(?: by.*)?|关闭(?:对话框|弹窗)?|關閉(?:對話框|彈窗)?|取消|暂不|暫不|经停|經停|排序)$/iu.test(own.trim());
   const filter = ['checkbox','radio','tab','option','menuitem','switch'].includes(target.role);
   // Filter and dismissal controls do not inherit unrelated form submitters.
   // Explicit destructive/purchase names still win (including close account).

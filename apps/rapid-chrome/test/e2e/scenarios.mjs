@@ -61,6 +61,10 @@ export function scenarioApproval(scenario,text) {
   if (/Go to [^\s]+\?|Open [^\s]+ in a new tab\?/i.test(text)) return 'approved';
   const action = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).find(line => /^(?:Click |Go to |Open |Add another one\?)/.test(line)) || '';
   const c=scenario.checks;
+  // Only this fixture's expected subscription may enter the cancellation flow.
+  // Match the action line, never unrelated page/card prose or a different host.
+  if(scenario.id==='fixture-subscriptions')
+    return /^Click '(?:Cancel StreamPlus|Confirm cancellation)' on 127\.0\.0\.1\?$/.test(action) ? 'approved' : 'denied';
   if(c.approval_expected && pattern(c.approval_expected).test(text))return c.approval_decision==='allow'?'approved':'denied';
   // This scenario explicitly asks to reach Place order. Checkout is an
   // intermediate navigation gate; the final purchase must still be denied.

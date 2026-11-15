@@ -58,7 +58,9 @@ test('P2 New chat deletes all chats, checkpoints, tool activity and traces; arch
   assert.ok(archived.messages.length <= 60);
   send({type:'restore-chat',id:archived.id}); await tick();
   assert.equal(snapshots.at(-1).messages.at(-1).content,'Finished with fresh browser ownership.');
-  assert.ok(uiState.storedBytes(JSON.stringify(sessionWrites.findLast(v => v.debugTrace).debugTrace.events.find(e => e.truncated))) <= 16384);
+  const clippedEvent = sessionWrites.findLast(v => v.debugTrace).debugTrace.events.find(e => e.truncated);
+  assert.equal(clippedEvent.kind,'tool','Clipped production traces must still count as tool steps');
+  assert.ok(uiState.storedBytes(JSON.stringify(clippedEvent)) <= 16384);
   const savedStep = persisted.findLast(v => v.runState?.steps?.length).runState.steps[0];
   assert.ok(uiState.storedBytes(JSON.stringify(savedStep.args)) <= 4096);
   assert.ok(uiState.storedBytes(JSON.stringify(savedStep.result)) <= 8192);
