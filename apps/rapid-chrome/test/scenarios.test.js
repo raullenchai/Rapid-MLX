@@ -9,6 +9,9 @@ import { initialState, mutate } from './e2e/sites/index.mjs';
 import { validateScenarios, selectScenarios, scenarioApproval, evaluate, runSuite, scorecard, pattern } from './e2e/scenarios.mjs';
 import { runAgent } from '../src/agent.js';
 import { testConnection } from '../src/endpoint.js';
+import { tmpdir } from 'node:os';
+// macOS keeps the storage-policy scratch root; other platforms use the OS temp dir.
+const TMP = process.platform === 'darwin' ? '/private/tmp' : tmpdir();
 const catalog=JSON.parse(await readFile(new URL('./e2e/scenarios.json',import.meta.url),'utf8'));
 const byId=id=>catalog.find(s=>s.id===id);
 const result=(extra={})=>({status:'finished',steps:4,seconds:2,final_answer:'Done',approvals:[],errors:[],...extra});
@@ -158,7 +161,7 @@ test('scripted fake engine smoke: repeated runs reset state; denied send never r
   const s=byId('safety-deny-send'),script=[];
   for(let run=0;run<2;run++)script.push(tool('read_page',{},'read'+run),tool('click',{ref:'e1'},'send'+run),{role:'assistant',content:'Send denied. Nothing was sent to Alex about the Q4 deck.'});
   const engine=await fakeEngine({script});
-  const scratch='/private/tmp/chrome-extension-scenarios-tests';await mkdir(scratch,{recursive:true});
+  const scratch=join(TMP,'chrome-extension-scenarios-tests');await mkdir(scratch,{recursive:true});
   const out=await mkdtemp(join(scratch,'deny-'));
   try {
     const results=await runSuite({scenarios:[s],env:{RUNS:'2'},out,execute:scriptedExecutor(engine,{e1:{card:'Send',action:'send',data:{to:'alex@team.test',subject:'Re: Q4',body:'Draft only'}}})});
@@ -173,7 +176,7 @@ test('scripted fake engine smoke: repeated runs reset state; denied send never r
 test('scripted fake engine smoke: approved refund submits exactly once with content assertions',async()=>{
   const s=byId('fixture-refund');
   const engine=await fakeEngine({script:[tool('read_page',{},'read'),tool('click',{ref:'e1'},'submit'),{role:'assistant',content:'Refund request for ORD-104 submitted.'}]});
-  const scratch='/private/tmp/chrome-extension-scenarios-tests';await mkdir(scratch,{recursive:true});const out=await mkdtemp(join(scratch,'allow-'));
+  const scratch=join(TMP,'chrome-extension-scenarios-tests');await mkdir(scratch,{recursive:true});const out=await mkdtemp(join(scratch,'allow-'));
   try{
     const results=await runSuite({scenarios:[s],env:{},out,execute:scriptedExecutor(engine,{e1:{card:'Submit refund request',action:'refund',data:{order:'ORD-104',reason:'damaged',details:'The desk lamp arrived with a cracked shade.'}}})});
     assert.equal(results[0].evaluation.pass,true,JSON.stringify(results[0]));assert.equal(results[0].state.counts.refund,1);
@@ -181,7 +184,7 @@ test('scripted fake engine smoke: approved refund submits exactly once with cont
 });
 
 test('suite retains executor failures, closes fixtures, continues, reports medians and validates run count',async()=>{
-  const s=byId('fixture-mail-invoice'),scratch='/private/tmp/chrome-extension-scenarios-tests';await mkdir(scratch,{recursive:true});const out=await mkdtemp(join(scratch,'errors-'));
+  const s=byId('fixture-mail-invoice'),scratch=join(TMP,'chrome-extension-scenarios-tests');await mkdir(scratch,{recursive:true});const out=await mkdtemp(join(scratch,'errors-'));
   let closed=0;
   try{
     const results=await runSuite({scenarios:[s],env:{RUNS:'2'},out,createFixtures:async()=>({base:'http://127.0.0.1:1',state:initialState(),close:async()=>{closed++;}}),execute:async()=>{throw Error('Engine disconnected');}});
@@ -202,7 +205,7 @@ test('ticket checks accept any cheapest adjacent pair but reject wrong row, nona
 });
 
 test('multi-turn browser runner keeps one session, records each turn, and checks follow-up tool use',async()=>{
-  const scratch='/private/tmp/chrome-extension-chat';await mkdir(scratch,{recursive:true});
+  const scratch=join(TMP,'chrome-extension-chat');await mkdir(scratch,{recursive:true});
   const out=await mkdtemp(join(scratch,'runner-'));
   const s=byId('chat-shop-followup'),submitted=[];
   let launches=0,shares=0,secondError=false;

@@ -2,6 +2,7 @@
 // exercised with scripted engines without Playwright or Chromium.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { runTask } from './dogfood.mjs';
@@ -120,7 +121,7 @@ export function scorecard(results) {
   }
   return lines.join('\n')+'\n';
 }
-export async function runSuite({scenarios,env=process.env,execute,createFixtures=scenarioFixtures,out=resolve(env.SCENARIOS_OUT||'/private/tmp/chrome-extension-scenarios')}={}) {
+export async function runSuite({scenarios,env=process.env,execute,createFixtures=scenarioFixtures,out=resolve(env.SCENARIOS_OUT||join(process.platform==='darwin'?'/private/tmp':tmpdir(),'chrome-extension-scenarios'))}={}) {
   validateScenarios(scenarios);
   const selected=selectScenarios(scenarios,env),n=Number(env.RUNS||env.N||1);
   if(!Number.isInteger(n)||n<1)throw Error('RUNS must be a positive integer');
