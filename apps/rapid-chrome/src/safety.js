@@ -35,6 +35,13 @@ function financialContext(target) {
   return financialCommit.test([target.name,target.label,target.form,target.formName,target.submitter].filter(Boolean).join(' ')) ||
     financialCommit.test(path.replace(/[-_/]+/g,' ')) || /(?:^|\/)(?:checkout|order)\b/i.test(path);
 }
+function consequentialContext(target) {
+  // A lookup submitter may repeat its label in form text. Only this exact
+  // phrase is benign; other effects in the same context must still win.
+  const context = [target.form,target.formName,target.submitter,target.action,target.label,target.id]
+    .filter(Boolean).join(' ').replace(/\bsubmit search\b/gi,'search');
+  return consequential.test(context) || destructive.test(context) || financialCommit.test(context) || financialContext(target);
+}
 // Positive browse context is required for ambiguous location/Go controls.
 // Account writes, opaque endpoints and explicit effects always keep the gate.
 export function preparatoryContext(t = {}) {
@@ -45,10 +52,9 @@ export function preparatoryContext(t = {}) {
   let path = '';
   try { path = new URL(t.action || t.href || '/', 'https://page.invalid').pathname; } catch {}
   // One editable query is structural evidence; GET alone does not make a write safe.
-  const queryEffect = [t.form,t.formName,t.submitter].join(' ').replace(/\bsubmit search\b/gi,'search');
-  const queryLookup = !consequential.test(queryEffect) && !financialContext(t) && t.method?.toLowerCase() === 'get' && t.singleQuery && /search|lookup|forecast|zipcity|(?:find|enter).*?(?:location|city|zip)/i.test(context);
+  const queryLookup = t.method?.toLowerCase() === 'get' && t.singleQuery && /search|lookup|forecast|zipcity|(?:find|enter).*?(?:location|city|zip)/i.test(context);
   const endpoint = (queryLookup && !/update|save|submit|delete|account|profile|address[-_/ ]?book/i.test(path)) || !t.action || /(?:^|\/)(?:search|s|browse|discover|find|restaurants?)(?:\/|$)/i.test(path) || path === '/';
-  if (!t.tag || account || writes || !endpoint || t.paymentForm || t.sensitiveForm || t.longName) return false;
+  if (!t.tag || account || writes || consequentialContext(t) || !endpoint || t.paymentForm || t.sensitiveForm || t.longName) return false;
   if (queryLookup && /^(?:go|search|find|submit search)$/i.test(own)) return true;
   const headerLocation = /^(?:HEADER|NAV)\b/.test(t.landmark || '') && /^(?:location .+|current address: .+\. Or select a new address\.)$/i.test(own);
   const cityChoice = /^(?:discover restaurants|order groceries for delivery or pickup)/i.test(t.heading || '') && /^(?:[A-Z][a-z]+)(?:[ -][A-Z][a-z]+){0,5}(?:, [A-Z]{2})?$/.test(own);
@@ -78,10 +84,11 @@ export function classifyTarget(target = {}) {
   // Explicit destructive/purchase names still win (including close account).
   const filterName = /^(?:order by|order history|confirm filters?|订单记录|訂單記錄|确认筛选|確認篩選)/iu.test(own)
     ? own.replace(/\b(?:order|confirm)\b|订单|訂單|确认|確認/giu,'') : own;
-  const explicit = (!/^submit search$/i.test(own) && consequential.test(filter ? filterName : own.replace(/^add \d+ to order(?=\s*(?:[•·]\s*[$€£¥]\s*[\d.,]+)?$)/i, 'add to cart'))) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
   const financial = financialContext(target);
-  const cart = isCartAddition(own) && !financial && !target.sensitiveForm && !target.paymentForm;
-  const searchSubmit = /^submit search$/i.test(own) && !consequential.test([target.label,target.form,target.formName,target.submitter,target.id].filter(v => v && !/^submit search$/i.test(v)).join(' ')) && !target.sensitiveForm && !target.paymentForm && !financial && !target.method && !target.action;
+  const contextEffect = consequentialContext(target);
+  const cart = isCartAddition(own) && !contextEffect && !target.sensitiveForm && !target.paymentForm;
+  const searchSubmit = /^submit search$/i.test(own) && !contextEffect && !target.sensitiveForm && !target.paymentForm && (!target.method || target.method.toLowerCase() === 'get');
+  const explicit = (!searchSubmit && consequential.test(filter ? filterName : own.replace(/^add \d+ to order(?=\s*(?:[•·]\s*[$€£¥]\s*[\d.,]+)?$)/i, 'add to cart'))) || /\b(?:place|submit|confirm)\s+(?:an?\s+)?(?:order|payment)\b|确认订单|確認訂單/iu.test(own) || /\bclose account\b|关闭账户|關閉帳戶/iu.test(own);
   const search = searchSubmit || /\b(search|find)\b|搜索|搜尋|查找|查询|查詢/iu.test(effect) || target.type === 'search' || (/^go$/i.test(own) && (!target.tag || preparatoryContext(target)));
   const genericSubmit = /\bsubmit\b|提交/iu.test([target.name,target.label].filter(Boolean).join(' ')) || (target.type === 'submit' && Boolean(target.method || target.action || target.form || target.submitter));
   // DOM text can be just '22' while its owning AX gridcell names the full date.
@@ -105,10 +112,15 @@ export function classifyTarget(target = {}) {
   // Error-page reload outside any form re-renders the page; "Retry" can replay a payment and stays gated.
   const reload = /^(?:reload|refresh|try again|重新加载|重新載入|刷新)$/iu.test(own) && target.type !== 'submit' && !target.form && !target.formName && !target.action && !target.method && !target.submitter && !financialContext(target) && !target.sensitiveForm && !target.paymentForm;
   const writes = target.method && !['get','dialog'].includes(target.method.toLowerCase());
+  // ARIA roles and benign labels cannot turn a submitting control into a
+  // dismissal/filter when its form declares an effect. Non-submitting filters
+  // still avoid inheriting unrelated form submitters.
+  const submitEffect = ['submit','image'].includes(target.type) && (contextEffect ||
+    (filter && target.method && target.method.toLowerCase() !== 'get'));
   const contextual = preparatoryContext(target);
   const accountWrite = /saved|account|profile|billing|address[-_/ ]?book/i.test([target.landmark,target.heading,target.formName,target.action].join(' '));
   const ambiguous = (target.role === 'button' || target.type === 'button') && !(contextual || preparation || reload || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart || search);
-  return { search, financial, consequential: destructive.test(own) || explicit || accountWrite || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(contextual || reload || searchSubmit || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
+  return { search, financial, consequential: Boolean(submitEffect) || destructive.test(own) || explicit || accountWrite || ambiguous || Boolean(target.longName || target.sensitiveForm || target.paymentForm) || (!(contextual || reload || searchSubmit || disclosure || pagination || filterControl || harmless || browsing || calendarDate || filter || cart) && (consequential.test(effect) || destructive.test(effect) || (!search && Boolean(genericSubmit || writes)))), sensitive: sensitive.test(text) };
 }
 
 export function isCartAddition(name = '') {

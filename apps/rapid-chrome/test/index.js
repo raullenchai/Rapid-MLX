@@ -43,6 +43,8 @@ import './round12.test.js';
 
 import './date-fare.test.js';
 
+import './security-r15.test.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';

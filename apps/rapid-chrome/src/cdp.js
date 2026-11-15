@@ -455,6 +455,11 @@ export class BrowserHand {
     if (goalKey && this.deniedGoals.has(goalKey)) throw new Error('denied: location change was already denied in this task; do not attempt it through another control');
     const repeat = target.additionKey && this.additions.has(target.additionKey);
     const approvalName = submit && info.submitter ? info.submitter : info.name || target.name || 'Focused element';
+    // Denials survive changed page context even if classification now grants
+    // a preparatory exemption. Identity excludes refs and editable form values.
+    const effectName = (submit || info.type === 'submit') && info.submitter ? info.submitter : approvalName;
+    const denialKey = JSON.stringify([new URL(tab.url).origin,info.action || new URL(tab.url).pathname,effectName.trim().toLocaleLowerCase()]);
+    if (this.denials.has(denialKey)) throw new Error(`denied: '${effectName}' was already denied in this task; approval will not be requested again`);
     if ((!fill || submit) && classification.financial) {
       const message = `Your turn: review and press ${approvalName} yourself${info.details ? `. Form values: ${info.details}` : ''}`;
       const error = new Error(`financial_handover: ${message}`);
@@ -462,12 +467,6 @@ export class BrowserHand {
       throw error;
     }
     if (repeat || always || ((!fill || submit) && classification.consequential)) {
-      // Submission via Enter, fill+submit, and a submit button represents the
-      // same effect. Keys exclude refs, field values, and input method so a
-      // refreshed outline or edited form cannot re-request a denied effect.
-      const effectName = (submit || info.type === 'submit') && info.submitter ? info.submitter : approvalName;
-      const denialKey = JSON.stringify([new URL(tab.url).origin,info.action || new URL(tab.url).pathname,effectName.trim().toLocaleLowerCase()]);
-      if (this.denials.has(denialKey)) throw new Error(`denied: '${effectName}' was already denied in this task; approval will not be requested again`);
       const titleKey = approvalTitleKey(approvalName);
       if (!await this.approve({titleKey:titleKey === 'allowAction' && (submit || info.type === 'submit') ? 'allowSubmit' : titleKey,action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.details ? ` Form values: ${info.details}` : info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
         this.denials.add(denialKey);

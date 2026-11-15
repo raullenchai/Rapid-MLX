@@ -28,13 +28,16 @@ test('Send approval names the submitter for fill+submit and Enter, and the contr
   }
 });
 
-test('disclosures ignore POST context but explicit consequential language anywhere in the label wins', () => {
-  const context = {role:'button',method:'post',type:'submit',form:'Book now Confirm purchase'};
+test('non-submitting disclosures ignore POST context but explicit consequential language anywhere in the label wins', () => {
+  const context = {role:'button',method:'post',type:'button',form:'Book now Confirm purchase'};
   for (const target of [
     {name:'Flight details. Leaves San Francisco International Airport'},
     {name:'Details about booking',expanded:'true'},
     {name:'View details '+ 'x'.repeat(100)}
-  ]) assert.equal(classifyTarget({...context,...target}).consequential,false);
+  ]) {
+    assert.equal(classifyTarget({...context,...target}).consequential,false);
+    assert.equal(classifyTarget({...context,...target,type:'submit'}).consequential,true);
+  }
   for (const name of ['Buy Now','Book flight','More options to book a flight','Flight details. Select and book','View details '+ 'x'.repeat(100) + ' buy now','Confirm purchase','Send','Delete account'])
     assert.equal(classifyTarget({...context,name}).consequential,true);
 });

@@ -6,14 +6,16 @@ import { effectReport, watchEffects, collectEffects } from '../src/effects.js';
 import { outlineAX } from '../src/ax.js';
 import { BrowserHand } from '../src/cdp.js';
 
-test('trace filter/dismissal names ignore POST and purchase form context, en + zh', () => {
-  const context = {form:'Buy now Confirm purchase 删除',method:'post',type:'submit'};
+test('non-submitting filter/dismissal names ignore POST and purchase form context, en + zh', () => {
+  const context = {form:'Buy now Confirm purchase 删除',method:'post',type:'button'};
   for (const name of ['Stops, Not selected','Close dialog','Close','Dismiss','Cancel','Not now','Sort by price','关闭对话框','取消','暂不','经停','排序']) {
     assert.equal(classifyTarget({...context,name,role:'button'}).consequential,false,name);
+    assert.equal(classifyTarget({...context,name,role:'button',type:'submit'}).consequential,true,name);
   }
   for (const role of ['checkbox','radio','tab','option','menuitem','switch']) {
     for (const name of ['Nonstop','Cheapest from 928 US dollars Learn more about ranking','直飞','最便宜','Order by price','订单记录','确认筛选']) {
       assert.equal(classifyTarget({...context,name,role}).consequential,false,`${role} ${name}`);
+      assert.equal(classifyTarget({...context,name,role,type:'submit'}).consequential,true,`${role} ${name}`);
     }
     for (const name of ['Buy now','Delete account','Send message','购买','删除','发送']) assert.equal(classifyTarget({...context,name,role}).consequential,true,name);
   }
