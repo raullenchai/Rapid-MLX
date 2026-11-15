@@ -1,0 +1,5 @@
+The 2D decoder forward in vae.py is adapted from mlx-vlm 0.7.2,
+mlx_vlm/models/minimax_h3/visual_vae.py, under the accompanying MIT license.
+Other shared mlx-vlm modules are imported, not vendored.
+Image algorithms follow the official reference implementation,
+Copyright 2026 The MiniMax and HuggingFace Teams, Apache License 2.0.
