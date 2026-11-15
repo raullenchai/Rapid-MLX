@@ -18,14 +18,14 @@ const post=async(base,action,data={})=>{
 
 test('catalog covers all categories, local sites and existing dogfood tasks; selectors reject typos',async()=>{
   assert.equal(validateScenarios(catalog),catalog);
-  assert.equal(catalog.length,30);
-  assert.deepEqual(new Set(catalog.map(s=>s.category)),new Set(['Shopping','Travel','Reservations','Food/grocery','Tickets','Money','Productivity','Safety']));
+  assert.equal(catalog.length,33);
+  assert.deepEqual(new Set(catalog.map(s=>s.category)),new Set(['Shopping','Travel','Reservations','Food/grocery','Tickets','Money','Productivity','Safety','chat']));
   const old=JSON.parse(await readFile(new URL('./e2e/dogfood-tasks.json',import.meta.url),'utf8'));
   for(const t of old)assert.ok(catalog.some(s=>s.id===t.id&&s.start_url===t.start_url));
   assert.equal(selectScenarios(catalog,{CATEGORY:'money'}).length,3);
   assert.deepEqual(selectScenarios(catalog,{SCENARIOS:'fixture-school, fixture-mail-reply'}).map(s=>s.id),['fixture-mail-reply','fixture-school']);
   for(const env of [{CATEGORY:'typo'},{SCENARIOS:'typo'},{SCENARIOS:'fixture-school',CATEGORY:'Travel'}])assert.throws(()=>selectScenarios(catalog,env));
-  for(const patch of [{id:'../escape'},{start_url:'file:///secret'},{checks:{max_steps:0}},{checks:{max_steps:1,state:[{path:'x',equals:1,gte:1}]}},{checks:{max_steps:1,answer_includes:['/[bad/']}}])assert.throws(()=>validateScenarios([{...catalog[0],...patch}]));
+  for(const patch of [{id:'../escape'},{start_url:'file:///secret'},{checks:{max_steps:-1}},{checks:{max_steps:1,state:[{path:'x',equals:1,gte:1}]}},{checks:{max_steps:1,answer_includes:['/[bad/']}}])assert.throws(()=>validateScenarios([{...catalog[0],...patch}]));
 });
 
 test('approval policy permits only the requested consequential action and safe navigation/cart actions',()=>{
@@ -187,4 +187,28 @@ test('ticket checks accept any cheapest adjacent pair but reject wrong row, nona
   assert.equal(evaluate(s,r,state).pass,true);
   for(const seats of [['C1','C3'],['B1','B2'],['C1']])assert.equal(evaluate(s,r,{...state,seatSelection:seats}).pass,false);
   assert.equal(evaluate(s,r,{...state,ticketQuantity:1}).pass,false);
+});
+
+test('multi-turn browser runner keeps one session, records each turn, and checks follow-up tool use',async()=>{
+  const scratch='/private/tmp/chrome-extension-chat';await mkdir(scratch,{recursive:true});
+  const out=await mkdtemp(join(scratch,'runner-'));
+  const s=byId('chat-shop-followup'),submitted=[];
+  let launches=0,shares=0;
+  const answers=['Bolt $29.99; Swift $24.99.','Swift is cheaper by $5.00.'];
+  const trace=()=>({events:submitted.length===1?[{kind:'tool'}]:[]});
+  const panel={locator:selector=>selector==='#stop'?{isDisabled:async()=>true}:selector==='#messages .assistant'?{count:async()=>submitted.length,last:()=>({innerText:async()=>answers[submitted.length-1]})}:{innerText:async()=>answers.join('\n')}};
+  const page={goto:async()=>{},bringToFront:async()=>{},screenshot:async()=>{},url:()=>s.start_url};
+  const source=(await readFile(new URL('./e2e/dogfood.mjs',import.meta.url),'utf8')).split('const cell =')[0].replace(/^import .*;$/gm,'').replace(/export /g,'');
+  const context=vm.createContext({mkdir,mkdtemp,rm,writeFile,join,Date,JSON,Set,process:{env:{}},launchExtension:async()=>{launches++;return {newPage:async()=>page,close:async()=>{}};},connectPanel:async()=>panel,shareTab:async()=>{shares++;},submitTask:async(_,task)=>submitted.push(task),readTrace:async()=>trace(),sleep:async()=>{},until:async()=>{}});
+  vm.runInContext(source,context);
+  try {
+    const r=await context.runTask({},s,out,'http://localhost:8000');
+    assert.deepEqual(submitted,s.turns.map(t=>t.task));
+    assert.equal(launches,1);assert.equal(shares,1);
+    assert.deepEqual(Array.from(r.turns,t=>t.steps),[1,0]);
+    assert.equal(r.steps,1);assert.equal(evaluate(s,r,{}).pass,true,JSON.stringify(r));
+    r.turns[1].steps=1;
+    assert.ok(evaluate(s,r,{}).failures.some(f=>/Turn 2: Steps/.test(f)));
+    assert.equal(JSON.parse(await readFile(join(out,s.id,'trace.json'),'utf8')).turns.length,2);
+  } finally {await rm(out,{recursive:true,force:true});}
 });

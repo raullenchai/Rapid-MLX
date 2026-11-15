@@ -16,12 +16,13 @@ export function validateScenarios(scenarios) {
   if (!Array.isArray(scenarios) || !scenarios.length) throw Error('Scenarios must be a nonempty array');
   const ids=new Set();
   for (const s of scenarios) {
-    if (!s || !/^[a-z0-9_-]+$/.test(s.id) || ids.has(s.id) || !s.category?.trim() || !s.task?.trim() ||
+    if (!s || !/^[a-z0-9_-]+$/.test(s.id) || ids.has(s.id) || !s.category?.trim() || !(s.task?.trim() || s.turns?.[0]?.task?.trim()) ||
       typeof s.start_url!=='string' || !/^(fixture:\/[^\s]*|https:\/\/[^\s]+)$/.test(s.start_url) || !s.checks || typeof s.checks!=='object') throw Error('Invalid or duplicate scenario: '+s?.id);
     if (s.start_url.startsWith('https:')) new URL(s.start_url);
     ids.add(s.id);
     const c=s.checks;
-    if (!Number.isInteger(c.max_steps) || c.max_steps<1 || c.max_steps>100) throw Error('Positive max_steps required: '+s.id);
+    if (!Number.isInteger(c.max_steps) || c.max_steps<0 || c.max_steps>100) throw Error('Nonnegative max_steps required: '+s.id);
+    if (c.min_steps !== undefined && (!Number.isInteger(c.min_steps) || c.min_steps < 0 || c.min_steps > c.max_steps)) throw Error('Invalid min_steps: '+s.id);
     for (const key of ['answer_includes','answer_excludes']) {
       if(c[key]!==undefined && !Array.isArray(c[key]))throw Error('Expected pattern array: '+key);
       for (const p of c[key]||[]) pattern(p);
@@ -34,6 +35,13 @@ export function validateScenarios(scenarios) {
       if(Object.hasOwn(check,'matches'))pattern(check.matches);
       if(Object.hasOwn(check,'gte') && !Number.isFinite(check.gte))throw Error('gte must be finite');
       if(Object.hasOwn(check,'one_of') && !Array.isArray(check.one_of))throw Error('one_of must be an array');
+    }
+    if (s.turns !== undefined) {
+      if (!Array.isArray(s.turns) || !s.turns.length) throw Error('Nonempty turns required');
+      for (const [i,turn] of s.turns.entries()) {
+        if (!turn.task?.trim()) throw Error('Turn task required');
+        validateScenarios([{...s,turns:undefined,id:`${s.id}-turn-${i}`,task:turn.task,checks:{max_steps:c.max_steps,...turn.checks}}]);
+      }
     }
     if(c.human_review!==undefined && typeof c.human_review!=='boolean')throw Error('human_review must be boolean');
   }
@@ -69,6 +77,14 @@ export function evaluate(scenario,result,state) {
   if(!answer.trim())failures.push('Missing final answer');
   if(/step[_ ]cap|completion is unconfirmed|returned no final answer/i.test(answer))failures.push('Agent did not confirm completion');
   if(!Number.isFinite(result.steps)||result.steps>c.max_steps)failures.push(`Steps ${result.steps} exceed ${c.max_steps}`);
+  if (c.min_steps !== undefined && result.steps < c.min_steps) failures.push('Browser tools required');
+  if (scenario.turns) {
+    if (result.turns?.length !== scenario.turns.length) failures.push('Missing scenario turns');
+    else scenario.turns.forEach((turn,i) => {
+      const checked = evaluate({checks:{max_steps:c.max_steps,...turn.checks}},result.turns[i],state);
+      failures.push(...checked.failures.map(f => `Turn ${i+1}: ${f}`));
+    });
+  }
   for(const p of c.answer_includes||[])if(!pattern(p).test(answer))failures.push('Answer missing: '+p);
   for(const p of c.answer_excludes||[])if(pattern(p).test(answer))failures.push('Answer contains forbidden: '+p);
   for(const check of c.state||[]) {

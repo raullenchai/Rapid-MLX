@@ -121,3 +121,19 @@ test('isolated overlay bindings dispatch take-over and stop only for the owned b
   await hand.event(1,'Runtime.bindingCalled',{name:'private-binding',payload:'heartbeat'});
   assert.equal(calls.length,1,'paused ownership must not renew the overlay');
 });
+
+test('finished text-only chat hides recovery and displays grant cards through existing approvals', () => {
+  const p=panel();
+  p.render(snapshot({messages:[{role:'user',content:'Hi'},{role:'assistant',kind:'answer',content:'Hello! I can chat and help with websites.'}]}));
+  assert.equal(p.get('recovery').hidden,true);
+  assert.equal(p.get('send').disabled,false);
+  assert.equal(p.get('stop').hidden,true);
+  assert.equal(p.get('result-tab').hidden,true);
+  p.render(snapshot({running:true,approvals:[{id:'grant',kind:'grant',action:'Let Rapid control this tab',site:'shop.test'}]}));
+  const card=p.get('approvals').children[0];
+  assert.match(card.textContent,/Let Rapid control this tab/);
+  const allow=card.children.find(c=>c.tagName==='BUTTON');
+  allow.onclick();
+  assert.equal(p.sent.at(-1).type,'approve');
+  assert.equal(p.sent.at(-1).id,'grant');assert.equal(p.sent.at(-1).allow,true);
+});

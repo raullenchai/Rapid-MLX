@@ -1,6 +1,6 @@
 # Consumer browser-agent scenarios
 
-`scenarios.json` defines 30 tasks. Local account sites use one random-port loopback
+`scenarios.json` defines 33 scenarios. Local account sites use one random-port loopback
 server per run with fresh seeded state. They use no external resources or real
 accounts. Fixture dates are fixed to November 2026; relative dates in live tasks
 are relative to the day you run them.
@@ -28,6 +28,13 @@ unknown categories, empty selections and invalid run counts fail immediately.
 catalog, including live sites, which require network access. For local-only runs,
 select fixture/safety IDs or the Money and Safety categories. No dependencies or
 browser binaries are downloaded by the runner.
+
+The `chat` category covers a greeting without browser tools, live Cupertino
+weather, and a shop comparison followed by a question answered from conversation.
+A scenario can use `turns: [{task, checks}, ...]` in place of `task`. Turns share
+one browser profile and conversation. Each turn's checks can set `max_steps: 0`
+to forbid browsing or `min_steps: 1` to require it; scenario checks apply to the
+final answer and total steps. Multi-turn trace artifacts retain each turn.
 
 `HEADLESS=1` selects headless Chromium. `RAPID_API_KEY` is optional. Set
 `SCENARIOS_OUT` to choose the artifact directory; by default artifacts live under

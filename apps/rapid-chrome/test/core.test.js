@@ -347,28 +347,16 @@ test('display brackets resolve only current exact refs, including after a fresh 
   await hand.resolve(1,'[e4]');
 });
 
-test('zero-tool Hello gets a bounded read recovery, then normal actions and denial', async () => {
+test('a text-only reply finishes in one request without tool calls or recovery', async () => {
   let requests = 0;
-  const executed = [];
-  const answer = await runAgent({settings,task:'Draft a message saying hello and send it',signal:new AbortController().signal,
+  const answer = await runAgent({settings,task:'Hi, what can you do?',signal:new AbortController().signal,
     fetchImpl:async (_,o) => {
-      const body = JSON.parse(o.body);
-      if (++requests === 1) return response({content:'Hello!'});
-      if (requests === 2) {
-        assert.deepEqual(body.tool_choice,{type:'function',function:{name:'read_page'}});
-        assert.match(body.messages.at(-1).content,/No browser observation/);
-        return response({tool_calls:[call('read_page',{})]});
-      }
-      assert.equal(body.tool_choice,undefined);
-      if (requests > 3) return response({content:'You denied approval; nothing was sent.'});
-      return response({tool_calls:[call('click',{ref:'e1'})]});
-    },execute:async name => { executed.push(name); if (name === 'click') throw new Error('denied: action not executed'); return {text:'Send form'}; }});
-  assert.deepEqual(executed,['read_page','click']);
-  assert.match(answer,/denied approval/);
-  let retries = 0;
-  const fallback = await runAgent({settings,task:'Send',signal:new AbortController().signal,
-    fetchImpl:async () => { retries++; return response({content:'Hello!'}); },execute:async () => assert.fail()});
-  assert.equal(retries,2); assert.match(fallback,/unconfirmed/);
+      requests++;
+      assert.equal(JSON.parse(o.body).tool_choice,undefined);
+      return response({content:'Hello! I can chat and help with websites.'});
+    },execute:async () => assert.fail('Chat must not execute browser tools')});
+  assert.equal(requests,1);
+  assert.equal(answer,'Hello! I can chat and help with websites.');
 });
 
 test('a new agent task after denial has a fresh guard and can read and act', async () => {

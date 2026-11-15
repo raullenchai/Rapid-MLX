@@ -89,7 +89,7 @@ test('metadata and generic browser words do not suppress recovery or invent a se
   assert.doesNotMatch(nudges[0].text,/page has a search box/);
 });
 
-test('zero-tool recovery consumes the same one-nudge allowance', async () => {
+test('zero-tool reply finishes without a recovery nudge', async () => {
   let requests = 0;
   const events = [];
   await runAgent({settings:{base:'http://127.0.0.1:8000',model:'test'},task:'Find a charger',signal:new AbortController().signal,
@@ -100,6 +100,6 @@ test('zero-tool recovery consumes the same one-nudge allowance', async () => {
       const message = requests === 2 ? {tool_calls:[call('read_page')]} : {content:'A needed tool is unavailable.'};
       return {ok:true,json:async () => ({choices:[{message}]})};
     }});
-  assert.equal(requests,3);
-  assert.equal(events.filter(e => e.kind === 'nudge').length,1);
+  assert.equal(requests,1);
+  assert.equal(events.filter(e => e.kind === 'nudge').length,0);
 });

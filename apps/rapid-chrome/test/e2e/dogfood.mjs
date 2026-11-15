@@ -18,6 +18,8 @@ export async function runTask(chromium, task, out, base, options = {}) {
   const result = {id:task.id, task:task.task, start_url:task.start_url, status:'error',
     seconds:0, steps:0, approvals:[], final_url:'', final_answer:'', errors:[]};
   let context, panel, page, trace;
+  const traces = [];
+  result.turns = [];
   // Keep collecting other artifacts if one capture fails (e.g. a closed tab).
   const capture = async fn => {
     try { return await fn(); }
@@ -33,39 +35,46 @@ export async function runTask(chromium, task, out, base, options = {}) {
     await capture(() => page.screenshot({path:join(dir,'start.png'),timeout:5000}));
     await shareTab(panel);
     const deadline = Date.now()+(task.timeout_s ?? 300)*1000;
-    await submitTask(panel,task.task);
-    const handled = new Set();
-    while (true) {
-      if (await panel.locator('#stop').isDisabled()) {
-        result.status = 'finished';
-        break;
+    for (const turn of task.turns || [{task:task.task}]) {
+      await submitTask(panel,turn.task);
+      const handled = new Set();
+      while (true) {
+        if (await panel.locator('#stop').isDisabled()) {
+          result.status = 'finished';
+          break;
+        }
+        if (Date.now() >= deadline) {
+          result.status = 'timeout';
+          break;
+        }
+        if (options.maxSteps && ((await readTrace(panel))?.events?.filter(e => e.kind === 'tool').length || 0) > options.maxSteps) {
+          result.status = 'step_limit';
+          break;
+        }
+        if (await panel.locator('#paused').isVisible()) {
+          result.status = 'needs_human';
+          result.final_answer = await panel.locator('#status').innerText();
+          break;
+        }
+        for (const card of await panel.locator('.approval').all()) {
+          const id = await card.getAttribute('data-id');
+          if (handled.has(id)) continue;
+          const text = await card.innerText();
+          const decision = (options.approvalDecision || approvalDecision)(text);
+          const approval = {id,text,decision,at_seconds:(Date.now()-started)/1000};
+          result.approvals.push(approval);
+          // Persist the full card and policy decision before clicking.
+          await writeFile(join(dir,'approvals.json'),JSON.stringify(result.approvals,null,2));
+          await card.getByRole('button',{name:decision === 'approved' ? 'Allow once' : 'Deny',exact:true}).click();
+          handled.add(id);
+        }
+        await sleep(100);
       }
-      if (Date.now() >= deadline) {
-        result.status = 'timeout';
-        break;
-      }
-      if (options.maxSteps && ((await readTrace(panel))?.events?.filter(e => e.kind === 'tool').length || 0) > options.maxSteps) {
-        result.status = 'step_limit';
-        break;
-      }
-      if (await panel.locator('#paused').isVisible()) {
-        result.status = 'needs_human';
-        result.final_answer = await panel.locator('#status').innerText();
-        break;
-      }
-      for (const card of await panel.locator('.approval').all()) {
-        const id = await card.getAttribute('data-id');
-        if (handled.has(id)) continue;
-        const text = await card.innerText();
-        const decision = (options.approvalDecision || approvalDecision)(text);
-        const approval = {id,text,decision,at_seconds:(Date.now()-started)/1000};
-        result.approvals.push(approval);
-        // Persist the full card and policy decision before clicking.
-        await writeFile(join(dir,'approvals.json'),JSON.stringify(result.approvals,null,2));
-        await card.getByRole('button',{name:decision === 'approved' ? 'Allow once' : 'Deny',exact:true}).click();
-        handled.add(id);
-      }
-      await sleep(100);
+      const turnTrace = await readTrace(panel);
+      traces.push(turnTrace);
+      const answers = panel.locator('#messages .assistant');
+      result.turns.push({status:result.status,steps:turnTrace?.events?.filter(e => e.kind === 'tool').length || 0,final_answer:await answers.last().innerText(),approvals:[...result.approvals],errors:[]});
+      if (result.status !== 'finished') break;
     }
   } catch (error) {
     result.errors.push(error.message);
@@ -90,11 +99,11 @@ export async function runTask(chromium, task, out, base, options = {}) {
       await capture(() => page.screenshot({path:join(dir,'end.png'),timeout:5000}));
     }
     result.seconds = Number(((Date.now()-started)/1000).toFixed(1));
-    result.steps = trace?.events?.filter(event => event.kind === 'tool').length || 0;
+    result.steps = traces.length ? result.turns.reduce((n,t) => n+t.steps,0) : trace?.events?.filter(event => event.kind === 'tool').length || 0;
     await capture(() => context?.close());
     await capture(() => rm(profile,{recursive:true,force:true}));
     await writeFile(join(dir,'approvals.json'),JSON.stringify(result.approvals,null,2));
-    await writeFile(join(dir,'trace.json'),JSON.stringify(trace ?? null,null,2));
+    await writeFile(join(dir,'trace.json'),JSON.stringify(task.turns ? {turns:traces} : trace ?? null,null,2));
     await writeFile(join(dir,'result.json'),JSON.stringify(result,null,2));
   }
   return result;

@@ -165,7 +165,7 @@ $('open-tab').onclick = () => send({type:'open-tab'});
 $('share').onclick = () => { const granted = state?.tabs.some(tab => tab.id === contextTab?.id); send(granted ? {type:state.running ? 'take-over' : 'release',id:contextTab.id} : {type:'share'}); };
 $('stop').onclick = $('pause-stop').onclick = () => send({type:'stop'});
 $('resume').onclick = () => send({type:'resume',allow:true});
-$('chat').onsubmit = e => { e.preventDefault(); const text = $('message').value.trim(); if (!text || state?.running || !state?.connected) return; send({type:'send',text:contextAdded && contextTab ? `${text}\n\n${t('pageContext')}: ${contextTab.title}\n${contextTab.url}` : text}); $('message').value = ''; contextAdded = false; $('add-context').setAttribute('aria-pressed','false'); $('context-hint').textContent = ''; grow(); scrollBottom(); };
+$('chat').onsubmit = e => { e.preventDefault(); const text = $('message').value.trim(); if (!text || state?.running || !state?.connected) return; send({type:'send',tabId:contextTab?.id,text:contextAdded && contextTab ? `${text}\n\n${t('pageContext')}: ${contextTab.title}\n${contextTab.url}` : text}); $('message').value = ''; contextAdded = false; $('add-context').setAttribute('aria-pressed','false'); $('context-hint').textContent = ''; grow(); scrollBottom(); };
 $('message').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('chat').requestSubmit(); } };
 $('new-chat').onclick = () => send({type:'new-chat'});
 $('copy-trace').onclick = async () => {

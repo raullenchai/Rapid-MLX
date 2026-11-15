@@ -64,7 +64,7 @@ function emit(event) {
     const detail = {url:state.steps[existing]?.url,targetLabel:state.steps[existing]?.targetLabel,...event,...(targetLabel ? {targetLabel} : {}),result:clip(event.result)};
     if (existing < 0) state.steps.push(detail); else state.steps[existing] = detail;
   } else if (event.kind === 'answer' || event.kind === 'notice' || event.kind === 'progress') {
-    state.messages.push({role:'assistant',kind:event.kind,content:event.text,at:new Date().toISOString()});
+    state.messages.push({role:'assistant',kind:event.kind,content:event.text,...(event.browserSummary ? {browserSummary:event.browserSummary} : {}),at:new Date().toISOString()});
     if (state.messages.length > 60) state.messages.splice(0,state.messages.length - 60);
     void chrome.storage.session.set({transcript:state.messages.slice(-60)});
     void persistConversation();
@@ -133,13 +133,16 @@ async function models(signal, probe = true, discover = false) {
   }
   throw failure;
 }
-async function run(task) {
+async function run(task, tabId) {
   if (state.running) throw new Error('A task is already running');
   if (!task.trim()) return;
   hand.paused = false; state.running = true; state.resultTab = null; state.pauseReason = null; state.steps = []; state.status = 'Working';
   controller = new AbortController();
   const signal = controller.signal;
-  const history = state.messages.filter(m => m.kind !== 'progress').slice(-20);
+  const history = state.messages.filter(m => !['progress','notice'].includes(m.kind)).slice(-60);
+  let currentTab;
+  let browserStarted = false, grantDenied = false;
+  const visited = new Set();
   const debugTrace = {version:1,id:crypto.randomUUID(),task,startedAt:new Date().toISOString(),events:[]};
   const started = Date.now();
   const trace = async event => {
@@ -150,16 +153,39 @@ async function run(task) {
   // A Chrome API call keeps a waiting approval / local inference run alive.
   const keepAlive = setInterval(() => { void chrome.runtime.getPlatformInfo(); },20000);
   try {
+    currentTab = tabId != null ? await chrome.tabs.get(tabId) : (await chrome.tabs.query?.({active:true,lastFocusedWindow:true}))?.[0];
     await trace({kind:'start'});
     if (!state.settings.model) await models(signal);
     signal.throwIfAborted();
-    await hand.begin(signal, task, history); refreshTabs();
-    await runAgent({settings:{...state.settings},task,history,signal,execute:async (...a) => {
+    await runAgent({settings:{...state.settings},task,history,currentTab,signal,execute:async (...a) => {
+      if (!browserStarted && currentTab) hand.active = currentTab.id;
+      if (currentTab && (a[1]?.tabId ?? hand.active) === currentTab.id && !hand.tabs.has(currentTab.id) && a[0] !== 'open_tab' && a[0] !== 'list_tabs') {
+        if (grantDenied) throw new Error('denied: tab grant already denied for this turn');
+        safeURL(currentTab.url,state.settings.base);
+        const allowed = await approve({kind:'grant',action:'Let Rapid control this tab',site:`${currentTab.title || ''}\n${currentTab.url}`,tabId:currentTab.id});
+        signal.throwIfAborted();
+        if (!allowed) { grantDenied = true; throw new Error('denied: Let Rapid control this tab'); }
+        hand.tabs.set(currentTab.id,{attached:false,created:false,groupId:currentTab.groupId,refs:new Map(),epoch:0,binding:`rapidStop_${crypto.randomUUID().replaceAll('-','')}`});
+        if (browserStarted) { await hand.own(currentTab.id); await hand.showOverlay(currentTab.id,true); }
+      }
+      if (!browserStarted) {
+        browserStarted = true; await hand.begin(signal,task,history); refreshTabs();
+      }
       const id = a[1]?.tabId ?? hand.active;
       const step = state.steps.findLast(step => step.status === 'running');
       if (step && id != null) { try { step.url = (await chrome.tabs.get(id)).url; publish(); } catch {} }
-      return hand.execute(...a);
-    },emit,checkpoint,trace});
+      const result = await hand.execute(...a);
+      const text = result.observation?.text || result.text || '';
+      for (const match of text.matchAll(/^URL:\s*(https?:\/\/\S+)/gm)) visited.add(match[1]);
+      if (step?.url) visited.add(step.url);
+      return result;
+    },emit:event => {
+      if (event.kind === 'answer' && browserStarted) {
+        // Store only a small summary with the final reply, never tool transcripts.
+        const summary = `Sites: ${[...visited].join(', ').slice(0,1200) || 'none recorded'}. Result: ${event.text.slice(0,2500)}`;
+        emit({...event,browserSummary:summary});
+      } else emit(event);
+    },checkpoint,trace});
     await trace({kind:'answer',text:state.messages.at(-1)?.content});
     state.status = 'Ready';
   } catch (e) {
@@ -168,8 +194,8 @@ async function run(task) {
     emit({kind:'notice',text:signal.aborted ? 'Stopped. No further actions will run.' : e.message});
   } finally {
     clearInterval(keepAlive);
-    state.resultTab = hand.active;
-    await hand.finish();
+    state.resultTab = browserStarted ? hand.active : null;
+    if (browserStarted) await hand.finish();
     await persistConversation();
     await chrome.storage.session.set({transcript:state.messages.slice(-60)});
     try { await trace({kind:'end',status:state.status,steps:state.steps.length,ms:Date.now()-started}); }
@@ -191,7 +217,7 @@ async function handle(message) {
   if (message.type === 'resume') { if (message.allow) resumeGate?.(true); else stop(); return; }
   if (message.type === 'send') {
     if (state.running) throw new Error('A task is already running');
-    runPromise = run(String(message.text || '')); void runPromise; return;
+    runPromise = run(String(message.text || ''),message.tabId); void runPromise; return;
   }
   if (message.type === 'new-chat') {
     if (state.running) throw new Error('Stop the task before starting a new chat');

@@ -745,5 +745,67 @@
       "approval_expected": "/Place order/i",
       "approval_decision": "deny"
     }
+  },
+  {
+    "id": "chat-hello",
+    "category": "chat",
+    "start_url": "fixture:/shop",
+    "task": "Hi, what can you do?",
+    "checks": {
+      "max_steps": 0,
+      "answer_includes": [
+        "/chat|help|assist/i"
+      ]
+    }
+  },
+  {
+    "id": "chat-weather",
+    "category": "chat",
+    "start_url": "https://www.google.com/",
+    "task": "What is the weather in Cupertino today?",
+    "checks": {
+      "max_steps": 30,
+      "min_steps": 1,
+      "answer_includes": [
+        "Cupertino",
+        "/-?\\d+(?:\\.\\d+)?\\s*\u00b0?\\s*(?:[CF]\\b|degrees|Celsius|Fahrenheit)/i"
+      ]
+    }
+  },
+  {
+    "id": "chat-shop-followup",
+    "category": "chat",
+    "start_url": "fixture:/shop",
+    "turns": [
+      {
+        "task": "Compare the list prices of the Bolt and Swift 65W chargers on this page. Report both prices.",
+        "checks": {
+          "min_steps": 1,
+          "answer_includes": [
+            "Bolt",
+            "Swift",
+            "$29.99",
+            "$24.99"
+          ]
+        }
+      },
+      {
+        "task": "Which one is cheaper and by how much?",
+        "checks": {
+          "max_steps": 0,
+          "answer_includes": [
+            "Swift",
+            "/\\$5(?:\\.00)?\\b/"
+          ]
+        }
+      }
+    ],
+    "checks": {
+      "max_steps": 30,
+      "answer_includes": [
+        "Swift",
+        "/\\$5(?:\\.00)?\\b/"
+      ]
+    }
   }
 ]
