@@ -55,7 +55,7 @@ function shoppingHand() {
   const hand = new BrowserHand({get:async () => ({url:'https://shop.test/p',title:'Charger'}),send:async (_id,method,params) => {
     commands.push({method,params});
     if (method === 'DOM.resolveNode') return {object:{objectId:'button'}};
-    if (method === 'DOM.getBoxModel') return {model:{content:[0,0,100,0,100,2000,0,2000]}};
+    if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('Math.min(innerWidth')) return {result:{value:{left:0,top:0,right:100,bottom:600}}};
     if (method === 'Page.getLayoutMetrics') return {cssLayoutViewport:{clientWidth:800,clientHeight:600}};
     if (method === 'DOM.getNodeForLocation') { assert.ok(params.y < 600); return {backendNodeId:7}; }
     if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') additions++;

@@ -62,3 +62,23 @@ export function additionKey(url, target) {
   const product = target.product || u.pathname.replace(/\/ref=.*$/, '');
   return JSON.stringify([u.origin,product,target.name.toLocaleLowerCase().replace(/\s+/g,' ').trim()]);
 }
+
+// Only explicit user URLs, observed outline links, and root/search entry points
+// may be typed by the model. Site approval still runs separately for new origins.
+export class NavigationPolicy {
+  constructor(task = '') {
+    this.seen = new Set(); this.given = new Set();
+    for (const match of task.matchAll(/https?:\/\/[^\s<>"']+/gi)) {
+      try { this.given.add(new URL(match[0].replace(/[.,;!?)]+$/, '')).href); } catch {}
+    }
+  }
+  observe(href) { try { this.seen.add(new URL(href).href); } catch {} }
+  check(url) {
+    if (this.given.has(url.href) || this.seen.has(url.href)) return;
+    const root = url.pathname === '/' && !url.search;
+    const searchPath = /^(?:\/s|\/search|\/search\/|\/site\/searchpage\.jsp|\/travel\/flights)$/i.test(url.pathname);
+    const search = searchPath && ['q','k','st','query','search'].some(k => url.searchParams.get(k)?.trim());
+    if (root || search) return; // A new origin must then receive site approval.
+    throw new Error('unobserved_url: URL was not supplied by the user or seen as an href in an outline in this task. Click a link from the page or use site search; do not invent product or venue URLs.');
+  }
+}

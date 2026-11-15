@@ -83,7 +83,7 @@ test('invalid JSON becomes a tool error without executing code', async () => {
   let n = 0;
   await runAgent({settings,task:'Test',signal:new AbortController().signal,fetchImpl:async (_,o) => {
     if (!n++) return response({tool_calls:[{...call('click',{}),function:{name:'click',arguments:'bad'}}]});
-    assert.match(JSON.parse(o.body).messages.at(-1).content,/error/); return response({content:'Handled'});
+    assert.match(JSON.parse(o.body).messages.findLast(m => m.role === 'tool').content,/error/); return response({content:'Handled'});
   },execute:async () => assert.fail('must not execute')});
 });
 function fakeHand(allow = false) {
@@ -142,7 +142,7 @@ test('click verifies hit target and descendant before dispatch; obstruction bloc
     const {hand,commands} = fakeHand(true);
     const original = hand.a.send;
     hand.a.send = async (id,method,params) => {
-      if (method === 'DOM.getBoxModel') return {model:{content:[10,10,30,10,30,30,10,30]}};
+      if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('Math.min(innerWidth')) return {result:{value:{left:10,top:10,right:30,bottom:30}}};
       if (method === 'DOM.getNodeForLocation') return {backendNodeId:99};
       if (method === 'Runtime.callFunctionOn' && params.arguments?.[0]?.objectId) return {result:{value:descendant}};
       return original(id,method,params);
@@ -235,7 +235,7 @@ test('identical failed calls return recovery to model without executing again', 
     fetchImpl:async (_,o) => {
       requests++;
       if (requests <= 2) return response({tool_calls:[call('click',{ref:'e1'})]});
-      assert.match(JSON.parse(o.body).messages.at(-1).content,/repeated_call/);
+      assert.match(JSON.parse(o.body).messages.findLast(m => m.role === 'tool').content,/repeated_call/);
       return response({content:'Cannot proceed'});
     },execute:async () => {executed++; throw new Error('stale_ref');}});
   assert.equal(executed,1);
@@ -319,7 +319,7 @@ test('search click, fill+submit and Enter execute without approval; send variant
       const original = hand.a.send;
       hand.a.send = async (id,method,params) => {
         if (method === 'Runtime.evaluate') return {result:{objectId:'focused'}};
-        if (method === 'DOM.getBoxModel') return {model:{content:[0,0,10,0,10,10,0,10]}};
+        if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('Math.min(innerWidth')) return {result:{value:{left:0,top:0,right:10,bottom:10}}};
         if (method === 'DOM.getNodeForLocation') return {backendNodeId:22};
         return original(id,method,params);
       };

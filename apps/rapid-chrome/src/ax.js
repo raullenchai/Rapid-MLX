@@ -4,6 +4,8 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const refs = new Map(), byId = new Map(nodes.filter(n => n.nodeId).map(n => [n.nodeId,n]));
   const visited = new Set(), entries = [];
   let next = start;
+  const hrefOf = n => (n.properties || []).find(p => p.name === 'url')?.value?.value || '';
+  const linkText = n => hrefOf(n) ? ` href=${JSON.stringify(hrefOf(n))}` : '';
   const nameOf = n => String(value(n.name) || '').replace(/\s+/g,' ').trim();
   function descendants(n, seen = new Set()) {
     if (seen.has(n)) return [];
@@ -36,9 +38,9 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
         const label = nameOf(n);
         if (names.has(label)) continue;
         const control = interactive.has(value(n.role)) && n.backendDOMNodeId;
-        const part = control ? `[e${next}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}` : label.slice(0,300);
+        const part = control ? `[e${next}] ${value(n.role)} ${JSON.stringify(label.slice(0,300))}${linkText(n)}` : label.slice(0,300);
         if (size+part.length > 1400) { shortened = true; continue; }
-        if (control) targets.push([`e${next++}`,{backendDOMNodeId:n.backendDOMNodeId,name:label,role:value(n.role)}]);
+        if (control) targets.push([`e${next++}`,{backendDOMNodeId:n.backendDOMNodeId,name:label,role:value(n.role),href:hrefOf(n)}]);
         parts.push(part); size += part.length+3; names.add(label);
       }
       for (const n of children) visited.add(n);
@@ -53,14 +55,21 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
     const content = protectedValue ? '[protected]' : String(value(node.value) ?? '').slice(0,300);
     const states = Object.entries(props).filter(([k,v]) => ['disabled','checked','selected','expanded','required','focused','readonly'].includes(k) && v !== undefined).map(([k,v]) => `${k}=${v}`).join(' ');
     if (!node.ignored && role !== 'InlineTextBox' && (ref || name || content) && !(role === 'StaticText' && parentName === name)) {
-      entries.push({text:`${ref ? `[${ref}] ` : ''}${role}${name ? ` ${JSON.stringify(name.slice(0,500))}` : ''}${content || ['textbox','searchbox','combobox'].includes(role) ? ` value=${JSON.stringify(content)}` : ''}${states ? ` ${states}` : ''}\n`,targets:ref ? [[ref,{backendDOMNodeId:node.backendDOMNodeId,name,role}]] : [],main,priority,visible:geometry.get(node.backendDOMNodeId) === true,offscreen:geometry.get(node.backendDOMNodeId) === false,search:name+' '+content});
+      entries.push({text:`${ref ? `[${ref}] ` : ''}${role}${name ? ` ${JSON.stringify(name.slice(0,500))}` : ''}${content || ['textbox','searchbox','combobox'].includes(role) ? ` value=${JSON.stringify(content)}` : ''}${states ? ` ${states}` : ''}${linkText(node)}\n`,targets:ref ? [[ref,{backendDOMNodeId:node.backendDOMNodeId,name,role,href:hrefOf(node)}]] : [],main,priority,visible:geometry.get(node.backendDOMNodeId) === true,offscreen:geometry.get(node.backendDOMNodeId) === false,search:name+' '+content});
     }
     for (const id of node.childIds || []) if (byId.has(id)) visit(byId.get(id),main,name || parentName,priority);
   }
   const childIds = new Set(nodes.flatMap(n => n.childIds || []));
   for (const n of nodes.filter(n => !childIds.has(n.nodeId))) visit(n);
   for (const n of nodes) visit(n);
-  const filtered = entries.filter(e => e.priority || !query || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  // Match words across a long AX label without requiring invented contiguous
+  // prose (e.g. airline + price + times). Normalize punctuation and thin spaces.
+  const words = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  const terms = words(query);
+  const matches = e => !terms.length || e.search.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ||
+    terms.every(term => words(e.search).includes(term));
+  const noMatch = Boolean(query) && !entries.some(matches);
+  const filtered = entries.filter(e => noMatch || e.priority || matches(e));
   // Stable sort preserves each region's document order. Visible main content,
   // visible controls, then remaining main content precede secondary navigation.
   const rank = e => e.priority ? (e.targets.some(([,t]) => t.role === 'button' && /^(?:done|apply|close|cancel|search)\b/i.test(t.name)) ? -2 : -1) : e.visible ? (e.main ? 0 : 1) : e.main ? 2 : 3;
@@ -76,6 +85,6 @@ export function outlineAX(nodes, {url = '', title = '', start = 1, limit = 12000
   const omitted = filtered.length-included;
   if (omitted) text += `[outline truncated: ${omitted} entries/cards omitted; use read_page(query) to narrow results.]\n`;
   if (entries.some(e => e.offscreen)) text += '[More below/outside viewport; click known refs directly, or read_page(query) for omitted content.]\n';
-  if (query && !filtered.length) text += '[No matching text; try a shorter query or read without query.]\n';
+  if (noMatch) text += '[No matching text for the query; showing the normal viewport-first outline. Use these fresh refs for site search or other controls.]\n';
   return {text,refs,next};
 }

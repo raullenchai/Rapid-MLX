@@ -114,7 +114,7 @@ async function run(task) {
     await trace({kind:'start'});
     if (!state.settings.model) await models(signal);
     signal.throwIfAborted();
-    await hand.begin(signal); refreshTabs();
+    await hand.begin(signal, task, history); refreshTabs();
     await runAgent({settings:{...state.settings},task,history,signal,execute:(...a) => hand.execute(...a),emit,checkpoint,trace});
     await trace({kind:'answer',text:state.messages.at(-1)?.content});
     state.status = 'Ready';

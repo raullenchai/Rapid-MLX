@@ -6,3 +6,7 @@ import './races.test.js';
 import './shopping.test.js';
 
 import './round5.test.js';
+
+import './round6.test.js';
+
+import './round7.test.js';

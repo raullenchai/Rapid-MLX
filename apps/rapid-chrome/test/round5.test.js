@@ -55,7 +55,7 @@ function node(parent = null, tag = 'SPAN', group = false) {
     getBoundingClientRect:() => ({left:0,top:0,right:100,bottom:100,width:100,height:100}),
     contains(other) { return other === this || this.children.some(c => c.contains(other)); },
     closest(selector) {
-      if (selector === 'button,a,input,[role="button"],label') return ['BUTTON','A','INPUT','LABEL'].includes(tag) ? this : parent?.closest(selector) || null;
+      if (selector === 'button,a,input,[role="button"],[role="option"],label') return ['BUTTON','A','INPUT','LABEL'].includes(tag) ? this : parent?.closest(selector) || null;
       if (selector === '.a-button,[data-button],[role="group"]') return group ? this : parent?.closest(selector) || null;
       return null;
     },
@@ -66,7 +66,7 @@ function node(parent = null, tag = 'SPAN', group = false) {
 async function clickCase(targetNode, hitNode, {fallback = false, hitError = false, stale = false} = {}) {
   const target = {objectId:'approved',backendDOMNodeId:7,epoch:0};
   const {hand,commands} = setup(async (method,p) => {
-    if (method === 'DOM.getBoxModel') return {model:{content:[0,1000,100,1000,100,1100,0,1100]}};
+    if (method === 'Runtime.callFunctionOn' && p.functionDeclaration.includes('Math.min(innerWidth')) return {result:{value:{left:0,top:0,right:100,bottom:100}}};
     if (method === 'Page.getLayoutMetrics') return {cssLayoutViewport:{pageY:1000,clientWidth:800,clientHeight:600}};
     if (method === 'DOM.getNodeForLocation') { assert.equal(p.y,50); if (hitError) throw new Error('No node found at given location'); return {backendNodeId:9}; }
     if (method === 'DOM.resolveNode') return {object:{objectId:'hit'}};

@@ -1,14 +1,14 @@
 import { watchEffects, collectEffects, effectReport } from './effects.js';
 import { detectChallenge } from './challenge.js';
 import { outlineAX } from './ax.js';
-import { safeURL, classifyTarget, needsSiteApproval, additionKey } from './safety.js';
+import { safeURL, classifyTarget, needsSiteApproval, additionKey, NavigationPolicy } from './safety.js';
 import { delay } from './agent.js';
 import { overlay } from './overlay.js';
 
 // Executed on the approved node, never on a replacement hit-test node.
 export function sameClickControl(other, x, y) {
   if (!other) return false;
-  const selector = 'button,a,input,[role="button"],label';
+  const selector = 'button,a,input,[role="button"],[role="option"],label';
   const control = node => {
     const c = node.closest(selector);
     return c?.tagName === 'LABEL' ? (c.control || c) : c;
@@ -34,6 +34,24 @@ export function canActivate() {
     r.width > 0 && r.height > 0;
 }
 
+export function clickRect() {
+  const r = this.getBoundingClientRect();
+  const rect = {left:Math.max(0,r.left),top:Math.max(0,r.top),
+    right:Math.min(innerWidth,r.right),bottom:Math.min(innerHeight,r.bottom)};
+  let view = this.ownerDocument?.defaultView;
+  while (view && view !== view.top) {
+    const frame = view.frameElement;
+    if (!frame) throw new Error('Cannot map cross-origin frame coordinates');
+    const f = frame.getBoundingClientRect();
+    const x = f.left+frame.clientLeft, y = f.top+frame.clientTop;
+    rect.left = Math.max(0,rect.left+x); rect.top = Math.max(0,rect.top+y);
+    rect.right = Math.min(view.parent.innerWidth,rect.right+x);
+    rect.bottom = Math.min(view.parent.innerHeight,rect.bottom+y);
+    view = frame.ownerDocument.defaultView;
+  }
+  return rect;
+}
+
 export class ChromeAdapter {
   constructor(api = chrome) { this.api = api; }
   send(id, method, params = {}) { return this.api.debugger.sendCommand({tabId:id}, method, params); }
@@ -54,7 +72,7 @@ export class BrowserHand {
   constructor(adapter, {settings, approve, emit = () => {}, stop = () => {}, challenge = async info => { throw new Error(`needs_human: ${info.message}`); }}) {
     this.a = adapter; this.settings = settings; this.approve = approve; this.emit = emit; this.stop = stop; this.challenge = challenge;
     this.tabs = new Map(); this.active = null; this.nextRef = 1; this.sites = new Set(); this.signal = null;
-    this.additions = new Set(); this.notices = []; this.pendingSites = new Map();
+    this.navigation = new NavigationPolicy(); this.additions = new Set(); this.notices = []; this.pendingSites = new Map();
   }
   check() { this.signal?.throwIfAborted(); if (this.paused) throw new Error('paused: debugger detached by user'); }
   async send(id, method, params) {
@@ -109,7 +127,8 @@ export class BrowserHand {
     if (created) { t.grouping = true; try { t.groupId = await this.a.group(id); } finally { t.grouping = false; } }
     return t;
   }
-  async begin(signal) {
+  async begin(signal, task = '', history = []) {
+    this.navigation = new NavigationPolicy([task,...history.filter(m => m.role === 'user').map(m => m.content)].join('\n'));
     this.signal = signal; this.additions.clear(); this.sites.clear(); this.pendingSites.clear();
     if (this.active !== null && this.tabs.has(this.active)) {
       const tab = await this.a.get(this.active);
@@ -240,15 +259,9 @@ export class BrowserHand {
   }
   async click(id,target) {
     await this.send(id,'DOM.scrollIntoViewIfNeeded',{backendNodeId:target.backendDOMNodeId});
-    const {model} = await this.send(id,'DOM.getBoxModel',{backendNodeId:target.backendDOMNodeId});
-    const q = model.content;
-    const metrics = await this.send(id,'Page.getLayoutMetrics');
-    const viewport = metrics.cssLayoutViewport || metrics.layoutViewport;
-    // BoxModel is in document coordinates; input and hit tests use viewport coordinates.
-    const px = viewport?.pageX || 0, py = viewport?.pageY || 0;
-    const left = Math.max(0,Math.min(q[0],q[2],q[4],q[6])-px), top = Math.max(0,Math.min(q[1],q[3],q[5],q[7])-py);
-    const right = Math.min(viewport?.clientWidth ?? Infinity,Math.max(q[0],q[2],q[4],q[6])-px);
-    const bottom = Math.min(viewport?.clientHeight ?? Infinity,Math.max(q[1],q[3],q[5],q[7])-py);
+    // Use client rects directly: CDP input/hit tests and CSSOM client rects
+    // share viewport coordinates. Subtracting pageY again rejects scrolled nodes.
+    const {left,top,right,bottom} = await this.call(id,target.objectId,clickRect);
     if (right <= left || bottom <= top) throw new Error('offscreen_target: no visible area; inspect dialogs or choose another control');
     const x = Math.round((left+right)/2), y = Math.round((top+bottom)/2);
     let accepted = false;
@@ -276,7 +289,13 @@ export class BrowserHand {
         await this.send(id,'Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});
         await this.send(id,'Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});
       } else {
-        await this.send(id,'DOM.focus',{backendNodeId:target.backendDOMNodeId});
+        try { await this.send(id,'DOM.focus',{backendNodeId:target.backendDOMNodeId}); }
+        catch (error) {
+          this.check();
+          // ARIA options and other clickable containers need not be focusable.
+          // Still activate only the same approved, visible, enabled node.
+          if (!/Element is not focusable/i.test(error.message)) throw error;
+        }
         if (target.epoch !== t.epoch || await this.call(id,target.objectId,canActivate) !== true)
           throw new Error('stale_ref: approved target changed before DOM activation');
         await this.call(id,target.objectId,function () { this.click(); });
@@ -284,6 +303,29 @@ export class BrowserHand {
     } finally { t.dispatchingInput = false; }
     await this.navigationResult(id);
     return accepted ? 'pointer' : 'DOM activation of the approved element (hit test failed; DOM.focus + this.click())';
+  }
+  async chooseOption(id, label) {
+    const normalize = text => String(text).normalize('NFKC').toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    const terms = normalize(label);
+    if (!terms.length) throw new Error('invalid_arguments: choose must contain an option label');
+    // Input handlers often populate a listbox asynchronously. Retry only the
+    // observation, never the activation; every candidate still passes click gates.
+    for (let attempt=0;attempt<5;attempt++) {
+      await delay(100,this.signal);
+      const {nodes} = await this.send(id,'Accessibility.getFullAXTree');
+      const options = nodes.filter(n => !n.ignored && n.role?.value === 'option' && n.backendDOMNodeId &&
+        !n.properties?.some(p => ['hidden','disabled'].includes(p.name) && p.value?.value === true));
+      const exact = options.filter(n => normalize(n.name?.value).join(' ') === terms.join(' '));
+      const matches = exact.length ? exact : options.filter(n => terms.every(t => normalize(n.name?.value).includes(t)));
+      if (matches.length > 1) throw new Error('ambiguous_option: multiple options match choose; use the returned outline to select an exact option');
+      if (!matches.length) continue;
+      const node = matches[0];
+      const {object} = await this.send(id,'DOM.resolveNode',{backendNodeId:node.backendDOMNodeId});
+      const target = {objectId:object.objectId,backendDOMNodeId:node.backendDOMNodeId,role:'option',name:node.name?.value,epoch:this.tabs.get(id).epoch};
+      await this.gateTarget(id,target,'click');
+      return this.click(id,target);
+    }
+    throw new Error('option_not_found: text was filled, but no unique autocomplete option matched choose; inspect the fresh outline before continuing');
   }
   async navigationResult(id) {
     const t = this.tabs.get(id);
@@ -353,9 +395,12 @@ export class BrowserHand {
     }
     const effect = before ? effectReport(before,[...samples,{...(samples.at(-1) || before),...meta}]) : {note:'Effect observation unavailable; verify in the cart before adding again.'};
     if (result?.activation) effect.activation = result.activation;
-    if (actionError) { actionError.effect = effect; throw actionError; }
+    if (actionError && !args.choose) { actionError.effect = effect; throw actionError; }
     try { observation = await this.executeCore('read_page',{tabId:id},signal); }
     catch (error) { this.check(); observation = {text:`Fresh observation unavailable: ${error.message}. Wait then read_page; do not repeat the action.`}; }
+    if (actionError) {
+      actionError.effect = effect; actionError.observation = observation; throw actionError;
+    }
     return {effect,...result,text:`${name} completed. Fresh observation:\n${observation.text}`};
   }
   async executeCore(name,args,signal) {
@@ -366,6 +411,7 @@ export class BrowserHand {
     }
     if (name === 'wait') { await delay(args.ms,signal); return {text:`Waited ${args.ms}ms`,...(this.tabs.has(this.active) ? await this.meta(this.active) : {})}; }
     if (name === 'open_tab') {
+      this.navigation.check(safeURL(args.url,this.settings.base));
       const url = await this.site(args.url,'Open tab');
       const tab = await this.a.create();
       this.check(); await this.own(tab.id,{created:true});
@@ -421,6 +467,7 @@ export class BrowserHand {
       }
       const outline = outlineAX(nodes,{url:tab.url,title:tab.title,start:this.nextRef,query:args.query,geometry});
       t.refs = outline.refs; this.nextRef = outline.next;
+      for (const target of outline.refs.values()) if (target.href) this.navigation.observe(target.href);
       const forms = new Map();
       for (const [ref, target] of outline.refs) {
         if (!['button','textbox','searchbox','combobox'].includes(target.role)) continue;
@@ -448,8 +495,11 @@ export class BrowserHand {
     }
     let activation;
     if (name === 'navigate') {
+      if (args.url) this.navigation.check(safeURL(args.url,this.settings.base));
       this.invalidate(id);
-      if (args.url) await this.send(id,'Page.navigate',{url:await this.site(args.url)});
+      if (args.url) {
+        await this.send(id,'Page.navigate',{url:await this.site(args.url)});
+      }
       else if (args.action === 'reload') await this.send(id,'Page.reload');
       else {
         const h = await this.send(id,'Page.getNavigationHistory');
@@ -468,6 +518,7 @@ export class BrowserHand {
         await this.send(id,'Input.dispatchKeyEvent',{type:'keyDown',key:'a',code:'KeyA',commands:['selectAll']});
         await this.send(id,'Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA'});
         await this.send(id,'Input.insertText',{text:args.text});
+        if (args.choose) activation = await this.chooseOption(id,args.choose);
         if (args.submit) {
           // Recheck after input handlers may have changed the form.
           await this.gateTarget(id,target,'Submit form',{fill:true,submit:true});
