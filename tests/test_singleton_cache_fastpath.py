@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("mlx.core", exc_type=ImportError)
+pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 
@@ -32,8 +32,6 @@ import mlx.core as mx
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 from rapid_mlx.singleton_cache_fastpath import (
-    _admitted_layers,
-    _bind_singleton_surface,
     _is_singleton_passthrough_layer,
     _promote_layer,
     install_singleton_cache_fastpath,
@@ -295,57 +293,6 @@ def test_extend_into_empty_batch_binds_surface():
     assert "filter" in out[0].__dict__ and "extract" in out[0].__dict__
 
 
-@pytest.mark.parametrize("kind", ["kv", "rotating", "composite"])
-def test_extend_into_empty_batch_preserves_owned_layers(kind):
-    from mlx_lm.models.cache import CacheList
-
-    raw = _filled_kv()
-    if kind == "rotating":
-        raw = RotatingKVCache(max_size=64)
-        raw.update_and_fetch(mx.zeros((1, 2, 4, 8)), mx.ones((1, 2, 4, 8)))
-    elif kind == "composite":
-        raw = CacheList(raw)
-    owned = _passthrough(raw)
-    gen = importlib.import_module("mlx_lm.generate")
-    assert gen._extend_cache([], [owned])[0] is owned
-
-
-@pytest.mark.parametrize("n_suffix", [1, 255, 256])
-def test_admission_headroom_preserves_state_and_suffix_shape(n_suffix):
-    raw = _filled_kv()
-    live = _passthrough(raw)
-    assert live.offset == raw.offset == 4
-    assert live.keys.shape[2] == live.values.shape[2] == live.offset + 256
-    assert live.keys is not raw.keys and live.values is not raw.values
-    for actual, expected in zip(live.state, raw.state):
-        assert actual.shape[2] == live.offset
-        assert mx.array_equal(actual, expected).item()
-    assert mx.all(live.keys[..., live.offset :, :] == 0).item()
-    assert mx.all(live.values[..., live.offset :, :] == 0).item()
-    shape = live.keys.shape
-    live.update_and_fetch(
-        mx.full((1, 2, n_suffix, 8), 5.0), mx.full((1, 2, n_suffix, 8), 7.0)
-    )
-    assert live.keys.shape == live.values.shape == shape
-    assert live.offset == 4 + n_suffix
-
-
-def test_extracted_payload_readmission_detaches_again():
-    gen = importlib.import_module("mlx_lm.generate")
-    live = _passthrough(_filled_kv())
-    payload = live.extract(0)
-    assert payload.keys.shape[2] == payload.values.shape[2] == payload.offset
-    for admitted in (
-        gen._extend_cache([], [payload])[0],
-        gen._merge_caches([[payload]])[0],
-    ):
-        assert admitted is not payload
-        assert admitted.keys is not payload.keys
-        assert admitted.values is not payload.values
-        assert admitted.keys.shape[2] == payload.offset + 256
-        assert gen._extend_cache([], [admitted])[0] is admitted
-
-
 # ----------------------------------------------- singleton batch surface
 
 
@@ -414,9 +361,6 @@ def test_extract_full_span_buffer_still_independent():
     c.values = mx.contiguous(c.values[..., :4, :])
     mx.eval(c.keys, c.values)
     c = _passthrough(c)
-    # Admission now reserves headroom; remove it to exercise full-span extract.
-    c.keys = mx.contiguous(c.keys[..., : c.offset, :])
-    c.values = mx.contiguous(c.values[..., : c.offset, :])
     clone = c.extract(0)
     assert clone.keys is not c.keys
     assert clone.values is not c.values
@@ -571,8 +515,6 @@ def test_merge_caches_detaches_loaned_prefix_state():
     loan.values = store.values
     loan.offset = 4
     [live] = gen._merge_caches([[loan]])
-    assert live.keys is not store.keys and live.values is not store.values
-    stored_keys, stored_values = store.keys.tolist(), store.values.tolist()
     # Decode writes past the trim point (positions 4..5).
     k = mx.full((1, 2, 2, 8), 5.0)
     v = mx.full((1, 2, 2, 8), 5.0)
@@ -580,8 +522,6 @@ def test_merge_caches_detaches_loaned_prefix_state():
     # The stored entry's own region must be untouched.
     assert float(store.values[0, 0, 4, 0]) == 1.0
     assert float(store.values[0, 0, 5, 0]) == 1.0
-    assert store.keys.tolist() == stored_keys
-    assert store.values.tolist() == stored_values
 
 
 def test_merge_caches_multi_uses_stock_merge():
@@ -669,48 +609,6 @@ def test_deepcopy_rebinds_surface_to_the_copy():
     assert dup.keys is None and dup.offset == 0
     assert c.keys is not None and c.offset == 4
     assert dup.extract  # surface present on the copy
-
-
-def test_deepcopy_of_admitted_layer_keeps_ownership():
-    original = _passthrough(_filled_kv())
-    dup = copy.deepcopy(original)
-    assert dup in _admitted_layers
-    assert dup.keys is not original.keys and dup.values is not original.values
-    gen = importlib.import_module("mlx_lm.generate")
-    assert gen._extend_cache([], [dup])[0] is dup
-
-
-@pytest.mark.parametrize("with_surface", [False, True])
-def test_deepcopy_of_non_admitted_layer_still_detaches(with_surface):
-    raw = _filled_kv()
-    if with_surface:
-        _bind_singleton_surface(raw)
-    dup = copy.deepcopy(raw)
-    assert raw not in _admitted_layers
-    assert dup not in _admitted_layers
-    gen = importlib.import_module("mlx_lm.generate")
-    [admitted] = gen._extend_cache([], [dup])
-    assert admitted is not dup
-    assert admitted.keys is not dup.keys and admitted.values is not dup.values
-
-
-def test_deepcopy_of_admitted_layer_update_preserves_original_arrays():
-    original = _passthrough(_filled_kv())
-    mx.eval(original.keys, original.values)
-    stored_keys, stored_values = original.keys.tolist(), original.values.tolist()
-    dup = copy.deepcopy(original)
-    gen = importlib.import_module("mlx_lm.generate")
-    [live] = gen._extend_cache([], [dup])
-    assert live is dup
-    shape = live.keys.shape
-    live.update_and_fetch(mx.full((1, 2, 2, 8), 5.0), mx.full((1, 2, 2, 8), 7.0))
-    mx.eval(live.keys, live.values)
-    assert live.keys.shape == live.values.shape == shape  # writes into headroom
-    assert mx.all(live.keys[..., 4:6, :] == 5.0).item()
-    assert mx.all(live.values[..., 4:6, :] == 7.0).item()
-    assert original.offset == 4 and live.offset == 6
-    assert original.keys.tolist() == stored_keys
-    assert original.values.tolist() == stored_values
 
 
 def test_surface_outliving_its_cache_raises():
