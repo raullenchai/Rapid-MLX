@@ -197,7 +197,8 @@ def test_build_dispatch_progress_cancel_and_ordered_references(
 
     # Patch the attribute, not the package: engine validation imports the
     # real ``layout`` submodule.
-    monkeypatch.setattr(runtime_package, "MiniMaxH3Image", Runtime, raising=False)
+    # setitem on __dict__ avoids the lazy __getattr__ (which imports MLX).
+    monkeypatch.setitem(runtime_package.__dict__, "MiniMaxH3Image", Runtime)
     monkeypatch.setattr(gate, "pinned_image_snapshot", lambda repo: "/text-snapshot")
     engine = ImageGenerationEngine(REPO, quantize=bits)
     monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: "/image-snapshot")
