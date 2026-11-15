@@ -16,6 +16,7 @@ import gc
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -96,9 +97,11 @@ class MiniMaxH3Image:
         self.text_encoder_path = Path(text_encoder_path).expanduser()
         self.quantize = quantize
         self.on_step = on_step
-        self.transformer = None
-        self.vae = None
-        self.conditioner = None
+        # Lazily loaded in ``load()``; typed loosely because the MLX modules
+        # come from optional runtime dependencies.
+        self.transformer: Any = None
+        self.vae: Any = None
+        self.conditioner: Any = None
 
     def load(self) -> None:
         """Explicitly warm lazy components, useful for operator memory measurements."""
@@ -206,9 +209,10 @@ class MiniMaxH3Image:
         vision_images = []
         for image in references:
             image = ImageOps.exif_transpose(image).convert("RGB")
-            check_reference_size(*image.size)
-            ref_size = bound_short_edge(*image.size, 1024, 2048)
-            vision_size = bound_short_edge(*image.size, 1024, 1024)
+            ref_w, ref_h = image.size
+            check_reference_size(ref_w, ref_h)
+            ref_size = bound_short_edge(ref_w, ref_h, 1024, 2048)
+            vision_size = bound_short_edge(ref_w, ref_h, 1024, 1024)
             vision_images.append(
                 image.resize(vision_size, Image.Resampling.LANCZOS)
                 if vision_size != image.size

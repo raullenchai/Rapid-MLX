@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -194,11 +193,11 @@ def test_build_dispatch_progress_cancel_and_ordered_references(
             built[0][1]["on_step"](6, 6)
             return Image.new("RGB", (32, 32))
 
-    monkeypatch.setitem(
-        sys.modules,
-        "rapid_mlx.image.minimax_h3_image",
-        SimpleNamespace(MiniMaxH3Image=Runtime),
-    )
+    import rapid_mlx.image.minimax_h3_image as runtime_package
+
+    # Patch the attribute, not the package: engine validation imports the
+    # real ``layout`` submodule.
+    monkeypatch.setattr(runtime_package, "MiniMaxH3Image", Runtime, raising=False)
     monkeypatch.setattr(gate, "pinned_image_snapshot", lambda repo: "/text-snapshot")
     engine = ImageGenerationEngine(REPO, quantize=bits)
     monkeypatch.setattr(engine, "_model_path_for_mflux", lambda: "/image-snapshot")
