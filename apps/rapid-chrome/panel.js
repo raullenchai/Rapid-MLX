@@ -125,7 +125,7 @@ function render(s, force = false) {
   if (!s.running && document.activeElement === $('stop')) $('message').focus();
   $('paused').hidden = !s.paused;
   $('pause-title').textContent = s.handover ? t('handoverTitle',[s.handover.reason || t(({login:'loginHandover',payment:'paymentHandover',permission:'permissionHandover',human_check:'checkHandover',load_error:'loadHandover'})[s.handover.kind] || 'checkHandover')]) : t(s.pauseReason === 'takeover' ? 'takeoverTitle' : 'challengeTitle');
-  $('pause-help').textContent = s.handover?.message ? t('handoverHelp') : t(s.pauseReason === 'takeover' ? 'takeoverHelp' : 'challengeHelp');
+  $('pause-help').textContent = s.handover?.message ? s.handover.message + ' ' + t('handoverHelp') : t(s.pauseReason === 'takeover' ? 'takeoverHelp' : 'challengeHelp');
   $('resume').textContent = t(s.handover ? 'handoverDone' : s.pauseReason === 'takeover' ? 'resumeTask' : 'continueTask');
   const lastAnswer = s.messages.findLast(m => m.role === 'assistant');
   const incomplete = !s.running && /completion is unconfirmed|model did not inspect|no final answer|step cap/i.test(lastAnswer?.content || '');

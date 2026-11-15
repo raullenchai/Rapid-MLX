@@ -370,10 +370,11 @@ export class BrowserHand {
       if (JSON.stringify(values).length > 16000) throw new Error('Form too large to bind');
       const sensitiveField = el => el.type === 'password' || /^(?:cc-|current-password|new-password)/i.test(el.autocomplete || '') || /password|cvv|cvc|card.?number|security.?code/i.test(el.name+' '+el.id);
       const sensitiveForm = fields.some(sensitiveField);
-      const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${(v.type === 'hidden' && !/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(v.name)) || /password|cc-|cvv|cvc|card|token|secret|account|routing/i.test(v.name+' '+v.type) || fields.some(el => (el.name || el.id || '') === v.name && sensitiveField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
+      const paymentForm = fields.some(el => /(?:^|\s)cc-|credit.?card|card.?number|card.?holder|security.?code|\bcvv\b|\bcvc\b|routing|bank.?account|iban|信用卡|银行卡|銀行卡|卡号|卡號/i.test([el.name,el.id,el.autocomplete].join(' ')));
+      const details = [...values].sort((a,b) => Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(b.name))-Number(/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(a.name))).map(v => `${v.name || v.type}: ${(v.type === 'hidden' && !/amount|currency|recipient|quantity|qty|address|destination|total|price|^to$/i.test(v.name)) || /password|cc-|cvv|cvc|card|token|secret|account|routing|iban/i.test(v.name+' '+v.type) || fields.some(el => (el.name || el.id || '') === v.name && sensitiveField(el)) ? '[masked]' : String(v.selected?.length > 1 ? v.selected.join(', ') : v.value).slice(0,160)}${['checkbox','radio'].includes(v.type) ? v.checked ? ' [checked]' : ' [unchecked]' : ''}${v.disabled ? ' [disabled]' : ''}`).join('; ').slice(0,3000);
       const card = e.closest('[data-asin]:not([data-asin=""]),[data-product-id],article,[role="listitem"],li');
       const product = card?.getAttribute('data-asin') || card?.getAttribute('data-product-id') || card?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || card?.querySelector('a[href]')?.getAttribute('href') || e.closest('[role="dialog"],dialog')?.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '';
-      return {values,details,sensitiveForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
+      return {values,details,sensitiveForm,paymentForm,longName:accessibleName(e).length > 1000,expanded:e.getAttribute('aria-expanded'),recipients,product:product.trim().slice(0,400),role:e.getAttribute('role') || (e.tagName === 'BUTTON' ? 'button' : ['checkbox','radio'].includes(e.type) ? e.type : ''),formName:accessibleName(form),submitter:submitters.map(accessibleName).join(' '),method:form?.method || '',name:(accessibleName(e) || label).slice(0,1000),type:e.type || e.getAttribute('type') || '',autocomplete:e.getAttribute('autocomplete') || '',id:[e.id,e.getAttribute('name')].join(' '),form:form?.innerText.slice(0,2000) || '',href:e.closest('a')?.href || '',action:form?.action || '',connected:e.isConnected};
     });
   }
   async gateTarget(id, target, action, {fill = false, submit = false, always = false} = {}) {
@@ -385,6 +386,12 @@ export class BrowserHand {
     target.additionKey = (!fill || submit) ? additionKey(tab.url,{...info,name:info.name || target.name}) : null;
     const repeat = target.additionKey && this.additions.has(target.additionKey);
     const approvalName = submit && info.submitter ? info.submitter : info.name || target.name || 'Focused element';
+    if ((!fill || submit) && classification.financial) {
+      const message = `Your turn: review and press ${approvalName} yourself${info.details ? `. Form values: ${info.details}` : ''}`;
+      const error = new Error(`financial_handover: ${message}`);
+      error.handover = {kind:'payment',message,reason:message};
+      throw error;
+    }
     if (repeat || always || ((!fill || submit) && classification.consequential)) {
       // Submission via Enter, fill+submit, and a submit button represents the
       // same effect. Keys exclude refs, field values, and input method so a
@@ -392,8 +399,6 @@ export class BrowserHand {
       const effectName = (submit || info.type === 'submit') && info.submitter ? info.submitter : approvalName;
       const denialKey = JSON.stringify([new URL(tab.url).origin,info.action || new URL(tab.url).pathname,effectName.trim().toLocaleLowerCase()]);
       if (this.denials.has(denialKey)) throw new Error(`denied: '${effectName}' was already denied in this task; approval will not be requested again`);
-      if (info.values && !info.values.length && /\b(?:buy|pay|purchase|place order|transfer|book|reserve)\b/i.test(approvalName))
-        throw new Error('blocked_sensitive_page: transaction values are opaque; complete this transaction yourself');
       const titleKey = approvalTitleKey(approvalName);
       if (!await this.approve({titleKey:titleKey === 'allowAction' && (submit || info.type === 'submit') ? 'allowSubmit' : titleKey,action:repeat ? 'Add another one? (already added once)' : `${action === 'click' ? 'Click' : action} '${approvalName.slice(0,100)}' on ${new URL(tab.url).hostname}?${info.details ? ` Form values: ${info.details}` : info.recipients ? ` Recipients: ${info.recipients}` : ''}`,target:approvalName,site:new URL(tab.url).origin})) {
         this.denials.add(denialKey);

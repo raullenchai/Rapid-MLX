@@ -53,7 +53,8 @@ export async function runTask(chromium, task, out, base, options = {}) {
         }
         if (await panel.locator('#paused').isVisible()) {
           result.status = 'needs_human';
-          result.final_answer = await panel.locator('#status').innerText();
+          result.final_answer = await panel.locator('#pause-help').innerText();
+          result.handover = {message:result.final_answer};
           break;
         }
         for (const card of await panel.locator('.approval').all()) {

@@ -191,9 +191,9 @@ async function run(task, tabId) {
       let result;
       try { result = await hand.execute(...a); }
       catch (e) {
-        if (/blocked_sensitive_field|blocked_sensitive_page|needs_human_permission/.test(e.message)) {
+        if (e.handover || /blocked_sensitive_field|blocked_sensitive_page|needs_human_permission/.test(e.message)) {
           const kind = /permission/.test(e.message) ? 'permission' : 'login';
-          await challenge({kind,message:t(kind === 'permission' ? 'handoverPermission' : 'handoverSensitive'),reason:t(kind === 'permission' ? 'permissionHandover' : 'sensitiveHandover')});
+          await challenge(e.handover || {kind,message:t(kind === 'permission' ? 'handoverPermission' : 'handoverSensitive'),reason:t(kind === 'permission' ? 'permissionHandover' : 'sensitiveHandover')});
           signal.throwIfAborted();
           // Never retry a sensitive action after handover; require a fresh read.
           throw new Error('needs_human: user returned; read_page for a fresh observation');

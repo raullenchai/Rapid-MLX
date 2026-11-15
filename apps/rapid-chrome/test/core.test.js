@@ -330,8 +330,9 @@ test('search click, fill+submit and Enter execute without approval; send variant
         assert.equal(approvals,0);
         assert.ok(commands.some(c => mode === 'click' ? c.params?.type === 'mouseReleased' : c.params?.key === 'Enter'));
       } else {
-        await assert.rejects(hand.execute(mode,args,hand.signal),/denied/);
-        assert.equal(approvals,1);
+        const financial = classifyTarget({name:effect}).financial;
+        await assert.rejects(hand.execute(mode,args,hand.signal),financial ? /financial_handover/ : /denied/);
+        assert.equal(approvals,financial ? 0 : 1);
         assert.ok(!commands.some(c => c.params?.type === 'mouseReleased' || c.params?.key === 'Enter'));
       }
     }
@@ -452,7 +453,7 @@ test('unclassified Enter executes while a purchase Enter remains gated', async (
     const {hand,commands} = fakeHand(); const original = hand.a.send;
     hand.a.send = async (id,m,p) => m === 'Runtime.evaluate' ? {result:{objectId:'active'}} : original(id,m,p);
     hand.inspect = async () => ({connected:true,name:'Date',type:'text',form:consequential ? 'Confirm purchase' : '',method:'get'});
-    if (consequential) await assert.rejects(hand.execute('press',{key:'Enter'},hand.signal),/denied/);
+    if (consequential) await assert.rejects(hand.execute('press',{key:'Enter'},hand.signal),/financial_handover/);
     else await hand.execute('press',{key:'Enter'},hand.signal);
     assert.equal(commands.some(c => c.method === 'Input.dispatchKeyEvent'),!consequential);
   }

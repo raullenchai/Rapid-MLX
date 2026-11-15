@@ -7,7 +7,7 @@ import { assembleMessages } from '../src/agent.js';
 import { boundedStored, storedBytes, runSnapshot } from '../src/ui-state.js';
 
 const base = 'http://127.0.0.1:8000';
-function setup({info = {connected:true,name:'Pay',values:[{name:'amount',value:'1'}]}, approve = async () => false, handler = () => ({})} = {}) {
+function setup({info = {connected:true,name:'Send',values:[{name:'amount',value:'1'}]}, approve = async () => false, handler = () => ({})} = {}) {
   const commands = [], cards = [];
   let url = 'https://shop.test/checkout';
   const hand = new BrowserHand({get:async () => ({url,title:'Checkout'}),send:async (_,method,p) => {
@@ -27,8 +27,8 @@ test('P1 disclosure ARIA cannot suppress consequential intent or sensitive-form 
   for (const expanded of [false,true,'false','true']) {
     for (const name of ['Buy now','Pay','Place order','Submit','Send','Delete','Transfer','Book','Confirm','Add to cart and buy now','Details. Buy now','Show more '+ 'x'.repeat(100)+' Pay']) {
       const {hand,cards,commands} = setup({info:{connected:true,name,expanded}});
-      await assert.rejects(hand.gateTarget(1,{epoch:0},'click'),/denied/);
-      assert.equal(cards.length,1,`${name} ${expanded}`);
+      await assert.rejects(hand.gateTarget(1,{epoch:0},'click'),/denied|financial_handover/);
+      assert.equal(cards.length,classifyTarget({name}).financial ? 0 : 1,`${name} ${expanded}`);
       assert.ok(!commands.some(c => c.method.startsWith('Input.')));
     }
     for (const role of ['button','menuitem','checkbox','option'])
@@ -115,8 +115,8 @@ function formFixture() {
     {tagName:'SELECT',name:'destination',type:'select-one',value:'a',selectedOptions:[{value:'a'}]},
     {tagName:'INPUT',name:'csrf_token',type:'hidden',value:'never-display-this'}
   ];
-  const form = {elements:fields,innerText:'Pay',method:'post',action:'https://shop.test/pay',getAttribute:() => null,ownerDocument:{getElementById:() => null}};
-  const node = {form,tagName:'BUTTON',type:'submit',innerText:'Pay',textContent:'Pay',isConnected:true,id:'pay',ownerDocument:{getElementById:() => null},getAttribute:() => null,closest:() => null};
+  const form = {elements:fields,innerText:'Submit refund',method:'post',action:'https://shop.test/refund',getAttribute:() => null,ownerDocument:{getElementById:() => null}};
+  const node = {form,tagName:'BUTTON',type:'submit',innerText:'Submit refund',textContent:'Submit refund',isConnected:true,id:'pay',ownerDocument:{getElementById:() => null},getAttribute:() => null,closest:() => null};
   return {fields,node};
 }
 
@@ -135,7 +135,7 @@ test('P1 actual inspection binds hidden, input and select transaction values and
 });
 
 test('P1 form mutations after card revalidation still invalidate approval immediately before pointer dispatch', async () => {
-  const info = {connected:true,name:'Pay',values:[{name:'amount',value:'1'}],details:'amount: 1'};
+  const info = {connected:true,name:'Submit refund',values:[{name:'amount',value:'1'}],details:'amount: 1'};
   const {hand,commands} = setup({info,approve:async () => true,handler:(m) => {
     if (m === 'DOM.getNodeForLocation') {info.values[0].value='10000';return {backendNodeId:7};}
     return {};
@@ -149,7 +149,7 @@ test('P1 form mutations after card revalidation still invalidate approval immedi
 
 test('P1 opaque financial transactions hand over without offering a label-only purchase approval', async () => {
   const {hand,cards,commands} = setup({info:{connected:true,name:'Buy now',values:[]},approve:async () => true});
-  await assert.rejects(hand.gateTarget(1,{epoch:0},'click'),/blocked_sensitive_page: transaction values are opaque/);
+  await assert.rejects(hand.gateTarget(1,{epoch:0},'click'),/financial_handover/);
   assert.equal(cards.length,0);
   assert.equal(commands.length,0);
 });
@@ -207,8 +207,8 @@ test('P2 sensitive vault and banking login URLs and sensitive fields hand over b
 
 test('benign add-to-cart, filters, pagination, show-more and search remain unattended', async () => {
   for (const target of [
-    {name:'Add to cart',type:'submit',method:'post',form:'Buy now'},
-    {name:'Price under $50',role:'checkbox',form:'Confirm purchase'},
+    {name:'Add to cart',type:'submit',method:'post',form:'Cart',action:'https://shop.test/api/cart'},
+    {name:'Price under $50',role:'checkbox',form:'Filters'},
     {name:'Filters',role:'button',expanded:false,method:'post'},
     {name:'Apply filters',role:'button',method:'post'},
     {name:'Next',role:'button',method:'post'},
@@ -250,4 +250,84 @@ test('P2 sensitive fields inside frames and open shadow roots force handover bef
   const field = {tagName:'INPUT',type:'password',getClientRects:() => [{}]};
   const host = {tagName:'LOGIN-FORM',shadowRoot:{querySelectorAll:() => [field]}};
   assert.equal(runInNewContext(`(${sensitiveDocument})()`,{document:{querySelectorAll:() => [host]},getComputedStyle:() => ({visibility:'visible'})}),true);
+});
+
+test('re-review: cart labels cannot exempt a purchase form, using production DOM inspection', async () => {
+  for (const name of ['Add to cart','Add 1 to order • $11.95','Add 1 ct Eggs']) {
+    const {node} = formFixture();
+    node.innerText = node.textContent = name;
+    node.form.innerText = name;
+    node.form.action = 'https://shop.test/purchase';
+    const {hand,cards,commands} = setup({approve:async () => true});
+    delete hand.inspect;
+    hand.call = async (_,__,fn) => runInNewContext(`(${fn}).call(node)`,{node});
+    await assert.rejects(hand.gateTarget(1,{epoch:0,objectId:'cart'},'click'),error => {
+      assert.equal(error.handover.kind,'payment');
+      assert.match(error.handover.message,/Your turn: review and press/);
+      assert.match(error.handover.message,/amount: 1/);
+      return /financial_handover/.test(error.message);
+    });
+    assert.equal(cards.length,0);
+    assert.ok(!commands.some(c => c.method.startsWith('Input.')));
+  }
+});
+
+test('re-review: financial commits always hand over regardless of roles, fields or opaque JS amount changes', async () => {
+  for (const name of ['Buy','Purchase','Pay','Place order','Checkout complete','Confirm order','Donate','Subscribe','Authorize','Authorize payment','Finalize','Complete purchase','Transfer','Send money','Tip','购买','付款','acheter','kaufen']) {
+    for (const values of [[],[{name:'csrf_token',type:'hidden',value:'same'}],[{name:'amount',value:'1'}]]) {
+      let jsAmount = 1, charged = 0;
+      const {hand,cards,commands,info} = setup({info:{connected:true,name,role:'menuitem',values,details:'csrf_token: [masked]'},approve:async () => true,
+        handler:m => {if (m === 'DOM.resolveNode') return {object:{objectId:'commit'}};if (m === 'Input.dispatchMouseEvent') charged = jsAmount;return {};}});
+      // The human pauses with the card open; the page changes only JS state.
+      for (const amount of [1,10000]) {
+        jsAmount = amount;
+        await assert.rejects(hand.executeCore('click',{ref:'e1'},hand.signal),error => {
+          assert.match(error.handover.message,new RegExp(`press ${name} yourself`));
+          assert.match(error.handover.message,/csrf_token: \[masked\]/);
+          return /financial_handover/.test(error.message);
+        });
+      }
+      assert.deepEqual(info.values,values);
+      assert.equal(charged,0); assert.equal(cards.length,0);
+      assert.ok(!commands.some(c => c.method.startsWith('Input.')));
+    }
+  }
+});
+
+test('re-review: destructive names require approval across every activation role', async () => {
+  for (const role of ['button','link','menuitem','option','switch']) {
+    for (const name of ['Deactivate account','Close account','Delete','Erase all','Remove account','Unsubscribe','Cancel subscription','Cancel membership','Revoke','Reset']) {
+      const {hand,cards,commands} = setup({info:{connected:true,name,role}});
+      await assert.rejects(hand.gateTarget(1,{epoch:0,role},'click'),/denied/);
+      assert.equal(cards.length,1,`${role}: ${name}`);
+      assert.equal(cards[0].titleKey,'allowDelete');
+      assert.ok(!commands.some(c => c.method.startsWith('Input.')));
+    }
+  }
+});
+
+test('re-review: cart exemption requires a benign name and form context', async () => {
+  for (const name of ['Add to cart','Add 1 to order','Add 1 ct Eggs']) {
+    for (const context of [{action:'https://shop.test/checkout'},{action:'https://shop.test/pay'},{action:'https://shop.test/payment'},{action:'https://shop.test/order.php',method:'post'},{action:'https://shop.test/order',method:'post'},{form:'Confirm purchase'},{sensitiveForm:true},{paymentForm:true}]) {
+      const {hand,cards} = setup({info:{connected:true,name,role:'button',...context}});
+      await assert.rejects(hand.gateTarget(1,{epoch:0},'click'),/financial_handover|denied/);
+    }
+    const {hand,cards} = setup({info:{connected:true,name,role:'button',type:'submit',method:'post',action:'https://shop.test/api/cart',form:'Cart'}});
+    await hand.gateTarget(1,{epoch:0},'click');
+    assert.equal(cards.length,0);
+  }
+});
+
+
+test('re-review: production inspection detects payment fields on a misleading cart form', async () => {
+  for (const field of [{name:'routing_number'},{name:'card_holder'},{autocomplete:'cc-number'}]) {
+    const {node} = formFixture();
+    node.innerText=node.textContent=node.form.innerText='Add to cart';
+    node.form.action='https://shop.test/api/cart';
+    node.form.elements=[{tagName:'INPUT',type:'text',value:'123',...field}];
+    const {hand,cards} = setup();delete hand.inspect;
+    hand.call=async (_,__,fn)=>runInNewContext(`(${fn}).call(node)`,{node});
+    await assert.rejects(hand.gateTarget(1,{epoch:0,objectId:'cart'},'click'),/denied/);
+    assert.equal(cards.length,1);
+  }
 });

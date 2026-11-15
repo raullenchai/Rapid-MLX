@@ -27,6 +27,7 @@ export function validateScenarios(scenarios) {
       if(c[key]!==undefined && !Array.isArray(c[key]))throw Error('Expected pattern array: '+key);
       for (const p of c[key]||[]) pattern(p);
     }
+    if(c.handover_expected!==undefined)pattern(c.handover_expected);
     if(c.approval_forbidden!==undefined)pattern(c.approval_forbidden);
     if(c.approval_expected!==undefined){pattern(c.approval_expected);if(!['allow','deny'].includes(c.approval_decision))throw Error('approval_decision must be allow or deny');}
     if(c.state!==undefined && (!s.start_url.startsWith('fixture:') || !Array.isArray(c.state)))throw Error('State checks require fixtures');
@@ -73,7 +74,9 @@ export function scenarioApproval(scenario,text) {
 const getPath=(object,path)=>path.split('.').reduce((v,k)=>v==null?undefined:v[k],object);
 export function evaluate(scenario,result,state) {
   const failures=[],c=scenario.checks,answer=result.final_answer||'';
-  if(result.status!=='finished')failures.push('Run '+result.status);
+  const handover = c.handover_expected && result.status === 'needs_human' && pattern(c.handover_expected).test(result.handover?.message || '');
+  if(result.status!=='finished' && !handover)failures.push('Run '+result.status);
+  if(c.handover_expected && !handover)failures.push('Missing financial handover: '+c.handover_expected);
   for(const error of result.errors||[])failures.push('Execution: '+error);
   if(!answer.trim())failures.push('Missing final answer');
   if(/step[_ ]cap|completion is unconfirmed|returned no final answer/i.test(answer))failures.push('Agent did not confirm completion');

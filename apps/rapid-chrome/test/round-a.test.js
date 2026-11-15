@@ -143,12 +143,12 @@ function handForGate(approve) {
 test('denied submit cannot re-request via changed refs, Enter, or fill+submit; unrelated effects remain possible', async () => {
   const cards=[];
   const {hand,commands} = handForGate(async card => {cards.push(card);return false;});
-  let info={connected:true,name:'Buy tickets',type:'submit',submitter:'Buy tickets',action:'https://mail.test/buy',method:'post'};
+  let info={connected:true,name:'Submit request',type:'submit',submitter:'Submit request',action:'https://mail.test/request',method:'post'};
   hand.inspect=async () => info;
-  await assert.rejects(hand.gateTarget(1,{epoch:0,name:'Buy tickets'},'click'),/^Error: denied:/);
+  await assert.rejects(hand.gateTarget(1,{epoch:0,name:'Submit request'},'click'),/^Error: denied:/);
   hand.invalidate(1);
   for (const opts of [{},{submit:true},{fill:true,submit:true}]) {
-    info={...info,name:opts.submit ? 'Ticket quantity' : 'Buy tickets',type:opts.submit ? 'text' : 'submit'};
+    info={...info,name:opts.submit ? 'Ticket quantity' : 'Submit request',type:opts.submit ? 'text' : 'submit'};
     await assert.rejects(hand.gateTarget(1,{epoch:1,name:'new ref'},'Press Enter',opts),/already denied/);
   }
   assert.equal(cards.length,1); assert.ok(commands.every(c => ['Runtime.evaluate','Page.getFrameTree'].includes(c)));

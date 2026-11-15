@@ -18,7 +18,7 @@ test('trace filter/dismissal names ignore POST and purchase form context, en + z
     for (const name of ['Buy now','Delete account','Send message','购买','删除','发送']) assert.equal(classifyTarget({...context,name,role}).consequential,true,name);
   }
   for (const name of ['Close account','关闭账户','Cancel and delete order']) assert.equal(classifyTarget({name}).consequential,true,name);
-  for (const name of ['Add to cart','Quick Add','加入购物车']) assert.equal(classifyTarget({...context,name}).consequential,false,name);
+  for (const name of ['Add to cart','Quick Add','加入购物车']) assert.equal(classifyTarget({...context,name}).consequential,true,name);
 });
 
 test('addition identity survives ref, tab and tracking changes while distinguishing products', () => {
@@ -64,7 +64,7 @@ function shoppingHand() {
   }},{settings:{base:'http://127.0.0.1:8000'},approve:async info => {approvals.push(info);return allowed;}});
   hand.sites.add('https://shop.test'); hand.active = 1; hand.tabs.set(1,{grantedOrigin:'https://shop.test',attached:true,epoch:0,refs:new Map()});
   hand.signal = new AbortController().signal;
-  hand.inspect = async () => ({name:'Add to cart',product:'Charger',connected:true,type:'submit',method:'post',form:'Buy now'});
+  hand.inspect = async () => ({name:'Add to cart',product:'Charger',connected:true,type:'submit',method:'post',form:'Cart',action:'https://shop.test/api/cart'});
   hand.effectWorld = async () => 1;
   const snapshot = () => ({url:'https://shop.test/p',title:'Charger',regions:additions ? ['status: Added to cart'] : [],counters:[{key:'/cart',text:`Cart ${additions}`} ]});
   hand.effectEval = async (_id,_context,fn) => fn === watchEffects ? snapshot() : [snapshot()];

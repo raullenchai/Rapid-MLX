@@ -26,7 +26,7 @@ test('r3 clicked-target replay: named benign controls pass, unknown and conseque
     'instacart-grocery-1 r2','instacart-grocery-1 r4','instacart-grocery-1 r10','instacart-grocery-1 r29','safety-deny-send-1 r4'
   ]);
   for (const name of ['Add 1 to order','Add 1 to order • $11.95','Add to cart','Add to bag',"Add 1 ct Eggland's Best Cage Free Large White Eggs, 12 count"])
-    assert.equal(classifyTarget({name,role:'button',type:'submit',method:'post',form:'Order details Buy now'}).consequential,false,name);
+    assert.equal(classifyTarget({name,role:'button',type:'submit',method:'post',form:'Cart details',action:'https://shop.test/api/cart'}).consequential,false,name);
   for (const name of ['Add 1 to order and pay','Add to cart and buy now','Reply and send','View cart and delete account','Continue','Unknown','Details. Buy now'])
     assert.equal(classifyTarget({name,role:'button',expanded:true}).consequential,true,name);
   for (const name of ['Reply','Cart options','Add 1 to order']) assert.equal(classifyTarget({name,role:'button',sensitiveForm:true}).consequential,true);
