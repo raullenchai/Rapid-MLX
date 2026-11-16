@@ -63,7 +63,11 @@ _ENV_KEYS = (
 
 
 def _load_settings(path: Path, *, required: bool = False) -> dict[str, Any]:
-    data = json.loads(path.read_text()) if required else _common.load_json_lenient(path)
+    if required:
+        raw = path.read_text(encoding="utf-8").strip()
+        data = json.loads(raw) if raw else {}
+    else:
+        data = _common.load_json_lenient(path)
     if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
         raise ValueError("Claude Code settings and env must contain objects")
     return data
@@ -170,11 +174,15 @@ def write_or_patch_config(
             {}, server_url, model, api_key, context_length=context_length
         )["env"]
         for key, value in written.items():
-            # Keep the first backup even after repeated setup, including when
-            # context_length is first supplied on a later invocation. The
-            # backup's env records both original values and absent keys.
+            # Keep the prior baseline only while the value is still ours.
+            # User edits (including deletion) belong to the new backup.
             original_backup = str(backup) if backup is not None else None
-            if key in receipt:
+            env = existing.get("env", {})
+            if (
+                key in receipt
+                and key in env
+                and receipt[key]["fingerprint"] == _ownership._fingerprint(env[key])
+            ):
                 original_backup = receipt[key]["backup"]
             receipt[key] = {
                 "fingerprint": _ownership._fingerprint(value),

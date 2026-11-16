@@ -443,6 +443,32 @@ class TestClaudeCode:
         assert not receipt.exists()
         assert not claude_code.remove_config()
 
+    @pytest.mark.parametrize("edited", ["new-user-secret", None])
+    def test_legacy_repeated_setup_preserves_intervening_edits(self, fake_home, edited):
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        path.write_text('{"env": {"ANTHROPIC_API_KEY": "original-secret"}}')
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        data = json.loads(path.read_text())
+        if edited is None:
+            del data["env"]["ANTHROPIC_API_KEY"]
+        else:
+            data["env"]["ANTHROPIC_API_KEY"] = edited
+        path.write_text(json.dumps(data))
+        claude_code.write_or_patch_config("http://127.0.0.1:9000", "other")
+        assert claude_code.remove_config()
+        expected = {} if edited is None else {"ANTHROPIC_API_KEY": edited}
+        assert json.loads(path.read_text()) == {"env": expected}
+
+    @pytest.mark.parametrize("content", ["", " \n\t"])
+    def test_legacy_remove_restores_empty_settings(self, fake_home, content):
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(content)
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        assert claude_code.remove_config()
+        assert json.loads(path.read_text()) == {"env": {}}
+
     def test_legacy_remove_preserves_edits_and_unwritten_context(self, fake_home):
         path = claude_code.current_config_path()
         path.parent.mkdir(parents=True)
@@ -516,7 +542,8 @@ class TestClaudeCode:
             action()
         assert (path.read_bytes(), receipt.read_bytes()) == before
 
-    def test_legacy_missing_original_backup_preserves_settings(self, fake_home):
+    @pytest.mark.parametrize("damage", ["missing", "invalid"])
+    def test_legacy_damaged_original_backup_preserves_settings(self, fake_home, damage):
         from rapid_mlx.launch import _ownership
 
         path = claude_code.current_config_path()
@@ -527,9 +554,12 @@ class TestClaudeCode:
         state = json.loads(receipt.read_text())
         backup = Path(state["ANTHROPIC_API_KEY"]["backup"])
         assert backup.stat().st_mode & 0o777 == 0o600
-        backup.unlink()
+        if damage == "missing":
+            backup.unlink()
+        else:
+            backup.write_text("[invalid")
         before = path.read_bytes(), receipt.read_bytes()
-        with pytest.raises(ValueError, match="backup missing"):
+        with pytest.raises(ValueError):
             claude_code.remove_config()
         assert (path.read_bytes(), receipt.read_bytes()) == before
 
