@@ -9,6 +9,7 @@ import sys
 import threading
 import types
 from argparse import Namespace
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -135,7 +136,7 @@ def test_engine_truncates_long_documents_and_counts_them():
     engine.max_length = head + tail + 3
     result = engine.score("q", ["!!!!!!", "x"], instruction="inst")
     assert engine.num_truncations == 1
-    assert result.prompt_tokens == 2 * (head + tail) + 3 + 2
+    assert result.prompt_tokens == 2 * (head + tail) + 3 + 1
 
 
 def test_engine_error_policy_rejects_long_documents():
@@ -149,7 +150,7 @@ def test_engine_error_policy_rejects_long_documents():
     with pytest.raises(RerankDocumentTooLongError) as exc_info:
         engine.score("q", ["ab", "abcdef"], instruction="inst")
     assert exc_info.value.index == 1
-    assert exc_info.value.observed_tokens == head + tail + 7
+    assert exc_info.value.observed_tokens == head + tail + 6
     assert engine.num_truncations == 0
 
 
@@ -168,21 +169,13 @@ def test_engine_rejects_unknown_model_family():
 
 
 def test_qwen3_puts_prompt_in_system_turn_and_instruction_in_user_turn():
-    engine = _engine(_FullLogitsModel())
-    engine.prompt = "Judge."
-    seen = []
-    render = engine._tokenizer.apply_chat_template
-
-    def _record(messages, **kwargs):
-        seen.append(messages)
-        return render(messages, **kwargs)
-
-    engine._tokenizer.apply_chat_template = _record
-    engine._prompt_parts("q?", "Find code")
-    assert seen[0][0] == {"role": "system", "content": "Judge."}
-    assert seen[0][1]["content"].startswith(
-        "<Instruct>: Find code\n<Query>: q?\n<Document>:"
+    engine = _format_engine("qwen3", prompt="Judge.")
+    head, tail = engine._prompt_parts("q?", "Find code")
+    assert engine._tokenizer.decode(head) == (
+        "<|im_start|>system\nJudge.<|im_end|>\n<|im_start|>user\n"
+        "<Instruct>: Find code\n<Query>: q?\n<Document>: "
     )
+    assert engine._tokenizer.decode(tail) == _QWEN3_SUFFIX
 
 
 def test_engine_instruction_precedence():
@@ -332,6 +325,81 @@ def _format_engine(family_id, instruction=None, prompt=None):
     engine.prompt = prompt or engine.family.default_prompt
     engine.max_length = 8192
     return engine
+
+
+_QWEN3_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def test_qwen3_format_ignores_checkpoint_chat_template():
+    class RerankerTokenizer(_CharTokenizer):
+        def apply_chat_template(self, messages, **kwargs):
+            # This checkpoint reads dedicated roles and ignores user content.
+            by_role = {message["role"]: message["content"] for message in messages}
+            return f"{by_role.get('query', '')}|{by_role.get('document', '')}"
+
+    engine = _format_engine("qwen3")
+    engine._tokenizer = RerankerTokenizer()
+    with mock.patch.object(
+        engine._tokenizer,
+        "apply_chat_template",
+        wraps=engine._tokenizer.apply_chat_template,
+    ) as template:
+        (sequence,) = engine._build_sequences("q?", ["doc"], engine.instruction)
+    template.assert_not_called()
+    assert engine._tokenizer.decode(sequence) == (
+        "<|im_start|>system\n"
+        "Judge whether the Document meets the requirements based on the Query "
+        "and the Instruct provided. Note that the answer can only be "
+        '"yes" or "no".<|im_end|>\n<|im_start|>user\n'
+        "<Instruct>: Given a web search query, retrieve relevant passages that "
+        "answer the query\n<Query>: q?\n<Document>: doc" + _QWEN3_SUFFIX
+    )
+
+
+@pytest.mark.parametrize("instruction", [None, "Find relevant code"])
+@pytest.mark.parametrize("document", ["The capital is Beijing.", "", "  中文\ncode()"])
+def test_qwen3_local_tokenizer_template_parity(instruction, document):
+    snapshot = Path(
+        "/Volumes/NVMe-4T/huggingface/hub/"
+        "models--mlx-community--Qwen3-Reranker-0.6B-4bit/snapshots/"
+        "5f324548f1d20c2b5a450f126fc6ef2fb1126524"
+    )
+    if not snapshot.is_dir():
+        pytest.skip("local Qwen3-Reranker tokenizer snapshot is unavailable")
+    with mock.patch.dict("os.environ"):
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+    engine = _format_engine("qwen3", instruction=instruction)
+    engine._tokenizer = tokenizer
+    messages = [
+        {"role": "system", "content": engine.instruction},
+        {"role": "query", "content": "What is the capital of China?"},
+        {"role": "document", "content": document},
+    ]
+    expected = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    head, tail = engine._prompt_parts(
+        "What is the capital of China?", engine.instruction
+    )
+    rendered = tokenizer.decode(head) + document + tokenizer.decode(tail)
+    assert rendered == expected
+    assert (
+        tokenizer.encode(rendered, add_special_tokens=False)
+        == tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+        )["input_ids"]
+    )
+    (sequence,) = engine._build_sequences(
+        "What is the capital of China?", [document], engine.instruction
+    )
+    assert tokenizer.decode(sequence) == expected
 
 
 def test_bge_gemma_format_matches_upstream():
@@ -560,7 +628,7 @@ def test_engine_load_rejects_multi_answer_token(monkeypatch):
         engine.load()
 
 
-def test_engine_load_rejects_qwen_without_chat_template(monkeypatch):
+def test_engine_load_accepts_qwen_without_chat_template(monkeypatch):
     from rapid_mlx import rerank
     from rapid_mlx.utils import tokenizer as model_loader
 
@@ -575,8 +643,10 @@ def test_engine_load_rejects_qwen_without_chat_template(monkeypatch):
         model_loader, "load_model_with_fallback", lambda _name: (object(), tokenizer)
     )
 
-    with pytest.raises(rerank.UnsupportedRerankModelError, match="no chat template"):
-        rerank.RerankEngine(RERANK_ID).load()
+    engine = rerank.RerankEngine(RERANK_ID)
+    engine.load()
+    assert engine.is_loaded
+    assert engine._answer_ids == [YES, NO]
 
 
 def test_engine_loads_cross_encoder_context_and_default_padding(monkeypatch):

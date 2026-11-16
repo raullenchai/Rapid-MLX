@@ -29,13 +29,10 @@ import mlx.nn as nn
 
 logger = logging.getLogger(__name__)
 
-# ChatML turns that mxbai2 and jina3 write out by hand upstream.
+# ChatML turns used by the generative and listwise rerankers.
 _CHATML_PREFIX = "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n"
 _CHATML_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
 _CROSS_ENCODER_FILES = ["*.json", "model*.safetensors", "sentencepiece.bpe.model"]
-# Splits the rendered template around the document so its tokens can be
-# truncated without re-tokenizing the query part for every document.
-_DOCUMENT_MARK = "\x00rapid-mlx-rerank-document\x00"
 _JINA3_FILES = [
     "*.json",
     "model*.safetensors",
@@ -185,7 +182,7 @@ FAMILIES: dict[str, RerankFamily] = {
                 "Query and the Instruct provided. Note that the answer can only "
                 'be "yes" or "no".'
             ),
-            document_prefix=" ",
+            document_prefix="",
             scoring="generative",
             answer_tokens=("yes", "no"),
             auto_max_length=8192,
@@ -647,12 +644,6 @@ class RerankEngine:
             model_max = config.get("max_position_embeddings", 0) - (
                 config.get("pad_token_id", 1) + 1
             )
-        if family.family_id == "qwen3" and not getattr(
-            tokenizer, "chat_template", None
-        ):
-            raise UnsupportedRerankModelError(
-                f"'{self.model_name}' has no chat template to render rerank prompts"
-            )
         answer_ids = []
         for token in family.answer_tokens:
             ids = list(tokenizer.encode(token, add_special_tokens=False))
@@ -743,24 +734,13 @@ class RerankEngine:
             # ``<s> query </s></s> document </s>``, as the pair tokenizer builds it.
             sep = tokenizer.sep_token_id
             return [tokenizer.cls_token_id] + encode(query) + [sep, sep], [sep]
-        messages = [
-            {"role": "system", "content": self.prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"<Instruct>: {instruction}\n<Query>: {query}\n"
-                    f"<Document>:{_DOCUMENT_MARK}"
-                ),
-            },
-        ]
-        rendered = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
+        # Qwen3-Reranker exports ship incompatible chat templates (dedicated
+        # query/document roles or ordinary chat). Pin the trained input format.
+        head = (
+            _CHATML_PREFIX.format(system=self.prompt)
+            + f"<Instruct>: {instruction}\n<Query>: {query}\n<Document>: "
         )
-        head, tail = rendered.rsplit(_DOCUMENT_MARK, 1)
-        return encode(head), encode(tail)
+        return encode(head), encode(_CHATML_SUFFIX + _NO_THINKING)
 
     def _build_sequences(
         self, query: str, documents: list[str], instruction: str | None
