@@ -50,7 +50,7 @@ because they share the parser-path family:**
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import pytest
 
@@ -60,8 +60,7 @@ from ..dispatch import run_tool_extraction
 from ..token_delta_splitter import batch_deltas_with_stream_interval
 
 
-@dataclass
-class _Case:
+class _Case(NamedTuple):
     id: str
     raw: str
     expected_name: str

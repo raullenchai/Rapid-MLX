@@ -53,7 +53,7 @@ Same OutputRouter channel-classification gap as:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import pytest
 
@@ -62,8 +62,7 @@ from rapid_mlx.output_router import OutputRouter
 from ..fake_tokenizer import HARMONY_VOCAB, harmony_fake_tokenizer
 
 
-@dataclass
-class _SanityCase:
+class _SanityCase(NamedTuple):
     """Sanity sequences pin the working content/reasoning channels."""
 
     id: str
@@ -73,8 +72,7 @@ class _SanityCase:
     expected_tool_calls: list[str] | None
 
 
-@dataclass
-class _BugCase:
+class _BugCase(NamedTuple):
     """Bug sequences assert what a TOOL_CALL fix MUST surface.
 
     The exact post-fix contract is intentionally permissive: a fix may

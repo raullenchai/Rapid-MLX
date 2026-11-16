@@ -205,55 +205,25 @@ def _stringify_structured(entry: object) -> str:
 def test_harmony_router_compound_analysis_then_commentary(case: _Case, router):
     result = router.feed_sequence(case.token_ids)
 
-    # Content must be empty — neither the analysis body nor the
-    # commentary block should leak into content.
     assert _normalize_str(result["content"]) is None, (
-        f"content leaked for case={case.id}: got={result['content']!r}. "
-        "Compound sequence emitted analysis or commentary text as content."
+        f"content leaked for case={case.id}: got={result['content']!r}."
     )
 
-    # Reasoning carries the analysis-channel body — and ONLY the
-    # analysis body. Codex round-1 NIT: substring containment alone
-    # would miss commentary/tool metadata accidentally leaking INTO
-    # reasoning (a fix that mis-routes everything to reasoning would
-    # otherwise pass the "Reasoning is somewhere in here" check).
-    # Add negative assertions for the tool metadata to enforce the
-    # partition contract.
     reasoning = _normalize_str(result["reasoning"]) or ""
     assert case.expected_reasoning_marker in reasoning, (
-        f"reasoning missing {case.expected_reasoning_marker!r} for "
-        f"case={case.id}; got reasoning={result['reasoning']!r}"
+        f"reasoning missing {case.expected_reasoning_marker!r} for case={case.id}"
     )
-    for tool_marker in (
-        case.expected_function_name,
-        case.expected_args_marker,
-        "commentary",
-        " to=functions.",
-    ):
-        assert tool_marker not in reasoning, (
-            f"Tool metadata marker {tool_marker!r} leaked into reasoning "
-            f"for case={case.id}; got reasoning={result['reasoning']!r}. "
-            "Channel partition contract violated — tool-call tokens "
-            "should not appear in the reasoning channel."
-        )
 
-    # Tool call has both name and args (permissive shape — text-blob or
-    # structured dict OK; same contract as #455 round-1 BLOCKING-1 fix).
+    assert case.expected_function_name not in reasoning
+    assert case.expected_args_marker not in reasoning
+    assert "commentary" not in reasoning
+    assert " to=functions." not in reasoning
+
     tool_calls = result["tool_calls"]
-    assert tool_calls, (
-        f"tool_calls is empty/None for case={case.id}; got={tool_calls!r}"
+    assert tool_calls and len(tool_calls) == 1, (
+        f"Expected 1 tool call; got {tool_calls!r}"
     )
-    assert len(tool_calls) == 1, (
-        f"Expected ONE aggregated tool_calls entry for case={case.id}; got "
-        f"{len(tool_calls)}: {tool_calls!r}"
-    )
-    entry = tool_calls[0]
-    payload = entry if isinstance(entry, str) else _stringify_structured(entry)
-    assert case.expected_function_name in payload, (
-        f"Function name {case.expected_function_name!r} missing from "
-        f"tool_calls entry for case={case.id}; got={entry!r}"
-    )
-    assert case.expected_args_marker in payload, (
-        f"Args marker {case.expected_args_marker!r} missing from "
-        f"tool_calls entry for case={case.id}; got={entry!r}"
-    )
+
+    payload = _stringify_structured(tool_calls[0])
+    assert case.expected_function_name in payload
+    assert case.expected_args_marker in payload
