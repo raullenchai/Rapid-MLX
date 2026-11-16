@@ -394,8 +394,148 @@ class TestClaudeCode:
         assert not claude_code.remove_config()
         assert not claude_code.current_config_path().exists()
 
+    def test_legacy_remove_without_setup_preserves_user_config(self, fake_home, capsys):
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        before = (
+            '{"env": {"ANTHROPIC_API_KEY": "user-secret", "ANTHROPIC_MODEL": "user"}}'
+        )
+        path.write_text(before)
+        assert not claude_code.remove_config()
+        launch_cli.launch_command(
+            _make_args(client="claude-code", remove=True, legacy_config=True)
+        )
+        assert "No identifiable Rapid-owned settings" in capsys.readouterr().out
+        assert path.read_text() == before
+
+    @pytest.mark.parametrize("repeat", [False, True])
+    def test_legacy_remove_restores_originals(self, fake_home, repeat):
+        from rapid_mlx.launch import _ownership
+
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        original = {
+            "permissions": {"allow": ["Read"]},
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://user-gateway.invalid",
+                "ANTHROPIC_API_KEY": "user-secret",
+                "ANTHROPIC_AUTH_TOKEN": "user-token",
+                "ANTHROPIC_MODEL": "user-model",
+                "CLAUDE_CODE_AUTO_MODE_SERVER": "1",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "9999",
+                "CUSTOM": "keep",
+            },
+        }
+        path.write_text(json.dumps(original))
+        claude_code.write_or_patch_config(
+            "http://127.0.0.1:8000", "local", context_length=32768
+        )
+        if repeat:
+            claude_code.write_or_patch_config(
+                "http://127.0.0.1:9000", "other", context_length=65536
+            )
+        receipt = _ownership._receipt(path)
+        assert receipt.stat().st_mode & 0o777 == 0o600
+        assert "user-secret" not in receipt.read_text()
+        assert "user-token" not in receipt.read_text()
+        assert claude_code.remove_config()
+        assert json.loads(path.read_text()) == original
+        assert not receipt.exists()
+        assert not claude_code.remove_config()
+
+    def test_legacy_remove_preserves_edits_and_unwritten_context(self, fake_home):
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "9999"}}))
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        data = json.loads(path.read_text())
+        data["env"]["ANTHROPIC_API_KEY"] = "new-user-secret"
+        del data["env"]["ANTHROPIC_AUTH_TOKEN"]
+        path.write_text(json.dumps(data))
+        assert claude_code.remove_config()
+        assert json.loads(path.read_text())["env"] == {
+            "ANTHROPIC_API_KEY": "new-user-secret",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "9999",
+        }
+
+    def test_legacy_context_first_written_on_repeated_setup(self, fake_home):
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        original = {"env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "9999"}}
+        path.write_text(json.dumps(original))
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        claude_code.write_or_patch_config(
+            "http://127.0.0.1:8000", "local", context_length=32768
+        )
+        # A later setup without context must retain ownership of that key.
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        assert claude_code.remove_config()
+        assert json.loads(path.read_text()) == original
+
+    def test_legacy_remove_retires_receipt_when_all_keys_edited(self, fake_home):
+        from rapid_mlx.launch import _ownership
+
+        path = claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        rapid_values = path.read_text()
+        path.write_text('{"env": {"ANTHROPIC_MODEL": "user-edit"}}')
+        assert not claude_code.remove_config()
+        assert not _ownership._receipt(path).exists()
+        path.write_text(rapid_values)
+        assert not claude_code.remove_config()
+        assert path.read_text() == rapid_values
+
+    @pytest.mark.parametrize("operation", ["setup", "remove"])
+    def test_legacy_receipt_failure_rolls_back_settings(
+        self, fake_home, monkeypatch, operation
+    ):
+        from rapid_mlx.launch import _ownership
+
+        path = claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        receipt = _ownership._receipt(path)
+        before = path.read_bytes(), receipt.read_bytes()
+        if operation == "setup":
+            write_json = _common.atomic_write_json
+
+            def fail_receipt(target, data):
+                if target == receipt:
+                    raise OSError("receipt write failed")
+                write_json(target, data)
+
+            monkeypatch.setattr(_common, "atomic_write_json", fail_receipt)
+            action = lambda: claude_code.write_or_patch_config(
+                "http://127.0.0.1:9000", "other"
+            )
+        else:
+
+            def fail_forget(_path):
+                raise OSError("receipt retirement failed")
+
+            monkeypatch.setattr(_ownership, "forget", fail_forget)
+            action = claude_code.remove_config
+        with pytest.raises(OSError, match="receipt"):
+            action()
+        assert (path.read_bytes(), receipt.read_bytes()) == before
+
+    def test_legacy_missing_original_backup_preserves_settings(self, fake_home):
+        from rapid_mlx.launch import _ownership
+
+        path = claude_code.current_config_path()
+        path.parent.mkdir(parents=True)
+        path.write_text('{"env": {"ANTHROPIC_API_KEY": "user-secret"}}')
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        receipt = _ownership._receipt(path)
+        state = json.loads(receipt.read_text())
+        backup = Path(state["ANTHROPIC_API_KEY"]["backup"])
+        assert backup.stat().st_mode & 0o777 == 0o600
+        backup.unlink()
+        before = path.read_bytes(), receipt.read_bytes()
+        with pytest.raises(ValueError, match="backup missing"):
+            claude_code.remove_config()
+        assert (path.read_bytes(), receipt.read_bytes()) == before
+
     @pytest.mark.parametrize("settings", [[], {"env": []}, {"env": None}, "[invalid"])
     def test_legacy_remove_rejects_invalid_settings(self, fake_home, settings):
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
         path = claude_code.current_config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         before = settings if isinstance(settings, str) else json.dumps(settings)
