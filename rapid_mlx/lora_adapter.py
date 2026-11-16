@@ -39,7 +39,10 @@ def _base_identity(name: str) -> str:
     cache = Path(os.path.abspath(Path(constants.HF_HUB_CACHE).expanduser()))
     # Inspect the cache spelling before resolving symlinks: a cached repository
     # may itself be a symlink to storage outside the cache root.
-    for candidate, root in ((path, cache), (path.resolve(), cache.resolve())):
+    roots = (cache, cache.resolve())
+    for candidate, root in (
+        (candidate, root) for candidate in (path, path.resolve()) for root in roots
+    ):
         try:
             parts = candidate.relative_to(root).parts
         except ValueError:

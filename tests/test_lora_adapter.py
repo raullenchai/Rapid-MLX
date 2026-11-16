@@ -143,6 +143,31 @@ def test_base_identity_repo_forms(adapter, tmp_path, monkeypatch, trained, serve
     assert args.no_spec_decode is True
 
 
+def test_base_identity_symlinked_cache_and_snapshot(adapter, tmp_path, monkeypatch):
+    """A symlinked cache root whose snapshot links to cold storage."""
+    from huggingface_hub import constants
+
+    directory, _ = adapter
+    real_cache = tmp_path / "volume" / "hub"
+    cold = tmp_path / "cold" / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots"
+    cold_snapshot = cold / ("a" * 40)
+    cold_snapshot.mkdir(parents=True)
+    snapshots = real_cache / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots"
+    snapshots.mkdir(parents=True)
+    (snapshots / ("a" * 40)).symlink_to(cold_snapshot, target_is_directory=True)
+    home_link = tmp_path / "home-hf"
+    home_link.symlink_to(tmp_path / "volume", target_is_directory=True)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(home_link / "hub"))
+    (directory / "adapter_config.json").write_text(
+        json.dumps({"model": "mlx-community/Qwen3-1.7B-4bit"})
+    )
+    for served in (
+        snapshots / ("a" * 40),
+        home_link / "hub" / snapshots.relative_to(real_cache) / ("a" * 40),
+    ):
+        assert validate_adapter(str(directory), str(served)).path == str(directory)
+
+
 @pytest.mark.parametrize("served", ["repo", "snapshot", "local", "lookalike"])
 def test_base_identity_does_not_equate_other_bases(
     adapter, tmp_path, monkeypatch, served
