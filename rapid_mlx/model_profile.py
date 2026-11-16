@@ -377,6 +377,9 @@ class ModelProfile:
     revision: str | None = None
     # Native image load-time quantization; absent means the engine default.
     image_quantize: int | None = None
+    # Checkpoint capability verified at the pinned revision, independent of cache.
+    # The installed image runtime may impose a lower reference limit.
+    max_reference_images: int | None = None
 
     @property
     def speedup_dict(self) -> dict[str, float]:

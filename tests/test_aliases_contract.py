@@ -57,6 +57,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "modality",
         "video_modes",
         "image_quantize",
+        "max_reference_images",
         # State-pin (parallel to ``is_hybrid``): serve a vision-config
         # checkpoint through the text-only mlx-lm lane. Translated to the
         # registered ``force_text`` routing kwarg (#393) in

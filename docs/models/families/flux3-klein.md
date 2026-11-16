@@ -30,9 +30,12 @@ backend. Uploads share the existing aggregate 25 MB request limit.
 `rapid-mlx models --json` image rows and `/v1/models` model information expose
 `max_reference_images`. Desktop uses it to cap attachments, defaulting to one
 when older servers omit it. FLUX 2 Klein and Qwen Image Edit remain limited
-to one reference. Qwen Image 2.1 accepts multiple references up to the installed
-mflux `QwenImage21Edit` limit when that backend is present; older runtimes
-without it retain one-reference img2img.
+to one reference. The default Qwen Image 2.1 Q4 aliases also accept only one
+reference: their pinned checkpoint lacks the component configs needed for
+multi-reference editing. The config-complete `qwen-image-2.1-bf16` alias accepts
+up to 10 references when the installed mflux `QwenImage21Edit` backend supports
+them; older runtimes retain one-reference img2img. See the
+[Qwen Image 2.1 checkpoint evidence](qwen-image-2.1.md#reference-images).
 Single-reference Qwen 2.1 requests retain their existing img2img behavior.
 Qwen Image 2.1 Turbo remains text-to-image only.
 

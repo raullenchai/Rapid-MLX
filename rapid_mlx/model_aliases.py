@@ -228,6 +228,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         {
             "hf_path",
             "image_quantize",
+            "max_reference_images",
             "revision",  # Immutable artifact identity, never a routing switch.
             "model_type",
             # Directory inside ``hf_path`` holding this alias's checkpoint.
@@ -569,6 +570,16 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: image_quantize requires image-gen and 4 or 8"
         )
 
+    max_reference_images = value.get("max_reference_images")
+    if max_reference_images is not None and (
+        type(max_reference_images) is not int
+        or not 0 <= max_reference_images <= 16
+        or value.get("modality") != "image-gen"
+    ):
+        raise ValueError(
+            f"alias {alias!r}: max_reference_images requires image-gen and 0 through 16"
+        )
+
     checkpoint_revision = value.get("revision")
     if checkpoint_revision is not None:
         if (
@@ -895,6 +906,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         hf_path=hf_path,
         revision=checkpoint_revision,
         image_quantize=image_quantize,
+        max_reference_images=max_reference_images,
         model_type=model_type,
         subfolder=subfolder,
         modality=modality,

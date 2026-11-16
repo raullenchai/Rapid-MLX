@@ -272,3 +272,86 @@ def test_flux3_checkpoint_layout(monkeypatch, tmp_path):
     assert gate.mflux_missing_weights(repo) == [
         "transformer/diffusion_pytorch_model.safetensors"
     ]
+
+
+@pytest.mark.parametrize(
+    "alias,limit",
+    [("qwen-image", 1), ("qwen-image-2.1", 1), ("qwen-image-2.1-bf16", 10)],
+)
+def test_qwen_checkpoint_reference_limits(monkeypatch, alias, limit):
+    from rapid_mlx.cli import _available_models_json_payload
+    from rapid_mlx.routes.models import _build_model_info
+
+    monkeypatch.setattr(image_engine, "_qwen21_max_references", lambda: 10)
+    repo = resolve_model(alias)
+    assert image_engine.max_reference_images_for_model(alias) == limit
+    assert image_engine.max_reference_images_for_model(repo) == limit
+    rows = {row["alias"]: row for row in _available_models_json_payload()["image"]}
+    assert rows[alias]["max_reference_images"] == limit
+    assert _build_model_info(alias).max_reference_images == limit
+    engine = ImageGenerationEngine(repo)
+    engine.validate_request(prompt="edit", image_paths=["a"])
+    if limit == 1:
+        monkeypatch.setattr(
+            engine, "_ensure_loaded", lambda **_: pytest.fail("model load attempted")
+        )
+        with pytest.raises(ImageRequestError, match="1 reference"):
+            engine.generate(prompt="edit", image_paths=["a", "b"])
+
+
+@pytest.mark.parametrize(
+    "references,message,request_error",
+    [
+        (
+            2,
+            "Editing requires a complete checkpoint with component configs; missing: [vae, transformer, text_encoder]",
+            True,
+        ),
+        (
+            1,
+            "Editing requires a complete checkpoint with component configs; missing: [vae]",
+            False,
+        ),
+        (2, "invalid quantization", False),
+    ],
+)
+def test_qwen_missing_edit_configs_error(
+    monkeypatch, references, message, request_error
+):
+    engine = ImageGenerationEngine("Qwen/Qwen-Image-2.1")
+    monkeypatch.setattr("rapid_mlx.model_downloads.require_local", lambda _: None)
+    monkeypatch.setattr(engine, "_ensure_runtime_assets", lambda: None)
+    monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
+
+    def fail():
+        raise ValueError(message)
+
+    monkeypatch.setattr(engine, "_build_edit_model", fail)
+    expected = ImageRequestError if request_error else image_engine.ImageRuntimeError
+    with pytest.raises(expected) as exc:
+        engine._ensure_loaded(for_edit=True, reference_count=references)
+    assert isinstance(exc.value, ImageRequestError) is request_error
+    assert isinstance(exc.value.__cause__, ValueError)
+    if request_error:
+        assert "Use one reference image" in str(exc.value)
+    assert engine._model is None
+
+
+@pytest.mark.parametrize("value", [True, -1, 17, "10"])
+def test_checkpoint_reference_limit_metadata_validation(value):
+    from rapid_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="max_reference_images"):
+        _coerce(
+            "test-image",
+            {
+                "hf_path": "org/image",
+                "modality": "image-gen",
+                "max_reference_images": value,
+            },
+        )
+
+
+def test_unreviewed_qwen_checkpoint_defaults_to_one_reference(monkeypatch):
+    monkeypatch.setattr(image_engine, "_qwen21_max_references", lambda: 10)
+    assert image_engine.max_reference_images_for_model("org/Qwen-Image-2.1-q4") == 1

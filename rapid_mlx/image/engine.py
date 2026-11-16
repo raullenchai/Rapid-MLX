@@ -375,13 +375,25 @@ def _qwen21_max_references() -> int:
 
 
 def max_reference_images_for_model(model_name: str) -> int:
+    from ..model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    # Catalog aliases and their resolved HF IDs must advertise the same limit.
+    # Never infer checkpoint capabilities from files in a machine's local cache.
+    if profile is not None:
+        model_name = profile.hf_path
     family = _detect_family(model_name)
     if family == "minimax-h3-image":
         return 16
     if family == "flux3-klein":
         return 10
     if family == "qwen-image-2.1" and not is_qwen_image_21_turbo(model_name):
-        return _qwen21_max_references()
+        checkpoint_limit = (
+            profile.max_reference_images
+            if profile is not None and profile.max_reference_images is not None
+            else 1
+        )
+        return min(checkpoint_limit, _qwen21_max_references())
     return 1 if family in {"flux2-klein", "qwen-image-edit"} else 0
 
 
@@ -1391,6 +1403,18 @@ class ImageGenerationEngine:
             except ImageRuntimeError:
                 raise
             except Exception as exc:  # noqa: BLE001 — surface a clean API error
+                if (
+                    isinstance(exc, ValueError)
+                    and self._qwen21_references
+                    and "Editing requires a complete checkpoint with component configs"
+                    in str(exc)
+                ):
+                    raise ImageRequestError(
+                        "This Qwen-Image 2.1 checkpoint cannot edit multiple reference "
+                        "images because component configs are missing. Use one "
+                        "reference image or a complete checkpoint such as "
+                        "qwen-image-2.1-bf16."
+                    ) from exc
                 raise ImageRuntimeError(
                     f"Failed to load image model '{self.model_name}': {exc}"
                 ) from exc

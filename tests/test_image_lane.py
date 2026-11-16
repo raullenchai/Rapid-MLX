@@ -1770,3 +1770,63 @@ def test_flux3_dimensions_return_400(client, monkeypatch):
     )
     assert response.status_code == 400
     assert "multiple" in response.text
+
+
+@pytest.mark.parametrize("alias", ["qwen-image", "qwen-image-2.1"])
+@pytest.mark.parametrize("field", ["image", "image[]"])
+@pytest.mark.parametrize("count,status", [(1, 200), (2, 400)])
+def test_qwen_q4_edit_reference_limit(client, monkeypatch, alias, field, count, status):
+    from rapid_mlx.image import engine as image_engine
+    from rapid_mlx.model_aliases import resolve_model
+
+    monkeypatch.setattr(image_engine, "_qwen21_max_references", lambda: 10)
+    backend = ImageGenerationEngine(resolve_model(alias))
+    engine = _FakeImageEngine(is_edit=True, family=backend.family)
+    engine.model_name = backend.model_name
+    engine.max_reference_images = backend.max_reference_images
+    monkeypatch.setattr(
+        "rapid_mlx.config.get_config",
+        lambda: types.SimpleNamespace(engine=engine, model_alias=alias),
+    )
+    response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "edit", "model": alias},
+        files=[(field, ("a.png", _png_upload_bytes(), "image/png"))] * count,
+    )
+    assert response.status_code == status
+    if count == 1:
+        assert len(engine.image_paths_seen) == 1
+    else:
+        assert "1 reference" in response.text
+        assert not engine.image_paths_seen
+
+
+def test_qwen_missing_edit_configs_returns_400(client, monkeypatch):
+    backend = ImageGenerationEngine("Qwen/Qwen-Image-2.1")
+    monkeypatch.setattr("rapid_mlx.model_downloads.require_local", lambda _: None)
+    monkeypatch.setattr(backend, "_ensure_runtime_assets", lambda: None)
+    monkeypatch.setattr(backend, "_verify_weights_complete", lambda: None)
+
+    def fail():
+        raise ValueError(
+            "Editing requires a complete checkpoint with component configs; "
+            "missing: [vae, transformer, text_encoder]"
+        )
+
+    monkeypatch.setattr(backend, "_build_edit_model", fail)
+    engine = _FakeImageEngine(is_edit=True, family=backend.family)
+    engine.max_reference_images = 10
+    monkeypatch.setattr(
+        engine,
+        "generate",
+        lambda **kwargs: backend._ensure_loaded(for_edit=True, reference_count=2),
+    )
+    _patch_engine(monkeypatch, engine)
+    response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "combine"},
+        files=[("image", ("a.png", _png_upload_bytes(), "image/png"))] * 2,
+    )
+    assert response.status_code == 400
+    assert "Use one reference image" in response.text
+    assert response.json()["error"]["code"] == "invalid_image_request"
