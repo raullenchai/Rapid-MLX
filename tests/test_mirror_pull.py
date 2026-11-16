@@ -828,18 +828,19 @@ def test_hf_resumable_keeps_partial_after_transport_error(tmp_path: Path):
         patch("urllib.request.urlopen", side_effect=router),
     ):
         metadata.return_value.location = location
-        assert not _mirror._hf_resumable_one(
-            "owner/repo",
-            filename,
-            "a" * 40,
-            target,
-            100,
-            "a" * 64,
-            None,
-            sidecar,
-            repo_root,
-            None,
-        )
+        with pytest.raises(_mirror.ResumableDownloadError):
+            _mirror._hf_resumable_one(
+                "owner/repo",
+                filename,
+                "a" * 40,
+                target,
+                100,
+                "a" * 64,
+                None,
+                sidecar,
+                repo_root,
+                None,
+            )
     assert part.read_bytes() == b"a" * 40
     assert router.requests[0]["headers"]["Range"] == "bytes=40-"
 
@@ -3781,16 +3782,15 @@ def test_progress_no_double_count_on_r2_short_read_then_hf(
         _FakeResponse(200, b"x" * 400, headers={"Content-Length": "1000"}),
     )
 
-    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
-        snap = (
-            Path(cache_dir)
-            / f"models--{repo_id.replace('/', '--')}"
-            / "snapshots"
-            / revision
-        )
-        snap.mkdir(parents=True, exist_ok=True)
-        (snap / filename).write_bytes(b"x" * 1000)
-        return str(snap / filename)
+    location = "https://cdn.example.test/model.safetensors"
+    router.add(
+        location,
+        _FakeResponse(
+            206,
+            b"x" * 600,
+            headers={"Content-Range": "bytes 400-999/1000", "Content-Length": "600"},
+        ),
+    )
 
     monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
@@ -3800,8 +3800,12 @@ def test_progress_no_double_count_on_r2_short_read_then_hf(
             "huggingface_hub.model_info",
             return_value=_mk_model_info(revision, files),
         ),
-        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch(
+            "huggingface_hub.hf_hub_download", side_effect=AssertionError("must resume")
+        ),
     ):
+        metadata.return_value.location = location
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
     assert ok
@@ -5037,8 +5041,9 @@ def test_mirror_non_lfs_warm_relink_reports_cached(
     assert out["transferred_bytes"] == 0
 
 
+@pytest.mark.parametrize("interruption", ["slow", "short", "reset"])
 def test_slow_mirror_fallback_resumes_prefix_and_announces(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, interruption
 ):
     import hashlib
 
@@ -5052,6 +5057,8 @@ def test_slow_mirror_fallback_resumes_prefix_and_announces(
 
     class SlowResponse(_FakeResponse):
         def read(self, n=-1):
+            if mirror_reads and interruption == "reset":
+                raise ConnectionResetError("peer reset")
             chunk = super().read(400)
             mirror_reads.append(len(chunk))
             return chunk
@@ -5065,10 +5072,16 @@ def test_slow_mirror_fallback_resumes_prefix_and_announces(
                 {"Content-Length": "600", "Content-Range": "bytes 400-999/1000"},
             )
         if req.full_url.endswith("model.safetensors"):
-            return SlowResponse(200, body, {"Content-Length": "1000"})
+            return SlowResponse(
+                200,
+                body[:400] if interruption == "short" else body,
+                {"Content-Length": "1000"},
+            )
         return router(req, timeout=timeout)
 
-    monkeypatch.setattr(_mirror._ThroughputFloor, "record", lambda self, read: True)
+    monkeypatch.setattr(
+        _mirror._ThroughputFloor, "record", lambda self, read: interruption == "slow"
+    )
     tracker = _mirror._ProgressTracker(total=len(body))
     monkeypatch.setattr(_mirror, "_ProgressTracker", lambda **kw: tracker)
     with (
@@ -5094,16 +5107,20 @@ def test_slow_mirror_fallback_resumes_prefix_and_announces(
         / "model.safetensors"
     )
     assert hashlib.sha256(target.read_bytes()).hexdigest() == digest
-    assert mirror_reads == [400]
+    assert mirror_reads == ([400, 0] if interruption == "short" else [400])
     assert tracker._done == len(body)
     lines = [
         line
         for line in capsys.readouterr().out.splitlines()
         if "Mirror is slow" in line
     ]
-    assert lines == [
-        "  Mirror is slow; continuing model.safetensors from the Hub (keeping 0.0 MB already downloaded)."
-    ]
+    assert lines == (
+        [
+            "  Mirror is slow; continuing model.safetensors from the Hub (keeping 0.0 MB already downloaded)."
+        ]
+        if interruption == "slow"
+        else []
+    )
 
 
 def test_slow_mirror_missing_part_announces_zero_bytes(tmp_path, monkeypatch, capsys):
@@ -5227,3 +5244,173 @@ def test_hub_file_announces_before_blocking_call(
         assert not _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
     assert resumable.call_count == int(hf_only)
     assert fallback.call_count == 1
+
+
+@pytest.mark.parametrize("ignore_range", [False, True])
+def test_hub_interruption_resumes_same_partial_on_next_invocation(
+    tmp_path, ignore_range
+):
+    """A new downloader invocation (including relaunch) reuses retained bytes."""
+    import hashlib
+
+    body = b"a" * 1000
+    repo = tmp_path / "models--owner--repo"
+    sidecar = repo / ".rapid-mlx-mirror"
+    sidecar.mkdir(parents=True)
+    part = sidecar / f"{_mirror._sidecar_key_for('model.safetensors')}.part"
+    part.write_bytes(body[:400])
+    target = repo / "snapshots" / ("a" * 40) / "model.safetensors"
+    args = (
+        "owner/repo",
+        "model.safetensors",
+        "a" * 40,
+        target,
+        len(body),
+        hashlib.sha256(body).hexdigest(),
+        None,
+        sidecar,
+        repo,
+        None,
+    )
+    requests = []
+
+    class Interrupted(_FakeResponse):
+        def read(self, n=-1):
+            if self._buf.tell() >= (500 if ignore_range else 100):
+                raise ConnectionResetError("interrupted")
+            return super().read(min(n, 100))
+
+    def response(req, **kwargs):
+        requests.append(req.get_header("Range"))
+        if len(requests) == 1:
+            return Interrupted(
+                200 if ignore_range else 206,
+                body if ignore_range else body[400:],
+                {
+                    "Content-Length": str(1000 if ignore_range else 600),
+                    "Content-Range": "bytes 400-999/1000",
+                },
+            )
+        return _FakeResponse(
+            206,
+            body[500:],
+            {"Content-Length": "500", "Content-Range": "bytes 500-999/1000"},
+        )
+
+    with (
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch("urllib.request.urlopen", side_effect=response),
+    ):
+        metadata.return_value.location = "https://cdn.example.test/file"
+        with pytest.raises(_mirror.ResumableDownloadError):
+            _mirror._hf_resumable_one(*args)
+        assert part.read_bytes() == body[:500]
+        assert _mirror._hf_resumable_one(*args)
+    assert requests == ["bytes=400-", "bytes=500-"]
+    assert target.read_bytes() == body
+    assert not part.exists()
+
+
+def test_chunked_short_body_preserves_partial(tmp_path):
+    """Missing Content-Length must not turn a truncated body into data loss."""
+    import hashlib
+
+    part = tmp_path / "file.part"
+    response = _FakeResponse(200, b"a" * 40)
+    response.headers = {}
+    tracker = _mirror._ProgressTracker(total=100)
+    with (
+        patch("urllib.request.urlopen", return_value=response),
+        pytest.raises(urllib.error.URLError),
+    ):
+        _mirror._do_r2_download(
+            "https://cdn.example.test/file",
+            tmp_path / "target",
+            part,
+            100,
+            expected_sha256=hashlib.sha256(b"a" * 100).hexdigest(),
+            progress_tracker=tracker,
+            enforce_floor=False,
+            raise_transport_errors=True,
+        )
+    assert part.read_bytes() == b"a" * 40
+    assert tracker._done == 0
+
+
+@pytest.mark.parametrize("raise_transport_errors", [False, True])
+@pytest.mark.parametrize("short", [False, True])
+def test_chunked_known_digest_distinguishes_truncation_from_corruption(
+    tmp_path, short, raise_transport_errors
+):
+    import hashlib
+
+    part = tmp_path / "file.part"
+    body = b"a" * (40 if short else 100)
+    response = _FakeResponse(200, body)
+    response.headers = {}
+    tracker = _mirror._ProgressTracker(total=100)
+    with patch("urllib.request.urlopen", return_value=response):
+
+        def download():
+            return _mirror._do_r2_download(
+                "https://cdn.example.test/file",
+                tmp_path / "target",
+                part,
+                100,
+                expected_sha256=hashlib.sha256(b"b" * 100).hexdigest(),
+                progress_tracker=tracker,
+                enforce_floor=False,
+                raise_transport_errors=raise_transport_errors,
+            )
+
+        if short and raise_transport_errors:
+            with pytest.raises(urllib.error.URLError):
+                download()
+        else:
+            ok, reason = download()
+            assert not ok
+            assert reason.startswith("short-read:" if short else "sha256-mismatch:")
+    assert part.exists() == short
+    if short:
+        assert part.read_bytes() == body
+    assert tracker._done == 0
+
+
+def test_range_ignored_prefix_emits_activity_without_byte_credit(
+    tmp_path, monkeypatch, capsys
+):
+    import hashlib
+
+    monkeypatch.setattr(_mirror, "_desktop_progress_protocol", lambda: True)
+    clock = [1000.0]
+    monkeypatch.setattr(_mirror.time, "monotonic", lambda: clock[0])
+    part = tmp_path / "file.part"
+    part.write_bytes(b"a" * 400)
+    tracker = _mirror._ProgressTracker(total=500)
+    notifications = []
+    tracker._on_bytes = notifications.append
+
+    class SlowPrefix(_FakeResponse):
+        def read1(self, n):
+            clock[0] += 60
+            # Every preceding read must already have flushed observable
+            # activity, even though no new retained bytes have arrived.
+            if 0 < self._buf.tell() <= 400:
+                assert f"[resume-check] {self._buf.tell()}" in capsys.readouterr().out
+                expected_credit = 400 if self._buf.tell() == 400 else 0
+                assert tracker._done == expected_credit
+                assert sum(notifications) == expected_credit
+            return self.read(min(n, 100))
+
+    with patch("urllib.request.urlopen", return_value=SlowPrefix(200, b"a" * 500)):
+        assert _mirror._do_r2_download(
+            "https://cdn.example.test/file",
+            tmp_path / "target",
+            part,
+            500,
+            expected_sha256=hashlib.sha256(b"a" * 500).hexdigest(),
+            progress_tracker=tracker,
+            enforce_floor=False,
+        )[0]
+    assert tracker._done == 500
+    assert sum(notifications) == 500

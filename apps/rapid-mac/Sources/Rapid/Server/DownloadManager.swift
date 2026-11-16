@@ -111,7 +111,8 @@ final class DownloadManager {
         /// job has already exited. Retained here so the manager can
         /// cancel the monitor on exit alongside the subprocess.
         fileprivate(set) var byteMonitor: HFCacheByteMonitor.Handle?
-        fileprivate var lastProgressAt: Date
+        internal var lastProgressAt: Date
+        fileprivate var lastResumeCheckBytes: Int64 = 0
         fileprivate var lastObservedBytes: Int64?
 
         enum Status: Equatable {
@@ -226,11 +227,13 @@ final class DownloadManager {
     /// distinguish a dead network path from an ordinary slow shard.
     nonisolated static let downloadStallWindow: TimeInterval = 120
     nonisolated static let stalledNoticeWindow: TimeInterval = 30
-    nonisolated static let maxAutomaticRetries = 3
+    // Twelve reconnects allow several minutes for Wi-Fi/service recovery.
+    // Transfer time itself is unlimited while bytes continue arriving.
+    nonisolated static let maxAutomaticRetries = 12
 
     nonisolated static func retryDelay(after attempt: Int) -> Int? {
-        guard attempt < maxAutomaticRetries else { return nil }
-        return 2 << attempt
+        guard attempt >= 0, attempt < maxAutomaticRetries else { return nil }
+        return min(30, 2 << attempt)
     }
 
     nonisolated static func isTransientDownloadError(_ output: String) -> Bool {
@@ -457,6 +460,10 @@ final class DownloadManager {
             source: effectiveSource, forceMirror: forceMirror, retryAttempt: retryAttempt,
             downloadEndpoint: downloadEndpoint
         )
+        if let bytes = retryingJob?.progress.bytesDownloaded {
+            job.progress.setTotalBytes(totalBytes)
+            job.progress.applyDiskObservation(bytes: bytes)
+        }
         jobs[trimmed] = job
         stderrTails[trimmed] = []
 
@@ -586,9 +593,9 @@ final class DownloadManager {
                         job.lastProgressAt = Date()
                         job.isStalled = false
                     }
-                    // A mirror miss can replace a large partial with a fresh
-                    // HF transfer. Follow the new counter so its next bytes
-                    // count as progress below the old high-water mark.
+                    // Integrity failures can invalidate a partial. Follow the
+                    // replacement counter so its next bytes count as progress
+                    // below the old high-water mark.
                     job.lastObservedBytes = bytes
                 }
                 job.isStalled = Self.isStalled(
@@ -649,7 +656,8 @@ final class DownloadManager {
             hfPath: hfPath,
             totalBytes: totalBytes,
             source: nextSource,
-            forceMirror: forceMirror
+            forceMirror: forceMirror,
+            retryingJob: previous
         )
     }
 
@@ -837,6 +845,19 @@ final class DownloadManager {
     private func ingestLines(alias: String, lines: [String], isStderr: Bool) {
         guard let job = jobs[alias] else { return }
         for line in lines {
+            // Range-ignoring servers resend retained bytes before appending.
+            // Accept increasing comparison activity without moving the byte bar.
+            if line.hasPrefix("[resume-check] "),
+               let checked = Int64(line.dropFirst("[resume-check] ".count)) {
+                if checked == 0 {
+                    job.lastResumeCheckBytes = 0
+                } else if checked > job.lastResumeCheckBytes {
+                    job.lastResumeCheckBytes = checked
+                    job.lastProgressAt = Date()
+                    job.isStalled = false
+                }
+                continue
+            }
             let oldPhase = job.progress.phase
             let oldBytes = job.progress.bytesDownloaded
             let consumed = job.progress.ingest(line)
@@ -915,7 +936,7 @@ final class DownloadManager {
         case .exit:
             if scheduleAutomaticRetry(
                 job: job, alias: alias,
-                transient: Self.isTransientDownloadError(Self.terminalPullFailure(stderrorLines: stderrTails[alias] ?? []))
+                stalled: false
             ) { return }
             recordFailure(job: job, alias: alias, signal: false)
         case .uncaughtSignal:
@@ -944,7 +965,7 @@ final class DownloadManager {
     private func scheduleAutomaticRetry(
         job: Job,
         alias: String,
-        transient: Bool = true
+        stalled: Bool = true
     ) -> Bool {
         let raw = Self.terminalPullFailure(stderrorLines: stderrTails[alias] ?? [])
         let kind = FailureDiagnoser.downloadFailureKind(raw: raw, usingMirror: job.source == .mirror)
@@ -956,6 +977,7 @@ final class DownloadManager {
               !raw.lowercased().contains("gated"),
               !raw.lowercased().contains("hf auth login") else { return false }
 
+        let transient = stalled || cause == .network || cause == .sourceUnavailable
         let switchToHF = job.source == .mirror && !job.forceMirror
             && (kind == .downloadSourceUnavailable || (transient && job.retryAttempt >= 1))
         guard transient || switchToHF,

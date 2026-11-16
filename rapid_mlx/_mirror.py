@@ -56,6 +56,10 @@ from typing import Any
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
 
+class ResumableDownloadError(RuntimeError):
+    """A verified Hub transfer failed; retry the shared sidecar, not a new blob."""
+
+
 class MirrorOnlyPullError(RuntimeError):
     """A pinned mirror cannot prove every requested file without the Hub."""
 
@@ -288,6 +292,8 @@ class _ProgressTracker:
         self._lock = threading.Lock()  # guards the byte counters (fast)
         self._io_lock = threading.Lock()  # serializes rendering + bar state
         self._done = 0
+        self._checked = 0
+        self._last_activity_emit = 0.0
         self._total = max(0, int(total))
         self._last_emit = 0.0
         # Capture the stream once so the isatty() decision and every write
@@ -314,6 +320,21 @@ class _ProgressTracker:
                 self._on_bytes(delta)
             except Exception as exc:
                 raise _DownloadCallbackError() from exc
+
+    def checked(self, delta: int) -> None:
+        """Signal real prefix-check activity without crediting retained bytes."""
+        if not self._machine or delta <= 0:
+            return
+        with self._io_lock:
+            if self._checked == 0:
+                # CLI retries construct another tracker in the same child.
+                # Reset the activity counter without claiming any activity.
+                print("[resume-check] 0", file=self._out, flush=True)
+            self._checked += delta
+            now = time.monotonic()
+            if now - self._last_activity_emit >= _PROGRESS_HEARTBEAT_SECONDS:
+                self._last_activity_emit = now
+                print(f"[resume-check] {self._checked}", file=self._out, flush=True)
 
     def add(self, delta: int) -> None:
         self._notify_bytes(delta)
@@ -900,6 +921,7 @@ def _download_one_from_r2(
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
     enforce_floor: bool = True,
+    raise_transport_errors: bool = False,
     existing_blob_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
@@ -962,6 +984,7 @@ def _download_one_from_r2(
             repo_root=repo_root,
             progress_tracker=progress_tracker,
             enforce_floor=enforce_floor,
+            raise_transport_errors=raise_transport_errors,
             existing_blob_ok=existing_blob_ok,
         )
     finally:
@@ -979,6 +1002,7 @@ def _do_r2_download(
     repo_root: Path | None = None,
     progress_tracker: _ProgressTracker | None = None,
     enforce_floor: bool = True,
+    raise_transport_errors: bool = False,
     existing_blob_ok: Callable[[Path], bool] | None = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
@@ -1001,7 +1025,7 @@ def _do_r2_download(
             existing = 0
 
     headers = {"User-Agent": _USER_AGENT}
-    if existing > 0:
+    if existing > 0 and existing != expected_size:
         headers["Range"] = f"bytes={existing}-"
 
     req = urllib.request.Request(url, headers=headers)
@@ -1068,19 +1092,36 @@ def _do_r2_download(
                 _safe_unlink(tmp)
                 return False, f"size-mismatch:{total_size}!={expected_size}"
 
-            # Codex round-9 BLOCKING #1: if we sent ``Range`` but the
-            # server returned 200 (range ignored — common with some
-            # proxies / R2 misconfig), the response body is the FULL
-            # object. Opening in ``"wb"`` correctly discards the stale
-            # ``.part`` prefix, but the SHA hasher would otherwise have
-            # been pre-fed those discarded bytes — producing a bogus
-            # digest that fails the LFS check and forces an unneeded HF
-            # fallback. Reset ``existing`` to 0 here so the prefix
-            # rehash below is skipped and the mode falls to ``"wb"``.
+            # A server may ignore Range. Compare and consume its full-body
+            # prefix without truncating our sidecar: another disconnect must
+            # never erase bytes we already have. A changed prefix is an
+            # integrity failure and cannot be appended safely.
+            reader = getattr(resp, "read1", None) or resp.read
+            skipped = 0
             if resp.status == 200 and existing > 0:
-                existing = 0
+                with tmp.open("rb") as prefix:
+                    while skipped < existing:
+                        chunk = reader(min(_CHUNK_BYTES, existing - skipped))
+                        if not chunk:
+                            if raise_transport_errors:
+                                raise urllib.error.URLError("incomplete read")
+                            return False, "short-read:prefix"
+                        if progress_tracker is not None:
+                            progress_tracker.checked(len(chunk))
+                        if chunk != prefix.read(len(chunk)):
+                            # The saved tail is inconsistent with this full
+                            # response. Replace only from the mismatch onward;
+                            # the final canonical digest still gates install.
+                            with tmp.open("r+b") as replacement:
+                                replacement.seek(skipped)
+                                replacement.write(chunk)
+                                replacement.truncate()
+                            existing = skipped + len(chunk)
+                            skipped += len(chunk)
+                            break
+                        skipped += len(chunk)
 
-            mode = "ab" if resp.status == 206 and existing > 0 else "wb"
+            mode = "ab" if existing > 0 else "wb"
             read = 0
             # Codex round-5 BLOCKING #1: stream a SHA-256 of the bytes
             # we write. For resumed downloads (206 + existing > 0) we
@@ -1111,17 +1152,8 @@ def _do_r2_download(
             # path's ``progress_tracker.add(size)`` would double-count and
             # the desktop bar could exceed 100%.
             chunks_credited = 0
-            # Codex R5 BLOCKING on PR #682: resumed downloads only stream
-            # the suffix; without crediting the validated ``.part``
-            # prefix the final heartbeat finishes short of 100% even
-            # though the file succeeded. Credit it once here and include
-            # it in ``chunks_credited`` — if R2 then fails the
-            # ``_safe_unlink(tmp)`` cleanup discards the prefix from
-            # disk, so the rollback must subtract it too (otherwise
-            # HF's full-file ``add(size)`` would still double-count).
-            # ``existing`` is the post-200/206 reconciled count: the 200
-            # branch above already zeroed it when the proxy ignored
-            # ``Range``.
+            # Credit the retained prefix once; failures roll back display
+            # credit so the next attempt can account for it again.
             if existing > 0 and progress_tracker is not None:
                 progress_tracker.add(existing)
                 chunks_credited += existing
@@ -1183,11 +1215,23 @@ def _do_r2_download(
             # Short-read guard — Content-Length lied or the connection
             # dropped silently. Don't rename a truncated file into the
             # snapshot; let HF redownload.
-            if length > 0 and read != length:
+            if length > 0 and read + skipped != length:
                 # A short body after valid headers is a transport interruption.
                 # Keep its prefix for a checked Range request on the next run.
+                if raise_transport_errors:
+                    raise urllib.error.URLError("incomplete read")
                 _rollback_credits(progress_tracker, chunks_credited)
-                return False, f"short-read:{read}!={length}"
+                return False, f"short-read:{read + skipped}!={length}"
+
+            # A chunked body can end cleanly without Content-Length. Check
+            # canonical size before its digest: truncation is resumable, while
+            # a full-length digest mismatch is corruption and must be removed.
+            final_size = tmp.stat().st_size
+            if expected_size is not None and 0 < final_size < expected_size:
+                if raise_transport_errors:
+                    raise urllib.error.URLError("incomplete read")
+                _rollback_credits(progress_tracker, chunks_credited)
+                return False, f"short-read:{final_size}!={expected_size}"
 
             # Codex round-5 BLOCKING #1 — SHA-256 check (LFS files
             # only; non-LFS hashers stay ``None``). Same-size-but-
@@ -1222,6 +1266,8 @@ def _do_r2_download(
         # raised). ``locals().get`` keeps the rollback safe in either
         # case.
         _rollback_credits(progress_tracker, locals().get("chunks_credited", 0))
+        if raise_transport_errors:
+            raise
         return False, type(e).__name__
 
     # Codex round-5 BLOCKING #2: ``tmp.stat()`` was outside the
@@ -1235,6 +1281,11 @@ def _do_r2_download(
         _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-stat:{type(e).__name__}"
     if expected_size is not None and final_size != expected_size:
+        if 0 < final_size < expected_size:
+            _rollback_credits(progress_tracker, chunks_credited)
+            if raise_transport_errors:
+                raise urllib.error.URLError("incomplete read")
+            return False, f"short-read:{final_size}!={expected_size}"
         _safe_unlink(tmp)
         _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-size-mismatch:{final_size}!={expected_size}"
@@ -1787,22 +1838,37 @@ def _hf_resumable_one(
         OSError,
         TimeoutError,
         ValueError,
-    ):
+    ) as exc:
+        _raise_if_disk_full(exc)
+        if (sidecar_dir / f"{_sidecar_key_for(filename)}.part").exists():
+            raise ResumableDownloadError("Hub metadata unavailable for resume") from exc
         return False
     if not location or not location.startswith("https://"):
         return False
-    ok, _ = _download_one_from_r2(
-        location,
-        target,
-        expected_size,
-        expected_sha256=expected_sha256,
-        expected_git_oid=None if expected_sha256 else expected_git_oid,
-        sidecar_dir=sidecar_dir,
-        sidecar_key=_sidecar_key_for(filename),
-        repo_root=repo_root,
-        progress_tracker=progress_tracker,
-        enforce_floor=False,
-    )
+    try:
+        ok, _ = _download_one_from_r2(
+            location,
+            target,
+            expected_size,
+            expected_sha256=expected_sha256,
+            expected_git_oid=None if expected_sha256 else expected_git_oid,
+            sidecar_dir=sidecar_dir,
+            sidecar_key=_sidecar_key_for(filename),
+            repo_root=repo_root,
+            progress_tracker=progress_tracker,
+            enforce_floor=False,
+            raise_transport_errors=True,
+        )
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        OSError,
+        ValueError,
+    ) as exc:
+        _raise_if_disk_full(exc)
+        raise ResumableDownloadError(
+            "Hub transfer interrupted; resume retained bytes"
+        ) from exc
     return ok
 
 
@@ -2548,8 +2614,10 @@ def download_with_mirror_fallback(
             )
             progress_tracker.write_line(message)
             sys.stdout.flush()
-        # Slow mirrors and direct Hub pulls share the verified Range path.
-        if (hf_only or slow_mirror) and _hf_resumable_one(
+        # Mirror misses with retained bytes and direct Hub pulls share the
+        # verified Range sidecar. A network failure must not start a second, unrelated blob.
+        has_partial = (sidecar_dir / f"{_sidecar_key_for(fname)}.part").is_file()
+        if (hf_only or slow_mirror or has_partial) and _hf_resumable_one(
             repo_id,
             fname,
             revision,
@@ -2644,6 +2712,8 @@ def download_with_mirror_fallback(
                     _, kind, size = fut.result()
                 except Exception as exc:
                     _raise_if_disk_full(exc)
+                    if isinstance(exc, ResumableDownloadError):
+                        raise
                     if not isinstance(
                         exc,
                         (

@@ -147,11 +147,17 @@ struct DownloadStrip: View {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Retry") {
+                if let bytes = job.progress.bytesDownloaded, bytes > 0 {
+                    Text("\(DownloadProgress.formatBytes(bytes)) downloaded")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Resume download") {
                     handleFailureAction(.retry, for: job)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!downloads.canRetryDownload(alias: job.alias))
                 .accessibilityIdentifier("DownloadStrip.SecondaryRecovery.\(job.alias)")
                 if job.failureKind == .downloadSourceUnavailable {
                     Button("Switch source") {

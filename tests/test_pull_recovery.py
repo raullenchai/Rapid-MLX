@@ -2,6 +2,7 @@
 
 import argparse
 import errno
+import http.client
 from types import SimpleNamespace
 
 import httpx
@@ -455,3 +456,120 @@ def test_shared_error_renderer_does_not_claim_unobserved_attempts(status):
     assert "temporarily unavailable" in rendered
     assert "completed cached files will be reused" in rendered
     assert "after three attempts" not in rendered
+
+
+def test_verified_hub_interruption_does_not_start_snapshot_download(
+    monkeypatch, capsys
+):
+    from rapid_mlx._mirror import ResumableDownloadError
+
+    def transfer(*args, **kwargs):
+        raise ResumableDownloadError("resume retained bytes") from httpx.ReadError(
+            "private URL"
+        )
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", transfer)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *a, **k: pytest.fail("must not start an unrelated Hub blob"),
+    )
+    with pytest.raises(SystemExit) as caught:
+        cli._pull_repository(
+            argparse.Namespace(model="owner/repo", bits=None, format=None),
+            emit_lifecycle_event=False,
+        )
+    assert caught.value.code == 1
+    output = capsys.readouterr().err
+    assert "could not reach Hugging Face" in output
+    assert "private URL" not in output
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError("private"),
+        http.client.IncompleteRead(b"private"),
+    ],
+)
+def test_wrapped_stream_failure_has_network_guidance(failure):
+    from rapid_mlx._mirror import ResumableDownloadError
+
+    error = ResumableDownloadError("interrupted")
+    error.__cause__ = failure
+    assert "could not reach Hugging Face" in cli.render_hub_error(error, "owner/repo")
+
+
+def test_verified_prefetch_retries_shared_downloader(monkeypatch):
+    from rapid_mlx import _mirror
+
+    sleeps = []
+    calls = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+
+    def download(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise _mirror.ResumableDownloadError("interrupted") from httpx.ReadError(
+                "private"
+            )
+        return True
+
+    monkeypatch.setattr(_mirror, "download_with_mirror_fallback", download)
+    assert cli._try_mirror_prefetch("owner/repo")
+    assert len(calls) == 2
+    assert sleeps == [1]
+
+
+@pytest.mark.parametrize(
+    "status", [429, 500, 501, 502, 503, 504, 599, 401, 403, 404, 400]
+)
+def test_direct_hub_http_errors_retry_and_render_safely(status, tmp_path, monkeypatch):
+    import urllib.error
+
+    from rapid_mlx import _mirror
+
+    sleeps = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    metadata = SimpleNamespace(location="https://cdn.example.test/private")
+    monkeypatch.setattr(
+        "huggingface_hub.file_download.get_hf_file_metadata", lambda *a, **k: metadata
+    )
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append(True)
+        raise urllib.error.HTTPError(
+            metadata.location, status, "private body", {}, None
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+
+    def transfer():
+        return _mirror._hf_resumable_one(
+            "owner/repo",
+            "model.safetensors",
+            "a" * 40,
+            tmp_path / "target",
+            100,
+            "a" * 64,
+            None,
+            tmp_path / "sidecar",
+            tmp_path,
+            None,
+        )
+
+    with pytest.raises(_mirror.ResumableDownloadError) as caught:
+        cli._retry_hub_download(transfer, "owner/repo")
+    retryable = status == 429 or 500 <= status < 600
+    assert len(calls) == (3 if retryable else 1)
+    assert sleeps == ([1, 2] if retryable else [])
+    rendered = cli.render_hub_error(caught.value, "owner/repo")
+    if retryable:
+        assert "Hugging Face is temporarily unavailable" in rendered
+    elif status in (401, 403):
+        assert "gated" in rendered
+    elif status == 404:
+        assert "not found" in rendered
+    else:
+        assert rendered is None
+    assert "private" not in (rendered or "")
