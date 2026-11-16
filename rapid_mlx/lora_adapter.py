@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,12 +25,30 @@ class Adapter:
 
 
 def _base_identity(name: str) -> str:
-    from .model_aliases import resolve_model
-    from .utils.tokenizer import _local_snapshot_if_cached
+    """Compare Hub bases by repo, and other local bases by absolute path."""
+    from huggingface_hub import constants
 
-    resolved = _local_snapshot_if_cached(resolve_model(name))
+    from .model_aliases import resolve_model
+
+    # Identity must not depend on the cached revision or external model roots.
+    resolved = resolve_model(name, include_external_roots=False)
     path = Path(resolved).expanduser()
-    return str(path.resolve()) if path.is_dir() else resolved
+    if not path.is_dir():
+        return resolved.casefold()
+    path = Path(os.path.abspath(path))
+    cache = Path(os.path.abspath(Path(constants.HF_HUB_CACHE).expanduser()))
+    # Inspect the cache spelling before resolving symlinks: a cached repository
+    # may itself be a symlink to storage outside the cache root.
+    for candidate, root in ((path, cache), (path.resolve(), cache.resolve())):
+        try:
+            parts = candidate.relative_to(root).parts
+        except ValueError:
+            continue
+        if len(parts) >= 3 and parts[1] == "snapshots":
+            repo = parts[0].split("--")
+            if len(repo) == 3 and repo[0] == "models" and all(repo[1:]):
+                return "/".join(repo[1:]).casefold()
+    return str(path.resolve())
 
 
 def validate_adapter(path: str, model: str) -> Adapter:
