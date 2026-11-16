@@ -510,6 +510,28 @@ class TestClaudeCode:
         assert not claude_code.remove_config()
         assert path.read_text() == rapid_values
 
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"fingerprint": 1, "backup": None},
+            {"fingerprint": "x"},
+            {"fingerprint": "x", "backup": 7},
+            "not-a-dict",
+        ],
+    )
+    def test_legacy_remove_rejects_corrupt_receipt(self, fake_home, entry):
+        import json as _json
+
+        from rapid_mlx.launch import _ownership
+
+        path = claude_code.write_or_patch_config("http://127.0.0.1:8000", "local")
+        before = path.read_bytes()
+        receipt = _ownership._receipt(path)
+        receipt.write_text(_json.dumps({"ANTHROPIC_MODEL": entry}))
+        with pytest.raises(ValueError, match="legacy ownership receipt"):
+            claude_code.remove_config()
+        assert path.read_bytes() == before
+
     @pytest.mark.parametrize("operation", ["setup", "remove"])
     def test_legacy_receipt_failure_rolls_back_settings(
         self, fake_home, monkeypatch, operation
