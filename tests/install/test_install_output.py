@@ -1,10 +1,14 @@
 """Regression checks for installer output."""
 
+import fcntl
 import json
 import os
 import pty
+import select
+import signal
 import subprocess
 import sys
+import termios
 import time
 import tomllib
 from pathlib import Path
@@ -502,6 +506,165 @@ def test_quick_start_chat_hint(tmp_path, available):
     assert result.returncode == 0
     line = next(line for line in result.stdout.splitlines() if "rapid-mlx-chat" in line)
     assert ("first:" not in line) == available
+
+
+def run_first_chat(
+    tmp_path,
+    *,
+    answer=None,
+    env=None,
+    controlling_tty=True,
+    stdout_tty=True,
+    model=None,
+    chat_status=0,
+    interrupt_chat=False,
+):
+    """Run the actual installer footer offline, with piped stdin and a PTY."""
+    bin_dir = tmp_path / ".rapid-mlx" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    python.write_text("#!/bin/bash\nexit 1\n")
+    python.chmod(0o755)
+    binary = bin_dir / "rapid-mlx"
+    binary.write_text(
+        "#!/bin/bash\nset -eu\n"
+        "[ -t 0 ] && [ -t 1 ] && [ -t 2 ]\n"
+        '[ ! -e "$HOME/.rapid-mlx.install-lock" ]\n'
+        'printf "stub invoked: %s; telemetry=%s\\n" "$*" "$RAPID_MLX_TELEMETRY"\n'
+        'IFS= read -r message\nprintf "stub received: %s\\n" "$message"\n'
+        + ("while :; do :; done\n" if interrupt_chat else f"exit {chat_status}\n")
+    )
+    binary.chmod(0o755)
+    # Include the real final call so tests catch missing or misplaced wiring.
+    footer = SCRIPT.read_text().split("VERSION=$(run_install_command", 1)[1]
+    footer = footer[footer.index('\necho ""') :]
+    code = (
+        'RAPID_INSTALL_LIB=1 source "$1"; '
+        'RAM_GB=16 RAM_TIER="16 GB" RECOMMENDED_FLAGS= VERSION=stub; '
+        'RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "${CACHED_MODEL:-}")"; '
+        "NEED_PATH_HINT=true; acquire_install_lock; "
+        'trap on_installer_exit EXIT; trap "exit 130" INT; ' + footer
+    )
+    master, slave = pty.openpty()
+
+    def setup_terminal():
+        os.setsid()
+        if controlling_tty:
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+    process = subprocess.Popen(
+        ["/bin/bash", "-c", code, "test", str(SCRIPT)],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "CI": "",
+            "NO_COLOR": "1",
+            "RAPID_INSTALL_NO_CHAT": "0",
+            "RAPID_MLX_TELEMETRY": "1",
+            "CACHED_MODEL": model or "",
+            **(env or {}),
+        },
+        stdin=subprocess.PIPE,
+        stdout=slave if stdout_tty else subprocess.PIPE,
+        stderr=slave,
+        pass_fds=(slave,),
+        preexec_fn=setup_terminal,
+    )
+    # Leave stdin open: accidentally reading it must time out, not appear to
+    # work because EOF was supplied. The chat must read its own terminal input.
+    output = bytearray()
+    try:
+        deadline = time.monotonic() + 10
+        sent = False
+        sent_message = False
+        interrupted = False
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                output.extend(os.read(master, 65536))
+            if answer is not None and not sent and b"[Y/n] " in output:
+                os.write(master, (answer + "\n").encode())
+                sent = True
+            if not sent_message and b"stub invoked:" in output:
+                os.write(master, b"hello\n")
+                sent_message = True
+            if interrupt_chat and not interrupted and b"stub received:" in output:
+                os.write(master, b"\x03")
+                interrupted = True
+            if process.poll() is not None:
+                while select.select([master], [], [], 0)[0]:
+                    chunk = os.read(master, 65536)
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                if not stdout_tty:
+                    output.extend(process.stdout.read())
+                return process.returncode, output.decode().replace("\r\n", "\n")
+        pytest.fail("installer footer blocked waiting for input")
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"controlling_tty": False},
+        {"stdout_tty": False},
+        {"env": {"RAPID_INSTALL_NO_CHAT": "1"}},
+        {"env": {"CI": "true"}},
+    ],
+)
+def test_first_chat_skips_without_blocking(tmp_path, kwargs):
+    status, output = run_first_chat(tmp_path, **kwargs)
+    assert status == 0, output
+    assert "Start a chat" not in output
+    assert "Quick start:" in output
+    assert "rapid-mlx chat lfm2.5-2.6b-4bit" in output
+    assert "Restart your terminal or run:" in output
+    assert "stub invoked:" not in output
+
+
+@pytest.mark.parametrize("answer", ["", "y", "Y", "yes"])
+@pytest.mark.parametrize("model", [None, "qwen3.5-4b-4bit"])
+def test_first_chat_yes_uses_installed_binary_and_recommended_model(
+    tmp_path, answer, model
+):
+    status, output = run_first_chat(tmp_path, answer=answer, model=model)
+    recommended = model or "lfm2.5-2.6b-4bit"
+    assert status == 0, output
+    assert output.count(f"Start a chat with {recommended} now? [Y/n]") == 1
+    assert "Quick start:" not in output
+    assert "The model will download first if it is not already cached." in output
+    assert f"stub invoked: chat {recommended}; telemetry=1" in output
+    assert output.index("Restart your terminal or run:") < output.index("stub invoked:")
+    assert output.endswith("stub received: hello\n")
+
+
+@pytest.mark.parametrize("answer", ["n", "N", "no", "invalid"])
+def test_first_chat_no_prints_existing_quick_start(tmp_path, answer):
+    status, output = run_first_chat(tmp_path, answer=answer)
+    assert status == 0, output
+    assert "Quick start:" in output
+    assert "rapid-mlx chat lfm2.5-2.6b-4bit" in output
+    assert "stub invoked:" not in output
+
+
+def test_first_chat_preserves_command_exit_status(tmp_path):
+    status, output = run_first_chat(tmp_path, answer="y", chat_status=7)
+    assert status == 7, output
+    assert output.endswith("stub received: hello\n")
+
+
+def test_first_chat_ctrl_c_returns_to_shell(tmp_path):
+    status, output = run_first_chat(tmp_path, answer="y", interrupt_chat=True)
+    assert status in {-signal.SIGINT, 130}, output
+    assert "stub received: hello" in output
 
 
 def test_reusable_standalone_takes_precedence(tmp_path):

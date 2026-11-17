@@ -720,6 +720,47 @@ print_quick_start_commands() {
     echo "    $(leaderboard_mac_url "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)" "$RAM_GB")"
 }
 
+# RAPID_INSTALL_NO_CHAT=1 keeps unattended installs on the printed quick start.
+finish_installation() {
+    local start_chat=false reply
+    # stdin can still contain installer source (curl | bash). Only use a real,
+    # openable controlling terminal, and do not prompt when output is captured.
+    if [ -z "${CI:-}" ] && [ "${RAPID_INSTALL_NO_CHAT:-0}" != 1 ] && [ -t 1 ]; then
+        if { exec 3</dev/tty; } 2>/dev/null; then
+            if [ -t 3 ]; then
+                printf '  Start a chat with %s now? [Y/n] ' "$RECOMMENDED_MODEL"
+                if IFS= read -r reply <&3; then
+                    case "$reply" in ''|[Yy]|[Yy][Ee][Ss]) start_chat=true ;; esac
+                fi
+                echo ""
+            fi
+            if [ "$start_chat" = false ]; then exec 3>&-; fi
+        fi
+    fi
+
+    if [ "$start_chat" = false ]; then
+        print_quick_start_commands
+    fi
+    echo ""
+    dim "Upgrade:    rapid-mlx upgrade"
+    dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
+    echo ""
+
+    if [ "$NEED_PATH_HINT" = true ]; then
+        warn "Restart your terminal or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        echo ""
+    fi
+
+    if [ "$start_chat" = true ]; then
+        info "The model will download first if it is not already cached."
+        # Finish installer cleanup and release its lock before replacing it with
+        # the user command. Normal chat signals and telemetry apply from here.
+        on_installer_exit
+        trap - EXIT HUP INT TERM
+        exec "$INSTALL_DIR/bin/rapid-mlx" chat "$RECOMMENDED_MODEL" <&3 2>&1 3>&-
+    fi
+}
+
 # Validate before changing the environment or downloading dependencies.
 validate_target() {
     case "$TARGET" in
@@ -1217,13 +1258,4 @@ VERSION=$(run_install_command "$INSTALL_DIR/bin/rapid-mlx" --version 2>/dev/null
 echo ""
 print_success_box "Rapid-MLX installed!" "Version: $VERSION" "RAM: ${RAM_GB} GB ($RAM_TIER)"
 echo ""
-print_quick_start_commands
-echo ""
-dim "Upgrade:    rapid-mlx upgrade"
-dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
-echo ""
-
-if [ "$NEED_PATH_HINT" = true ]; then
-    warn "Restart your terminal or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-fi
+finish_installation
