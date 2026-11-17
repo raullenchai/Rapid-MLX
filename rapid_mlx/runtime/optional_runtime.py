@@ -43,6 +43,10 @@ _EXTRA_INSTALL_SIZE_MB: dict[OptionalExtra, int] = {
 _INSTALL_PROMPT_TIMEOUT_SECONDS = 30.0
 
 
+class MissingServingExtraError(ImportError):
+    """A startup dependency guard without the interactive repair lifecycle."""
+
+
 class _PromptInput(Protocol):
     def fileno(self) -> int: ...
 
@@ -441,7 +445,7 @@ def handle_optional_runtime_missing(
     )
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("preflight")
+    failed("preflight", exc=exc)
     accepted = False
     if managed_runtime:
         extra_recovery: ExtraRecovery = "managed_runtime"

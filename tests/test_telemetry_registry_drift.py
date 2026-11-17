@@ -214,6 +214,8 @@ def test_server_start_state_contract_is_exact(registry):
         "port_explicit",
         "failure_stage",
         "exit_reason",
+        "error_class",
+        "failure_subtype",
     }
     assert props["exit_reason"] == {
         "kind": "enum",

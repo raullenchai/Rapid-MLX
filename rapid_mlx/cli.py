@@ -216,7 +216,7 @@ def _resolve_serve_log_level(flag_value: str | None, default: str = "INFO") -> s
             f"{', '.join(_SERVE_LOG_LEVELS)} (case-insensitive)",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
     return level
 
 
@@ -376,6 +376,18 @@ def _port_collision_host(host: str, port: int) -> str | None:
     return None
 
 
+def _serve_usage_exit(code: int = 2, *, cause: BaseException | None = None) -> NoReturn:
+    """Keep deliberate startup validation exits distinct from runtime errors."""
+    exc = SystemExit(code)
+    try:
+        from rapid_mlx.telemetry.server_start import set_exit_reason
+
+        set_exit_reason("usage_error", exc=exc)
+    except BaseException:
+        pass
+    raise exc from cause
+
+
 def _exit_for_port_collision(
     port: int, collision_host: str, *, model: str, port_explicit: bool
 ) -> NoReturn:
@@ -411,7 +423,8 @@ def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
         f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
         file=sys.stderr,
     )
-    raise SystemExit(2) from None
+    print("Use --host 127.0.0.1 for a local server.", file=sys.stderr)
+    _serve_usage_exit(cause=exc)
 
 
 def _port_preflight_or_die(
@@ -455,7 +468,7 @@ def _port_preflight_or_die(
     if not 0 <= port <= 65535:
         print(f"\n  Error: --port {port} is out of range. Ports must be 0-65535.")
         print(f"  Try a valid port: rapid-mlx serve {model} --port 8000")
-        sys.exit(1)
+        _serve_usage_exit(1)
 
     try:
         collision_host = _port_collision_host(host, port)
@@ -583,7 +596,7 @@ def _reject_unsupported_listen_fd_lane(
             "omit --listen-fd or pass --host/--port.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
 
 def _resolve_serve_port(
@@ -608,7 +621,7 @@ def _resolve_serve_port(
             return _listen_fd_port(listen_fd)
         except OSError as exc:
             print(f"Invalid --listen-fd {listen_fd}: {exc}", file=sys.stderr)
-            raise SystemExit(2) from None
+            _serve_usage_exit()
 
     if port is not None:
         if port_explicit is None:
@@ -936,11 +949,11 @@ def _validate_primary_lifecycle_args(args) -> None:
     idle_unload_seconds = getattr(args, "idle_unload_seconds", 0.0)
     if not math.isfinite(idle_unload_seconds) or idle_unload_seconds < 0:
         print("Error: --idle-unload-seconds must be finite and >= 0")
-        raise SystemExit(1)
+        _serve_usage_exit(1)
     audio_ttl = getattr(args, "audio_lane_idle_ttl", 0.0)
     if not math.isfinite(audio_ttl) or audio_ttl < 0:
         print("Error: --audio-lane-idle-ttl must be finite and >= 0")
-        raise SystemExit(1)
+        _serve_usage_exit(1)
 
 
 def _port_is_busy(host: str, port: int) -> bool:
@@ -1570,7 +1583,7 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
         )
     except ValueError as exc:
         print(f"error: --embedding-max-length {exc}", file=sys.stderr)
-        sys.exit(2)
+        _serve_usage_exit(cause=exc)
     overflow_policy = getattr(args, "embedding_overflow_policy", "truncate")
 
     not_found_exc_classes = _embedding_not_found_exception_classes()
@@ -1597,7 +1610,7 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
             "HuggingFace id (e.g. "
             "``mlx-community/embeddinggemma-300m-6bit``).\n"
         )
-        sys.exit(1)
+        raise SystemExit(1) from exc
     print(f"Embedding model loaded: {args.embedding_model}")
 
 
@@ -1614,7 +1627,7 @@ def _load_rerank_model_or_exit(args, load_fn) -> None:
         max_length = normalize_max_length(getattr(args, "rerank_max_length", "auto"))
     except ValueError as exc:
         print(f"error: --rerank-max-length {exc}", file=sys.stderr)
-        sys.exit(2)
+        _serve_usage_exit(cause=exc)
 
     original = args.rerank_model
     resolved = resolve_model(original)
@@ -1634,7 +1647,7 @@ def _load_rerank_model_or_exit(args, load_fn) -> None:
         )
     except UnsupportedRerankModelError as exc:
         print(f"\n  Error: --rerank-model {exc}\n")
-        sys.exit(1)
+        raise SystemExit(1) from exc
     except _embedding_not_found_exception_classes() as exc:
         print(
             f"\n  Error: --rerank-model '{original}' could not be loaded "
@@ -1645,7 +1658,7 @@ def _load_rerank_model_or_exit(args, load_fn) -> None:
             "(e.g. ``mlx-community/Qwen3-Reranker-0.6B-mxfp8``) or a local "
             "model directory.\n"
         )
-        sys.exit(1)
+        raise SystemExit(1) from exc
     print(f"Rerank model loaded: {args.rerank_model}")
 
 
@@ -1877,7 +1890,7 @@ def _check_download_disk_space(model_size_bytes: int, force: bool = False) -> No
             file=sys.stderr,
         )
         print(file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(1) from OSError("Insufficient download disk space")
     # ``force=True``: warn loudly, let the user proceed at their own risk.
     print("  --force-disk-check set — proceeding anyway.", file=sys.stderr)
     print(file=sys.stderr)
@@ -2092,7 +2105,7 @@ def _apply_mtp_cli_model_type_reconciliation(
             "run in the model directory.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        raise SystemExit(2)
     # If the earlier best-effort read succeeded but disagreed with
     # the eligibility read, prefer the eligibility read — it drives
     # the accept/reject decision, so it MUST be the source of truth
@@ -2120,7 +2133,7 @@ def _apply_mtp_cli_model_type_reconciliation(
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        sys.exit(2)
+        _serve_usage_exit()
     if (
         _eligibility_model_type == "qwen4_exp"
         and explicit_depth
@@ -2214,7 +2227,13 @@ def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
             "become unresponsive.\n",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        print("  Pick a smaller model: rapid-mlx models", file=sys.stderr)
+        from .memory_budget import MetalPreflightError
+        from .telemetry.server_start import set_exit_reason
+
+        exc = SystemExit(1)
+        set_exit_reason("memory_refused", exc=exc)
+        raise exc from MetalPreflightError()
 
     if stream is None:
         stream = sys.stdout
@@ -2727,7 +2746,11 @@ def _refuse_model_download(model_name: str) -> None:
         f"  Download it with `rapid-mlx pull {model_name}`, then try again.\n",
         file=sys.stderr,
     )
-    raise SystemExit(1)
+    from .telemetry.server_start import set_exit_reason
+
+    exc = SystemExit(1)
+    set_exit_reason("declined_download", exc=exc)
+    raise exc
 
 
 def _claim_hub_guidance_render() -> bool:
@@ -3011,7 +3034,7 @@ def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> No
         print(format_startup_failure_marker(marker_reason), file=sys.stderr)
     emit_model_pull_failed(exc, model_ref=model_id, source="hf")
     emit_model_serve_failed(exc, alias_or_path=model_id, failure_stage="resolve")
-    failed("resolve")
+    failed("resolve", exc=exc)
     raise SystemExit(1)
 
 
@@ -3168,7 +3191,7 @@ def _ensure_target_model_downloaded(
                 )
                 spinner.stop()
                 print(f"\n{render_hub_error(exc, model_name)}\n", file=sys.stderr)
-                raise SystemExit(1) from None
+                raise SystemExit(1) from exc
             if _is_transient_hub_error(exc):
                 mirror_ok = False
                 print("  Mirror connection interrupted; trying Hugging Face.")
@@ -3738,7 +3761,7 @@ def _reject_tensorfold_family_opt_out_or_exit(args) -> None:
             f"Use {family.fallback_model} instead.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
 
 def _require_tensorfold_family_lane_or_exit(args) -> None:
@@ -3768,7 +3791,7 @@ def _require_tensorfold_family_lane_or_exit(args) -> None:
             f"profile. Use {family.fallback_model} for other configurations.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
 
 def _reject_tensorfold_lanes_off_lane_or_exit(args) -> None:
@@ -3804,7 +3827,7 @@ def _reject_tensorfold_lanes_off_lane_or_exit(args) -> None:
             request_lanes(qualified, explicit)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
+            _serve_usage_exit(cause=exc)
         return
 
     config = getattr(args, "_speculative_config", None)
@@ -3835,7 +3858,7 @@ def _reject_tensorfold_lanes_off_lane_or_exit(args) -> None:
             f"Unset {LANES_ENV} or set it to 1."
         )
     print(f"error: {message}", file=sys.stderr)
-    raise SystemExit(2)
+    _serve_usage_exit()
 
 
 def _speculative_changes(args, before):
@@ -4081,7 +4104,7 @@ def _normalize_speculative_config_or_exit(args):
             f"error: --no-spec-decode is mutually exclusive with {joined}.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
 
     def _legacy_speculative_fields() -> list[str]:
         fields = []
@@ -4139,7 +4162,7 @@ def _normalize_speculative_config_or_exit(args):
                 f"error: legacy speculative decoding knob {knob} requires {selector}.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
 
         spec_decode = getattr(args, "spec_decode", "none")
         dflash_model = (getattr(args, "dflash_drafter_path", "") or "").strip()
@@ -4179,7 +4202,7 @@ def _normalize_speculative_config_or_exit(args):
                 "conflict; pass only one token-count value.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         if mtp_num_draft_tokens != 1:
             if not mtp_requested:
                 reject_orphan("mtp_num_draft_tokens", "enable_mtp or spec_decode=mtp")
@@ -4207,7 +4230,7 @@ def _normalize_speculative_config_or_exit(args):
                 "implement optimistic mode. Remove --mtp-optimistic.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         if mtp_requested:
             add_method("mtp", mtp_payload)
 
@@ -4238,7 +4261,7 @@ def _normalize_speculative_config_or_exit(args):
                 f"methods ({joined}); use one --speculative-config payload.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         return methods[0][1]
 
     legacy_payload = None
@@ -4257,7 +4280,7 @@ def _normalize_speculative_config_or_exit(args):
                 f"legacy speculative decoding aliases: {joined}.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
 
     if raw_config is None:
         _reject_no_spec_decode_runtime_conflicts()
@@ -4391,7 +4414,7 @@ def _normalize_speculative_config_or_exit(args):
                 require_migrated_speculative_config(config)
         except SpeculativeConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
-            sys.exit(2)
+            _serve_usage_exit()
         if (
             config is not None
             and config.method == "dspark"
@@ -4432,14 +4455,14 @@ def _normalize_speculative_config_or_exit(args):
                 "text lane.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         if getattr(args, "no_spec_decode", False):
             print(
                 "error: --speculative-config is mutually exclusive with "
                 "--no-spec-decode.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
 
     if config is None:
         _fill_runtime_defaults(overwrite=True)
@@ -4512,7 +4535,7 @@ def _normalize_speculative_config_or_exit(args):
                 "unless they resolve to a catalog profile.)",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         if legacy_enable_mtp_requested:
             args.enable_mtp = True
             if config.num_speculative_tokens is not None:
@@ -4602,7 +4625,7 @@ def _preflight_native_mtp_or_exit(args):
             f"support: {', '.join(unsupported)}",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
     from .model_aliases import resolve_profile
     from .speculative.native_mtp import (
@@ -4621,7 +4644,7 @@ def _preflight_native_mtp_or_exit(args):
         )
     except NativeMTPUnavailableError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
+        _serve_usage_exit(cause=exc)
 
     from .speculative.native_mtp.runtime import (
         QUALIFIED_MLX_VLM_VERSION,
@@ -4636,7 +4659,9 @@ def _preflight_native_mtp_or_exit(args):
             f"  {optional_extra_install_hint('mtp')}\n",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        from .runtime.optional_runtime import MissingServingExtraError
+
+        raise SystemExit(1) from MissingServingExtraError()
     if pair.drafter_model_type == "glm5_next_mtp" and not have_glm_cache_runtime():
         print(
             "\n  Error: GLM-5.3 native MTP requires the complete cache-owned "
@@ -4644,7 +4669,7 @@ def _preflight_native_mtp_or_exit(args):
             "incompatible.\n",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        _serve_usage_exit(1)
 
     args._native_mtp_pair = pair
     return pair
@@ -4818,7 +4843,7 @@ def _preflight_companion_dspark_or_exit(args):
         )
     except CompanionDSparkError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
+        _serve_usage_exit(cause=exc)
 
     unsupported = []
     if getattr(args, "no_mllm", False):
@@ -4838,14 +4863,16 @@ def _preflight_companion_dspark_or_exit(args):
             f"support {joined}.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
     if not have_runtime():
         print(
             "error: LFM companion DSpark requires exactly mlx-vlm "
             f"{QUALIFIED_MLX_VLM_VERSION}; install the qualified vision runtime.",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        from .runtime.optional_runtime import MissingServingExtraError
+
+        raise SystemExit(1) from MissingServingExtraError()
 
     args._companion_dspark_pair = pair
     return pair
@@ -5024,7 +5051,7 @@ def _resolve_dflash_launch_or_exit(args):
         )
     except DFlashUnavailable as e:
         print(f"\n  Error: {e}\n")
-        sys.exit(1)
+        _serve_usage_exit(1)
     if _assessment.warnings:
         warnings = "; ".join(dict.fromkeys(_assessment.warnings))
         print(f"\n  ⚠ Experimental DFlash: {warnings}.\n")
@@ -5093,7 +5120,7 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
                 "BatchedEngine; other spec-decode methods only apply to the "
                 "BatchedEngine path.\n"
             )
-            sys.exit(1)
+            _serve_usage_exit(1)
         return
 
     if (
@@ -5107,14 +5134,14 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
             "BatchedEngine; other spec-decode methods only apply to the "
             "BatchedEngine path.\n"
         )
-        sys.exit(1)
+        _serve_usage_exit(1)
     if getattr(args, "no_spec_decode", False):
         print(
             "error: DFlash and --no-spec-decode are mutually exclusive "
             "— DFlash is a speculative-decode mode.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
 
 
 def tensorfold_profile_issue(args=None) -> str | None:
@@ -5209,7 +5236,7 @@ def _preflight_ddtree_or_exit(args):
             'error: DDTree requires --speculative-config \'{"method":"ddtree"}\'.',
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
 
     if getattr(args, "enable_dflash", False):
         print(
@@ -5234,7 +5261,7 @@ def _preflight_ddtree_or_exit(args):
             "exclusive — DDTree is a speculative-decode mode.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
 
     from .model_aliases import resolve_profile
     from .model_profile import ModelProfile
@@ -5288,7 +5315,7 @@ def _preflight_ddtree_or_exit(args):
         )
     except DDTreeUnavailable as e:
         print(f"\n  Error: {e}\n")
-        sys.exit(1)
+        _serve_usage_exit(1, cause=e)
     if not have_runtime():
         from rapid_mlx.speculative.ddtree.runtime import DDTREE_INSTALL_COMMAND
 
@@ -5298,7 +5325,9 @@ def _preflight_ddtree_or_exit(args):
             "\n  Error: DDTree requires the experimental dtree-mlx "
             f"runtime. Install with: `{DDTREE_INSTALL_COMMAND}`.{detail}\n"
         )
-        sys.exit(1)
+        from .runtime.optional_runtime import MissingServingExtraError
+
+        raise SystemExit(1) from MissingServingExtraError()
 
     if assessment.warnings:
         warnings = "; ".join(dict.fromkeys(assessment.warnings))
@@ -5776,7 +5805,7 @@ def _reject_embedding_alias_serve(profile, model_name: str) -> None:
         f"    rapid-mlx serve <chat-alias> --embedding-model {model_name}",
         file=sys.stderr,
     )
-    sys.exit(2)
+    _serve_usage_exit()
 
 
 def _serve_will_run_on_mllm_lane(args) -> bool:
@@ -6264,7 +6293,7 @@ def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
             "--no-spec-decode.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
 
 def _resolve_system_one_backend(model: str, requested: str) -> str:
@@ -6494,7 +6523,7 @@ def _serve_cua_only_mode(args) -> None:
             "RAPID_MLX_API_KEY.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
     from .config import get_config
     from .cua.server import app, configure_cua_server
@@ -6507,7 +6536,7 @@ def _serve_cua_only_mode(args) -> None:
             + ", ".join(incompatible),
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
 
     args.port = _resolve_serve_port(
         getattr(args, "host", "127.0.0.1"),
@@ -6616,7 +6645,7 @@ def _validate_local_search_exposure_or_exit(args) -> None:
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        _serve_usage_exit(cause=exc)
 
 
 @dataclass(frozen=True)
@@ -6855,7 +6884,7 @@ def resolve_serve_pflash_config(args, *, resolve_auto_config):
         )
     except ValueError as e:
         print(f"Error: {e}")
-        sys.exit(1)
+        _serve_usage_exit(1)
 
     return pflash_config, _serve_is_mllm
 
@@ -6878,7 +6907,7 @@ def resolve_serve_kv_cache(
     _continuous_cache_conflict = continuous_mtp_cache_conflict(args)
     if _continuous_cache_conflict is not None:
         print(f"\n  Error: {_continuous_cache_conflict}\n")
-        sys.exit(2)
+        _serve_usage_exit()
 
     # The alias's TurboQuant tier is an automatic serving default, not an
     # operator request. Continuous MTP's stricter cache capability takes
@@ -6893,7 +6922,7 @@ def resolve_serve_kv_cache(
     _kv_conflict = kv_cache_flag_conflict(args)
     if _kv_conflict is not None:
         print(f"\n  Error: {_kv_conflict}\n")
-        sys.exit(1)
+        _serve_usage_exit(1)
 
     # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
     # the legacy --kv-cache-quantization flag wins. When --kv-cache-
@@ -6940,7 +6969,7 @@ def resolve_serve_kv_cache(
             )
         except KVCacheQuantizationUnsupportedError as e:
             print(f"\n  Error: {e}\n")
-            sys.exit(2)
+            _serve_usage_exit()
         if _continuous_mtp and args.reasoning:
             logging.getLogger(__name__).info(
                 "MTP cache policy: keeping BF16 KV cache; the reasoning "
@@ -6994,7 +7023,7 @@ def resolve_serve_kv_cache(
             )
         except KVCacheQuantizationUnsupportedError as e:
             print(f"\n  Error: {e}\n")
-            sys.exit(2)
+            _serve_usage_exit()
         # When --reasoning is set alongside the (compatible) bits=8
         # legacy flag, the operator-facing reason should still
         # advertise the reasoning profile so the startup banner is
@@ -7146,7 +7175,9 @@ def serve_acceleration_preflights(args) -> None:
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks.\n"
                 f"\n  {optional_extra_install_hint('dflash')}\n"
             )
-            sys.exit(1)
+            from .runtime.optional_runtime import MissingServingExtraError
+
+            raise SystemExit(1) from MissingServingExtraError()
 
 
 def resolve_serve_acceleration(args) -> ServeAccelerationPlan:
@@ -7280,7 +7311,7 @@ def serve_command(args):
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        _serve_usage_exit(cause=exc)
 
     from .lora_adapter import prepare_adapter_cli
 
@@ -7288,7 +7319,7 @@ def serve_command(args):
         prepare_adapter_cli(args)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        _serve_usage_exit(cause=exc)
 
     args.log_level = _resolve_serve_log_level(getattr(args, "log_level", None))
     try:
@@ -7299,7 +7330,7 @@ def serve_command(args):
             log_file.apply(log_target, log_source)
     except log_file.LogFileError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        _serve_usage_exit(cause=exc)
     from rapid_mlx.local_models import flush_serve_startup_notes
 
     flush_serve_startup_notes(args)
@@ -7320,7 +7351,7 @@ def serve_command(args):
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        _serve_usage_exit(cause=exc)
 
     from .local_search_runtime import configure as configure_local_search
 
@@ -7351,7 +7382,7 @@ def serve_command(args):
                 "combined with " + ", ".join(incompatible),
                 file=sys.stderr,
             )
-            raise SystemExit(2)
+            _serve_usage_exit()
 
     _validate_primary_lifecycle_args(args)
     from . import server as audio_lifecycle_server
@@ -7365,7 +7396,7 @@ def serve_command(args):
         getattr(args, "vision_max_pixels", 0),
     ):
         print(f"error: {bounds_error}", file=sys.stderr)
-        raise SystemExit(2)
+        _serve_usage_exit()
 
     if os.environ.get("RAPID_PYSAMPLE"):
         from ._pysample import install as _pysample_install
@@ -7381,7 +7412,7 @@ def serve_command(args):
         configure_video_jobs(getattr(args, "video_output_dir", None))
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: cannot configure video output directory: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
+        _serve_usage_exit(cause=exc)
 
     # Parent-PID watchdog (rapid-desktop issue #449): if the supervisor
     # passed its own PID via ``--watchdog-ppid`` or
@@ -7483,7 +7514,7 @@ def serve_command(args):
             "currently supports 1 <= --max-tokens <= 4096.",
             file=sys.stderr,
         )
-        raise SystemExit(2)
+        _serve_usage_exit()
     if _serve_profile is not None and _serve_profile.modality == "video-gen":
         from .runtime.video_lane import require_video_runtime_or_exit
         from .video.wan import is_wan_model
@@ -7590,7 +7621,7 @@ def serve_command(args):
         emit_capability_rejected("mcp_unsupported", model_type="llm")
         message = "error: MCP is not supported by the experimental DeepSeek V4.1 DSpark K4 serial server."
         print(message, file=sys.stderr)
-        raise SystemExit(2)
+        _serve_usage_exit()
     # DDTree has an external experimental runtime and its validated target
     # can be multi-GB. Fail the cheap config/alias/runtime gates before the
     # version prompt and before any model prefetch so a missing dtree-mlx
@@ -7638,7 +7669,9 @@ def serve_command(args):
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks.\n"
                 f"\n  {optional_extra_install_hint('dflash')}\n"
             )
-            sys.exit(1)
+            from .runtime.optional_runtime import MissingServingExtraError
+
+            raise SystemExit(1) from MissingServingExtraError()
 
     # R10-C1: AUDIO-SERVE-MODE FORK. The boot guard above only checks
     # that the ``[audio]`` extra is installed — it doesn't route the
@@ -7993,7 +8026,9 @@ def serve_command(args):
                 "then serve again.\n",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            from .model_load_errors import IncompleteCheckpoint
+
+            raise SystemExit(1) from IncompleteCheckpoint("Missing image weights")
 
     # Importing the unified server also imports scheduler modules that report
     # optional kernel installation at INFO. Apply the parsed level first so a
@@ -8015,7 +8050,7 @@ def serve_command(args):
     if args.enable_auto_tool_choice and not args.tool_call_parser:
         print("Error: --enable-auto-tool-choice requires --tool-call-parser")
         print("Example: --enable-auto-tool-choice --tool-call-parser mistral")
-        sys.exit(1)
+        _serve_usage_exit(1)
 
     # Validate --tool-call-parser against the live registry (not the
     # stale argparse choices list). v0.6.63 onboarding sweep finding #1.
@@ -8050,7 +8085,7 @@ def serve_command(args):
                 f"(choose from: {', '.join(valid)})",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
 
     # Validate gpu-memory-utilization range (None = auto budgeting, #2858)
     if args.gpu_memory_utilization is not None and not (
@@ -8059,20 +8094,20 @@ def serve_command(args):
         print(
             "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
         )
-        sys.exit(1)
+        _serve_usage_exit(1)
     if getattr(args, "resident_memory_limit_gb", 0.0) < 0:
         print("Error: --resident-memory-limit-gb must be >= 0")
-        sys.exit(1)
+        _serve_usage_exit(1)
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
-        sys.exit(1)
+        _serve_usage_exit(1)
     import math
 
     idle_cache_clear_seconds = getattr(args, "idle_cache_clear_seconds", None)
     if idle_cache_clear_seconds is not None:
         if not math.isfinite(idle_cache_clear_seconds) or idle_cache_clear_seconds < 0:
             print("Error: --idle-cache-clear-seconds must be finite and >= 0")
-            sys.exit(1)
+            _serve_usage_exit(1)
 
     # Validate PFlash config and reject unsupported model combinations
     # at startup. Done here (not lazily in the scheduler) so a typo in
@@ -8143,14 +8178,14 @@ def serve_command(args):
             "mutually exclusive — pick one to override auto-detection.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
     if args.reasoning_parser and _opt_out_reasoning:
         print(
             "error: --reasoning-parser and --no-reasoning-parser are "
             "mutually exclusive — pick one to override auto-detection.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
     # R12-S1: snapshot whether the user explicitly passed
     # ``--tool-call-parser`` BEFORE auto-detect mutates ``args``. The
     # misbind warning below only consults this snapshot — auto-detected
@@ -8429,32 +8464,20 @@ def serve_command(args):
             logger.info(f"Reasoning parser enabled: {args.reasoning_parser}")
         except KeyError as e:
             print(f"Error: {e}")
-            sys.exit(1)
+            _serve_usage_exit(1)
         except ImportError as e:
             print(f"Error: Failed to import reasoning module: {e}")
-            sys.exit(1)
+            print("Run `rapid-mlx doctor` to check this installation.")
+            raise SystemExit(1) from e
         except Exception as e:
             print(
                 f"Error: Failed to initialize reasoning parser "
                 f"'{args.reasoning_parser}': {e}"
             )
-            sys.exit(1)
+            print("Retry without --reasoning-parser, or run `rapid-mlx doctor`.")
+            raise SystemExit(1) from e
     else:
         server._reasoning_parser = None
-
-    # DFlash / DDTree mutual-exclusion gates fire BEFORE the startup banner so
-    # the user sees a clean error instead of an optimistic "Features:
-    # dflash" / "ddtree" line immediately followed by an exit. The deeper
-    # SchedulerConfig mutex (suffix vs. mtp) stays below since it doesn't
-    # involve the dedicated single-user servers.
-    if args.enable_dflash and args.suffix_decoding:
-        print(
-            "\n  Error: DFlash cannot combine with other spec-decode methods. "
-            "DFlash runs a dedicated single-user server that bypasses "
-            "BatchedEngine; other spec-decode methods only apply to the "
-            "BatchedEngine path.\n"
-        )
-        sys.exit(1)
 
     # DFlash eligibility gate fires here, BEFORE the startup banner —
     # so the user sees a clean error rather than an optimistic "DFlash
@@ -8662,14 +8685,6 @@ def serve_command(args):
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and
     # initialization describe capabilities that actually apply.
     if args.enable_dflash:
-        if getattr(args, "no_spec_decode", False):
-            print(
-                "error: DFlash and --no-spec-decode are mutually "
-                "exclusive — DFlash is a speculative-decode mode.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-
         from .model_aliases import resolve_profile
 
         _dflash_backend = getattr(args, "dflash_backend", None)
@@ -8983,7 +8998,7 @@ def serve_command(args):
                 "checkpoint (3 mtp stages plus Markov heads).",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         requested_k = getattr(args, "dspark_num_speculative_tokens", 5)
         if requested_k != metadata.block_size:
             print(
@@ -8993,7 +9008,7 @@ def serve_command(args):
                 "checkpoint's complete DSpark block.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
         print(
             (
                 "DSpark: enabled via --speculative-config, "
@@ -9041,7 +9056,7 @@ def serve_command(args):
                     "supported. The loaded model does not qualify.",
                     file=sys.stderr,
                 )
-            sys.exit(2)
+            _serve_usage_exit()
 
         # Codex round-I BLOCKING #3 / round-K BLOCKING #2:
         # reconcile the earlier best-effort CLI-thread config read
@@ -9154,14 +9169,14 @@ def serve_command(args):
             "pick one to override auto-detection.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
     if getattr(args, "force_hybrid", False) and getattr(args, "no_hybrid", False):
         print(
             "error: --force-hybrid and --no-hybrid are mutually exclusive — "
             "pick one to override auto-detection.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
     if getattr(args, "force_spec_decode", False) and getattr(
         args, "no_spec_decode", False
     ):
@@ -9170,7 +9185,7 @@ def serve_command(args):
             "exclusive — pick one to override auto-detection.",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
     if getattr(args, "force_openai_harmony_streaming", False) and getattr(
         args, "no_openai_harmony_streaming", False
     ):
@@ -9180,7 +9195,7 @@ def serve_command(args):
             "to override the HarmonyStreamingRouter auto-upgrade gate (#516).",
             file=sys.stderr,
         )
-        sys.exit(2)
+        _serve_usage_exit()
     server.configure_model_residency(
         memory_limit_gb=getattr(args, "resident_memory_limit_gb", 0.0),
         idle_ttl_seconds=getattr(args, "resident_model_idle_ttl", 0.0),
@@ -9222,7 +9237,7 @@ def serve_command(args):
     except KVCacheQuantizationUnsupportedError as e:
         from rapid_mlx.telemetry.server_start import failed
 
-        failed("prepare")
+        failed("prepare", exit_reason="usage_error", exc=e)
         # The scheduler/MLLM-lane backstop (#78) rejects an explicit
         # quantized-KV request that the CLI-time resolver could not see (a
         # freshly-downloaded model whose config wasn't readable yet surfaces
@@ -9230,11 +9245,11 @@ def serve_command(args):
         # code (2) as the CLI resolver so every serving lane reports the dtype
         # contract identically instead of a generic model-load failure.
         print(f"\n  Error: {e}\n")
-        sys.exit(2)
+        _serve_usage_exit()
     except Exception as e:
         from rapid_mlx.telemetry.server_start import failed
 
-        failed("prepare")
+        failed("prepare", exc=e)
         from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
         emit_model_serve_failed(
@@ -17181,6 +17196,36 @@ def _start_quiet_lifecycle(command: str, *, no_telemetry: bool) -> None:
         return
 
 
+def _print_unhandled_start_failure(exc: BaseException) -> None:
+    """Give an otherwise unhandled startup traceback a recovery step."""
+    from rapid_mlx.telemetry.server_start import exit_reason_for, startup_in_progress
+
+    if not startup_in_progress():
+        return
+    if isinstance(exc, Exception):
+        print(f"\n  Error: Server startup failed: {exc}", file=sys.stderr)
+        print(
+            "  Next step: run `rapid-mlx doctor` to check this installation. "
+            "If it passes, report this failure with the traceback below.",
+            file=sys.stderr,
+        )
+    elif (
+        isinstance(exc, SystemExit)
+        and exc.code not in (None, 0)
+        and exc.__cause__ is None
+        and exit_reason_for(exc) == "exception"
+    ):
+        print(
+            f"\n  Error: Server startup exited before listening (exit {exc.code}).",
+            file=sys.stderr,
+        )
+        print(
+            "  Next step: run `rapid-mlx doctor` to check this installation. "
+            "If it passes, report the startup output.",
+            file=sys.stderr,
+        )
+
+
 def _capture_start_failures(func: Callable):
     """Lazy exception guard so importing the CLI needs no telemetry deps."""
 
@@ -17192,6 +17237,7 @@ def _capture_start_failures(func: Callable):
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
+                _print_unhandled_start_failure(exc)
                 fail_current(exc)
             except BaseException:
                 pass
@@ -17389,7 +17435,7 @@ def main():
                 "  Or start a small one:   rapid-mlx serve qwen3.5-4b-4bit",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            _serve_usage_exit()
 
     # ``bench --submit`` is a removed invocation. Reject it at the parse
     # boundary so global model resolution and the auto-pull gate cannot do
@@ -17620,7 +17666,7 @@ def main():
                 exc, (FileNotFoundError, NotADirectoryError, PermissionError)
             ):
                 print(f"\n  Error: Model resolution failed: {exc}", file=sys.stderr)
-                raise SystemExit(1) from None
+                raise SystemExit(1) from exc
             if getattr(args, "command", None) == "serve":
                 from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
@@ -17638,7 +17684,7 @@ def main():
                         log_file.apply(target, source)
                 except log_file.LogFileError as log_exc:
                     print(f"error: {log_exc}", file=sys.stderr)
-                    raise SystemExit(2) from None
+                    _serve_usage_exit(cause=log_exc)
                 if isinstance(exc, InvalidModelConfig):
                     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
@@ -17672,10 +17718,12 @@ def main():
                     supplied_model, exc, include_supplied_path=True
                 )
                 print(f"\n  Error: {message}", file=sys.stderr)
-            raise SystemExit(1) from None
+            raise SystemExit(1) from exc
         except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)
-            raise SystemExit(1) from None
+            from huggingface_hub.errors import HFValidationError
+
+            _serve_usage_exit(1, cause=HFValidationError("Invalid model alias"))
         if resolved != args.model:
             from rapid_mlx.model_aliases import local_dir_shadows_alias
 
@@ -17735,7 +17783,9 @@ def main():
                 _print_unknown_model_help(
                     args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
                 )
-                sys.exit(1)
+                from huggingface_hub.errors import HFValidationError
+
+                _serve_usage_exit(1, cause=HFValidationError("Unknown model alias"))
             else:
                 # #991: it IS an audio alias. ``serve`` keeps the short
                 # alias for request-time resolution, but ``pull``/``rm``
@@ -17798,7 +17848,11 @@ def main():
                     failure_stage="resolve",
                 )
                 print(f"\n  Error: {exc}", file=sys.stderr)
-                raise SystemExit(1) from None
+                exit_exc = SystemExit(1)
+                # This boundary already reported the failure with the original
+                # alias. The outer startup guard must only record its state.
+                exit_exc._rapid_mlx_serve_failure_reported = True  # type: ignore[attr-defined]
+                raise exit_exc from exc
 
     # Bring-your-own-model preflight: an uncataloged repo or local path that
     # provably cannot run here (GGUF/.bin-only, unsupported architecture, too
@@ -17868,7 +17922,7 @@ def main():
                 _repo_cached = require_repo_cache_probe(args.model)
             except ExternalCacheProbeError as exc:
                 print(f"\n  Error: {exc.user_message()}", file=sys.stderr)
-                raise SystemExit(2) from None
+                _serve_usage_exit(cause=exc)
 
             if (
                 not _repo_cached

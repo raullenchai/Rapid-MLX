@@ -109,6 +109,8 @@ def require_mlx_embeddings_or_exit(model_name: str | None = None) -> None:
     Probe at flag-parse time and exit ``2`` (the conventional argparse
     usage-error code) with an actionable hint to stderr.
     """
+    from .runtime.optional_runtime import MissingServingExtraError
+
     if is_native_embedding_model(model_name):
         import importlib.util
 
@@ -119,7 +121,7 @@ def require_mlx_embeddings_or_exit(model_name: str | None = None) -> None:
             + optional_extra_install_hint("vision"),
             file=sys.stderr,
         )
-        sys.exit(2)
+        raise SystemExit(2) from MissingServingExtraError()
     if mlx_embeddings_available():
         return
     print(
@@ -127,7 +129,7 @@ def require_mlx_embeddings_or_exit(model_name: str | None = None) -> None:
         + EMBEDDINGS_EXTRA_INSTALL_HINT,
         file=sys.stderr,
     )
-    sys.exit(2)
+    raise SystemExit(2) from MissingServingExtraError()
 
 
 def normalize_max_length_setting(max_length: int | str) -> int | str:

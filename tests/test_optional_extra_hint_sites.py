@@ -181,7 +181,9 @@ def test_repair_command_detector_failures_fall_back_to_python(monkeypatch) -> No
         status="absent",
     )
     monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: False)
-    monkeypatch.setattr("rapid_mlx.telemetry.server_start.failed", lambda _stage: None)
+    monkeypatch.setattr(
+        "rapid_mlx.telemetry.server_start.failed", lambda _stage, **_kw: None
+    )
     monkeypatch.setattr(
         "rapid_mlx.telemetry.model_events.emit_model_serve_failed",
         lambda *_a, **_kw: None,
