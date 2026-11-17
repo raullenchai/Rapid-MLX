@@ -25,7 +25,7 @@ struct ImageResultDeletionTests {
     @Test("Deleting the active result selects the adjacent older image")
     @MainActor
     func deletingActiveResultSelectsAdjacentImage() {
-        let viewModel = ImageGenViewModel(server: ServerManager())
+        let viewModel = makeViewModel()
         let newest = image("newest")
         let selected = image("selected")
         let oldest = image("oldest")
@@ -41,7 +41,7 @@ struct ImageResultDeletionTests {
     @Test("Deleting the last gallery image restores the empty stage")
     @MainActor
     func deletingOnlyResultClearsSelection() {
-        let viewModel = ImageGenViewModel(server: ServerManager())
+        let viewModel = makeViewModel()
         let only = image("only")
         viewModel.results = [only]
         viewModel.activeID = only.id
@@ -56,7 +56,7 @@ struct ImageResultDeletionTests {
     @Test("Deleting an edit source exits editing without leaving stale state")
     @MainActor
     func deletingEditSourceExitsEditing() {
-        let viewModel = ImageGenViewModel(server: ServerManager())
+        let viewModel = makeViewModel()
         viewModel.imageModels = [
             ModelEntry(
                 alias: "image-model", hfRepo: "example/image", sizeOnDisk: nil,
@@ -80,7 +80,7 @@ struct ImageResultDeletionTests {
     @Test("Deleting an imported edit source preserves gallery results")
     @MainActor
     func deletingImportedSourcePreservesGallery() {
-        let viewModel = ImageGenViewModel(server: ServerManager())
+        let viewModel = makeViewModel()
         let galleryImage = image("gallery")
         let imported = image("imported")
         viewModel.results = [galleryImage]
@@ -91,6 +91,13 @@ struct ImageResultDeletionTests {
         #expect(!viewModel.isEditing)
         #expect(viewModel.results == [galleryImage])
         #expect(viewModel.activeImage?.id == galleryImage.id)
+    }
+
+    @MainActor
+    private func makeViewModel() -> ImageGenViewModel {
+        let directory = URL(fileURLWithPath: "/private/tmp/harbor-gallery-persist-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        return ImageGenViewModel(server: ServerManager(), artifactStore: ImageArtifactStore(directory: directory))
     }
 
     private func image(_ prompt: String) -> GeneratedImage {

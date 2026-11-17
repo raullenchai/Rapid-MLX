@@ -79,6 +79,11 @@ enum ApplicationSupportLocator {
             .appendingPathComponent("LocalSearch", isDirectory: true)
     }
 
+    static func imageArtifactsDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        applicationSupportRoot(environment: environment)
+            .appendingPathComponent("ImageArtifacts", isDirectory: true)
+    }
+
     static func videoArtifactsDirectory() -> URL {
         videoArtifactsDirectory(environment: ProcessInfo.processInfo.environment)
     }
