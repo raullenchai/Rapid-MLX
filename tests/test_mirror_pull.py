@@ -5311,30 +5311,149 @@ def test_hub_interruption_resumes_same_partial_on_next_invocation(
     assert not part.exists()
 
 
-def test_chunked_short_body_preserves_partial(tmp_path):
-    """Missing Content-Length must not turn a truncated body into data loss."""
+@pytest.mark.parametrize("raise_transport_errors", [False, True])
+@pytest.mark.parametrize("content_length", [None, "100"])
+def test_short_body_preserves_partial(tmp_path, raise_transport_errors, content_length):
+    """Truncation with or without Content-Length must retain resumable bytes."""
     import hashlib
 
     part = tmp_path / "file.part"
     response = _FakeResponse(200, b"a" * 40)
-    response.headers = {}
+    response.headers = (
+        {} if content_length is None else {"Content-Length": content_length}
+    )
     tracker = _mirror._ProgressTracker(total=100)
-    with (
-        patch("urllib.request.urlopen", return_value=response),
-        pytest.raises(urllib.error.URLError),
-    ):
-        _mirror._do_r2_download(
-            "https://cdn.example.test/file",
-            tmp_path / "target",
-            part,
-            100,
-            expected_sha256=hashlib.sha256(b"a" * 100).hexdigest(),
-            progress_tracker=tracker,
-            enforce_floor=False,
-            raise_transport_errors=True,
-        )
+    with patch("urllib.request.urlopen", return_value=response):
+
+        def download():
+            return _mirror._do_r2_download(
+                "https://cdn.example.test/file",
+                tmp_path / "target",
+                part,
+                100,
+                expected_sha256=hashlib.sha256(b"a" * 100).hexdigest(),
+                progress_tracker=tracker,
+                enforce_floor=False,
+                raise_transport_errors=raise_transport_errors,
+            )
+
+        if raise_transport_errors:
+            with pytest.raises(urllib.error.URLError):
+                download()
+        else:
+            assert download() == (False, "short-read:40!=100")
     assert part.read_bytes() == b"a" * 40
     assert tracker._done == 0
+
+
+@pytest.mark.parametrize("raise_transport_errors", [False, True])
+def test_range_ignored_disconnect_during_prefix_keeps_retained_bytes(
+    tmp_path, raise_transport_errors
+):
+    part = tmp_path / "file.part"
+    part.write_bytes(b"a" * 40)
+    target = tmp_path / "target"
+    # Valid full-body headers, but EOF before even the retained prefix arrives.
+    response = _FakeResponse(200, b"a" * 20, {"Content-Length": "100"})
+    tracker = _mirror._ProgressTracker(total=100)
+    with patch("urllib.request.urlopen", return_value=response):
+
+        def download():
+            return _mirror._do_r2_download(
+                "https://cdn.example.test/file",
+                target,
+                part,
+                100,
+                progress_tracker=tracker,
+                enforce_floor=False,
+                raise_transport_errors=raise_transport_errors,
+            )
+
+        if raise_transport_errors:
+            with pytest.raises(urllib.error.URLError, match="incomplete read"):
+                download()
+        else:
+            assert download() == (False, "short-read:prefix")
+    assert part.read_bytes() == b"a" * 40
+    assert tracker._done == 0
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("raise_transport_errors", [False, True])
+def test_final_size_recheck_preserves_partial_if_response_cleanup_truncates_file(
+    tmp_path, raise_transport_errors
+):
+    part = tmp_path / "file.part"
+    target = tmp_path / "target"
+    tracker = _mirror._ProgressTracker(total=100)
+
+    class TruncatedOnClose(_FakeResponse):
+        def __exit__(self, *exc):
+            # Exercise the second on-disk size check with a real file change
+            # after the in-response check, rather than mocking stat results.
+            with part.open("r+b") as stream:
+                stream.truncate(40)
+            return False
+
+    with patch(
+        "urllib.request.urlopen", return_value=TruncatedOnClose(200, b"a" * 100)
+    ):
+
+        def download():
+            return _mirror._do_r2_download(
+                "https://cdn.example.test/file",
+                target,
+                part,
+                100,
+                progress_tracker=tracker,
+                enforce_floor=False,
+                raise_transport_errors=raise_transport_errors,
+            )
+
+        if raise_transport_errors:
+            with pytest.raises(urllib.error.URLError, match="incomplete read"):
+                download()
+        else:
+            assert download() == (False, "short-read:40!=100")
+    assert part.read_bytes() == b"a" * 40
+    assert tracker._done == 0
+    assert not target.exists()
+
+
+def test_retained_partial_metadata_failure_propagates_out_of_worker(
+    tmp_path, monkeypatch
+):
+    import hashlib
+
+    filename = "model.safetensors"
+    body = b"x" * 100
+    repo, revision, _ = _mirrored_pull_setup(
+        tmp_path, monkeypatch, [(filename, len(body))], [404]
+    )
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    part = _sidecar_part_path(tmp_path, repo, filename)
+    part.parent.mkdir(parents=True)
+    part.write_bytes(body[:40])
+    failure = OSError("metadata unavailable")
+    with (
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision, [(filename, len(body), hashlib.sha256(body).hexdigest())]
+            ),
+        ),
+        patch(
+            "huggingface_hub.file_download.get_hf_file_metadata", side_effect=failure
+        ),
+        patch("huggingface_hub.hf_hub_download") as hub,
+        pytest.raises(
+            _mirror.ResumableDownloadError, match="metadata unavailable"
+        ) as caught,
+    ):
+        _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
+    assert caught.value.__cause__ is failure
+    hub.assert_not_called()
+    assert part.read_bytes() == body[:40]
 
 
 @pytest.mark.parametrize("raise_transport_errors", [False, True])

@@ -3037,6 +3037,11 @@ flow_model_crash_recovery() {
     start_persona model-crash-recovery FAKE_DIE_AFTER_CHUNKS=2 \
         FAKE_DIE_ONCE_STATE="$OUT_ROOT/model-crash-recovery/died-once"
     dismiss_first_run
+    # Skipping onboarding can leave the recommended starter selected. This
+    # journey's baseline and crash fixture belong to the cached fake model.
+    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+        "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/select-crash-model.json" \
+        || die "crash fixture model could not be selected"
     start_model
     send_prompt "golden crash marker" crash
     for _ in {1..160}; do
@@ -3050,6 +3055,10 @@ flow_model_crash_recovery() {
     done
     [[ "$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null || true)" -ge 2 ]] \
         || die "server did not respawn after the simulated crash"
+    jq -e -s --arg alias "$FAKE_ALIAS" \
+        '[.[] | select(.event == "server_started")] | length >= 2 and all(.[]; .alias == $alias)' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "crash recovery started a model other than the crash fixture"
     for _ in {1..80}; do
         see_main "$OUT/crash-ready.json"
         crash_send_label="$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)"

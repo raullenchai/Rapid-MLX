@@ -16,6 +16,59 @@ def function(name):
 
 
 class HarnessIsolationTests(unittest.TestCase):
+    def test_crash_recovery_pins_fixture_before_start_and_checks_respawn_alias(self):
+        for restarted_alias in ("fake-alias", "lfm2.5-2.6b-4bit"):
+            with (
+                self.subTest(restarted_alias=restarted_alias),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                shell = (
+                    function("flow_model_crash_recovery")
+                    + r"""
+OUT_ROOT="$1"
+OUT="$1"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=driver
+log() { :; }
+die() { echo "$*" >&2; exit 1; }
+start_persona() { :; }
+dismiss_first_run() { :; }
+driver() {
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 1
+    touch "$OUT/fixture-selected"
+}
+start_model() {
+    [[ -f "$OUT/fixture-selected" ]] || die "started without selecting fixture"
+    printf '{"event": "server_started", "alias": "fake-alias"}\n' > "$OUT/fake-events.jsonl"
+}
+see_main() {
+    printf '{"data":{"ui_elements":[{"identifier":"ChatView.SendOrStopButton"}]}}\n' > "$1"
+}
+element_field() { echo 'Send message'; }
+wait_send_idle() { :; }
+baseline() { touch "$OUT/baseline-checked"; }
+cleanup_persona() { :; }
+RESTARTED_ALIAS="$2"
+send_prompt() {
+    printf '{"event": "server_started", "alias": "%s"}\n' "$RESTARTED_ALIAS" >> "$OUT/fake-events.jsonl"
+}
+flow_model_crash_recovery
+"""
+                )
+                result = subprocess.run(
+                    ["/bin/bash", "-eu", "-c", shell, "test", tmp, restarted_alias],
+                    text=True,
+                    capture_output=True,
+                )
+                if restarted_alias == "fake-alias":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue((Path(tmp) / "baseline-checked").exists())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("other than the crash fixture", result.stderr)
+                    self.assertFalse((Path(tmp) / "baseline-checked").exists())
+
     def test_persona_language_is_pinned_across_launches(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "home").mkdir()
