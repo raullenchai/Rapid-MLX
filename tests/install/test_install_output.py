@@ -1,5 +1,6 @@
 """Regression checks for installer output."""
 
+import json
 import os
 import pty
 import subprocess
@@ -30,6 +31,108 @@ def run_bash(code, *args, env=None, **kwargs):
         ],
         env={**clean_env, **(env or {})},
         **kwargs,
+    )
+
+
+@pytest.mark.parametrize("telemetry_env", [None, "1"])
+@pytest.mark.parametrize("terminal", [False, True])
+def test_internal_commands_preserve_first_use_disclosure(
+    tmp_path, monkeypatch, telemetry_env, terminal
+):
+    from rapid_mlx.telemetry import state
+
+    home = tmp_path / "home"
+    binaries = home / ".rapid-mlx" / "bin"
+    binaries.mkdir(parents=True)
+    (binaries / "python").symlink_to(sys.executable)
+    events = tmp_path / "events.jsonl"
+    cli = binaries / "rapid-mlx"
+    # Exercise the real CLI/consent/tracking path as an official release, with
+    # a recording sender: no network or model discovery is needed.
+    cli.write_text(
+        f"#!{sys.executable}\n"
+        f"import sys; sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+        """
+import json, os
+from pathlib import Path
+import rapid_mlx
+from rapid_mlx import cli
+from rapid_mlx.telemetry import build_gate, posthog_sender
+rapid_mlx.__version__ = "0.15.1"
+stamp = build_gate.ReleaseStamp(channel="stable", posthog_key="phc_" + "a" * 32)
+build_gate.official_build = lambda: stamp
+class Sender:
+    def capture(self, item):
+        with Path(os.environ["TEST_EVENTS"]).open("a") as stream:
+            stream.write(json.dumps(dict(item)) + "\\n")
+        return True
+posthog_sender.get_sender = lambda: Sender()
+posthog_sender.install_atexit = lambda: None
+cli.models_command = lambda args: print('{"cached":[]}')
+cli.main()
+"""
+    )
+    cli.chmod(0o755)
+    for name in (
+        state.ENV_VAR,
+        state.DO_NOT_TRACK_ENV,
+        *state.CI_ENV_VARS,
+        "RAPID_MLX_PROCESS_ROLE",
+        "RAPID_MLX_WATCHDOG_PPID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    env = {**os.environ, "HOME": str(home), "TEST_EVENTS": str(events)}
+    if telemetry_env is not None:
+        env[state.ENV_VAR] = telemetry_env
+    master, slave = pty.openpty() if terminal else (None, None)
+    try:
+        result = run_bash(
+            """
+VENV_BACKUP=fixture
+commit_rebuild() { :; }
+finish_rebuild
+installed_cached_aliases
+run_install_command "$INSTALL_DIR/bin/rapid-mlx" --version
+run_install_command "$INSTALL_DIR/bin/python" "$INSTALL_DIR/bin/rapid-mlx" models --cached --json
+printf 'parent-telemetry=%s\\n' "${RAPID_MLX_TELEMETRY-unset}"
+""",
+            env=env,
+            stdin=slave if terminal else subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        if terminal:
+            os.close(master)
+            os.close(slave)
+    assert result.returncode == 0, result.stderr
+    assert f"parent-telemetry={telemetry_env or 'unset'}" in result.stdout
+    assert "anonymous usage reporting" not in result.stderr
+    assert not events.exists()
+    assert not (home / ".rapid-mlx" / "telemetry-client-id").exists()
+    assert not (home / ".rapid-mlx" / "telemetry-consent.yaml").exists()
+    assert not (home / ".rapid-mlx" / "telemetry-consent.yaml.lock").exists()
+    assert sorted(path.name for path in (home / ".rapid-mlx").iterdir()) == ["bin"]
+
+    normal = subprocess.run(
+        [str(cli), "models", "--cached", "--json"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert normal.returncode == 0, normal.stderr
+    assert "anonymous usage reporting is ON" in normal.stderr
+    assert (home / ".rapid-mlx" / "telemetry-client-id").exists()
+    assert (
+        "notice_revision_seen: 1"
+        in (home / ".rapid-mlx" / "telemetry-consent.yaml").read_text()
+    )
+    captured = [json.loads(line) for line in events.read_text().splitlines()]
+    assert any(
+        item["event"] == "app_opened" and item["properties"]["command"] == "models"
+        for item in captured
     )
 
 
