@@ -292,3 +292,12 @@ ranges, pinned software, complete applicable knob combinations and workload
 selectors; it never writes `builtin.json`. Conflicting sessions require review.
 Retain raw runs with candidate data-only PRs and review other-mode regression
 evidence. MTP determinism is separate work.
+
+Short-request scheduling exposes `prefix_boundary_min_tokens` (default 0,
+nonnegative integer; candidates 0/128/256/512) and `admission_window_ms`
+(default 8.0, finite nonnegative milliseconds; candidates 0/8). No builtin cells
+select them yet. Shared scheduling resolution supplies model/device facts to
+both text lanes. Only non-trimmable text boundaries are suppressed, based on
+the uncached length; media and trimmable caches retain their existing policy.
+Admission preserves the legacy environment override and cap at the consumer.
+See [scheduling semantics and cache tradeoffs](../performance/rapid-lattice.md#short-request-scheduling).

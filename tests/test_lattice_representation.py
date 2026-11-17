@@ -59,6 +59,8 @@ def test_builtin_resolution_snapshot(monkeypatch):
     count = 0
     migrated_knobs = {
         "mtp_lookup_max_copy",
+        "prefix_boundary_min_tokens",
+        "admission_window_ms",
         "metal_cache_floor_bytes",
         "metal_cache_cap_bytes",
         "metal_cache_divisor",
@@ -187,6 +189,8 @@ def test_existing_validator_domains():
     # continues to characterize only the pre-extension registry.
     extended_knobs = {
         "mtp_lookup_max_copy",
+        "prefix_boundary_min_tokens",
+        "admission_window_ms",
         "metal_cache_floor_bytes",
         "metal_cache_cap_bytes",
         "metal_cache_divisor",

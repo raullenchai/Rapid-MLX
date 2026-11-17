@@ -3635,3 +3635,36 @@ def test_short_cache_boundary_split_does_not_yield_executor():
     assert stores == [50, 75]
     assert cache[0].tokens_seen == 100
     assert request.vision_encoded
+
+
+@pytest.mark.parametrize(
+    "threshold,length,cached,recurrent,shapes,stores_expected",
+    [
+        (0, 73, 0, True, [58, 14, 1], [58]),
+        (128, 73, 0, True, [73], []),
+        (128, 128, 0, True, [58, 69, 1], [58]),
+        (128, 200, 150, True, [50], []),
+        (128, 73, 0, False, [58, 14, 1], [58]),
+    ],
+)
+def test_mllm_text_prefix_boundary_threshold(
+    monkeypatch, threshold, length, cached, recurrent, shapes, stores_expected
+):
+    from mlx_vlm.models.cache import ArraysCache, KVCache
+
+    monkeypatch.setenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", str(threshold))
+    model = _RecurrentRecordingModel()
+    gen = _make_bare_generator(512, model)
+    request = _make_ids_request(length)
+    request.cached_tokens = cached
+    request.input_ids = request.input_ids[cached:]
+    request.prefix_boundary = 58 if not cached else 175
+    stores = []
+    gen._store_exact_text_prefix = lambda req, cache, prefix_len: stores.append(
+        prefix_len
+    )
+    cache = [ArraysCache(1)] if recurrent else [KVCache()]
+    gen._run_vision_encoding(request, cache=cache)
+    assert [n for n, _ in model.calls] == shapes
+    assert stores == stores_expected
+    assert request.prefix_boundary == (58 if not cached else 175)

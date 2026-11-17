@@ -1239,3 +1239,138 @@ def test_free_disk_admission_counts_the_checkpoint_sidecar(tmp_path, monkeypatch
     saved, snap = save(reserve + persist_bytes + 4096, reserve, "roomy")
     assert saved is True
     assert (snap / "entry_0_ckpt.safetensors").exists()
+
+
+@pytest.mark.parametrize(
+    "threshold,length,cached,split",
+    [
+        (None, 73, 0, 58),
+        (0, 73, 0, 58),
+        (128, 73, 0, None),
+        (128, 128, 0, 58),
+        (128, 200, 150, None),
+    ],
+)
+def test_prefix_boundary_min_tokens_scheduling(
+    monkeypatch, threshold, length, cached, split
+):
+    from types import SimpleNamespace
+
+    if threshold is None:
+        monkeypatch.delenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", str(threshold))
+    sched = _scheduler(monkeypatch, non_trimmable_exact_prefix_reuse=True)
+    req = _register(sched, 201, length)
+    req.prefix_boundary = 58 if not cached else 175
+    req.exact_prefix_boundary = True
+    req.cached_tokens = cached
+    req.remaining_tokens = req.prompt_token_ids[cached:]
+    if cached:
+        req.prompt_cache = _hybrid_cache(MB)
+    sched.waiting.append(req)
+    generator = MagicMock()
+    generator.insert.return_value = [201]
+    generator.insert_segments.return_value = [201]
+    sched.batch_generator = generator
+    monkeypatch.setattr(sched, "_ensure_batch_generator", lambda *_: True)
+    monkeypatch.setattr(sched, "_get_request_sampler", lambda _r: MagicMock())
+    monkeypatch.setattr(sched, "_register_uid_processors", MagicMock())
+    monkeypatch.setattr(sched, "_validate_cache", lambda _c: True)
+    assert sched._schedule_waiting() == [req]
+    if split is None:
+        generator.insert.assert_called_once()
+        generator.insert_segments.assert_not_called()
+        assert generator.insert.call_args.args[0] == [req.prompt_token_ids[cached:]]
+    else:
+        generator.insert.assert_not_called()
+        assert generator.insert_segments.call_args.args[0] == [
+            [req.prompt_token_ids[:split], req.prompt_token_ids[split:]]
+        ]
+    sched.memory_aware_cache.store = MagicMock(return_value=True)
+    response = SimpleNamespace(
+        uid=201,
+        progress=(req.prefix_boundary - cached, length - cached),
+        end_of_segment=True,
+        end_of_prompt=False,
+    )
+    layers = _hybrid_cache(MB)
+    generator.extract_cache.return_value = {201: (layers, [])}
+    monkeypatch.setattr(sched, "_extract_cache_states", lambda _: [1])
+    monkeypatch.setattr(sched, "_reconstruct_cache_from_states", lambda _: layers)
+    sched._snapshot_boundary_segments([response])
+    assert sched.memory_aware_cache.store.call_count == (0 if split is None else 1)
+    # Completion storage remains available when the boundary was skipped.
+    if split is None:
+        req.output_token_ids = [999]
+        req._extracted_cache = _hybrid_cache(MB)
+        sched.running[req.request_id] = req
+        sched._cleanup_finished({req.request_id})
+        assert sched.memory_aware_cache.store.call_args.args[
+            0
+        ] == req.prompt_token_ids + [999]
+
+
+@pytest.mark.parametrize("threshold", [0, 128])
+def test_prefix_threshold_cached_insert_failure_rechecks_cold_length(
+    monkeypatch, threshold
+):
+    monkeypatch.setenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", str(threshold))
+    sched = _scheduler(monkeypatch, non_trimmable_exact_prefix_reuse=True)
+    req = _register(sched, 202, 200)
+    req.prefix_boundary = 175
+    req.exact_prefix_boundary = True
+    req.cached_tokens = 150
+    req.prompt_cache = _hybrid_cache(MB)
+    req.remaining_tokens = req.prompt_token_ids[150:]
+    sched.waiting.append(req)
+    generator = MagicMock()
+    generator.insert.return_value = [202]
+    generator.insert_segments.return_value = [202]
+    if threshold:
+        generator.insert.side_effect = RuntimeError("reject cached insert")
+    else:
+        generator.insert_segments.side_effect = [
+            RuntimeError("reject cached segments"),
+            [202],
+        ]
+    sched.batch_generator = generator
+    monkeypatch.setattr(sched, "_ensure_batch_generator", lambda *_: True)
+    monkeypatch.setattr(sched, "_get_request_sampler", lambda _r: MagicMock())
+    monkeypatch.setattr(sched, "_register_uid_processors", MagicMock())
+    monkeypatch.setattr(sched, "_validate_cache", lambda _: True)
+    assert sched._schedule_waiting() == [req]
+    assert req.cached_tokens == 0
+    assert getattr(req, "_cache_snapshot_boundary", req.prefix_boundary) == 175
+    assert generator.insert_segments.call_args.args[0] == [
+        [list(range(175)), list(range(175, 200))]
+    ]
+    assert generator.insert_segments.call_args.kwargs["caches"] is None
+
+
+def test_prefix_threshold_leaves_trimmable_policy_unchanged(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", "512")
+    sched = _scheduler(monkeypatch)
+    req = _register(sched, 203, 73)
+    req.prefix_boundary = 58
+    req.exact_prefix_boundary = True
+    assert sched._resolve_snapshot_boundary(req) == 58
+    assert not hasattr(req, "_cache_snapshot_boundary")
+
+
+def test_prefix_threshold_preserves_fetch_for_a_short_warm_tail(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", "128")
+    sched = _scheduler(monkeypatch, non_trimmable_exact_prefix_reuse=True)
+    prefix = list(range(150))
+    assert sched.memory_aware_cache.store(
+        prefix, _hybrid_cache(MB), message_boundary=True
+    )
+    req = _register(sched, 204, 200)
+    req.prefix_boundary = 175
+    req.exact_prefix_boundary = True
+    sched._fetch_memory_aware_prefix(req)
+    assert req.cached_tokens == 150
+    assert req.remaining_tokens == list(range(150, 200))
+    assert req.prompt_cache is not None
+    assert sched._resolve_snapshot_boundary(req) == 0
+    assert tuple(prefix) in sched.memory_aware_cache._entries

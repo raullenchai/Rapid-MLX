@@ -306,3 +306,33 @@ def test_hard_cap_bounds_never_quiet_stream(monkeypatch):
     # Ticks at t=0,10,20,30,40ms all pass the <45ms deadline check; the
     # sixth check (t=50ms) fails -> exactly 5 sleeps.
     assert len(calls) == 5
+
+
+@pytest.mark.parametrize("window,expected", [(0, []), (8, [0.008])])
+def test_lattice_admission_window(sleep_spy, monkeypatch, window, expected):
+    import json
+
+    calls, _, holder = sleep_spy
+    monkeypatch.delenv("RAPID_ADMISSION_WINDOW_MS", raising=False)
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCHMARK_KNOBS", json.dumps({"admission_window_ms": window})
+    )
+    eng = _make_engine()
+    holder["eng"] = eng
+    _run(eng._await_admission_wave())
+    assert calls == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "override,expected", [("25", [0.025]), ("-1", []), ("bad", [])]
+)
+def test_admission_legacy_env_wins_over_lattice(
+    sleep_spy, monkeypatch, override, expected
+):
+    calls, _, holder = sleep_spy
+    monkeypatch.setenv("RAPID_MLX_BENCHMARK_KNOBS", '{"admission_window_ms": 0}')
+    monkeypatch.setenv("RAPID_ADMISSION_WINDOW_MS", override)
+    eng = _make_engine()
+    holder["eng"] = eng
+    _run(eng._await_admission_wave())
+    assert calls == pytest.approx(expected)

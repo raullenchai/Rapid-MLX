@@ -63,6 +63,8 @@ from .hybrid_state_checkpoints import (  # noqa: E402
     record_checkpoints,
     restore_recurrent_layer,
 )
+from .lattice.scheduling import skip_prefix_boundary
+from .memory_cache import _cache_has_non_trimmable
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .mllm_prefill import (  # noqa: E402
     MLLM_PREFILL_CHUNK_TOKENS,
@@ -4526,9 +4528,17 @@ class MLLMBatchGenerator:
         memory_guard = (
             getattr(self, "_prefill_memory_guard", None) if is_text_only else None
         )
+        boundary = request.prefix_boundary - request.cached_tokens
+        if (
+            is_text_only
+            and cache is not None
+            and _cache_has_non_trimmable(cache)
+            and skip_prefix_boundary(self.model, prompt_length)
+        ):
+            boundary = 0
         needs_split = (
             prompt_length > chunk
-            or 0 < request.prefix_boundary - request.cached_tokens < prompt_length
+            or 0 < boundary < prompt_length
             or request.shared_prefix_store_at > request.cached_tokens
         )
         chunkable = (
@@ -4564,7 +4574,6 @@ class MLLMBatchGenerator:
             # any working model; the numerical-equivalence test locks this in.
             prefix = input_ids[:, :-1]
             prefix_len = prefix.shape[1]
-            boundary = request.prefix_boundary - request.cached_tokens
             if not 0 < boundary <= prefix_len:
                 boundary = 0
             shared = request.shared_prefix_store_at - request.cached_tokens

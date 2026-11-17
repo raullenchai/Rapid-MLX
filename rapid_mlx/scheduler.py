@@ -166,6 +166,7 @@ from .hybrid_state_checkpoints import (  # noqa: E402
 from .hybrid_state_checkpoints import (  # noqa: E402
     record_checkpoints as _record_state_checkpoints,
 )
+from .lattice.scheduling import skip_prefix_boundary
 from .memory_cache import (  # noqa: E402
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
@@ -9819,6 +9820,18 @@ class Scheduler:
         cannot suppress the bounded N-1 fallback for non-trimmable caches.
         """
         prompt_tokens = request.prompt_token_ids or []
+        if self.config.non_trimmable_exact_prefix_reuse and skip_prefix_boundary(
+            self.model,
+            len(prompt_tokens) - (request.cached_tokens or 0),
+            mode="mtp" if self.config.spec_decode == "mtp" else "plain",
+        ):
+            # Explicit zero also disables callback fallback to prefix_boundary.
+            skipped_state: Any = request
+            skipped_state._cache_snapshot_boundary = 0
+            return 0
+        if getattr(request, "_cache_snapshot_boundary", None) == 0:
+            skipped_state = request
+            del skipped_state._cache_snapshot_boundary
         snapshot_boundary = int(getattr(request, "prefix_boundary", 0) or 0)
         # The snapshot machinery reads ``_cache_snapshot_boundary`` and falls
         # back to the caller's ``prefix_boundary``, so a boundary moved below
@@ -11015,6 +11028,9 @@ class Scheduler:
                         retry_state._boundary_snapshot_taken = False
                         retry_state._cache_snapshot_is_internal = False
                         del retry_state._cache_snapshot_boundary
+                        self._resolve_snapshot_boundary(request)
+                    elif getattr(request, "_cache_snapshot_boundary", None) == 0:
+                        # A skipped warm tail may now be a long cold prompt.
                         self._resolve_snapshot_boundary(request)
                     if not self._prefill_cohort_fits(request):
                         if not shortest_tail:
