@@ -587,11 +587,16 @@ def estimate_repo_size_bytes(repo_id: str) -> int | None:
     """
     try:
         from ._mirror import _packaged_digest_info
-        from .model_aliases import resolve_revision, subfolder_allow_patterns
+        from .model_aliases import (
+            resolve_hub_model,
+            resolve_revision,
+            subfolder_allow_patterns,
+        )
 
         pin = resolve_revision(repo_id)
+        selection = subfolder_allow_patterns(repo_id)
         info = (
-            _packaged_digest_info(repo_id, pin, subfolder_allow_patterns(repo_id))
+            _packaged_digest_info(resolve_hub_model(repo_id), pin, selection)
             if pin
             else None
         )
@@ -609,6 +614,11 @@ def estimate_repo_size_bytes(repo_id: str) -> int | None:
         name = getattr(sib, "rfilename", "") or ""
         if prefix and not name.startswith(prefix):
             continue
+        if selection is not None:
+            from fnmatch import fnmatchcase
+
+            if not any(fnmatchcase(name, pattern) for pattern in selection):
+                continue
         if not _is_weight_file(name):
             continue
         total += _sibling_size(sib)

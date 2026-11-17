@@ -12768,8 +12768,9 @@ def _pull_repository(
 
         integrity_allow = variant_allow
         if integrity_allow is None:
-            subfolder = resolve_subfolder(repo_id)
-            integrity_allow = [f"{subfolder}/*"] if subfolder else None
+            from rapid_mlx.model_aliases import subfolder_allow_patterns
+
+            integrity_allow = subfolder_allow_patterns(repo_id)
         repaired = _verify_pulled_snapshot(
             repo_id,
             snapshot_dir,
@@ -12861,7 +12862,9 @@ def _pull_repository(
                     f"  This repo ships one checkpoint per quantization; "
                     f"fetching only {_subfolder}/ (the folder rapid-mlx serves)."
                 )
-            _allow = [f"{_subfolder}/*"] if _subfolder else None
+            from rapid_mlx.model_aliases import subfolder_allow_patterns
+
+            _allow = subfolder_allow_patterns(repo_id)
         # HF-fallback runs only after a mirror miss — but a cached HF no-op is
         # still possible and must be labelled "Already cached", so account the
         # TRANSFER from the BLOB store (Codex #2392), never huggingface_hub's
