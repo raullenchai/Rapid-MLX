@@ -2811,11 +2811,11 @@ def _retry_hub_download(
     """
     import time
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             return operation()
         except Exception as exc:
-            if not _is_transient_hub_error(exc) or attempt == 2:
+            if not _is_transient_hub_error(exc):
                 raise
             delay = 2**attempt
             print(
@@ -2824,7 +2824,7 @@ def _retry_hub_download(
                 file=sys.stderr,
             )
             time.sleep(delay)
-    raise AssertionError("unreachable: the last attempt re-raises")
+    return operation()
 
 
 def _hub_not_found_hint(model_id: str) -> str:
