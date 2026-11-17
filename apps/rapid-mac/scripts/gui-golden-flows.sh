@@ -1976,6 +1976,26 @@ wait_settings_stable() {
     die "Settings AX tree did not settle with required identifiers: $*"
 }
 
+start_fixture_chat_model() {
+    # Skip can hand off the RAM-only starter before catalog discovery, or
+    # leave the cached fixture selected if the picker resolved first. These
+    # journeys test chat persistence/recovery, so explicitly choose their
+    # fixture instead of starting whichever side of that race won.
+    wait_identifier_enabled Readiness.Action "$OUT/fixture-picker-ready.json"
+    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+        "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
+        || die "chat fixture model could not be selected"
+    for _ in {1..40}; do
+        see_main "$OUT/fixture-model-selected.json"
+        if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]]; then
+            start_model
+            return
+        fi
+        sleep 0.25
+    done
+    die "chat fixture model selection did not settle on $FAKE_ALIAS"
+}
+
 start_model() {
     # The readiness band is mounted before its action becomes interactive
     # while the catalog finishes resolving the selected model.  Pressing the
@@ -2775,7 +2795,7 @@ flow_chat_restore() {
     log "3/6 basic chat and session restore"
     start_persona chat-restore
     dismiss_first_run
-    start_model
+    start_fixture_chat_model
     send_prompt "golden restore marker" chat
     for _ in {1..100}; do
         see_main "$OUT/chat-complete.json"
@@ -3037,7 +3057,7 @@ flow_model_crash_recovery() {
     start_persona model-crash-recovery FAKE_DIE_AFTER_CHUNKS=2 \
         FAKE_DIE_ONCE_STATE="$OUT_ROOT/model-crash-recovery/died-once"
     dismiss_first_run
-    start_model
+    start_fixture_chat_model
     send_prompt "golden crash marker" crash
     for _ in {1..160}; do
         see_main "$OUT/crash-recovered.json"

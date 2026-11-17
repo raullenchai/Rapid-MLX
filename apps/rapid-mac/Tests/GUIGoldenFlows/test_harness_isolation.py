@@ -16,6 +16,82 @@ def function(name):
 
 
 class HarnessIsolationTests(unittest.TestCase):
+    def test_chat_lifecycle_flows_select_fixture_before_starting(self):
+        # Exercise each journey's real setup through its first prompt. Skip
+        # may win discovery (starter alias) or lose it (cached fixture alias).
+        for flow in ("flow_chat_restore", "flow_model_crash_recovery"):
+            for initial_alias, selection in (
+                ("lfm2.5-2.6b-4bit", "delayed"),
+                ("fake-alias", "delayed"),
+                ("lfm2.5-2.6b-4bit", "ignored"),
+                ("lfm2.5-2.6b-4bit", "failed"),
+            ):
+                with self.subTest(
+                    flow=flow, initial=initial_alias, selection=selection
+                ):
+                    shell = (
+                        "\n".join(
+                            function(name)
+                            for name in ("start_fixture_chat_model", flow)
+                        )
+                        + r"""
+OUT_ROOT="$1"
+OUT="$1"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=fixture_driver
+selected_alias="$2"
+selection="$3"
+polls=0
+log() { :; }
+start_persona() { :; }
+dismiss_first_run() { :; }
+wait_identifier_enabled() { :; }
+sleep() { :; }
+die() { echo "$*" >&2; exit 1; }
+fixture_driver() {
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 2
+    [[ "$selection" != failed ]]
+}
+see_main() {
+    polls=$((polls + 1))
+    if [[ "$selection" == delayed && "$polls" -ge 2 ]]; then
+        selected_alias=fake-alias
+    fi
+}
+element_field() { echo "$selected_alias"; }
+start_model() {
+    [[ "$selected_alias" == fake-alias ]] || exit 3
+    echo "started $selected_alias"
+}
+send_prompt() { exit 0; }
+"""
+                        + "\n"
+                        + flow
+                    )
+                    with tempfile.TemporaryDirectory() as tmp:
+                        result = subprocess.run(
+                            [
+                                "/bin/bash",
+                                "-eu",
+                                "-c",
+                                shell,
+                                "test",
+                                tmp,
+                                initial_alias,
+                                selection,
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                    if selection in ("ignored", "failed"):
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertNotIn("started", result.stdout)
+                        self.assertIn("fixture model", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, "started fake-alias\n")
+
     def test_persona_language_is_pinned_across_launches(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "home").mkdir()
