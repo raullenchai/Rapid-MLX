@@ -9812,7 +9812,7 @@ class Scheduler:
                     position,
                 )
 
-    def _resolve_snapshot_boundary(self, request: Request) -> int:
+    def _resolve_snapshot_boundary(self, request: Request, *, batch: int = 1) -> int:
         """Return a usable prompt boundary, arming N-1 reuse when needed.
 
         A caller-provided boundary must lie strictly inside the scheduler's
@@ -9824,6 +9824,7 @@ class Scheduler:
             self.model,
             len(prompt_tokens) - (request.cached_tokens or 0),
             mode="mtp" if self.config.spec_decode == "mtp" else "plain",
+            batch=batch,
         ):
             # Explicit zero also disables callback fallback to prefix_boundary.
             skipped_state: Any = request
@@ -10951,7 +10952,17 @@ class Scheduler:
             # A non-trimmable exact hit cannot use the usual trim-one then
             # re-forward-last-token kickoff. Capture the cold prompt at N-1;
             # an identical repeat becomes a safe one-token prefix extension.
-            snapshot_boundary = self._resolve_snapshot_boundary(request)
+            # Include this turn's prospective admissions before the first
+            # insert. Counting only running rows would qualify the first row
+            # of a burst for a singleton-only cell. Later admission deferrals
+            # may conservatively retain an extra snapshot.
+            boundary_batch = min(
+                self._max_running_sequences(),
+                len(self.running) + 1 + len(self.waiting),
+            )
+            snapshot_boundary = self._resolve_snapshot_boundary(
+                request, batch=boundary_batch
+            )
             if (
                 self.memory_aware_cache is not None
                 and snapshot_boundary > 0
@@ -11028,10 +11039,10 @@ class Scheduler:
                         retry_state._boundary_snapshot_taken = False
                         retry_state._cache_snapshot_is_internal = False
                         del retry_state._cache_snapshot_boundary
-                        self._resolve_snapshot_boundary(request)
+                        self._resolve_snapshot_boundary(request, batch=boundary_batch)
                     elif getattr(request, "_cache_snapshot_boundary", None) == 0:
                         # A skipped warm tail may now be a long cold prompt.
-                        self._resolve_snapshot_boundary(request)
+                        self._resolve_snapshot_boundary(request, batch=boundary_batch)
                     if not self._prefill_cohort_fits(request):
                         if not shortest_tail:
                             self.waiting.insert(waiting_order.index(request), request)

@@ -4533,7 +4533,11 @@ class MLLMBatchGenerator:
             is_text_only
             and cache is not None
             and _cache_has_non_trimmable(cache)
-            and skip_prefix_boundary(self.model, prompt_length)
+            and skip_prefix_boundary(
+                self.model,
+                prompt_length,
+                batch=getattr(self, "_prefix_boundary_batch", 1),
+            )
         ):
             boundary = 0
         needs_split = (
@@ -4777,6 +4781,9 @@ class MLLMBatchGenerator:
         # keeps the gate honest if that ever changes.)
         active_batch = getattr(self, "active_batch", None)
         no_active_batch = active_batch is None or len(active_batch) == 0
+        self._prefix_boundary_batch = len(requests) + (
+            len(active_batch) if active_batch is not None else 0
+        )
         self._media_singleton_turn = (
             getattr(self, "_media_structural_singleton", False)
             and no_active_batch

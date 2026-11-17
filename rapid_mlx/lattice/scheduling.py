@@ -28,8 +28,10 @@ def scheduling_value(name: str, model, *, mode: str = "plain", batch: int = 1) -
     return cast(float, resolve(name, context).value)
 
 
-def skip_prefix_boundary(model, uncached_tokens: int, *, mode: str = "plain") -> bool:
+def skip_prefix_boundary(
+    model, uncached_tokens: int, *, mode: str = "plain", batch: int = 1
+) -> bool:
     """Strictly short tails trade a boundary snapshot for fewer forwards."""
     return uncached_tokens < scheduling_value(
-        "prefix_boundary_min_tokens", model, mode=mode
+        "prefix_boundary_min_tokens", model, mode=mode, batch=batch
     )
