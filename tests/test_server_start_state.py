@@ -2344,6 +2344,19 @@ def test_failed_event_remains_self_describing_when_model_event_is_suppressed(
     assert events[-1][1]["exit_reason"] == "exception"
 
 
+def test_fail_current_survives_a_broken_model_failure_emitter(monkeypatch):
+    def _boom(*_a, **_kw):
+        raise RuntimeError("private")
+
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(model_events, "emit_model_serve_failed", _boom)
+    server_start.attempted()
+    server_start.fail_current(ValueError("private"))
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == "exception"
+    assert "private" not in json.dumps(events)
+
+
 @pytest.mark.parametrize(
     "exc, reason, subtype",
     [
