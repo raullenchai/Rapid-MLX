@@ -859,4 +859,9 @@ class TestMLLMBatchGeneratorFailsLoud:
         assert idx != -1, "MLLMScheduler no longer calls batch_generator.next()"
         window = src[max(0, idx - 100) : idx + 400]
         assert "try:" in window
-        assert "except (ValueError, RuntimeError)" in window
+        import re
+
+        m = re.search(r"except \(([^)]*)\)", window)
+        assert m, "no tuple except around batch_generator.next()"
+        caught = {name.strip() for name in m.group(1).split(",")}
+        assert {"ValueError", "RuntimeError"} <= caught
