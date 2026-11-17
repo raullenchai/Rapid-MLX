@@ -445,9 +445,7 @@ def handle_optional_runtime_missing(
     )
     from rapid_mlx.telemetry.server_start import failed
 
-    # The detailed typed failure and recovery outcome belong to the model
-    # event below. Keep the lifecycle callback's established stage-only call.
-    failed("preflight")
+    failed("preflight", exc=exc)
     accepted = False
     if managed_runtime:
         extra_recovery: ExtraRecovery = "managed_runtime"
