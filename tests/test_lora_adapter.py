@@ -91,6 +91,161 @@ def test_base_mismatch(adapter):
         validate_adapter(str(directory), "another/base")
 
 
+@pytest.mark.parametrize(
+    ("trained", "served"),
+    [
+        ("alias", "repo"),
+        ("repo", "alias"),
+        ("repo", "snapshot"),
+        ("snapshot", "repo"),
+        ("alias", "snapshot"),
+        ("repo", "snapshot_link"),
+        ("snapshot", "other_revision"),
+        ("snapshot", "subdir"),
+        ("repo", "lowercase_repo"),
+        ("uncataloged_repo", "uncataloged_lowercase_repo"),
+    ],
+)
+def test_base_identity_repo_forms(adapter, tmp_path, monkeypatch, trained, served):
+    from huggingface_hub import constants
+
+    directory, _ = adapter
+    cache = tmp_path / "hub"
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
+    snapshots = cache / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots"
+    snapshot = snapshots / ("a" * 40)
+    other_revision = snapshots / ("b" * 40)
+    subdir = snapshot / "checkpoint"
+    subdir.mkdir(parents=True)
+    other_revision.mkdir()
+    snapshot_link = tmp_path / "snapshot-link"
+    snapshot_link.symlink_to(snapshot, target_is_directory=True)
+    repo = "mlx-community/Qwen3-1.7B-4bit"
+    forms = {
+        "alias": "qwen3-1.7b",
+        "repo": repo,
+        "lowercase_repo": repo.lower(),
+        "uncataloged_repo": "test-org/Uncataloged-Base-4bit",
+        "uncataloged_lowercase_repo": "test-org/uncataloged-base-4bit",
+        "snapshot": str(snapshot),
+        "snapshot_link": str(snapshot_link),
+        "other_revision": str(other_revision),
+        "subdir": str(subdir),
+    }
+    (directory / "adapter_config.json").write_text(
+        json.dumps({"model": forms[trained]})
+    )
+    assert validate_adapter(str(directory), forms[served]).path == str(directory)
+    args = build_parser().parse_args(
+        ["serve", forms[served], "--adapter", str(directory)]
+    )
+    prepare_adapter_cli(args)
+    assert args.no_spec_decode is True
+
+
+def test_base_identity_symlinked_cache_and_snapshot(adapter, tmp_path, monkeypatch):
+    """A symlinked cache root whose snapshot links to cold storage."""
+    from huggingface_hub import constants
+
+    directory, _ = adapter
+    real_cache = tmp_path / "volume" / "hub"
+    cold = tmp_path / "cold" / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots"
+    cold_snapshot = cold / ("a" * 40)
+    cold_snapshot.mkdir(parents=True)
+    snapshots = real_cache / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots"
+    snapshots.mkdir(parents=True)
+    (snapshots / ("a" * 40)).symlink_to(cold_snapshot, target_is_directory=True)
+    home_link = tmp_path / "home-hf"
+    home_link.symlink_to(tmp_path / "volume", target_is_directory=True)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(home_link / "hub"))
+    (directory / "adapter_config.json").write_text(
+        json.dumps({"model": "mlx-community/Qwen3-1.7B-4bit"})
+    )
+    for served in (
+        snapshots / ("a" * 40),
+        home_link / "hub" / snapshots.relative_to(real_cache) / ("a" * 40),
+    ):
+        assert validate_adapter(str(directory), str(served)).path == str(directory)
+
+
+@pytest.mark.parametrize("served", ["repo", "snapshot", "local", "lookalike"])
+def test_base_identity_does_not_equate_other_bases(
+    adapter, tmp_path, monkeypatch, served
+):
+    from huggingface_hub import constants
+
+    directory, base = adapter
+    cache = tmp_path / "hub"
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
+    snapshot = cache / "models--mlx-community--Qwen3-1.7B-8bit" / "snapshots" / "abc"
+    snapshot.mkdir(parents=True)
+    lookalike = (
+        tmp_path / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots" / "abc"
+    )
+    lookalike.mkdir(parents=True)
+    (base / "config.json").write_text(
+        json.dumps({"_name_or_path": "mlx-community/Qwen3-1.7B-4bit"})
+    )
+    (directory / "adapter_config.json").write_text(
+        json.dumps({"model": "mlx-community/Qwen3-1.7B-4bit"})
+    )
+    forms = {
+        "repo": "mlx-community/Qwen3-1.7B-8bit",
+        "snapshot": str(snapshot),
+        "local": str(base),
+        "lookalike": str(lookalike),
+    }
+    with pytest.raises(ValueError, match="base mismatch"):
+        validate_adapter(str(directory), forms[served])
+
+
+def test_base_identity_local_paths(adapter, tmp_path, monkeypatch):
+    directory, base = adapter
+    monkeypatch.chdir(tmp_path)
+    link = tmp_path / "base-link"
+    link.symlink_to(base, target_is_directory=True)
+    assert validate_adapter(str(directory), "./base").path == str(directory)
+    assert validate_adapter(str(directory), str(link)).path == str(directory)
+    other = tmp_path / "other-base"
+    other.mkdir()
+    with pytest.raises(ValueError, match="base mismatch"):
+        validate_adapter(str(directory), str(other))
+
+
+@pytest.mark.parametrize("cache_env", ["HF_HOME", "HF_HUB_CACHE"])
+def test_base_identity_custom_hf_cache(adapter, tmp_path, cache_env):
+    import os
+    import subprocess
+    import sys
+
+    directory, _ = adapter
+    cache_home = tmp_path / "custom-hf"
+    cache = cache_home / "hub" if cache_env == "HF_HOME" else cache_home
+    snapshot = cache / "models--mlx-community--Qwen3-1.7B-4bit" / "snapshots" / "abc"
+    snapshot.mkdir(parents=True)
+    (directory / "adapter_config.json").write_text(
+        json.dumps({"model": "mlx-community/Qwen3-1.7B-4bit"})
+    )
+    env = dict(os.environ)
+    for key in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        env.pop(key, None)
+    env[cache_env] = str(cache_home)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from rapid_mlx.lora_adapter import validate_adapter; "
+            "validate_adapter(sys.argv[1], sys.argv[2])",
+            str(directory),
+            str(snapshot),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_identity_content_and_location(adapter, tmp_path):
     import shutil
 
