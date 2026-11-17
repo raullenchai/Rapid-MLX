@@ -2,6 +2,18 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Connect an agent or client" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connect an agent or client" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "连接智能体或客户端" } }
+      }
+    },
+    "Dismiss connection hint" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Dismiss connection hint" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "关闭连接提示" } }
+      }
+    },
     "Powered by %@" : {
       "comment" : "Image model attribution beside the model picker.",
       "localizations" : {
