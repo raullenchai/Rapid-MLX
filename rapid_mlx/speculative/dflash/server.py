@@ -72,7 +72,7 @@ from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 from ..request_policy import RequestRefused
 from .eligibility import have_runtime
-from .runtime import load_runtime
+from .runtime import _OfflineDrafterUnavailable, load_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -2766,15 +2766,19 @@ def run_dflash_server(
     arbitrary ``main_model_repo`` programmatically are responsible for
     not pointing it at a MoE model. Documented in CALLERS.md.
     """
-    model, processor, runtime = load_dflash_runtime(
-        main_model_repo=main_model_repo,
-        main_model_revision=main_model_revision,
-        drafter_repo=drafter_repo,
-        drafter_revision=drafter_revision,
-        experimental_opt_in=experimental_opt_in,
-        expected_algorithm=expected_algorithm,
-        experimental_warning_shown=experimental_warning_shown,
-    )
+    try:
+        model, processor, runtime = load_dflash_runtime(
+            main_model_repo=main_model_repo,
+            main_model_revision=main_model_revision,
+            drafter_repo=drafter_repo,
+            drafter_revision=drafter_revision,
+            experimental_opt_in=experimental_opt_in,
+            expected_algorithm=expected_algorithm,
+            experimental_warning_shown=experimental_warning_shown,
+        )
+    except _OfflineDrafterUnavailable as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1) from None
 
     app = _build_app(
         model=model,

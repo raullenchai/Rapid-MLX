@@ -18,11 +18,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from .eligibility import have_runtime
+from .eligibility import DFlashUnavailable, have_runtime
 
 logger = logging.getLogger(__name__)
+
+
+class _OfflineDrafterUnavailable(DFlashUnavailable):
+    """The requested drafter revision is not complete in the offline cache."""
 
 
 @dataclass
@@ -123,9 +128,35 @@ def load_runtime(
 
     load_source = drafter_repo
     if drafter_revision is not None:
-        from mlx_vlm.utils import get_model_path
+        from rapid_mlx.model_metadata import (
+            _complete_cached_checkpoint,
+            hub_offline_mode_active,
+        )
 
-        load_source = str(get_model_path(drafter_repo, revision=drafter_revision))
+        if hub_offline_mode_active() and not Path(drafter_repo).is_dir():
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            repo_root = Path(HF_HUB_CACHE) / (
+                "models--" + drafter_repo.replace("/", "--")
+            )
+            cached = _complete_cached_checkpoint(
+                repo_root,
+                repo_root / "snapshots" / drafter_revision,
+                drafter_repo,
+                checkpoint_subfolder="",
+            )
+            if cached is None:
+                raise _OfflineDrafterUnavailable(
+                    f"DFlash drafter {drafter_repo}@{drafter_revision} is missing "
+                    "or incomplete in the local cache while offline. Download "
+                    "this exact revision on a connected machine with "
+                    "HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE unset, then retry."
+                )
+            load_source = str(cached)
+        else:
+            from mlx_vlm.utils import get_model_path
+
+            load_source = str(get_model_path(drafter_repo, revision=drafter_revision))
     logger.info(
         "Loading DFlash drafter: %s revision=%s (kind=%s)",
         drafter_repo,
