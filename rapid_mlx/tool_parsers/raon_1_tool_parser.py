@@ -83,6 +83,13 @@ class ToolCall:
 FunctionCall = DeltaFunctionCall
 
 
+@dataclass
+class _ExtractedToolCalls:
+    tools_called: bool
+    tool_calls: list[ToolCall]
+    content: str | None = None
+
+
 def make_tool_call_id(**kwargs):
     return "call_" + uuid.uuid4().hex[:24]
 
@@ -182,6 +189,7 @@ def _parameters_json(raw: str, partial: bool) -> str:
         ):
             body_end = end = following.start()
         else:
+            assert closing is not None
             body_end, end = closing.start(), closing.end()
         params[opening.group(1)] = _unwrap(raw[opening.end() : body_end])
         kept.append(raw[cursor : opening.start()])
@@ -378,7 +386,6 @@ class _Call:
         self.sent = ""
 
 
-@ToolParserManager.register_module("raon_1")
 class RaonToolParser(ToolParser):
     """Parses ``<tool_call>`` blocks into OpenAI ``tool_calls``."""
 
@@ -518,7 +525,10 @@ class RaonToolParser(ToolParser):
                 continue
             function = tool.get("function", tool)
             if function.get("name") == name:
-                return (function.get("parameters") or {}).get("properties", {})
+                properties: dict = (function.get("parameters") or {}).get(
+                    "properties", {}
+                )
+                return properties
         return {}
 
     def _typed(self, arguments: str, name: str) -> str:
@@ -773,7 +783,7 @@ class RaonToolParser(ToolParser):
 
     def _extract_tool_calls(
         self, model_output: str, request: Any
-    ) -> ExtractedToolCallInformation:
+    ) -> _ExtractedToolCalls:
         self._use_request(request)
         self._reset(_CONTENT)
         events = (
@@ -787,7 +797,7 @@ class RaonToolParser(ToolParser):
         content = "".join(value for kind, value, _ in events if kind == "content")
         if content and calls:
             content = content.strip()
-        return ExtractedToolCallInformation(
+        return _ExtractedToolCalls(
             tools_called=bool(calls), tool_calls=calls, content=content or None
         )
 
@@ -858,3 +868,6 @@ class RaonToolParser(ToolParser):
     def flush_held_content(self, full_text: str) -> str:
         delta = self.finish_streaming()
         return delta.content or "" if delta is not None else ""
+
+
+ToolParserManager.register_module("raon_1", RaonToolParser)

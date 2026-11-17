@@ -531,8 +531,8 @@ class RaonReasoningParser(ReasoningParser):
         if not content and not reasoning:
             return None
         delta = DeltaMessage(
-            **({"content": content} if content else {}),
-            **({"reasoning": reasoning} if reasoning else {}),
+            content=content or None,
+            reasoning=reasoning,
         )
         if reasoning is not None:
             self._streamed_reasoning.append(reasoning)
@@ -607,6 +607,8 @@ class RaonReasoningParser(ReasoningParser):
         self, model_output: str, request: Any
     ) -> tuple[str | None, str | None]:
         self._count_from_stream = False
+        reasoning: str | None
+        content: str | None
         if not self.thinking:
             reasoning, content = None, model_output
         else:

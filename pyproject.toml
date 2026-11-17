@@ -894,3 +894,9 @@ ignore_errors = true
 # repository-wide shrink-only error budget.
 module = "rapid_mlx.models.mlx_vlm_vendored.cache"
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Vendored numerical core kept near-verbatim for parity and upstream syncs.
+# Rapid-owned Raon parsers remain under the shrink-only error budget.
+module = "rapid_mlx.models.raon1_nano"
+ignore_errors = true
