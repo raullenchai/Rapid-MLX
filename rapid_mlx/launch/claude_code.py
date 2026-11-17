@@ -24,10 +24,11 @@ the standard ``~/.config`` tree before the first run.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
-from . import _common
+from . import _common, _ownership
 
 # Per-user state dir Anthropic's CLI creates on first run. We probe for
 # it as a "claude has been launched at least once" signal — a fallback
@@ -51,6 +52,39 @@ _CLAUDE_STATE_DIR = Path.home() / ".claude"
 # desktop UI, so the adapter was also contradicting its own catalogue entry.
 _CONFIG_DIR = Path.home() / ".claude"
 _CONFIG_FILENAME = "settings.json"
+_ENV_KEYS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_AUTO_MODE_SERVER",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+)
+
+
+def _load_settings(path: Path, *, required: bool = False) -> dict[str, Any]:
+    if required:
+        raw = path.read_text(encoding="utf-8").strip()
+        data = json.loads(raw) if raw else {}
+    else:
+        data = _common.load_json_lenient(path)
+    if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
+        raise ValueError("Claude Code settings and env must contain objects")
+    return data
+
+
+def _read_receipt(path: Path) -> dict[str, Any]:
+    receipt = _ownership._read_receipt(path)
+    for key, entry in receipt.items():
+        if (
+            key not in _ENV_KEYS
+            or not isinstance(entry, dict)
+            or not isinstance(entry.get("fingerprint"), str)
+            or "backup" not in entry
+            or (entry["backup"] is not None and not isinstance(entry["backup"], str))
+        ):
+            raise ValueError("Invalid Claude Code legacy ownership receipt")
+    return receipt
 
 
 def detect() -> bool:
@@ -129,14 +163,37 @@ def write_or_patch_config(
     path = config_path or current_config_path()
     assert path is not None  # current_config_path never returns None here
 
-    existing = _common.load_json_lenient(path)
-    _common.backup_existing(path)
-
-    existing = patched_config(
-        existing, server_url, model, api_key, context_length=context_length
-    )
-
-    _common.atomic_write_json(path, existing)
+    path = path.resolve()
+    with _ownership.locked(path):
+        existing = _load_settings(path)
+        receipt = _read_receipt(path)
+        backup = _common.backup_existing(path)
+        if backup is not None:
+            backup.chmod(0o600)
+        written = patched_config(
+            {}, server_url, model, api_key, context_length=context_length
+        )["env"]
+        for key, value in written.items():
+            # Keep the prior baseline only while the value is still ours.
+            # User edits (including deletion) belong to the new backup.
+            original_backup = str(backup) if backup is not None else None
+            env = existing.get("env", {})
+            if (
+                key in receipt
+                and key in env
+                and receipt[key]["fingerprint"] == _ownership._fingerprint(env[key])
+            ):
+                original_backup = receipt[key]["backup"]
+            receipt[key] = {
+                "fingerprint": _ownership._fingerprint(value),
+                "backup": original_backup,
+            }
+        existing["env"] = {**existing.get("env", {}), **written}
+        _ownership._commit(
+            path,
+            lambda: _common.atomic_write_json(path, existing),
+            lambda: _common.atomic_write_json(_ownership._receipt(path), receipt),
+        )
     return path
 
 
@@ -182,24 +239,44 @@ def patched_config(
 
 
 def remove_config() -> bool:
-    """Strip the routing environment keys owned by the legacy setup."""
+    """Restore legacy env values only while they still match our receipt."""
     path = current_config_path()
     assert path is not None  # current_config_path never returns None here
-    data = _common.load_json_lenient(path)
-    if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
-        raise ValueError("Claude Code settings and env must contain objects")
-    env = data.get("env", {})
-    owned = {
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_MODEL",
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-        "CLAUDE_CODE_AUTO_MODE_SERVER",
-    }
-    if not owned.intersection(env):
+    path = path.resolve()
+    if not _ownership._receipt(path).exists():
         return False
-    data["env"] = {key: value for key, value in env.items() if key not in owned}
-    _common.backup_existing(path)
-    _common.atomic_write_json(path, data)
-    return True
+    with _ownership.locked(path):
+        receipt = _read_receipt(path)
+        data = _load_settings(path)
+        env = data.get("env", {})
+        changed = False
+        for key in _ENV_KEYS:
+            if key not in receipt or key not in env:
+                continue
+            entry = receipt[key]
+            if entry["fingerprint"] != _ownership._fingerprint(env[key]):
+                continue
+            backup = entry["backup"]
+            # A lost/unreadable backup must fail without changing settings or
+            # retiring the receipt; never mistake a missing backup for absence.
+            if backup is not None and not Path(backup).is_file():
+                raise ValueError(
+                    f"Claude Code original settings backup missing: {backup}"
+                )
+            original_env = (
+                _load_settings(Path(backup), required=True).get("env", {})
+                if backup is not None
+                else {}
+            )
+            if key in original_env:
+                env[key] = original_env[key]
+            else:
+                del env[key]
+            changed = True
+        if not changed:
+            _ownership.forget(path)
+            return False
+        data["env"] = env
+        _common.backup_existing(path)
+        _ownership.remove(path, lambda: _common.atomic_write_json(path, data))
+        return True
