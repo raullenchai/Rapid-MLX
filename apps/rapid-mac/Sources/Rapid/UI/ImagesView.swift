@@ -363,6 +363,7 @@ struct ImagesView: View {
                 minimumMemoryGB: entry?.minimumMemoryGB
             ),
             imageMode: viewModel.isEditing ? .editing : .generation,
+            imageMinimumMemoryGB: entry?.minimumMemoryGB,
             // mflux is a modal engine, like TTS: it cannot be admitted through
             // the chat sidecar's resident /v1/models/load endpoint.
             residencyEligible: false

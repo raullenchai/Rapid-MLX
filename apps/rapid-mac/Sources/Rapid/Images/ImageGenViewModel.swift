@@ -444,6 +444,7 @@ final class ImageGenViewModel {
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
                 imageMode: .generation,
+                imageMinimumMemoryGB: target.minimumMemoryGB,
                 residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
@@ -481,6 +482,7 @@ final class ImageGenViewModel {
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
                 imageMode: .editing,
+                imageMinimumMemoryGB: target.minimumMemoryGB,
                 residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
@@ -612,7 +614,8 @@ final class ImageGenViewModel {
                 sizeText: selected.sizeOnDisk,
                 sizeBytes: selected.sizeBytes,
                 minimumMemoryGB: selected.minimumMemoryGB
-            )
+            ),
+            minimumMemoryGB: selected.minimumMemoryGB
         )
     }
 
@@ -620,5 +623,6 @@ final class ImageGenViewModel {
         let alias: String
         let hfPath: String?
         let estimatedMemoryGB: Double
+        let minimumMemoryGB: Double?
     }
 }

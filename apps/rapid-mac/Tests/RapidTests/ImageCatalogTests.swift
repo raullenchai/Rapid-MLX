@@ -149,6 +149,71 @@ struct ImageCatalogTests {
         ])
     }
 
+    /// Shared with the Python preflight consistency test, which verifies every
+    /// row against the live catalog. No production Swift alias table is needed.
+    private func catalogMemoryContract() throws -> [String: ModelCatalog.ImageReadiness] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let json = try String(contentsOf: root.appendingPathComponent(
+            "tests/fixtures/catalog_image_memory.json"
+        ), encoding: .utf8)
+        return ModelCatalog.parseImageReadinessJSON(json)
+    }
+
+    @Test("Desktop and CLI admit every image at its catalog minimum")
+    func catalogMinimumGuaranteesDesktopAdmission() throws {
+        let rows = try catalogMemoryContract()
+        #expect(!rows.isEmpty)
+        for (alias, readiness) in rows {
+            let minimum = readiness.minimumMemoryGB
+            // Artifact size or cached buffer peaks must not veto the minimum.
+            let charge = ModelSizing.imageResidentEstimateGB(
+                alias: alias, sizeBytes: 100 * (1 << 30), minimumMemoryGB: minimum
+            )
+            for ram in [minimum - 1, minimum, minimum * 2] {
+                let hardware = MacHardware(
+                    brandString: "Apple M3", family: .m3, tier: .base,
+                    physicalRAMBytes: UInt64(ram * Double(1 << 30)), memoryBandwidthGBs: 100
+                )
+                let admitted = ModelSizing.imageMemoryFloorSatisfied(
+                    minimumMemoryGB: minimum, physicalMemoryGB: hardware.physicalRAMGB
+                ) && charge <= ModelSizing.residentMemoryCeilingGB(on: hardware)
+                #expect(admitted == (ram >= minimum), "\(alias) on \(ram) GB")
+            }
+        }
+    }
+
+    @Test("16 GB admits FLUX2 and Z-Image but refuses FLUX3",
+          arguments: ["flux2-klein-4b", "z-image-turbo", "flux3-klein"])
+    func imageAdmissionOn16GB(alias: String) throws {
+        let rows = try catalogMemoryContract()
+        let minimum = try #require(rows[alias]?.minimumMemoryGB)
+        let fits = ModelSizing.imageMemoryFloorSatisfied(
+            minimumMemoryGB: minimum, physicalMemoryGB: 16
+        )
+        #expect(fits == (alias != "flux3-klein"))
+        let charge = ModelSizing.imageResidentEstimateGB(alias: alias, minimumMemoryGB: minimum)
+        #expect((charge <= 12) == fits)
+    }
+
+    @MainActor
+    @Test("An image above physical capacity is refused before a resident request")
+    func oversizedImageNeverReachesResidentLoad() async {
+        let server = ServerManager(testingState: .ready(alias: "current-model"))
+        server.memorySnapshotProvider = {
+            MemoryProbe.Snapshot(totalBytes: 16 << 30, usedBytes: 2 << 30)
+        }
+        let loaded = await server.ensureServing(
+            alias: "flux3-klein", hfPath: nil, estimatedMemoryGB: 19,
+            imageMode: .generation, imageMinimumMemoryGB: 24
+        )
+        #expect(!loaded)
+        #expect(server.residentLoadFailures["flux3-klein"] != nil)
+        #expect(server.state == .ready(alias: "current-model"))
+    }
+
     @Test("image picker summarizes load readiness before selection")
     func imageReadinessSummary() {
         let entry = ModelEntry(
