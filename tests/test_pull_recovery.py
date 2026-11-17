@@ -558,6 +558,13 @@ def test_direct_hub_http_errors_retry_and_render_safely(status, tmp_path, monkey
             None,
         )
 
+    if status in (401, 403):
+        # Anonymous access denied: hand off to the credential-aware Hub client.
+        assert cli._retry_hub_download(transfer, "owner/repo") is False
+        assert len(calls) == 1
+        assert sleeps == []
+        return
+
     with pytest.raises(_mirror.ResumableDownloadError) as caught:
         cli._retry_hub_download(transfer, "owner/repo")
     retryable = status == 429 or 500 <= status < 600
@@ -566,8 +573,6 @@ def test_direct_hub_http_errors_retry_and_render_safely(status, tmp_path, monkey
     rendered = cli.render_hub_error(caught.value, "owner/repo")
     if retryable:
         assert "Hugging Face is temporarily unavailable" in rendered
-    elif status in (401, 403):
-        assert "gated" in rendered
     elif status == 404:
         assert "not found" in rendered
     else:

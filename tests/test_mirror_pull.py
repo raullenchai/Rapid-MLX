@@ -5414,3 +5414,88 @@ def test_range_ignored_prefix_emits_activity_without_byte_credit(
         )[0]
     assert tracker._done == 500
     assert sum(notifications) == 500
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("source", ["hub", "redirect", "mirror"])
+@pytest.mark.parametrize("retained_prefix", [False, True])
+def test_direct_auth_denial_uses_authenticated_hub_fallback(
+    tmp_path, monkeypatch, status, source, retained_prefix
+):
+    """Anonymous GET denials fall back to Hub without exposing the HF token."""
+    from huggingface_hub.utils import build_hf_headers
+
+    filename = "model.safetensors"
+    body = b"x" * 1000
+    repo, revision, router = _mirrored_pull_setup(
+        tmp_path, monkeypatch, [(filename, len(body))], [404]
+    )
+    monkeypatch.setenv("HF_TOKEN", "hf_test_gated_access")
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising=False)
+    if source != "mirror":
+        monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    location = (
+        f"https://huggingface.co/{repo}/resolve/{revision}/{filename}"
+        if source == "hub"
+        else f"https://cdn.example.test/{filename}"
+    )
+    part = _sidecar_part_path(tmp_path, repo, filename)
+    # A mirror partial forces the resumable Hub path after the mirror denial.
+    if retained_prefix or source == "mirror":
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_bytes(body[:400])
+    requests = []
+
+    def urlopen(req, timeout=None):
+        assert req.get_header("Authorization") is None
+        assert "hf_test_gated_access" not in req.full_url
+        if req.full_url == location or req.full_url.endswith(filename):
+            requests.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, status, "denied", {}, None)
+        return router(req, timeout=timeout)
+
+    def authenticated_download(repo_id, filename, revision, cache_dir=None, **kwargs):
+        # Hub retains implicit token resolution; no token=False override.
+        assert build_hf_headers(token=kwargs.get("token"))["authorization"] == (
+            "Bearer hf_test_gated_access"
+        )
+        if retained_prefix or source == "mirror":
+            assert part.read_bytes() == body[:400]
+        target = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+            / filename
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        return str(target)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=urlopen),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, [(filename, len(body))]),
+        ),
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch(
+            "huggingface_hub.hf_hub_download", side_effect=authenticated_download
+        ) as hub,
+    ):
+        metadata.return_value.location = location
+        assert _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
+
+    hub.assert_called_once()
+    assert location in requests
+    if source == "mirror":
+        assert any(url.startswith("https://models.rapidmlx.com/") for url in requests)
+    assert not part.exists()
+    target = (
+        tmp_path
+        / f"models--{repo.replace('/', '--')}"
+        / "snapshots"
+        / revision
+        / filename
+    )
+    assert target.read_bytes() == body

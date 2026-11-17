@@ -1866,6 +1866,11 @@ def _hf_resumable_one(
         ValueError,
     ) as exc:
         _raise_if_disk_full(exc)
+        if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
+            # The direct GET is anonymous, even at mirror/CDN locations. Let
+            # hf_hub_download resolve Hub credentials and handle authenticated
+            # access instead of retrying here with a token on an arbitrary host.
+            return False
         raise ResumableDownloadError(
             "Hub transfer interrupted; resume retained bytes"
         ) from exc
