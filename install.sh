@@ -66,12 +66,14 @@ print_success_box() {
 # With curl | bash, stdin is installer source, not input for child commands.
 # Keep terminal input available for interactive runs; internal data pipelines
 # (such as the cache JSON reader) must keep their own explicit stdin.
+# Installer probes must not report usage or consume the first-use disclosure.
+# Scope the opt-out to each child; never persist it or change the user's env.
 run_install_command() {
     local status=0
     if [ -t 0 ]; then
-        "$@" <&0 &
+        RAPID_MLX_TELEMETRY=0 "$@" <&0 &
     else
-        "$@" </dev/null &
+        RAPID_MLX_TELEMETRY=0 "$@" </dev/null &
     fi
     INSTALL_CHILD_PID=$!
     while :; do
@@ -652,7 +654,7 @@ EOF
 
 installed_cached_aliases() {
     run_install_command "$INSTALL_DIR/bin/rapid-mlx" models --cached --json 2>/dev/null |
-        "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
+        RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
 }
 
 refresh_starter_from_installed_cache() {
@@ -707,7 +709,7 @@ print_quick_start_commands() {
     echo "    # Launch checks the agent's model needs against your Mac RAM; small Macs may need more memory."
     echo "    # Run the same command tomorrow; add --remove to delete Rapid's profile."
     echo ""
-    if "$INSTALL_DIR/bin/python" -I -c 'import importlib.util,sys; sys.exit(importlib.util.find_spec("gradio") is None)' </dev/null; then
+    if RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -I -c 'import importlib.util,sys; sys.exit(importlib.util.find_spec("gradio") is None)' </dev/null; then
         echo "    rapid-mlx-chat    # web UI"
     else
         echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/python -m pip install 'rapid-mlx[chat]')"
@@ -754,7 +756,7 @@ uv_config_absent() {
         while :; do
             [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
             if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
-                "$INSTALL_DIR/bin/python" -I -c '
+                RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -I -c '
 import sys, tomllib
 with open(sys.argv[1], "rb") as f:
     doc = tomllib.load(f)
@@ -955,7 +957,7 @@ restart_service_hints() {
                 found=1
             fi
             dim "$hint"
-        done < <("$INSTALL_DIR/bin/python" -I -c '
+        done < <(RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -I -c '
 import os, plistlib, shlex, sys
 install, bin_dir, *paths = sys.argv[1:]
 root = os.path.realpath(install)
