@@ -1637,6 +1637,26 @@ def mtp_generate_step(
     def _may_run_ahead() -> bool:
         return may_run_ahead is None or bool(may_run_ahead())
 
+    def _note_lookup_verify(width: int) -> None:
+        _lookup_widths[width] = _lookup_widths.get(width, 0) + 1
+        _timing_add(f"prompt_lookup_verify_width_{width}", 1.0)
+
+    def _note_lookup_accepted(copied_accepted: int) -> None:
+        _lookup_counts["accepted"] += copied_accepted
+        _timing_add("prompt_lookup_accepted_tokens", float(copied_accepted))
+
+    def _log_lookup_summary() -> None:
+        if _prompt_lookup_enabled:
+            logger.info(
+                "[MTP lookup] max_copy=%d proposals=%d "
+                "copied_proposed=%d copied_accepted=%d verify_widths=%s",
+                _lookup_max_copy,
+                _lookup_counts["proposals"],
+                _lookup_counts["proposed"],
+                _lookup_counts["accepted"],
+                dict(sorted(_lookup_widths.items())),
+            )
+
     def _copy_may_follow() -> bool:
         return (
             _prompt_lookup_index is not None
@@ -1904,9 +1924,7 @@ def mtp_generate_step(
                     )
                     _timing_add("verify_calls", 1.0)
                     if pending_is_prompt_lookup:
-                        width = k_len + 1
-                        _lookup_widths[width] = _lookup_widths.get(width, 0) + 1
-                        _timing_add(f"prompt_lookup_verify_width_{width}", 1.0)
+                        _note_lookup_verify(k_len + 1)
 
                     # ------- Host-side read (all values already resident) -------
                     accept_flags = accept_mask_arr.tolist()
@@ -1970,9 +1988,7 @@ def mtp_generate_step(
                             break
 
                 if pending_is_prompt_lookup:
-                    copied_accepted = min(accepted_count, max_tokens - ntoks)
-                    _lookup_counts["accepted"] += copied_accepted
-                    _timing_add("prompt_lookup_accepted_tokens", float(copied_accepted))
+                    _note_lookup_accepted(min(accepted_count, max_tokens - ntoks))
 
                 round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
                 # What the round actually delivers: the accepted prefix, plus the
@@ -2286,13 +2302,4 @@ def mtp_generate_step(
             _settle_head_after_error(_discard_head_history)
         raise
     finally:
-        if _prompt_lookup_enabled:
-            logger.info(
-                "[MTP lookup] max_copy=%d proposals=%d "
-                "copied_proposed=%d copied_accepted=%d verify_widths=%s",
-                _lookup_max_copy,
-                _lookup_counts["proposals"],
-                _lookup_counts["proposed"],
-                _lookup_counts["accepted"],
-                dict(sorted(_lookup_widths.items())),
-            )
+        _log_lookup_summary()
