@@ -1,5 +1,7 @@
+import json
 import sys
 from contextlib import nullcontext
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -175,8 +177,9 @@ def test_refusal_suggests_fitting_same_task_model(
     monkeypatch.setattr(
         preflight, "_mlx_recommended_working_set_bytes", lambda: 25 * GIB
     )
+    ram = 24 if alias == "qwen-image-2.1-bf16" else 32
     with pytest.raises(SystemExit) as exc:
-        run(alias, 32, monkeypatch)
+        run(alias, ram, monkeypatch)
     assert exc.value.code == 1
     output = capsys.readouterr().err
     pick = output.split("rapid-mlx serve ", 1)[1].split()[0]
@@ -186,7 +189,7 @@ def test_refusal_suggests_fitting_same_task_model(
     assert operations.issubset(_main_capabilities(profile)["operation_modes"])
     if expected_pick is not None:
         assert pick == expected_pick
-    run(pick, 32, monkeypatch)
+    run(pick, ram, monkeypatch)
 
 
 @pytest.mark.parametrize(
@@ -401,7 +404,7 @@ def test_refusal_without_fitting_image_model(monkeypatch, capsys):
         preflight, "_mlx_recommended_working_set_bytes", lambda: 3 * GIB
     )
     with pytest.raises(SystemExit) as exc:
-        run("flux2-klein-4b", 32, monkeypatch)
+        run("flux2-klein-4b", 4, monkeypatch)
     assert exc.value.code == 1
     output = capsys.readouterr().err
     assert "No image generation model in the catalog fits this Mac." in output
@@ -616,6 +619,136 @@ def test_image_fit_uses_admission_charge_instead_of_weights(alias):
     assert preflight.catalog_memory_refusal(alias, cached=False, **kwargs) is None
 
 
+@pytest.mark.parametrize("alias", ["flux2-klein-4b", "z-image-turbo"])
+@pytest.mark.parametrize("recommended", [None, int(10.67 * GIB), 12 * GIB])
+@pytest.mark.parametrize("cached", [False, True])
+def test_16gb_image_models_pass_at_documented_minimum(
+    alias, recommended, cached, monkeypatch
+):
+    kwargs = dict(ram_bytes=16 * GIB, recommended_working_set_bytes=recommended)
+    for name in (alias, resolve_profile(alias).hf_path):
+        fit = preflight.catalog_memory_fit(name, **kwargs)
+        assert fit.floor_gib == 16
+        assert fit.fits is True
+        assert preflight.catalog_memory_refusal(name, cached=cached, **kwargs) is None
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: cached)
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: recommended
+    )
+    run(alias, 16, monkeypatch)
+
+
+@pytest.mark.parametrize("recommended", [None, int(10.67 * GIB), 12 * GIB])
+def test_flux3_klein_still_refused_on_16gb(recommended, monkeypatch, capsys):
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: False)
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: recommended
+    )
+    with pytest.raises(SystemExit):
+        run("flux3-klein", 16, monkeypatch)
+    assert "at least 24 GB" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("recommended", [None])
+def test_catalog_documented_minimum_guarantees_admission(recommended):
+    from rapid_mlx.cli import _available_models_json_payload
+    from rapid_mlx.model_aliases import list_profiles
+
+    # The public catalog and serve must consume the same profile field.
+    payload = _available_models_json_payload()
+    published = {
+        row["alias"]: row["min_memory_gb"]
+        for rows in payload.values()
+        if isinstance(rows, list)
+        for row in rows
+        if isinstance(row, dict) and "alias" in row and "min_memory_gb" in row
+    }
+    assert published
+    # Swift consumes this same fixture through ModelCatalog's production JSON
+    # parser and checks capacity plus the real resident ceiling. Pin every image
+    # floor to the live public catalog here, so either language drifting fails.
+    desktop_rows = json.loads(
+        (Path(__file__).parent / "fixtures/catalog_image_memory.json").read_text()
+    )["image"]
+    assert desktop_rows == [
+        {key: row[key] for key in ("alias", "min_memory_gb", "default_steps")}
+        for row in payload["image"]
+        if row.get("min_memory_gb") is not None
+    ]
+    for row in desktop_rows:
+        floor = row["min_memory_gb"]
+        for ram in (floor - 1, floor, floor * 2):
+            fit = preflight.catalog_memory_fit(
+                row["alias"],
+                ram_bytes=int(ram * GIB),
+                recommended_working_set_bytes=recommended,
+            )
+            assert fit.fits is (ram >= floor), row["alias"]
+    for alias, profile in list_profiles().items():
+        floor = profile.min_memory_gb
+        if floor is None:
+            continue
+        assert published[alias] == floor
+        for ram in (floor, floor * 2):
+            kwargs = dict(
+                ram_bytes=int(ram * GIB),
+                recommended_working_set_bytes=recommended,
+            )
+            fit = preflight.catalog_memory_fit(alias, **kwargs)
+            assert fit.fits is True, alias
+            assert fit.floor_gib == floor, alias
+            for cached in (False, True):
+                assert (
+                    preflight.catalog_memory_refusal(alias, cached=cached, **kwargs)
+                    is None
+                ), alias
+
+
+def test_qwen_4b_on_8gb_uses_runtime_footprint():
+    kwargs = dict(ram_bytes=8 * GIB, recommended_working_set_bytes=None)
+    fit = preflight.catalog_memory_fit("qwen3.5-4b-4bit", **kwargs)
+    assert fit.floor_gib == resolve_profile("qwen3.5-4b-4bit").min_memory_gb == 16
+    assert fit.estimate_bytes == 6 * GIB
+    assert fit.estimate_source == "curated_footprint"
+    assert fit.budget_bytes == int(8 * GIB * 2 / 3)
+    assert fit.fits is False
+    refusal = preflight.catalog_memory_refusal(
+        "qwen3.5-4b-4bit", cached=False, **kwargs
+    )
+    assert refusal.kind == "gpu_budget"
+    assert refusal.footprint_bytes == 6 * GIB
+
+
+@pytest.mark.parametrize(
+    "alias, ram, modality",
+    [("flux2-klein-4b", 8, "image-gen"), ("qwen3.5-4b-4bit", 8, "text")],
+)
+def test_small_mac_refusal_explains_runtime_and_offers_fitting_alternative(
+    alias, ram, modality, monkeypatch, capsys
+):
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: False)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: 1000.0)
+    budget = int(ram * GIB * 2 / 3)
+    monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: budget)
+    with pytest.raises(SystemExit):
+        run(alias, ram, monkeypatch)
+    output = capsys.readouterr().err
+    assert ("text encoder, VAE" in output) == (modality == "image-gen")
+    assert "Nothing was downloaded" in output
+    marker = "A model that fits this Mac: rapid-mlx serve "
+    if modality == "image-gen" and marker not in output:
+        return  # no shipped image model fits an 8 GB Mac's GPU budget
+    pick = output.split(marker)[1].split()[0]
+    assert pick != alias
+    assert resolve_profile(pick).modality == modality
+    assert (
+        preflight.catalog_memory_fit(
+            pick, ram_bytes=ram * GIB, recommended_working_set_bytes=budget
+        ).fits
+        is True
+    )
+
+
 def test_image_bf16_uses_admission_charge():
     result = preflight.catalog_memory_fit(
         "qwen-image-2.1-bf16", ram_bytes=64 * GIB, recommended_working_set_bytes=None
@@ -639,7 +772,7 @@ def test_image_at_floor_refuses_when_weights_exceed_gpu_budget(monkeypatch):
     assert refusal.footprint_bytes == result.estimate_bytes
 
 
-def test_image_at_floor_refuses_when_admission_charge_exceeds_gpu_budget(monkeypatch):
+def test_image_at_floor_passes_when_admission_charge_exceeds_gpu_budget(monkeypatch):
     alias = "flux-schnell"
     estimate = 20 * GIB
     monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: 4 * GIB)
@@ -654,12 +787,11 @@ def test_image_at_floor_refuses_when_admission_charge_exceeds_gpu_budget(monkeyp
         alias, ram_bytes=32 * GIB, recommended_working_set_bytes=12 * GIB
     )
     assert result.estimate_bytes == estimate
-    assert result.fits is False
+    assert result.fits is True
     refusal = preflight.catalog_memory_refusal(
         alias, ram_bytes=32 * GIB, recommended_working_set_bytes=12 * GIB, cached=False
     )
-    assert refusal.kind == "gpu_budget"
-    assert refusal.footprint_bytes == estimate
+    assert refusal is None
 
 
 def test_image_below_floor_refusal():

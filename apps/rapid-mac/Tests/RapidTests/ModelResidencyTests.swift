@@ -992,7 +992,7 @@ struct ModelResidencyTests {
             sizeText: "6.5 GiB",
             minimumMemoryGB: 16
         )
-        #expect(abs(estimate - 12.8) < 0.001)
+        #expect(estimate == 12)
     }
 
     @Test("Selecting a chat model does not retain the legacy server restart flow")

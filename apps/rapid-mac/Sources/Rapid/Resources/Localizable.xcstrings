@@ -23723,6 +23723,16 @@
         }
       }
     },
+    "This image model needs at least %@ of unified memory; this Mac has %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该图像模型至少需要 %@ 统一内存，这台 Mac 只有 %@。"
+          }
+        }
+      }
+    },
     "This local server does not support automatic app selection. Update or restart Rapid, then try again." : {
       "localizations" : {
         "zh-Hans" : {

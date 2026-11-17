@@ -1,0 +1,84 @@
+{
+  "image": [
+    {
+      "alias": "bonsai-image-4b-2bit",
+      "min_memory_gb": 12.0,
+      "default_steps": 4
+    },
+    {
+      "alias": "flux-schnell",
+      "min_memory_gb": 32.0,
+      "default_steps": 4
+    },
+    {
+      "alias": "flux2-klein-4b",
+      "min_memory_gb": 16.0,
+      "default_steps": 4
+    },
+    {
+      "alias": "flux3-klein",
+      "min_memory_gb": 24.0,
+      "default_steps": 16
+    },
+    {
+      "alias": "flux3-klein-base",
+      "min_memory_gb": 24.0,
+      "default_steps": 50
+    },
+    {
+      "alias": "hidream-o1-dev",
+      "min_memory_gb": 32.0,
+      "default_steps": 28
+    },
+    {
+      "alias": "minimax-h3-image",
+      "min_memory_gb": 64.0,
+      "default_steps": 6
+    },
+    {
+      "alias": "minimax-h3-image-8bit",
+      "min_memory_gb": 96.0,
+      "default_steps": 6
+    },
+    {
+      "alias": "qwen-image",
+      "min_memory_gb": 8.0,
+      "default_steps": 40
+    },
+    {
+      "alias": "qwen-image-2.1",
+      "min_memory_gb": 8.0,
+      "default_steps": 40
+    },
+    {
+      "alias": "qwen-image-2.1-bf16",
+      "min_memory_gb": 32.0,
+      "default_steps": 40
+    },
+    {
+      "alias": "qwen-image-2.1-turbo",
+      "min_memory_gb": 32.0,
+      "default_steps": 8
+    },
+    {
+      "alias": "qwen-image-edit",
+      "min_memory_gb": 96.0,
+      "default_steps": 20
+    },
+    {
+      "alias": "sd35-large-4bit",
+      "min_memory_gb": 32.0,
+      "default_steps": 28
+    },
+    {
+      "alias": "sdxl-base",
+      "min_memory_gb": 16.0,
+      "default_steps": 30
+    },
+    {
+      "alias": "z-image-turbo",
+      "min_memory_gb": 16.0,
+      "default_steps": 8
+    }
+  ]
+}

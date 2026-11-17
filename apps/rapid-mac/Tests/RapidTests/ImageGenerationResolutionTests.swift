@@ -266,7 +266,8 @@ struct ImageGenerationResolutionTests {
             ModelEntry(
                 alias: "flux2-klein-4b", hfRepo: "example/flux",
                 sizeOnDisk: "4.3 GiB", cached: true, kind: .image,
-                imageCapability: .generationAndEditing
+                imageCapability: .generationAndEditing,
+                minimumMemoryGB: 16
             ),
             ModelEntry(
                 alias: "z-image-turbo", hfRepo: "example/z",
@@ -281,5 +282,7 @@ struct ImageGenerationResolutionTests {
 
         #expect(target.alias == "flux2-klein-4b")
         #expect(target.hfPath == "example/flux")
+        #expect(target.minimumMemoryGB == 16)
+        #expect(target.estimatedMemoryGB == 12)
     }
 }

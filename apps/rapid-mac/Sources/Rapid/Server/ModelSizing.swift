@@ -132,7 +132,11 @@ enum ModelSizing {
     /// same 80%-of-physical usable pool as picker classification so startup
     /// warnings and runtime eviction do not disagree about available memory.
     static func residentMemoryCeilingGB(on hardware: MacHardware) -> Double {
-        max(4, floor(hardware.usableRAMGB))
+        residentMemoryBudgetGB(physicalMemoryGB: hardware.physicalRAMGB)
+    }
+
+    private static func residentMemoryBudgetGB(physicalMemoryGB: Double) -> Double {
+        max(4, floor(physicalMemoryGB * MacHardware.modelUsableMemoryFraction))
     }
 
     /// Residency charge sent to the server. Downloaded bytes are better
@@ -146,23 +150,31 @@ enum ModelSizing {
         return max(heuristic, diskGiB * 1.25 + 0.5)
     }
 
-    /// Image catalog memory is a whole-machine support floor. Convert it to
-    /// the same 80%-usable process budget used by the existing live-pressure
-    /// admission guard, while retaining artifact sizing as the lower bound.
+    /// Catalog minima describe supported whole-machine capacity, not a measured
+    /// process peak. Charge the same rounded budget as the resident ceiling at
+    /// that minimum so artifact size cannot veto a supported Mac. Unknown
+    /// models retain the conservative artifact estimate.
     static func imageResidentEstimateGB(
         alias: String,
         sizeText: String? = nil,
         sizeBytes: Int64? = nil,
         minimumMemoryGB: Double? = nil
     ) -> Double {
-        let artifactEstimate = residentEstimateGB(alias: alias, sizeText: sizeText, sizeBytes: sizeBytes)
         guard let minimumMemoryGB,
               minimumMemoryGB.isFinite,
-              minimumMemoryGB > 0 else { return artifactEstimate }
-        return max(
-            artifactEstimate,
-            minimumMemoryGB * MacHardware.modelUsableMemoryFraction
-        )
+              minimumMemoryGB > 0 else {
+            return residentEstimateGB(alias: alias, sizeText: sizeText, sizeBytes: sizeBytes)
+        }
+        return residentMemoryBudgetGB(physicalMemoryGB: minimumMemoryGB)
+    }
+
+    /// Compare the catalog's support floor with physical RAM, independently of
+    /// residency charges and live memory pressure. Missing metadata leaves the
+    /// existing estimate-based admission in charge.
+    static func imageMemoryFloorSatisfied(minimumMemoryGB: Double?, physicalMemoryGB: Double) -> Bool {
+        guard let minimumMemoryGB, minimumMemoryGB.isFinite, minimumMemoryGB > 0,
+              physicalMemoryGB.isFinite, physicalMemoryGB > 0 else { return true }
+        return physicalMemoryGB >= minimumMemoryGB
     }
 
     /// Pick a KV-reserve target proportional to model size — bigger
