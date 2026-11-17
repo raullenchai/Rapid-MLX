@@ -27,7 +27,7 @@ import threading
 import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 if TYPE_CHECKING:
     from rapid_mlx.speculative.serial_benchmark import SerialRuntimeHandle
@@ -2797,7 +2797,12 @@ def _is_transient_hub_error(exc: BaseException) -> bool:
     return transient
 
 
-def _retry_hub_download(operation, model_id: str):
+_HubResult = TypeVar("_HubResult")
+
+
+def _retry_hub_download(
+    operation: Callable[[], _HubResult], model_id: str
+) -> _HubResult:
     """Retry transient Hub transfers against the same on-disk cache.
 
     Completed Hub files and mirror partials survive each attempt. Some Hub
@@ -2819,6 +2824,7 @@ def _retry_hub_download(operation, model_id: str):
                 file=sys.stderr,
             )
             time.sleep(delay)
+    raise AssertionError("unreachable: the last attempt re-raises")
 
 
 def _hub_not_found_hint(model_id: str) -> str:
