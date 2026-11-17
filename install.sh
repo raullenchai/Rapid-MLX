@@ -66,12 +66,14 @@ print_success_box() {
 # With curl | bash, stdin is installer source, not input for child commands.
 # Keep terminal input available for interactive runs; internal data pipelines
 # (such as the cache JSON reader) must keep their own explicit stdin.
+# Installer probes must not report usage or consume the first-use disclosure.
+# Scope the opt-out to each child; never persist it or change the user's env.
 run_install_command() {
     local status=0
     if [ -t 0 ]; then
-        "$@" <&0 &
+        RAPID_MLX_TELEMETRY=0 "$@" <&0 &
     else
-        "$@" </dev/null &
+        RAPID_MLX_TELEMETRY=0 "$@" </dev/null &
     fi
     INSTALL_CHILD_PID=$!
     while :; do
@@ -652,7 +654,7 @@ EOF
 
 installed_cached_aliases() {
     run_install_command "$INSTALL_DIR/bin/rapid-mlx" models --cached --json 2>/dev/null |
-        "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
+        RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
 }
 
 refresh_starter_from_installed_cache() {
@@ -707,7 +709,7 @@ print_quick_start_commands() {
     echo "    # Launch checks the agent's model needs against your Mac RAM; small Macs may need more memory."
     echo "    # Run the same command tomorrow; add --remove to delete Rapid's profile."
     echo ""
-    if "$INSTALL_DIR/bin/python" -I -c 'import importlib.util,sys; sys.exit(importlib.util.find_spec("gradio") is None)' </dev/null; then
+    if RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -I -c 'import importlib.util,sys; sys.exit(importlib.util.find_spec("gradio") is None)' </dev/null; then
         echo "    rapid-mlx-chat    # web UI"
     else
         echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/python -m pip install 'rapid-mlx[chat]')"
@@ -716,6 +718,47 @@ print_quick_start_commands() {
     dim "Measured speeds on Macs like this one:"
     echo ""
     echo "    $(leaderboard_mac_url "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)" "$RAM_GB")"
+}
+
+# RAPID_INSTALL_NO_CHAT=1 keeps unattended installs on the printed quick start.
+finish_installation() {
+    local start_chat=false reply
+    # stdin can still contain installer source (curl | bash). Only use a real,
+    # openable controlling terminal, and do not prompt when output is captured.
+    if [ -z "${CI:-}" ] && [ "${RAPID_INSTALL_NO_CHAT:-0}" != 1 ] && [ -t 1 ]; then
+        if { exec 3</dev/tty; } 2>/dev/null; then
+            if [ -t 3 ]; then
+                printf '  Start a chat with %s now? [Y/n] ' "$RECOMMENDED_MODEL"
+                if IFS= read -r reply <&3; then
+                    case "$reply" in ''|[Yy]|[Yy][Ee][Ss]) start_chat=true ;; esac
+                fi
+                echo ""
+            fi
+            if [ "$start_chat" = false ]; then exec 3>&-; fi
+        fi
+    fi
+
+    if [ "$start_chat" = false ]; then
+        print_quick_start_commands
+    fi
+    echo ""
+    dim "Upgrade:    rapid-mlx upgrade"
+    dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
+    echo ""
+
+    if [ "$NEED_PATH_HINT" = true ]; then
+        warn "Restart your terminal or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        echo ""
+    fi
+
+    if [ "$start_chat" = true ]; then
+        info "The model will download first if it is not already cached."
+        # Finish installer cleanup and release its lock before replacing it with
+        # the user command. Normal chat signals and telemetry apply from here.
+        on_installer_exit
+        trap - EXIT HUP INT TERM
+        exec "$INSTALL_DIR/bin/rapid-mlx" chat "$RECOMMENDED_MODEL" <&3 2>&1 3>&-
+    fi
 }
 
 # Validate before changing the environment or downloading dependencies.
@@ -754,7 +797,7 @@ uv_config_absent() {
         while :; do
             [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
             if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
-                "$INSTALL_DIR/bin/python" -I -c '
+                RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -I -c '
 import sys, tomllib
 with open(sys.argv[1], "rb") as f:
     doc = tomllib.load(f)
@@ -955,7 +998,7 @@ restart_service_hints() {
                 found=1
             fi
             dim "$hint"
-        done < <("$INSTALL_DIR/bin/python" -I -c '
+        done < <(RAPID_MLX_TELEMETRY=0 "$INSTALL_DIR/bin/python" -I -c '
 import os, plistlib, shlex, sys
 install, bin_dir, *paths = sys.argv[1:]
 root = os.path.realpath(install)
@@ -1029,7 +1072,7 @@ validate_target
 echo ""
 echo "  ╭─────────────────────────────────────╮"
 echo "  │  Rapid-MLX — AI on Apple Silicon    │"
-echo "  │  Up to 3x Ollama throughput         │"
+echo "  │  Fast local models for your agents  │"
 echo "  ╰─────────────────────────────────────╯"
 echo ""
 
@@ -1215,13 +1258,4 @@ VERSION=$(run_install_command "$INSTALL_DIR/bin/rapid-mlx" --version 2>/dev/null
 echo ""
 print_success_box "Rapid-MLX installed!" "Version: $VERSION" "RAM: ${RAM_GB} GB ($RAM_TIER)"
 echo ""
-print_quick_start_commands
-echo ""
-dim "Upgrade:    rapid-mlx upgrade"
-dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
-echo ""
-
-if [ "$NEED_PATH_HINT" = true ]; then
-    warn "Restart your terminal or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-fi
+finish_installation
