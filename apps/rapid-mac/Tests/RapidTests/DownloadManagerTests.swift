@@ -621,11 +621,11 @@ struct DownloadManagerTests {
 
     // /usr/bin/true stands in for pull: retries create real replacement jobs
     // through startDownload, without network traffic or model/cache writes.
-    private func retryManager() -> DownloadManager {
+    private func retryManager(endpointPreference: @escaping () -> String? = { nil }) -> DownloadManager {
         let binary = URL(fileURLWithPath: "/usr/bin/true")
         // Inject access: the real probe would read this host's actual HF cache.
         return DownloadManager(
-            binaryPath: binary, binaryLocator: { binary }, endpointPreference: { nil },
+            binaryPath: binary, binaryLocator: { binary }, endpointPreference: endpointPreference,
             cacheAccessCheck: { nil }
         )
     }
@@ -735,9 +735,11 @@ struct DownloadManagerTests {
         }
     }
 
-    @Test("Manual Resume retains bytes, endpoint and source and resets the retry budget")
-    func resumeRetainsProgress() async throws {
-        let mgr = retryManager()
+    @Test("Manual Resume retains bytes and source, refreshes the endpoint and resets the retry budget",
+          arguments: ["https://new-mirror.example", nil])
+    func resumeRetainsProgress(endpoint: String?) async throws {
+        var savedEndpoint: String? = "https://original.example"
+        let mgr = retryManager(endpointPreference: { savedEndpoint })
         defer { mgr.beginShutdown(); mgr.finishShutdown() }
         let job = mgr._testingSeedJob(alias: "model", hfPath: "owner/repo", totalBytes: 2_000_000,
                                      source: .huggingFace, retryAttempt: DownloadManager.maxAutomaticRetries)
@@ -745,13 +747,14 @@ struct DownloadManagerTests {
         mgr._testingIngestStderr(alias: "model", line: "Error: could not reach Hugging Face")
         mgr._testingFinish(alias: "model", status: 1, reason: .exit)
         #expect(mgr.canRetryDownload(alias: "model"))
+        savedEndpoint = endpoint
         #expect(mgr.retryDownload(alias: "model"))
         let next = try #require(mgr.job(for: "model"))
         #expect(next.progress.bytesDownloaded == 1_000_000)
         #expect(next.source == .huggingFace)
         #expect(next.retryAttempt == 0)
         #expect(next.hfPath == "owner/repo")
-        #expect(next.downloadEndpoint == job.downloadEndpoint)
+        #expect(next.downloadEndpoint == endpoint)
     }
 
     @Test("Cancellation never schedules a mirror fallback")

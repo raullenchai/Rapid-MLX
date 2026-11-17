@@ -417,7 +417,10 @@ final class DownloadManager {
         }
         if isDownloading(trimmed) { return false }
         let downloadEndpoint: String?
-        if let retryingJob {
+        // Automatic reconnects continue the same endpoint snapshot. A manual
+        // Resume starts a new retry budget and honors the current setting,
+        // while retryingJob still carries forward its retained byte progress.
+        if retryAttempt > 0, let retryingJob {
             downloadEndpoint = retryingJob.downloadEndpoint
         } else {
             downloadEndpoint = endpointPreference()
