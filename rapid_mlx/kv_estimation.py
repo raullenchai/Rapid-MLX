@@ -805,3 +805,94 @@ def memory_fit_context(
         else:
             hi = mid - 1
     return lo if lo > 0 else None
+
+
+def _resolved_layer_types(config: Any, layers: int) -> list[str] | None:
+    """Read an explicit map or the supported GDN interval-based layout.
+
+    Live language dataclasses discard the checkpoint's layer map. Their
+    decoder constructs full attention at (index + 1) % interval == 0.
+    Never infer this layout for unknown families or replace a malformed map.
+    """
+    explicit = _cfg_get(config, "layer_types")
+    if explicit is not None:
+        return _valid_layer_types(explicit, layers)
+    if _cfg_get(config, "model_type") not in {
+        "qwen3_5",
+        "qwen3_5_text",
+        "qwen3_next",
+    }:
+        return None
+    interval = _pos_int(_cfg_get(config, "full_attention_interval"))
+    if (
+        not interval
+        or not layers
+        or _cfg_get(config, "num_kv_shared_layers", 0)
+        or _gateddeltanet_state_bytes(config) is None
+    ):
+        return None
+    return [
+        "full_attention" if (i + 1) % interval == 0 else "linear_attention"
+        for i in range(layers)
+    ]
+
+
+def _live_kv_dtype_bytes(model: Any) -> int | None:
+    """Inspect floating parameters without importing MLX or evaluating tensors.
+
+    Packed integer weights do not describe activation dtype. Floating scales
+    and ordinary weights do; use the widest width for mixed-dtype models.
+    """
+    widths = {"float16": 2, "bfloat16": 2, "float32": 4, "float64": 8}
+    found = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+        else:
+            name = str(getattr(value, "dtype", None)).lower().rsplit(".", 1)[-1]
+            if name in widths:
+                found.append(widths[name])
+
+    try:
+        visit(model.parameters())
+    except Exception:
+        return None
+    return max(found) if found else None
+
+
+def footprint_from_model(model: Any) -> KVFootprintEstimate | None:
+    """MLLM-only live dtype and interval layout recovery; text estimates stay unchanged."""
+    for config in (getattr(model, "config", None), getattr(model, "args", None)):
+        # Work on copies: live dataclasses can omit the checkpoint layer map.
+        def recover(cfg: Any) -> Any:
+            if cfg is None:
+                return None
+            values = dict(cfg) if isinstance(cfg, dict) else dict(vars(cfg))
+            layers = _pos_int(values.get("num_hidden_layers"))
+            layout = _resolved_layer_types(cfg, layers)
+            if layout is not None:
+                values["layer_types"] = layout
+            if values.get("text_config") is not None:
+                values["text_config"] = recover(values["text_config"])
+            return values
+
+        try:
+            recovered = recover(config)
+        except (TypeError, AttributeError):
+            continue
+        dims = config_kv_dims(recovered)
+        if dims is None:
+            continue
+        supported = _cfg_get(dims[3], "model_type") in {
+            "qwen3_5",
+            "qwen3_5_text",
+            "qwen3_next",
+        }
+        width = (_live_kv_dtype_bytes(model) or 4) if supported else None
+        return footprint_from_config(recovered, width)
+    return None

@@ -5659,6 +5659,7 @@ class ContextLengthExceeded(HTTPException):
             status_code=400,
             detail={"error": self.error_payload},
         )
+        logger.info("context_length_exceeded: %s", message)
 
 
 def context_overflow_from_client_error(

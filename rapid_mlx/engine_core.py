@@ -1583,7 +1583,7 @@ class EngineCore:
                                 f"[stream_outputs] {request_id[:12]} engine aborted: {output.error}"
                             )
                             raise InferenceAbortedError(
-                                output.error,
+                                str(output.error),
                                 error_kind=output.error_kind,
                                 prompt_tokens=output.prompt_tokens,
                                 completion_tokens=output.completion_tokens,
@@ -1702,7 +1702,7 @@ class EngineCore:
                 from .request import InferenceAbortedError
 
                 raise InferenceAbortedError(
-                    final_output.error,
+                    str(final_output.error),
                     error_kind=final_output.error_kind,
                     prompt_tokens=final_output.prompt_tokens,
                     completion_tokens=final_output.completion_tokens,
