@@ -561,6 +561,69 @@ def test_mllm_late_guard_error_survives_delivery(prefill_scheduler, stream):
     assert context_overflow_from_memory_error(None, caught.value).status_code == 400
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error_type", ["text", "context", "backpressure"])
+def test_text_engine_abort_normalizes_error_message(stream, error_type):
+    import asyncio
+    import logging
+    from unittest.mock import AsyncMock, Mock
+
+    from rapid_mlx.errors import (
+        MemoryContextExceededError,
+        MetalMemoryBackpressureError,
+    )
+    from rapid_mlx.output_collector import RequestOutputCollector
+    from rapid_mlx.request import InferenceAbortedError, RequestOutput
+
+    error = {
+        "text": "inference failed",
+        "context": MemoryContextExceededError(prompt_tokens=100, memory_ceiling=64),
+        "backpressure": MetalMemoryBackpressureError("memory cap reached"),
+    }[error_type]
+    cls = _production_methods(
+        "engine_core.py",
+        "EngineCore",
+        {"stream_outputs", "generate"},
+        dict(
+            __package__="rapid_mlx",
+            asyncio=asyncio,
+            logger=logging.getLogger(__name__),
+        ),
+    )
+    obj = cls()
+    collector = RequestOutputCollector(aggregate=True)
+    collector.put(
+        RequestOutput(
+            request_id="failed",
+            finished=True,
+            error=error,
+            error_kind="insufficient_memory",
+            prompt_tokens=100,
+            completion_tokens=0,
+        )
+    )
+    obj._output_collectors = {"failed": collector}
+    obj.add_request = AsyncMock(return_value="failed")
+    obj.scheduler = SimpleNamespace(abort_request=Mock())
+    obj._cleanup_request = Mock()
+
+    async def run():
+        event = asyncio.Event()
+        event.set()
+        obj._finished_events = {"failed": event}
+        if stream:
+            return [o async for o in obj.stream_outputs("failed")]
+        return await obj.generate("test")
+
+    with pytest.raises(InferenceAbortedError) as caught:
+        asyncio.run(run())
+    assert caught.value.args == (str(error),)
+    assert caught.value.error_kind == "insufficient_memory"
+    assert caught.value.prompt_tokens == 100
+    assert caught.value.completion_tokens == 0
+    obj._cleanup_request.assert_called_once_with("failed")
+
+
 def test_lazy_mllm_generator_inherits_guard(monkeypatch, prefill_scheduler):
     import sys
     from unittest.mock import Mock
@@ -817,6 +880,50 @@ def test_mllm_layout_recovery_does_not_change_shared_estimator():
     assert recovered.per_token_growth_bytes == 65536
     assert recovered.fixed_baseline_bytes == 156893184
     assert "layer_types" not in config
+
+
+@pytest.mark.parametrize("config", [object(), {"text_config": object()}, {}])
+def test_mllm_layout_recovery_falls_back_to_args(config):
+    from rapid_mlx.kv_estimation import footprint_from_model
+
+    model = SimpleNamespace(config=config, args=_config(), parameters=_parameters())
+    expected = footprint_from_model(
+        SimpleNamespace(config=_config(), parameters=_parameters())
+    )
+    assert footprint_from_model(model) == expected
+
+
+@pytest.mark.parametrize("config", [None, object(), {}])
+def test_mllm_layout_recovery_returns_none_without_valid_dimensions(config):
+    from rapid_mlx.kv_estimation import footprint_from_model
+
+    assert footprint_from_model(SimpleNamespace(config=config)) is None
+
+
+def test_prefill_memory_context_without_bounded_accounting(prefill_scheduler):
+    from rapid_mlx.kv_estimation import KVFootprintEstimate, memory_fit_context
+
+    s = prefill_scheduler
+    s._mllm_context_accounting = False
+    estimate = KVFootprintEstimate(1024, 4096, 0, 0)
+    assert s._prefill_memory_context(estimate, 65536) == memory_fit_context(
+        estimate, 65536
+    )
+    assert s._prefill_memory_context(estimate, 4096) is None
+
+
+def test_prefill_chunk_without_bounded_accounting(prefill_scheduler):
+    s = prefill_scheduler
+    s._mllm_context_accounting = False
+    assert s._prefill_chunk_for_context(10000, 2048) == 2048
+    assert s._prefill_chunk_for_context(10000, 0) == 1
+
+
+def test_prefill_chunk_without_metal_cap(prefill_scheduler):
+    s = prefill_scheduler
+    s._resolve_metal_cap_bytes = lambda: 0
+    assert s._bounded_prefill_enabled()
+    assert s._prefill_chunk_for_context(10000, 2048) == 2048
 
 
 def test_plain_preflight_counts_shared_owner_residency(prefill_scheduler):

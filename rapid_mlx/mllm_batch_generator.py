@@ -1339,6 +1339,8 @@ class MLLMBatchGenerator:
         ...         print(f"Request {resp.request_id}: token={resp.token}")
     """
 
+    _prefill_memory_guard: Callable[..., int] | None = None
+
     def __init__(
         self,
         model: nn.Module,
@@ -4549,7 +4551,7 @@ class MLLMBatchGenerator:
                     and not getattr(self, "active_batch", None)
                 ),
             )
-        if chunkable and (needs_split or prompt_length > chunk):
+        if cache is not None and chunkable and (needs_split or prompt_length > chunk):
             # Positional correctness across chunks rests on the model deriving
             # RoPE positions from the *cache offset*, not from each chunk's
             # local length. This is the same contract every autoregressive
