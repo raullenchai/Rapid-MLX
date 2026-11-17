@@ -1118,6 +1118,22 @@ def subfolder_allow_patterns(name: str) -> list[str] | None:
     """
     from .video.minimax_h3 import video_payloads
 
+    if resolve_hub_model(name) == "KRAFTON/Raon-1-nano-mlx":
+        # Explicit root files: *.safetensors also matches mtp/*.safetensors
+        # under fnmatch, so a wildcard would fetch the out-of-scope draft.
+        return [
+            "config.json",
+            "generation_config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "chat_template.jinja",
+            "README.md",
+            "NOTICE",
+            "LICENSE",
+            "LICENSES/*",
+        ]
     if resolve_hub_model(name) in {
         "black-forest-labs/flux-3-image-klein",
         "black-forest-labs/flux-3-image-klein-base",

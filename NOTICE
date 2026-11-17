@@ -33,6 +33,16 @@ project (https://github.com/vllm-project/vllm).
 Vendored third-party source
 ===========================
 
+The Raon-1 nano architecture in `rapid_mlx/models/raon1_nano.py` and the
+Raon parser state machines are from KRAFTON/Raon-1-nano-mlx (Apache-2.0),
+architecture revision 81e25155d3332c261ba503c0ae63eb65ad868398,
+Copyright 2026 KRAFTON Inc. The architecture retains its Apple MIT license
+header. See `rapid_mlx/models/NOTICE-RAON` for the component attributions.
+Parser interfaces were adapted to Rapid-MLX. Model changes gate the singleton
+folded-RDA and projected-KV kernels to batch size one; batched requests use
+the existing general paths.
+
+
 The Bonsai 2 Hadamard runtime in
 `rapid_mlx/models/prism_hadamard_qwen35.py` is adapted from Prism ML's
 https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-mlx-2bit

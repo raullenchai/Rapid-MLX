@@ -750,6 +750,8 @@ include = [
 [tool.ruff]
 line-length = 88
 extend-exclude = [
+    # Vendored Raon release: preserve arithmetic and source shape for parity.
+    "rapid_mlx/models/raon1_nano.py",
     # Vendored CogVideoX-Fun MLX runtime. Keep iso-upstream.
     "videox_fun_mlx",
     # Vendored LTX-2.5 MLX runtime. Keep iso-upstream; only provenance and

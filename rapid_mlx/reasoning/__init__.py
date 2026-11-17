@@ -100,6 +100,9 @@ def _register_builtin_parsers():
     from .ui_tars_parser import UiTarsReasoningParser
 
     register_parser("gemma4", Gemma4ReasoningParser)
+    from .raon_1_parser import RaonReasoningParser
+
+    register_parser("raon_1", RaonReasoningParser)
     register_parser("qwen3", Qwen3ReasoningParser)
     # ``hy_v3`` — Tencent Hunyuan 3 suffix-tolerant ``<think:opensource>``
     # variant of qwen3. Aliased as ``hy3`` for CLI convenience.

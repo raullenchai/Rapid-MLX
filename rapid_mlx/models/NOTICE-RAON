@@ -1,0 +1,17 @@
+Raon-1 nano, MLX model file (raon_mlx_model.py)
+Copyright 2026 KRAFTON Inc.
+
+raon_mlx_model.py includes code from the following sources.
+
+1. Raon-1 mini preview, MLX release (KRAFTON Inc.)
+   https://huggingface.co/KRAFTON/Raon-1-mini-preview-mlx, file raon_mlx_model.py
+   Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+   The Raon-1 mini model code and Metal kernels, and the MLA decode attention, prompt mHC and prompt
+   gated delta-rule kernels, are included with only import lines changed.
+
+2. MLX and MLX-LM (Apple Inc.)
+   https://github.com/ml-explore/mlx, https://github.com/ml-explore/mlx-lm
+   Copyright © 2023-2026 Apple Inc. Licensed under the MIT License (LICENSES/MIT-Apple-MLX.txt).
+   Portions reproduce the arithmetic order of MLX 0.32.4 kernels and the gated delta-rule kernel of
+   mlx_lm/models/gated_delta.py. The MLX load_vector and qdot helpers are read from the installed MLX
+   package at run time and are not included in this file.

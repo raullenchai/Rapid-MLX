@@ -1267,7 +1267,19 @@ def _detect_metadata_config(
         )
     )
 
-    if "flint" in model_types:
+    if "raon1_nano" in model_types:
+        settings.update(
+            tool_call_parser="raon_1",
+            reasoning_parser="raon_1",
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            is_moe=False,
+            is_text_only=True,
+            supports_spec_decode=False,
+            recommended_sampling=(("presence_penalty", 1.5), ("temperature", 0.1)),
+        )
+        reasons.append("Raon-1 nano hybrid text architecture")
+    elif "flint" in model_types:
         settings.update(
             tool_call_parser="glm47",
             reasoning_parser="qwen3",

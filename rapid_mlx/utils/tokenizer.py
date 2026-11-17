@@ -681,7 +681,9 @@ _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
 # Keep this separate from ``_VENDORED_MODEL_TYPES``: several older adapters
 # still rely on checkpoint-specific loading behavior and must not inherit the
 # stricter "weights/tokenizer only" trust boundary implicitly.
-_RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset({"k2_horizon", "lfm3"})
+_RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset(
+    {"k2_horizon", "lfm3", "raon1_nano"}
+)
 
 
 def _register_vendored_archs() -> None:
@@ -798,6 +800,18 @@ def _register_vendored_archs() -> None:
                 _VENDORED_MODEL_TYPES.add("muse_glimmer")
         else:
             _VENDORED_MODEL_TYPES.add("muse_glimmer")
+
+    # Raon's checkpoint declares model_file. Always own the architecture and
+    # suppress that selector through _rapid_owned_model_config, even if an
+    # installed package later adds an implementation with the same model_type.
+    try:
+        from ..models import raon1_nano as _raon1_nano
+
+        sys.modules["mlx_lm.models.raon1_nano"] = _raon1_nano
+    except Exception as e:
+        logger.warning("raon1_nano vendored module failed to register: %s", e)
+    else:
+        _VENDORED_MODEL_TYPES.add("raon1_nano")
 
     if "mlx_lm.models.g9v3" not in sys.modules:
         # AI9Stars G9v3-39A5B — vendored MoE text backbone (see
@@ -1279,7 +1293,12 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
         _snapshot_is_complete,
         pulled_variant,
     )
-    from ..model_aliases import resolve_model, resolve_revision, resolve_subfolder
+    from ..model_aliases import (
+        resolve_model,
+        resolve_revision,
+        resolve_subfolder,
+        subfolder_allow_patterns,
+    )
 
     repo_id = resolve_model(model_name)
     if os.path.exists(repo_id):
@@ -1312,7 +1331,7 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
             revision,
             allow_patterns=[f"{_escape_variant_glob_literal(subfolder)}/*"]
             if subfolder
-            else None,
+            else subfolder_allow_patterns(model_name),
         )
         checkpoint = os.path.join(local, subfolder or "")
         if not _snapshot_is_complete(checkpoint):
@@ -1320,7 +1339,10 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
         return checkpoint
 
     if not subfolder:
-        return model_name
+        selection = subfolder_allow_patterns(model_name)
+        if selection is None:
+            return model_name
+        return snapshot_download(repo_id, allow_patterns=selection)
     # ``resolve_subfolder`` answers for BOTH spellings — the alias the user
     # typed and the repo id the CLI resolves it to. The Hub only knows the
     # latter. ``server.load_model`` is also a public entry point that
