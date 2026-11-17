@@ -72,7 +72,7 @@ def test_packaged_pull_preserves_disk_full(monkeypatch, tmp_path, source, wrappe
 
         monkeypatch.setattr("urllib.request.urlopen", urlopen)
     elif source == "hub":
-        monkeypatch.setattr("huggingface_hub.hf_hub_download", fail)
+        monkeypatch.setattr("huggingface_hub.file_download.get_hf_file_metadata", fail)
     else:
         monkeypatch.setattr(_mirror, "_download_one_from_r2", fail)
 

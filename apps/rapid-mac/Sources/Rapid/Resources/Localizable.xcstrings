@@ -25026,6 +25026,16 @@
         }
       }
     },
+    "%@ downloaded. Resume to continue." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载 %@。点击“继续下载”以继续。"
+          }
+        }
+      }
+    },
     "%@ downloaded" : {
       "localizations" : {
         "zh-Hans" : {

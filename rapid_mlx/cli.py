@@ -27,7 +27,7 @@ import threading
 import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 if TYPE_CHECKING:
     from rapid_mlx.speculative.serial_benchmark import SerialRuntimeHandle
@@ -2639,12 +2639,15 @@ def _try_mirror_prefetch(
         # Mirror module not available (minimal-deps install or
         # deliberately removed). Use the legacy HF path.
         return False
-    return download_with_mirror_fallback(
+    return _retry_hub_download(
+        lambda: download_with_mirror_fallback(
+            model_name,
+            on_pull_start=on_pull_start,
+            allow_patterns=allow_patterns,
+            out=out,
+            revision=revision,
+        ),
         model_name,
-        on_pull_start=on_pull_start,
-        allow_patterns=allow_patterns,
-        out=out,
-        revision=revision,
     )
 
 
@@ -2744,11 +2747,23 @@ def _safe_hub_model_id(model_id: str) -> str:
     ]
 
 
+def _hub_http_status(exc: BaseException) -> int | None:
+    """Read status from Hub SDK and direct-download HTTP errors."""
+    from huggingface_hub.errors import HfHubHTTPError
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code
+    if isinstance(exc, HfHubHTTPError):
+        return getattr(exc.response, "status_code", None)
+    return None
+
+
 def _is_transient_hub_error(exc: BaseException) -> bool:
     """Recognize recoverable transport failures on an explicit cause chain."""
+    import http.client
+
     import httpx
     from huggingface_hub.errors import (
-        HfHubHTTPError,
         OfflineModeIsEnabled,
         RepositoryNotFoundError,
     )
@@ -2763,21 +2778,31 @@ def _is_transient_hub_error(exc: BaseException) -> bool:
         seen.add(id(current))
         if isinstance(current, (OfflineModeIsEnabled, RepositoryNotFoundError)):
             return False
-        if isinstance(current, HfHubHTTPError) and getattr(
-            current.response, "status_code", None
-        ) in (401, 403, 404):
+        if _hub_http_status(current) in (401, 403, 404):
             return False
-        if isinstance(current, (httpx.TransportError, ChunkedEncodingError)):
+        if isinstance(
+            current,
+            (
+                httpx.TransportError,
+                ChunkedEncodingError,
+                http.client.HTTPException,
+                ConnectionError,
+            ),
+        ):
             transient = True
-        if isinstance(current, HfHubHTTPError) and getattr(
-            current.response, "status_code", None
-        ) in (429, 500, 502, 503, 504):
+        status = _hub_http_status(current)
+        if status == 429 or (status is not None and 500 <= status < 600):
             transient = True
         current = current.__cause__
     return transient
 
 
-def _retry_hub_download(operation, model_id: str):
+_HubResult = TypeVar("_HubResult")
+
+
+def _retry_hub_download(
+    operation: Callable[[], _HubResult], model_id: str
+) -> _HubResult:
     """Retry transient Hub transfers against the same on-disk cache.
 
     Completed Hub files and mirror partials survive each attempt. Some Hub
@@ -2786,11 +2811,11 @@ def _retry_hub_download(operation, model_id: str):
     """
     import time
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             return operation()
         except Exception as exc:
-            if not _is_transient_hub_error(exc) or attempt == 2:
+            if not _is_transient_hub_error(exc):
                 raise
             delay = 2**attempt
             print(
@@ -2799,6 +2824,7 @@ def _retry_hub_download(operation, model_id: str):
                 file=sys.stderr,
             )
             time.sleep(delay)
+    return operation()
 
 
 def _hub_not_found_hint(model_id: str) -> str:
@@ -2841,6 +2867,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     response bodies and must never become part of telemetry or CLI copy.
     """
     import errno
+    import http.client
     import socket
 
     import httpx
@@ -2925,9 +2952,8 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 + "  Use an exact `namespace/repository-name` ID, for example "
                 "`mlx-community/Qwen3.5-9B-4bit`."
             )
-        if isinstance(current, HfHubHTTPError) and getattr(
-            current.response, "status_code", None
-        ) in (429, 500, 502, 503, 504):
+        status = _hub_http_status(current)
+        if status == 429 or (status is not None and 500 <= status < 600):
             return (
                 f"  Error: Hugging Face is temporarily unavailable for "
                 f"'{rendered_model_id}'.\n"
@@ -2946,6 +2972,8 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 requests_exceptions.ChunkedEncodingError,
                 httpx.TransportError,
                 socket.gaierror,
+                http.client.HTTPException,
+                ConnectionError,
                 TimeoutError,
                 urllib.error.URLError,
             ),
@@ -3129,10 +3157,10 @@ def _ensure_target_model_downloaded(
         except Exception as exc:
             import errno
 
-            from rapid_mlx._mirror import MirrorOnlyPullError
+            from rapid_mlx._mirror import MirrorOnlyPullError, ResumableDownloadError
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-            if isinstance(exc, MirrorOnlyPullError) or (
+            if isinstance(exc, (MirrorOnlyPullError, ResumableDownloadError)) or (
                 isinstance(exc, OSError) and exc.errno == errno.ENOSPC
             ):
                 emit_model_pull_failed(
@@ -12716,17 +12744,17 @@ def _pull_repository(
     except Exception as exc:
         import errno
 
-        from rapid_mlx._mirror import MirrorOnlyPullError
+        from rapid_mlx._mirror import MirrorOnlyPullError, ResumableDownloadError
         from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
-        if isinstance(exc, MirrorOnlyPullError) or (
+        if isinstance(exc, (MirrorOnlyPullError, ResumableDownloadError)) or (
             isinstance(exc, OSError) and exc.errno == errno.ENOSPC
         ):
             if emit_lifecycle_event:
                 emit_model_pull_failed(
                     exc, model_ref=repo_id, source=_mirror_out.get("source")
                 )
-            print(f"\n{render_hub_error(exc, repo_id)}\n", file=sys.stderr)
+            print(f"\n{render_hub_error(exc, repo_id) or str(exc)}\n", file=sys.stderr)
             retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(
                 args
             )

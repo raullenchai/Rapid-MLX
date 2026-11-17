@@ -269,7 +269,7 @@ struct DownloadManagerTests {
     @Test("Exhausted transient exits show the cause without raw stderr")
     func failedExitUsesSafeCause() {
         let mgr = DownloadManager()
-        _ = mgr._testingSeedJob(alias: "qwen3.6-27b", retryAttempt: 3)
+        _ = mgr._testingSeedJob(alias: "qwen3.6-27b", retryAttempt: DownloadManager.maxAutomaticRetries)
         // Raw child stderr (engine name, Python tracebacks, HTTP codes)
         // is logged for support but MUST NOT reach the user-facing
         // failure message.
@@ -319,7 +319,7 @@ struct DownloadManagerTests {
     func unreachableSourceFullTail() {
         let mgr = DownloadManager()
         let alias = "smollm3-3b-4bit"
-        _ = mgr._testingSeedJob(alias: alias, source: .huggingFace, retryAttempt: 3)
+        _ = mgr._testingSeedJob(alias: alias, source: .huggingFace, retryAttempt: DownloadManager.maxAutomaticRetries)
         for line in [
             "Download interrupted, retrying (1/3)",
             "Download interrupted, retrying (2/3)",
@@ -346,7 +346,7 @@ struct DownloadManagerTests {
         ] {
             let mgr = DownloadManager()
             let alias = "qwen3-0.6b-4bit"
-            _ = mgr._testingSeedJob(alias: alias, source: source, retryAttempt: 3)
+            _ = mgr._testingSeedJob(alias: alias, source: source, retryAttempt: DownloadManager.maxAutomaticRetries)
             mgr._testingIngestStderr(alias: alias, line: "Traceback (most recent call last):")
             mgr._testingIngestStderr(alias: alias, line: line)
             mgr._testingIngestStderr(alias: alias, line: "Retry: rapid-mlx pull qwen3-0.6b-4bit")
@@ -409,7 +409,7 @@ struct DownloadManagerTests {
         ]
         for (lines, cause, message) in cases {
             let mgr = DownloadManager()
-            let job = mgr._testingSeedJob(alias: "x", retryAttempt: 3)
+            let job = mgr._testingSeedJob(alias: "x", retryAttempt: DownloadManager.maxAutomaticRetries)
             for line in lines { mgr._testingIngestStderr(alias: "x", line: line, isStderr: false) }
             mgr._testingFinish(alias: "x", status: 1, reason: .exit)
             #expect(job.failureCause == cause)
@@ -420,7 +420,7 @@ struct DownloadManagerTests {
     @Test("Mirror fallback preserves the full network failure block")
     func mirrorFallbackNetworkFailure() {
         let mgr = DownloadManager()
-        let job = mgr._testingSeedJob(alias: "x", source: .mirror, retryAttempt: 3)
+        let job = mgr._testingSeedJob(alias: "x", source: .mirror, retryAttempt: DownloadManager.maxAutomaticRetries)
         for line in [
             "  Error: could not reach Hugging Face for 'x'.",
             "  Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
@@ -530,6 +530,46 @@ struct DownloadManagerTests {
         ))
     }
 
+    @Test("Prefix comparison keeps watchdog alive without increasing retained bytes")
+    func prefixComparisonActivity() {
+        let manager = DownloadManager()
+        let job = manager._testingSeedJob(alias: "model", totalBytes: 1000)
+        manager._testingIngestStderr(alias: "model", line: "[bytes] 400/1000")
+        for checked in [100, 200, 300, 400] {
+            // Simulate another minute of a comparison lasting over two minutes.
+            job.lastProgressAt = Date().addingTimeInterval(-60)
+            manager._testingIngestStderr(alias: "model", line: "[resume-check] \(checked)")
+            #expect(!DownloadManager.isStalled(lastProgressAt: job.lastProgressAt, now: Date()))
+            #expect(Date().timeIntervalSince(job.lastProgressAt) < 1)
+            #expect(job.progress.bytesDownloaded == 400)
+        }
+        let stale = Date().addingTimeInterval(-121)
+        job.lastProgressAt = stale
+        for line in ["[resume-check] 400", "[resume-check] 100", "[resume-check] invalid"] {
+            manager._testingIngestStderr(alias: "model", line: line)
+        }
+        #expect(job.lastProgressAt == stale)
+        #expect(DownloadManager.isStalled(lastProgressAt: job.lastProgressAt, now: Date()))
+        // A CLI retry uses a fresh tracker in the same subprocess.
+        manager._testingIngestStderr(alias: "model", line: "[resume-check] 0")
+        #expect(job.lastProgressAt == stale)
+        manager._testingIngestStderr(alias: "model", line: "[resume-check] 100")
+        #expect(Date().timeIntervalSince(job.lastProgressAt) < 1)
+        #expect(job.progress.bytesDownloaded == 400)
+    }
+
+    @Test("Direct Hub service errors classify as source unavailable")
+    func hubServiceUnavailable() {
+        for source: DownloadManager.DownloadSource in [.mirror, .huggingFace] {
+            let failure = DownloadManager.classifyPullFailure(
+                tailLines: ["Error: Hugging Face is temporarily unavailable for 'owner/repo'."],
+                source: source
+            )
+            #expect(failure.kind == .downloadSourceUnavailable)
+            #expect(FailureDiagnoser.downloadFailureCause(raw: "Hugging Face is temporarily unavailable", kind: failure.kind) == .sourceUnavailable)
+        }
+    }
+
     @Test("Repeated transfer ticks with no new bytes do not hide a stall")
     func repeatedTicksDoNotAdvanceWatchdog() {
         let old = DownloadProgress.Phase.downloading(
@@ -557,7 +597,9 @@ struct DownloadManagerTests {
 
     @Test("Transient reconnects are bounded and permanent errors are excluded")
     func automaticRetryPolicy() {
-        #expect((0...3).map(DownloadManager.retryDelay) == [2, 4, 8, nil])
+        #expect((0...12).map(DownloadManager.retryDelay) == [2, 4, 8, 16, 30, 30, 30, 30, 30, 30, 30, 30, nil])
+        #expect((0..<12).compactMap(DownloadManager.retryDelay).reduce(0, +) == 270)
+        #expect(DownloadManager.retryDelay(after: -1) == nil)
         #expect(DownloadManager.isTransientDownloadError("ConnectionResetError: connection reset"))
         #expect(DownloadManager.isTransientDownloadError("nodename nor servname provided"))
         #expect(DownloadManager.isTransientDownloadError("HTTP Error 500: Internal Server Error"))
@@ -579,11 +621,11 @@ struct DownloadManagerTests {
 
     // /usr/bin/true stands in for pull: retries create real replacement jobs
     // through startDownload, without network traffic or model/cache writes.
-    private func retryManager() -> DownloadManager {
+    private func retryManager(endpointPreference: @escaping () -> String? = { nil }) -> DownloadManager {
         let binary = URL(fileURLWithPath: "/usr/bin/true")
         // Inject access: the real probe would read this host's actual HF cache.
         return DownloadManager(
-            binaryPath: binary, binaryLocator: { binary }, endpointPreference: { nil },
+            binaryPath: binary, binaryLocator: { binary }, endpointPreference: endpointPreference,
             cacheAccessCheck: { nil }
         )
     }
@@ -611,8 +653,7 @@ struct DownloadManagerTests {
         mgr._testingIngestStderr(alias: "model", line: attempt == 2
             ? "Error: connection refused" : "Error: could not reach Hugging Face")
         mgr._testingFinish(alias: "model", status: 1, reason: .exit)
-        #expect(next.status == .failed(message: "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry."))
-        #expect(next.retryDelaySeconds == nil)
+        #expect(next.retryDelaySeconds == DownloadManager.retryDelay(after: attempt + 1))
     }
 
     @Test("Transient mirror failures retry once on mirror then switch to HF")
@@ -676,6 +717,44 @@ struct DownloadManagerTests {
             #expect(job.source == .mirror)
             if case .failed = job.status {} else { Issue.record("Expected terminal failure for \(error)") }
         }
+    }
+
+    @Test("Rendered transport and service failures reconnect on either source", arguments: [false, true])
+    func renderedFailuresReconnect(huggingFace: Bool) {
+        for line in ["Error: could not reach Hugging Face for 'x'.",
+                     "Error: Hugging Face is temporarily unavailable for 'x'."] {
+            let mgr = DownloadManager()
+            let job = mgr._testingSeedJob(alias: "x", source: huggingFace ? .huggingFace : .mirror)
+            job.progress.applyDiskObservation(bytes: 1_000_000)
+            mgr._testingIngestStderr(alias: "x", line: line)
+            mgr._testingFinish(alias: "x", status: 1, reason: .exit)
+            #expect(job.status == .running)
+            #expect(job.retryDelaySeconds == 2)
+            #expect(job.progress.bytesDownloaded == 1_000_000)
+            mgr.cancelDownload(alias: "x")
+        }
+    }
+
+    @Test("Manual Resume retains bytes and source, refreshes the endpoint and resets the retry budget",
+          arguments: ["https://new-mirror.example", nil])
+    func resumeRetainsProgress(endpoint: String?) async throws {
+        var savedEndpoint: String? = "https://original.example"
+        let mgr = retryManager(endpointPreference: { savedEndpoint })
+        defer { mgr.beginShutdown(); mgr.finishShutdown() }
+        let job = mgr._testingSeedJob(alias: "model", hfPath: "owner/repo", totalBytes: 2_000_000,
+                                     source: .huggingFace, retryAttempt: DownloadManager.maxAutomaticRetries)
+        job.progress.applyDiskObservation(bytes: 1_000_000)
+        mgr._testingIngestStderr(alias: "model", line: "Error: could not reach Hugging Face")
+        mgr._testingFinish(alias: "model", status: 1, reason: .exit)
+        #expect(mgr.canRetryDownload(alias: "model"))
+        savedEndpoint = endpoint
+        #expect(mgr.retryDownload(alias: "model"))
+        let next = try #require(mgr.job(for: "model"))
+        #expect(next.progress.bytesDownloaded == 1_000_000)
+        #expect(next.source == .huggingFace)
+        #expect(next.retryAttempt == 0)
+        #expect(next.hfPath == "owner/repo")
+        #expect(next.downloadEndpoint == endpoint)
     }
 
     @Test("Cancellation never schedules a mirror fallback")

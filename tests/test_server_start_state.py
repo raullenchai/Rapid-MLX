@@ -1353,7 +1353,18 @@ def test_render_hub_error_gated_has_access_and_auth_next_steps(status_code):
 
 @pytest.mark.parametrize(
     ("status_code", "expected"),
-    [(401, "gated"), (404, "not found"), (500, None)],
+    [
+        (401, "gated"),
+        (404, "not found"),
+        # Service failures have actionable resume guidance, rather than raw
+        # exception output. Other HTTP errors must not look like network loss.
+        (429, "temporarily unavailable"),
+        (500, "temporarily unavailable"),
+        (503, "temporarily unavailable"),
+        (599, "temporarily unavailable"),
+        (400, None),
+        (600, None),
+    ],
 )
 def test_render_hub_error_classifies_urllib_http_errors(status_code, expected):
     failure = urllib.error.HTTPError(
@@ -1368,6 +1379,9 @@ def test_render_hub_error_classifies_urllib_http_errors(status_code, expected):
         assert rendered is not None
         assert expected in rendered.lower()
         assert "could not reach" not in rendered.lower()
+        assert "private" not in rendered.lower()
+        if expected == "temporarily unavailable":
+            assert "completed cached files will be reused" in rendered
 
 
 @pytest.mark.parametrize(
