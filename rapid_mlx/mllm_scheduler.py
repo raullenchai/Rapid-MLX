@@ -41,6 +41,10 @@ _mlx_compat.install()
 
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
+from .errors import (  # noqa: E402
+    MemoryContextExceededError,
+    MetalMemoryBackpressureError,
+)
 from .memory_peak import cumulative_peak_bytes  # noqa: E402
 from .mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
@@ -633,6 +637,9 @@ class MLLMScheduler:
                 ),
             )
             self.batch_generator.cooperative_prefill = self.cooperative_prefill
+            self.batch_generator._prefill_memory_guard = getattr(
+                self, "_prefill_memory_guard", None
+            )
 
     # ========== Sync API (step-based) ==========
 
@@ -1491,7 +1498,12 @@ class MLLMScheduler:
         if self.batch_generator is not None and self.running:
             try:
                 responses = self.batch_generator.next()
-            except (ValueError, RuntimeError) as e:
+            except (
+                ValueError,
+                RuntimeError,
+                MemoryContextExceededError,
+                MetalMemoryBackpressureError,
+            ) as e:
                 # Fail the requests involved in this step instead of retrying forever.
                 err_msg = str(e)
                 get_step_uids = getattr(self.batch_generator, "failed_step_uids", None)
@@ -1568,7 +1580,11 @@ class MLLMScheduler:
                     "invalid_request" if is_client_error else classify_engine_abort(e)
                 )
                 public_error = (
-                    err_msg
+                    e
+                    if isinstance(
+                        e, (MemoryContextExceededError, MetalMemoryBackpressureError)
+                    )
+                    else err_msg
                     if is_client_error
                     else "MLLM inference ran out of memory processing the request"
                     if error_kind == "insufficient_memory"
@@ -2297,6 +2313,11 @@ class MLLMScheduler:
                     # Mark finished BEFORE raising so the finally block
                     # doesn't double-abort what's already cleaned up.
                     finished_normally = True
+                    if isinstance(
+                        output.error,
+                        (MemoryContextExceededError, MetalMemoryBackpressureError),
+                    ):
+                        raise output.error
                     if output.error_kind == "repetition":
                         logger.warning(
                             "MLLM repetition-guard stop for %s; returning "

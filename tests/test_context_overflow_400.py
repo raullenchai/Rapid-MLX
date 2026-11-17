@@ -1335,7 +1335,7 @@ def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("route", ["chat", "completions", "responses", "messages"])
-def test_memory_window_rejected_before_generation(route, stream, monkeypatch):
+def test_memory_window_rejected_before_generation(route, stream, monkeypatch, caplog):
     from rapid_mlx.routes import anthropic, chat, completions, responses
     from rapid_mlx.telemetry import inference
 
@@ -1364,7 +1364,18 @@ def test_memory_window_rejected_before_generation(route, stream, monkeypatch):
             messages=[{"role": "user", "content": _huge_text(100)}], max_tokens=16
         )
     router, path = routers[route]
-    response = _make_app([router], engine=engine).post(path, json=payload)
+    with caplog.at_level("INFO", logger="rapid_mlx.service.helpers"):
+        response = _make_app([router], engine=engine).post(path, json=payload)
+    refusals = [
+        record.message
+        for record in caplog.records
+        if "context_length_exceeded:" in record.message
+    ]
+    assert len(refusals) == 1
+    assert "available memory" in refusals[0]
+    assert "100 tokens" in refusals[0]
+    assert "80 tokens" in refusals[0]
+    assert _huge_text(100) not in refusals[0]
     if route == "responses" and stream:
         error = _responses_overflow_error(response)
     else:
