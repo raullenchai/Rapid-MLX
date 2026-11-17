@@ -235,6 +235,14 @@ KNOBS = {
         default=(),
         validator=forward_costs,
     ),
+    "mtp_lookup_max_copy": _knob(
+        "mtp_lookup_max_copy",
+        lambda c: c.mode == "mtp" and c.batch == 1,
+        "RAPID_MLX_MTP_LOOKUP_MAX_COPY",
+        default=31,
+        validator=enum_values(31, 63),
+        candidates=(31, 63),
+    ),
     "mtp_max_depth": _knob(
         "mtp_max_depth",
         lambda c: c.mode == "mtp" and c.batch == 1,

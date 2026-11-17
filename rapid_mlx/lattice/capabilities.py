@@ -24,6 +24,7 @@ def requirement_reason(name: str, ctx: LatticeContext) -> str | None:
         name
         in {
             "mtp_max_depth",
+            "mtp_lookup_max_copy",
             "mtp_forward_costs_ms",
             "mtp_prefill_block_size",
             "mtp_gdn_fusion",

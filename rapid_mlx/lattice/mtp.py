@@ -10,8 +10,8 @@ from . import LatticeContext, model_profile, resolve, runtime_context
 logger = logging.getLogger(__name__)
 
 
-def _expert_quantization(model):
-    """Uniform installed expert format; model args omit the quantization block."""
+def _expert_quantization(model, *, dense=False):
+    """Uniform installed weight format; args omit the quantization block."""
     named_modules = getattr(model, "named_modules", None)
     if not callable(named_modules):
         return None
@@ -23,8 +23,9 @@ def _expert_quantization(model):
                 getattr(module, "mode", None),
             )
             for name, module in named_modules()
-            # Expert activation modules have no weight format to qualify.
-            if ".switch_mlp." in name and hasattr(module, "weight")
+            # Dense norms and other unquantized modules have no packed format.
+            if (hasattr(module, "bits") if dense else ".switch_mlp." in name)
+            and hasattr(module, "weight")
         }
     except Exception:  # noqa: BLE001 -- unavailable facts cannot qualify a lattice cell
         return None
@@ -130,3 +131,26 @@ def gdn_fusion_enabled(model) -> bool:
         decision.profile_version,
     )
     return bool(decision.value)
+
+
+def lookup_max_copy(model, default_max_copy: int) -> int:
+    """Resolve once per lookup-enabled request; preserve family defaults."""
+    model = getattr(model, "language_model", model)
+    ctx = _model_context(model)
+    if ctx is None:
+        return default_max_copy
+    if ctx.model.family == "qwen3_5_text" and not ctx.model.num_experts:
+        # Dense args also omit quantization; qualify the installed modules.
+        quant = _expert_quantization(model, dense=True)
+        profile = replace(ctx.model, bits=None, group_size=None, quant_mode="unknown")
+        if quant is not None:
+            profile = replace(
+                profile, bits=quant[0], group_size=quant[1], quant_mode=quant[2]
+            )
+        ctx = replace(ctx, model=profile)
+    ceiling = resolve("mtp_lookup_max_copy", ctx)
+    return (
+        default_max_copy
+        if ceiling.value == 31 or ceiling.source in {"default", "capability"}
+        else int(cast(int, ceiling.value))
+    )

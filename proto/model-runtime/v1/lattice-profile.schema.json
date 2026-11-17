@@ -275,6 +275,9 @@
             "lane_simd_probe": {
               "type": "boolean"
             },
+            "mtp_lookup_max_copy": {
+              "enum": [31, 63]
+            },
             "mtp_max_depth": {
               "type": "integer",
               "minimum": 1,

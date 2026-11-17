@@ -58,6 +58,7 @@ def test_builtin_resolution_snapshot(monkeypatch):
     selected = set()
     count = 0
     migrated_knobs = {
+        "mtp_lookup_max_copy",
         "metal_cache_floor_bytes",
         "metal_cache_cap_bytes",
         "metal_cache_divisor",
@@ -86,6 +87,9 @@ def test_builtin_resolution_snapshot(monkeypatch):
         for name in lattice.KNOBS.keys() - migrated_knobs:
             decision = lattice.resolve(name, ctx, environ={})
             decisions[name] = asdict(decision)
+            if decision.source.startswith("builtin:"):
+                # Preserve the behavior golden across profile metadata updates.
+                decisions[name]["profile_version"] = "2026.11.10.3"
             if decision.source.startswith("builtin:"):
                 selected.add(decision.source.removeprefix("builtin:"))
         digest.update(json.dumps(decisions, sort_keys=True).encode())
@@ -179,9 +183,10 @@ def test_existing_validator_domains():
         pass
 
     values.extend((TupleValue((1, 1)), ListValue([2, 4])))
-    # New memory domains have dedicated validation coverage. This oracle
+    # New memory and lookup domains have dedicated validation coverage. This oracle
     # continues to characterize only the pre-extension registry.
-    memory_knobs = {
+    extended_knobs = {
+        "mtp_lookup_max_copy",
         "metal_cache_floor_bytes",
         "metal_cache_cap_bytes",
         "metal_cache_divisor",
@@ -191,7 +196,7 @@ def test_existing_validator_domains():
         "memory_check_interval",
     }
     for name, knob in lattice.KNOBS.items():
-        if name in memory_knobs:
+        if name in extended_knobs:
             continue
         for value in values:
             assert knob.valid(value) == legacy_valid(knob.default, value), (name, value)

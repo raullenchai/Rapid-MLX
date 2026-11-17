@@ -103,3 +103,28 @@ check exact `"0"` at installation; router checks falsey values at installation;
 affine4 and MoE decode check falsey values at installation and dynamically in
 forward/eligibility. Thus a live opt-out still works where it did before, while
 installation-only switches do not acquire dynamic semantics.
+
+
+| MTP lookup knob | Default | Scope and requirement | Builtin policy |
+| --- | --- | --- | --- |
+| `mtp_lookup_max_copy` | `31` (integer: 31, 63) | Singleton MTP with installed head and existing lookup qualification; proposal ceiling and adaptive gate growth limit | `63` for M5 Max 36 GB, Qwen3.8-27B (hidden 5120) affine4/group64, MLX 0.32.4, macOS 27.0.1 ([evidence](2026-11-17-m5-mtp-lookup.md)) |
+
+The lookup knob resolves once per lookup-enabled request. The environment
+override is `RAPID_MLX_MTP_LOOKUP_MAX_COPY=63`; benchmark JSON and overlay
+precedence follow the usual Lattice rules. Without a qualified selection the
+family's existing copy limit is preserved. The index contains prompt tokens only.
+
+The existing gate still prices and sizes copies: 63 can be earned by full
+31-token copies. Cache rollback admission and remaining output budget can
+further narrow proposals. The target verifies every copied position. The
+qualified cell uses model family, geometry and installed quantization because
+the schema has no checkpoint-name key; other hardware/software/model facts
+retain their existing limits.
+
+At INFO, `[MTP lookup]` logs one request summary (including generator close):
+`proposals`, `copied_proposed`, `copied_accepted`, and `verify_widths` (rows,
+including the base row). Acceptance counts the verified prefix capped at EOS
+and output budget; a cancelled consumer may have received fewer tokens.
+Existing timing diagnostics retain `prompt_lookup_proposals`,
+`prompt_lookup_drafted_tokens`, `prompt_lookup_accepted_tokens`, and now
+`prompt_lookup_verify_width_<rows>`. No token contents are logged.

@@ -203,6 +203,13 @@ def _generation_harness(
         _admit_mtp_depth=lambda k: k,
         _step_backbone=backbone,
         _remember_generated=lambda tok: None,
+        _note_lookup_verify=lambda width: None,
+        _note_lookup_accepted=lambda n: None,
+        _log_lookup_summary=lambda: None,
+        _prompt_lookup_enabled=False,
+        _lookup_max_copy=31,
+        _lookup_counts={"proposals": 0, "proposed": 0, "accepted": 0},
+        _lookup_widths={},
         _record_round=lambda *args, **kwargs: None,
         _gate_cost=lambda ms, rows: ms,
         _copy_draft_gate=SimpleNamespace(
