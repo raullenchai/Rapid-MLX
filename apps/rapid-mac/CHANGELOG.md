@@ -17,6 +17,23 @@ can actually understand.
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-11-16
+
+Desktop adds MiniMax-H3-Image and FLUX 3 Klein with multi-reference edits, and fixes conversation history in narrow windows and model names in onboarding. The bundled engine makes coding-agent launches reliable.
+
+### New features and improvements
+
+- **MiniMax-H3-Image**: text-to-image and edits that combine several reference images. The model's community license excludes use in the European Union, United Kingdom, Republic of Korea and United States ([#5832](https://github.com/raullenchai/Rapid-MLX/pull/5832))
+- **FLUX 3 Klein**: Klein and Klein Base image models, with up to ten edit references ([#5790](https://github.com/raullenchai/Rapid-MLX/pull/5790))
+- **Image runtime**: upgraded to mflux 0.23 with no change in generation behavior ([#5787](https://github.com/raullenchai/Rapid-MLX/pull/5787))
+- **Coding agents**: the bundled engine configures agents before the server is ready. It also fixes first-launch problems with Claude Code, Hermes, Aider and Qwen Code ([#5804](https://github.com/raullenchai/Rapid-MLX/pull/5804), [#5811](https://github.com/raullenchai/Rapid-MLX/pull/5811), [#5813](https://github.com/raullenchai/Rapid-MLX/pull/5813), [#5828](https://github.com/raullenchai/Rapid-MLX/pull/5828), [#5840](https://github.com/raullenchai/Rapid-MLX/pull/5840))
+
+### Bug fixes
+
+- **Conversation history in narrow windows**: when the sidebar collapses to its icon rail, saved conversations are still reachable ([#5799](https://github.com/raullenchai/Rapid-MLX/pull/5799))
+- **Onboarding model names**: a recommended model row with long size details no longer truncates the model name ([#5793](https://github.com/raullenchai/Rapid-MLX/pull/5793))
+- **Qwen-Image edits**: Qwen-Image checkpoints accept only the number of references they support, and a multi-reference edit beyond that limit fails with a clear message instead of a server error ([#5839](https://github.com/raullenchai/Rapid-MLX/pull/5839))
+
 ## [1.0.3] — 2026-11-11
 
 Desktop adds opt-in LAN access, folder-scoped chat, a memory overview and opening existing checkpoints, with measured speed references, idle speech unloading and fixes for model selection, downloads and conversation recovery.
@@ -4635,7 +4652,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.3...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.4...HEAD
+[1.0.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.3...rapid-mac-v1.0.4
 [1.0.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.2...rapid-mac-v1.0.3
 [1.0.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...rapid-mac-v1.0.2
 [1.0.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...rapid-mac-v1.0.1
