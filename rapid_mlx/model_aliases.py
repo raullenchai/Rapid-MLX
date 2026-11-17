@@ -1111,9 +1111,33 @@ def subfolder_allow_patterns(name: str) -> list[str] | None:
     caller that downloads or measures such a repo must pass these
     patterns, or the user waits for (and stores) seven checkpoints they
     did not ask for.
+
+    Image repositories can also publish several incompatible layouts. Klein
+    uses the component layout for both weights and tokenization; root weights
+    and NVIDIA variants are not read by the image runtime.
     """
     from .video.minimax_h3 import video_payloads
 
+    if resolve_hub_model(name) in {
+        "black-forest-labs/flux-3-image-klein",
+        "black-forest-labs/flux-3-image-klein-base",
+    }:
+        return [
+            "config.json",
+            "LICENSE.md",
+            "NOTICE.md",
+            "README.md",
+            "text_encoder/LICENSE",
+            "text_encoder/README.md",
+            "vae/*.safetensors",
+            "vae/*.json",
+            "transformer/*.safetensors",
+            "transformer/*.json",
+            "text_encoder/*.safetensors",
+            "text_encoder/*.json",
+            "text_encoder/merges.txt",
+            "text_encoder/chat_template.jinja",
+        ]
     if payloads := video_payloads(name):
         return list(payloads[0][2])
     subfolder = resolve_subfolder(name)

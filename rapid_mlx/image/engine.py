@@ -634,8 +634,11 @@ class ImageGenerationEngine:
         if pinned_revision is None:
             return self.model_name
         from .._mirror import pinned_snapshot_download
+        from ..model_aliases import subfolder_allow_patterns
 
-        allow_patterns = IMAGE_MODEL_DATA_FILES.get(self.model_name)
+        allow_patterns = IMAGE_MODEL_DATA_FILES.get(
+            self.model_name
+        ) or subfolder_allow_patterns(self.model_name)
         # Vendored runtimes execute only reviewed local code. Fetch the pinned
         # model data they consume, never repository scripts — from the mirror
         # where its bytes are proven identical to the pin, else from HF.

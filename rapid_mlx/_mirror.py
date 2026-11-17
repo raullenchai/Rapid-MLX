@@ -593,7 +593,7 @@ def _fetch_json_with_status(
 def _packaged_digest_info(
     repo_id: str, revision: str, allow_patterns: list[str] | None = None
 ):
-    """Use package-owned digests for an exact pinned alias selection."""
+    """Use package-owned digests covering an exact pinned selection."""
     from types import SimpleNamespace
 
     manifest_path = Path(__file__).with_name("model_digests.json")
@@ -609,7 +609,13 @@ def _packaged_digest_info(
         for entry in aliases.values()
         if entry.get("repo") == repo_id
         and entry.get("revision") == revision
-        and sorted(entry.get("allow_patterns") or []) == (patterns or [])
+        and (
+            sorted(entry.get("allow_patterns") or []) == (patterns or [])
+            # A whole-repository inventory also proves any narrower selection.
+            # Keep all siblings here: consumers apply their requested patterns.
+            # A partial inventory must never prove a broader download.
+            or (patterns is not None and entry.get("allow_patterns") is None)
+        )
     ]
     if not candidates:
         return None
