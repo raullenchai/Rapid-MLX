@@ -65,6 +65,15 @@ struct CommunityBenchmarkNavigationTests {
         #expect(!settings.contains("Settings.Experimental.BenchmarkToggle"))
     }
 
+    @Test("Both sidebar layouts label Sidebar.Launch as Agent")
+    func agentLabelMatchesAcrossLayouts() throws {
+        let sidebar = try canonicalSource("SidebarView.swift")
+        let label = #"title:String(localized:"Agent"),"#
+        #expect(sidebar.components(separatedBy: label).count - 1 == 2)
+        #expect(!sidebar.contains(#"title:String(localized:"Launch"),"#))
+        #expect(sidebar.components(separatedBy: #".accessibilityIdentifier("Sidebar.Launch")"#).count - 1 == 2)
+    }
+
     private func canonicalSource(_ name: String) throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

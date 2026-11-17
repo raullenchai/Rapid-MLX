@@ -1380,7 +1380,7 @@ def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch, model_ref):
 @pytest.mark.parametrize(
     "model,kwargs,message",
     [
-        ("Qwen/Qwen-Image-2.1", {"image_paths": ["a"] * 11}, "reference images"),
+        ("Qwen/Qwen-Image-2.1", {"image_paths": ["a"] * 11}, "reference image"),
         ("Qwen/Qwen-Image-Edit-2509", {}, "requires at least one input image"),
         ("Qwen/Qwen-Image", {"image_paths": ["a"]}, "text-to-image only"),
         ("HiDream-O1-Image-Dev", {"prompt": "x" * 4097}, "4096 characters"),
@@ -1756,7 +1756,10 @@ def test_edit_route_family_limits(client, monkeypatch, family, limit):
         files=[("image", ("a.png", _png_upload_bytes(), "image/png"))] * (limit + 1),
     )
     assert response.status_code == 400
-    assert f"{limit} reference" in response.text
+    noun = "image" if limit == 1 else "images"
+    assert response.json()["error"]["message"] == (
+        f"This model accepts at most {limit} reference {noun}"
+    )
 
 
 def test_flux3_dimensions_return_400(client, monkeypatch):
@@ -1830,3 +1833,17 @@ def test_qwen_missing_edit_configs_returns_400(client, monkeypatch):
     assert response.status_code == 400
     assert "Use one reference image" in response.text
     assert response.json()["error"]["code"] == "invalid_image_request"
+
+
+@pytest.mark.parametrize("limit", [1, 3])
+def test_engine_reference_limit_grammar(limit):
+    from rapid_mlx.image.engine import ImageRequestError
+
+    engine = ImageGenerationEngine("qwen-image-edit")
+    engine.max_reference_images = limit
+    noun = "image" if limit == 1 else "images"
+    with pytest.raises(ImageRequestError) as error:
+        engine.validate_request(prompt="edit", image_paths=["input.png"] * (limit + 1))
+    assert str(error.value) == (
+        f"{engine.family} accepts at most {limit} reference {noun}."
+    )

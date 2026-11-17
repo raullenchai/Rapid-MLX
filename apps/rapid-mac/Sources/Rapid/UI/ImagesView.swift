@@ -309,11 +309,28 @@ struct ImagesView: View {
     }
 
     private var startupProgress: ModelReadiness.ProgressSnapshot? {
+        if let progress = Self.downloadProgressSnapshot(
+            alias: viewModel.selectedAlias,
+            job: downloads.job(for: viewModel.selectedAlias)
+        ) { return progress }
         guard case .starting = server.state else { return nil }
         return ModelReadiness.ProgressSnapshot(
             activity: server.downloadProgress.startupActivity,
             subtitle: server.downloadProgress.progressSubtitle,
             fraction: server.downloadProgress.progressFraction
+        )
+    }
+
+    /// Download-only pulls belong to DownloadManager, independently of the
+    /// sidecar's state and startup progress. Read the observable job each render.
+    static func downloadProgressSnapshot(
+        alias: String, job: DownloadManager.Job?
+    ) -> ModelReadiness.ProgressSnapshot? {
+        guard let job, job.alias == alias, job.status == .running else { return nil }
+        return .init(
+            activity: .downloading,
+            subtitle: job.progress.progressSubtitle,
+            fraction: job.progress.progressFraction
         )
     }
 

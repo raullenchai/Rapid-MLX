@@ -1520,7 +1520,8 @@ class ImageGenerationEngine:
             and len(input_paths) > self.max_reference_images
         ):
             raise ImageRequestError(
-                f"{self.family} accepts at most {self.max_reference_images} reference images."
+                f"{self.family} accepts at most {self.max_reference_images} reference "
+                f"{'image' if self.max_reference_images == 1 else 'images'}."
             )
         if self.family == "minimax-h3-image":
             if num_inference_steps not in (None, 6):
