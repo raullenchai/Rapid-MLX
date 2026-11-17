@@ -799,3 +799,101 @@ def test_active_fixed_controller_retains_original_exploration():
         controller.record(k, (1.0, 1.272, 1.544)[k], [True] * k)
         original.record(k, (1.0, 1.272, 1.544)[k], [True] * k)
     assert controller.starvation_probe_count > 0
+
+
+@pytest.fixture
+def long_lookup(monkeypatch):
+    """Real knob resolution with explicit model facts; no hardware enrollment."""
+    from rapid_mlx import lattice
+    from rapid_mlx.lattice import defaults
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    ctx = lattice.runtime_context({}, mode="mtp", has_mtp_head=True)
+    monkeypatch.setattr("rapid_mlx.lattice.mtp._model_context", lambda _: ctx)
+    monkeypatch.setattr(lattice, "overlay_profile", lambda: defaults.Profile())
+    monkeypatch.delenv("RAPID_MLX_BENCHMARK_KNOBS", raising=False)
+    monkeypatch.setenv("RAPID_MLX_MTP_LOOKUP_MAX_COPY", "31")
+    return dict(
+        max_k=0,
+        disable_auto_k=True,
+        temp=0.0,
+        prompt_lookup_enabled=True,
+        prompt_lookup_policy=PromptLookupPolicy(True, 2, 2, 31),
+    )
+
+
+def test_lookup_default_and_explicit_off_same_proposals(monkeypatch, long_lookup):
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupIndex
+
+    prompt = list(range(20, 120)) + [19]
+    proposals = []
+    original = PromptLookupIndex.propose
+
+    def record(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        proposals.append(result)
+        return result
+
+    monkeypatch.setattr(PromptLookupIndex, "propose", record)
+    runs = []
+    for explicit in (False, True):
+        name = "RAPID_MLX_MTP_LOOKUP_MAX_COPY"
+        if explicit:
+            monkeypatch.setenv(name, "31")
+        else:
+            monkeypatch.delenv(name, raising=False)
+        model = _WidthSensitiveTarget(lambda _: NARROW_WINNER)
+        start = len(proposals)
+        tokens = _generate(model, prompt, 70, **long_lookup)
+        runs.append((tokens, model.widths, proposals[start:]))
+    assert runs[0] == runs[1]
+    assert runs[0][0] == list(range(20, 90))
+
+
+@pytest.mark.parametrize("ceiling", [63])
+@pytest.mark.parametrize("mismatch", range(63))
+def test_long_copy_every_mismatch_matches_greedy(
+    monkeypatch, long_lookup, ceiling, mismatch
+):
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    # Isolate verification from gate warmup; growth itself is tested on CPU.
+    monkeypatch.setattr(CopyDraftGate, "width_cap", lambda self, proposed: proposed)
+    monkeypatch.setenv("RAPID_MLX_MTP_LOOKUP_MAX_COPY", str(ceiling))
+    prompt = list(range(20, 120)) + [19]
+    prompt[2 + mismatch] = 240
+    timing = {}
+    model = _WidthSensitiveTarget(lambda _: NARROW_WINNER)
+    enabled = _generate(model, prompt, 70, timing_stats=timing, **long_lookup)
+    off = dict(long_lookup, prompt_lookup_enabled=False)
+    plain = _generate(_WidthSensitiveTarget(lambda _: NARROW_WINNER), prompt, 70, **off)
+    assert enabled == plain == list(range(20, 90))
+    assert timing["prompt_lookup_rejections"] >= 1
+    assert timing[f"prompt_lookup_verify_width_{ceiling + 1}"] >= 1
+    assert (
+        max(int(k.rsplit("_", 1)[1]) for k in timing if "verify_width_" in k)
+        <= ceiling + 1
+    )
+
+
+@pytest.mark.parametrize("offset", range(63))
+def test_long_copy_eos_and_budget_inside_copy(monkeypatch, long_lookup, offset):
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    monkeypatch.setattr(CopyDraftGate, "width_cap", lambda self, proposed: proposed)
+    monkeypatch.setenv("RAPID_MLX_MTP_LOOKUP_MAX_COPY", "63")
+    prompt = list(range(20, 120)) + [19]
+    stop = 22 + offset
+    stopped = _generate(
+        _WidthSensitiveTarget(lambda _: NARROW_WINNER),
+        prompt,
+        80,
+        stop_tokens={stop},
+        **long_lookup,
+    )
+    assert stopped == list(range(20, stop + 1))
+    budget = offset + 3
+    capped = _generate(
+        _WidthSensitiveTarget(lambda _: NARROW_WINNER), prompt, budget, **long_lookup
+    )
+    assert capped == list(range(20, 20 + budget))
