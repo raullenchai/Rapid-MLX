@@ -885,4 +885,6 @@ def test_registry_has_no_new_server_start_or_app_opened_properties():
         "port_explicit",
         "failure_stage",
         "exit_reason",
+        "error_class",
+        "failure_subtype",
     }

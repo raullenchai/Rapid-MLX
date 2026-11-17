@@ -48,6 +48,7 @@ _attempted_emitted = False
 _attempted_deferred = False
 _terminal = False
 _model_type: str | None = None
+_model_ref: object = None
 _load_policy: str | None = None
 _current_failure_stage = "resolve"
 _previous_run_unterminated = False
@@ -393,9 +394,23 @@ def _server_start_props(
     failure_stage: str | None = None,
     port_explicit: bool | None = None,
     exit_reason: str | None = None,
+    exc: BaseException | None = None,
 ) -> dict[str, object]:
     """Build only registry-approved properties for ``server_start_state``."""
     props: dict[str, object] = {"state": state}
+    if state == "failed":
+        from rapid_mlx.telemetry.model_events import (
+            serve_error_class,
+            serve_failure_subtype,
+        )
+
+        props["error_class"] = (
+            serve_error_class(exc, model_ref=_model_ref) if exc is not None else "other"
+        )
+        if props["error_class"] == "other":
+            props["failure_subtype"] = (
+                serve_failure_subtype(exc) if exc is not None else "unknown"
+            )
     if _model_type is not None:
         props["model_type"] = _model_type
     if _load_policy is not None:
@@ -447,7 +462,7 @@ def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
     window emit ``attempted`` immediately, exactly as before.
     """
     global _attempted, _attempted_emitted, _attempted_deferred
-    global _model_type, _load_policy
+    global _model_type, _load_policy, _model_ref
     global _previous_run_unterminated, _start_failure_snapshot
     global _owns_inflight_marker
     resolved_policy = (
@@ -468,6 +483,7 @@ def attempted(model_ref: object = None, *, load_policy: object = None) -> None:
         if owns:
             _register_marker_cleanup()
         _load_policy = resolved_policy
+        _model_ref = model_ref
         try:
             from rapid_mlx.telemetry import posthog_sender
             from rapid_mlx.telemetry.model_events import model_type
@@ -577,6 +593,7 @@ def failed(
     *,
     port_explicit: bool | None = None,
     exit_reason: object = None,
+    exc: BaseException | None = None,
 ) -> None:
     """Emit the sole failed terminal state with a closed startup stage.
 
@@ -602,7 +619,7 @@ def failed(
     reason = (
         exit_reason
         if isinstance(exit_reason, str) and exit_reason in _EXIT_REASONS
-        else "exception"
+        else exit_reason_for(exc)
     )
     bind_port_explicit = port_explicit if failure_stage == "bind" else None
     try:
@@ -626,6 +643,7 @@ def failed(
                 failure_stage=failure_stage,
                 port_explicit=bind_port_explicit,
                 exit_reason=reason,
+                exc=exc,
             ),
         )
         accepted_attempted = (
@@ -692,7 +710,7 @@ def failure_stage(stage: str) -> Iterator[None]:
     try:
         yield
     except BaseException as exc:
-        failed(stage, exit_reason=exit_reason_for(exc))
+        fail_current(exc)
         raise
     finally:
         _current_failure_stage = previous
@@ -751,17 +769,56 @@ def terminal_recorded() -> bool:
         return _terminal
 
 
+def startup_in_progress() -> bool:
+    with _lock:
+        return _attempted and not _terminal
+
+
 def fail_current(exc: BaseException | None = None) -> None:
     """Fail at the stage selected by the active entrypoint boundary."""
+    if isinstance(exc, SystemExit) and exc.code in (None, 0):
+        return
+    with _lock:
+        if _terminal:
+            return
+    reason = exit_reason_for(exc)
     failed(
         _current_failure_stage,
-        exit_reason=exit_reason_for(exc),
+        exit_reason=reason,
+        exc=exc,
     )
+    try:
+        if exc is not None and _attempted:
+            from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+            from rapid_mlx.telemetry.model_events import (
+                emit_model_serve_failed,
+                serve_error_class,
+            )
+
+            if reason in {"user_interrupt", "declined_download", "port_in_use"}:
+                return
+            if isinstance(exc, OptionalRuntimeMissing):
+                # The entrypoint's repair handler owns extra_recovery. A stage
+                # context must not consume its one-shot event before it runs.
+                return
+            if (
+                reason == "usage_error"
+                and serve_error_class(exc, model_ref=_model_ref) == "other"
+            ):
+                return
+
+            # Inner owners retain their model/recovery details via the emitter's
+            # existing one-shot latch and model-identity sanitization.
+            emit_model_serve_failed(
+                exc, alias_or_path=_model_ref, failure_stage=_current_failure_stage
+            )
+    except BaseException:
+        pass
 
 
 def _reset_for_tests() -> None:
     global _attempted, _attempted_emitted, _attempted_deferred, _terminal
-    global _model_type, _load_policy
+    global _model_type, _load_policy, _model_ref
     global _current_failure_stage
     global _previous_run_unterminated, _owned_inflight_snapshot
     global _owns_inflight_marker, _start_failure_snapshot
@@ -772,6 +829,7 @@ def _reset_for_tests() -> None:
         _attempted_deferred = False
         _terminal = False
         _model_type = None
+        _model_ref = None
         _load_policy = None
         _current_failure_stage = "resolve"
         _previous_run_unterminated = False

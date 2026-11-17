@@ -43,8 +43,10 @@ def _reset_state(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("RAPID_MLX_STATE_DIR", raising=False)
     server_start._reset_for_tests()
+    model_events._reset_for_tests()
     yield
     server_start._reset_for_tests()
+    model_events._reset_for_tests()
 
 
 def _capture(monkeypatch):
@@ -1238,8 +1240,9 @@ def test_failure_context_preserves_original_exception(monkeypatch):
         raise SystemExit(2)
 
     assert caught.value.code == 2
-    assert [props["state"] for _, props in events] == ["attempted", "failed"]
-    assert events[-1][1]["failure_stage"] == "preflight"
+    starts = [props for name, props in events if name == "server_start_state"]
+    assert [props["state"] for props in starts] == ["attempted", "failed"]
+    assert starts[-1]["failure_stage"] == "preflight"
 
 
 def test_fail_current_uses_selected_failure_stage(monkeypatch):
@@ -1494,7 +1497,7 @@ def test_offline_uncached_refusal_uses_shared_terminal_failure(monkeypatch, caps
     monkeypatch.setattr(
         server_start,
         "failed",
-        lambda stage: resolve_failures.append(stage),
+        lambda stage, **_kw: resolve_failures.append(stage),
     )
 
     with pytest.raises(SystemExit) as caught:
@@ -1846,7 +1849,8 @@ def test_exit_reason_properties_and_failure_boundaries(monkeypatch, tmp_path):
         assert server_start.current_failure_stage() == "preflight"
         raise MetalPreflightError()
     assert server_start.terminal_recorded()
-    assert events[-1][1]["exit_reason"] == "memory_refused"
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == "memory_refused"
     server_start._reset_for_tests()
     server_start.attempted()
     server_start.fail_current(OSError(errno.EADDRINUSE, "private"))
@@ -1869,7 +1873,8 @@ def test_invalid_exit_reason_never_reaches_event(monkeypatch, reason):
     events = _capture(monkeypatch)
     server_start.attempted()
     server_start.failed("preflight", exit_reason=reason)
-    assert events[-1][1]["exit_reason"] == "exception"
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == "exception"
     assert "exit_reason" not in server_start._server_start_props(
         "failed", exit_reason=reason
     )
@@ -1915,7 +1920,10 @@ def test_failure_after_preflight_stage_skips_preflight_emission(monkeypatch):
     try:
         with pytest.raises(RuntimeError):
             cli.main()
-        assert not [p for name, p in events if name == "model_serve_failed"]
+        failures = [p for name, p in events if name == "model_serve_failed"]
+        assert len(failures) == 1
+        assert failures[0]["failure_stage"] == "prepare"
+        assert failures[0]["error_class"] == "insufficient_memory"
         starts = [p for name, p in events if name == "server_start_state"]
         assert starts[-1]["failure_stage"] == "prepare"
     finally:
@@ -1960,7 +1968,8 @@ def test_argparse_usage_error_reaches_failed_start(monkeypatch):
     with pytest.raises(SystemExit) as raised:
         parse()
     assert raised.value.code == 2
-    assert events[-1][1]["exit_reason"] == "exception"
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == "exception"
 
 
 @pytest.mark.parametrize("entry", ["cli", "server"])
@@ -2039,3 +2048,381 @@ def test_known_preflight_failure_emits_sanitized_model(monkeypatch, model):
         assert "/private/" not in json.dumps(events)
     finally:
         model_events._reset_for_tests()
+
+
+@pytest.mark.parametrize(
+    "stage", ["preflight", "resolve", "bind", "prepare", "download"]
+)
+@pytest.mark.parametrize(
+    "make_exc, error_class, subtype",
+    [
+        (lambda: RuntimeError("private startup detail"), "other", "runtime_error"),
+        (lambda: SystemExit(1), "other", "system_exit"),
+        (
+            lambda: ModuleNotFoundError("No module named 'mlx'", name="mlx"),
+            "other",
+            "import_error",
+        ),
+    ],
+)
+def test_failed_start_is_self_describing(
+    monkeypatch, stage, make_exc, error_class, subtype
+):
+    events = _capture(monkeypatch)
+    model_events._reset_for_tests()
+    server_start.attempted()
+    server_start.set_failure_stage(stage)
+    server_start.fail_current(make_exc())
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == "exception"
+    assert starts[-1]["error_class"] == error_class
+    assert starts[-1].get("failure_subtype") == subtype
+    failures = [p for name, p in events if name == "model_serve_failed"]
+    assert len(failures) == 1
+    assert failures[0]["error_class"] == error_class
+    assert failures[0]["failure_stage"] == stage
+    assert "private startup detail" not in json.dumps(events)
+    assert all(registry.validate(name, props) == props for name, props in events)
+    model_events._reset_for_tests()
+
+
+@pytest.mark.parametrize(
+    "reason", ["usage_error", "port_in_use", "declined_download", "user_interrupt"]
+)
+def test_control_exit_has_reason_without_loader_failure(monkeypatch, reason):
+    events = _capture(monkeypatch)
+    model_events._reset_for_tests()
+    server_start.attempted()
+    exc = SystemExit(1)
+    server_start.set_exit_reason(reason, exc=exc)
+    server_start.fail_current(exc)
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == reason
+    assert starts[-1]["error_class"] == "other"
+    assert not [p for name, p in events if name == "model_serve_failed"]
+    model_events._reset_for_tests()
+
+
+@pytest.mark.parametrize("code", [0, None])
+@pytest.mark.parametrize(
+    "decorator", [cli._capture_start_failures, server._capture_start_failures]
+)
+def test_successful_early_exit_is_not_a_failed_start(monkeypatch, code, decorator):
+    events = _capture(monkeypatch)
+    server_start.attempted()
+
+    @decorator
+    def upgraded():
+        raise SystemExit(code)
+
+    with pytest.raises(SystemExit):
+        upgraded()
+    assert [p["state"] for name, p in events if name == "server_start_state"] == [
+        "attempted"
+    ]
+    assert not server_start.terminal_recorded()
+    assert not [p for name, p in events if name == "model_serve_failed"]
+
+
+@pytest.mark.parametrize("model", ["unknown-example-alias", "/missing/private/model"])
+def test_resolution_failures_keep_their_closed_cause(monkeypatch, capsys, model):
+    from rapid_mlx.telemetry import consent_runtime
+
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(consent_runtime, "startup", lambda **_kw: None)
+    monkeypatch.setattr(cli, "_start_v2_lifecycle", lambda *_a: None)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", model])
+    with pytest.raises(SystemExit):
+        cli.main()
+    starts = [p for name, p in events if name == "server_start_state"]
+    expected = (
+        "invalid_model_ref"
+        if model == "unknown-example-alias"
+        else "local_path_missing"
+    )
+    assert starts[-1]["failure_stage"] == "resolve"
+    assert starts[-1]["error_class"] == expected
+    assert starts[-1]["exit_reason"] == (
+        "usage_error" if expected == "invalid_model_ref" else "exception"
+    )
+    failures = [p for name, p in events if name == "model_serve_failed"]
+    assert len(failures) == 1
+    assert failures[0]["error_class"] == expected
+    assert model not in json.dumps(events)
+    output = capsys.readouterr()
+    assert (
+        ("not a known alias" in output.out)
+        if expected == "invalid_model_ref"
+        else ("Next step:" in output.err)
+    )
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_embedding_extra_guard_preserves_cause(monkeypatch, capsys, native):
+    import importlib
+    from types import ModuleType
+
+    mlx = ModuleType("mlx")
+    core = ModuleType("mlx.core")
+    mlx.core = core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    spec = importlib.util.spec_from_file_location(
+        "rapid_mlx._startup_embedding_probe", REPO_ROOT / "rapid_mlx" / "embedding.py"
+    )
+    embedding = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(embedding)
+
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(embedding, "is_native_embedding_model", lambda _: native)
+    monkeypatch.setattr(embedding, "mlx_embeddings_available", lambda: False)
+    monkeypatch.setattr("importlib.util.find_spec", lambda _: None)
+    server_start.attempted()
+    server_start.set_failure_stage("preflight")
+
+    @cli._capture_start_failures
+    def guard():
+        embedding.require_mlx_embeddings_or_exit()
+
+    with pytest.raises(SystemExit) as caught:
+        guard()
+    assert caught.value.code == 2
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["error_class"] == "missing_extra"
+    assert starts[-1]["exit_reason"] == "exception"
+    assert "requires" in capsys.readouterr().err
+
+
+def test_memory_floor_refusal_is_actionable_and_classified(monkeypatch, capsys):
+    from rapid_mlx.byom import preflight
+
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_profile",
+        lambda _: SimpleNamespace(min_memory_gb=64),
+    )
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=8 * 1024**3)
+    )
+    monkeypatch.setattr(preflight, "_enforced_memory_floor", lambda *_: True)
+    server_start.attempted()
+    server_start.set_failure_stage("preflight")
+
+    @cli._capture_start_failures
+    def guard():
+        cli._check_alias_min_memory("private-example")
+
+    with pytest.raises(SystemExit):
+        guard()
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["error_class"] == "insufficient_memory"
+    assert starts[-1]["exit_reason"] == "memory_refused"
+    assert "Pick a smaller model: rapid-mlx models" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "guard, args",
+    [
+        (cli._port_preflight_or_die, ("127.0.0.1", 99999)),
+        (
+            cli._validate_primary_lifecycle_args,
+            (SimpleNamespace(idle_unload_seconds=-1),),
+        ),
+        (
+            cli._validate_primary_lifecycle_args,
+            (SimpleNamespace(audio_lane_idle_ttl=-1),),
+        ),
+        (
+            cli._preflight_native_mtp_or_exit,
+            (SimpleNamespace(mtp_backend="native", mllm=True),),
+        ),
+        (
+            cli._preflight_dflash_mutexes_or_exit,
+            (SimpleNamespace(enable_dflash=True, no_spec_decode=True),),
+        ),
+    ],
+)
+def test_validation_guards_report_usage_reason(monkeypatch, guard, args):
+    events = _capture(monkeypatch)
+    server_start.attempted()
+    server_start.set_failure_stage("preflight")
+
+    @cli._capture_start_failures
+    def run_guard():
+        if guard is cli._port_preflight_or_die:
+            guard(*args, model="example", port_explicit=True)
+        else:
+            guard(*args)
+
+    with pytest.raises(SystemExit):
+        run_guard()
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == "usage_error"
+    assert not [p for name, p in events if name == "model_serve_failed"]
+
+
+@pytest.mark.parametrize(
+    "entry", [cli._capture_start_failures, server._capture_start_failures]
+)
+def test_unhandled_startup_exception_has_recovery_step(monkeypatch, capsys, entry):
+    _capture(monkeypatch)
+    server_start.attempted()
+
+    @entry
+    def fail():
+        raise ImportError("runtime unavailable")
+
+    with pytest.raises(ImportError, match="runtime unavailable"):
+        fail()
+    assert "Next step: run `rapid-mlx doctor`" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "kind, expected_reason, expected_class",
+    [
+        ("gated", "exception", "download_failed"),
+        ("not_found", "exception", "download_failed"),
+        ("invalid_ref", "exception", "invalid_model_ref"),
+        ("format", "exception", "unsupported_format"),
+        ("architecture", "exception", "unsupported_architecture"),
+        ("memory", "memory_refused", "insufficient_memory"),
+        ("extra", "exception", "missing_extra"),
+        ("disk", "exception", "other"),
+        ("port", "port_in_use", "other"),
+    ],
+)
+def test_typed_preflight_causes_survive_exit_conversion(
+    monkeypatch, kind, expected_reason, expected_class
+):
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HFValidationError,
+        RepositoryNotFoundError,
+    )
+
+    from rapid_mlx.byom.preflight import PreflightRejectedError
+    from rapid_mlx.memory_budget import MetalPreflightError
+    from rapid_mlx.runtime.optional_runtime import MissingServingExtraError
+
+    causes = {
+        "gated": lambda: GatedRepoError("private", response=_hub_response(403)),
+        "not_found": lambda: RepositoryNotFoundError(
+            "private", response=_hub_response(404)
+        ),
+        "invalid_ref": lambda: HFValidationError("private"),
+        "format": lambda: PreflightRejectedError("unsupported_format"),
+        "architecture": lambda: PreflightRejectedError("unsupported_architecture"),
+        "memory": MetalPreflightError,
+        "extra": MissingServingExtraError,
+        "disk": lambda: OSError(errno.ENOSPC, "private"),
+        "port": lambda: OSError(errno.EADDRINUSE, "private"),
+    }
+    events = _capture(monkeypatch)
+    server_start.attempted()
+    server_start.set_failure_stage("preflight")
+    cause = causes[kind]()
+    exc = SystemExit(1)
+    exc.__cause__ = cause
+    server_start.fail_current(exc)
+    starts = [p for name, p in events if name == "server_start_state"]
+    assert starts[-1]["exit_reason"] == expected_reason
+    assert starts[-1]["error_class"] == expected_class
+    assert "private" not in json.dumps(events)
+
+
+def test_failed_event_remains_self_describing_when_model_event_is_suppressed(
+    monkeypatch,
+):
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(
+        model_events, "emit_model_serve_failed", lambda *_a, **_kw: None
+    )
+    server_start.attempted()
+    server_start.fail_current(ValueError("private"))
+    assert events[-1][1]["error_class"] == "other"
+    assert events[-1][1]["failure_subtype"] == "value_error"
+    assert events[-1][1]["exit_reason"] == "exception"
+
+
+@pytest.mark.parametrize(
+    "exc, reason, subtype",
+    [
+        (OSError(errno.EADDRINUSE, "private"), "port_in_use", "io_error"),
+        (OSError(errno.EACCES, "private"), "exception", "io_error"),
+        (RuntimeError("private"), "exception", "runtime_error"),
+    ],
+)
+def test_uvicorn_bind_failure_retains_cause(monkeypatch, exc, reason, subtype):
+    from rapid_mlx._uvicorn import run_uvicorn
+
+    events = _capture(monkeypatch)
+    server_start.attempted()
+
+    def fail(*_a, **_kw):
+        raise exc
+
+    with pytest.raises(type(exc)):
+        run_uvicorn(object(), port_explicit=True, uvicorn_runner=fail)
+    assert events[-1][1]["failure_stage"] == "bind"
+    assert events[-1][1]["exit_reason"] == reason
+    assert events[-1][1]["failure_subtype"] == subtype
+
+
+def test_start_failure_details_are_only_allowed_on_failed_events():
+    props = registry.validate(
+        "server_start_state",
+        {"state": "ready", "error_class": "other", "failure_subtype": "system_exit"},
+    )
+    assert props is None
+    props = registry.validate(
+        "server_start_state",
+        {
+            "state": "failed",
+            "error_class": "missing_extra",
+            "failure_subtype": "system_exit",
+        },
+    )
+    assert props is None
+
+
+def test_stage_fallback_preserves_optional_runtime_recovery_details(monkeypatch):
+    from rapid_mlx.runtime.optional_runtime import (
+        OptionalRuntimeMissing,
+        handle_optional_runtime_missing,
+    )
+
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    server_start.attempted()
+    exc = OptionalRuntimeMissing(
+        extra="audio",
+        install_hint="install audio",
+        detail="audio unavailable",
+        status="absent",
+    )
+    with pytest.raises(OptionalRuntimeMissing), server_start.failure_stage("prepare"):
+        raise exc
+    assert not [p for name, p in events if name == "model_serve_failed"]
+    with pytest.raises(SystemExit):
+        handle_optional_runtime_missing(exc, assume_yes=False)
+    failures = [p for name, p in events if name == "model_serve_failed"]
+    assert len(failures) == 1
+    assert failures[0]["error_class"] == "missing_extra"
+    assert failures[0]["extra"] == "audio"
+    assert "extra_recovery" in failures[0]
+
+
+def test_unexplained_nonzero_exit_has_recovery_step(monkeypatch, capsys):
+    _capture(monkeypatch)
+    server_start.attempted()
+
+    @cli._capture_start_failures
+    def fail():
+        raise SystemExit(1)
+
+    with pytest.raises(SystemExit) as caught:
+        fail()
+    assert caught.value.code == 1
+    output = capsys.readouterr().err
+    assert "Server startup exited before listening (exit 1)." in output
+    assert "Next step: run `rapid-mlx doctor`" in output

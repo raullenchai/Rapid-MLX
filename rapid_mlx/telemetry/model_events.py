@@ -21,7 +21,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import ParamSpec, TypeAlias
 
-from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
+from rapid_mlx.runtime.optional_runtime import (
+    MissingServingExtraError,
+    OptionalRuntimeMissing,
+)
 
 _serve_failure_lock = threading.Lock()
 _serve_failure_claimed = False
@@ -283,6 +286,10 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
         # cause chain. A generic outer wrapper may mention memory or corruption
         # while merely relaying one of these more precise failures.
         for current in chain:
+            if isinstance(current, PreflightRejectedError):
+                return current.failure_class
+            if isinstance(current, MissingServingExtraError):
+                return "missing_extra"
             if isinstance(current, MetalPreflightError):
                 return "insufficient_memory"
             if isinstance(current, InvalidModelConfig):
