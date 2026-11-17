@@ -8451,20 +8451,6 @@ def serve_command(args):
     else:
         server._reasoning_parser = None
 
-    # DFlash / DDTree mutual-exclusion gates fire BEFORE the startup banner so
-    # the user sees a clean error instead of an optimistic "Features:
-    # dflash" / "ddtree" line immediately followed by an exit. The deeper
-    # SchedulerConfig mutex (suffix vs. mtp) stays below since it doesn't
-    # involve the dedicated single-user servers.
-    if args.enable_dflash and args.suffix_decoding:
-        print(
-            "\n  Error: DFlash cannot combine with other spec-decode methods. "
-            "DFlash runs a dedicated single-user server that bypasses "
-            "BatchedEngine; other spec-decode methods only apply to the "
-            "BatchedEngine path.\n"
-        )
-        _serve_usage_exit(1)
-
     # DFlash eligibility gate fires here, BEFORE the startup banner —
     # so the user sees a clean error rather than an optimistic "DFlash
     # enabled" feature line followed by an exit. Cheap (just reads
@@ -8671,14 +8657,6 @@ def serve_command(args):
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and
     # initialization describe capabilities that actually apply.
     if args.enable_dflash:
-        if getattr(args, "no_spec_decode", False):
-            print(
-                "error: DFlash and --no-spec-decode are mutually "
-                "exclusive — DFlash is a speculative-decode mode.",
-                file=sys.stderr,
-            )
-            _serve_usage_exit()
-
         from .model_aliases import resolve_profile
 
         _dflash_backend = getattr(args, "dflash_backend", None)

@@ -2426,3 +2426,248 @@ def test_unexplained_nonzero_exit_has_recovery_step(monkeypatch, capsys):
     output = capsys.readouterr().err
     assert "Server startup exited before listening (exit 1)." in output
     assert "Next step: run `rapid-mlx doctor`" in output
+
+
+def _assert_failed_start(events, *, reason="usage_error", error_class="other"):
+    starts = [props for name, props in events if name == "server_start_state"]
+    assert [props["state"] for props in starts] == ["attempted", "failed"]
+    assert starts[-1]["exit_reason"] == reason
+    assert starts[-1]["error_class"] == error_class
+    assert "private" not in json.dumps(events)
+    assert all(registry.validate(name, props) == props for name, props in events)
+
+
+def test_usage_exit_survives_reason_recording_failure(monkeypatch):
+    events = _capture(monkeypatch)
+    server_start.attempted()
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("private telemetry failure")
+
+    monkeypatch.setattr(server_start, "set_exit_reason", unavailable)
+    with pytest.raises(SystemExit) as caught:
+        cli._capture_start_failures(cli._serve_usage_exit)()
+    assert caught.value.code == 2
+    _assert_failed_start(events, reason="exception")
+
+
+@pytest.mark.parametrize("invalid_length", [True, False])
+def test_embedding_preload_exit_keeps_diagnostic(
+    monkeypatch, scheduler_config_stub, invalid_length
+):
+    from rapid_mlx import embedding
+
+    events = _capture(monkeypatch)
+    monkeypatch.setattr(embedding, "require_mlx_embeddings_or_exit", lambda: None)
+    args = SimpleNamespace(
+        embedding_model="private/embedding",
+        embedding_max_length="bad" if invalid_length else "auto",
+    )
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("private embedding")
+
+    server_start.attempted()
+    with pytest.raises(SystemExit) as caught:
+        cli._capture_start_failures(cli._load_embedding_model_or_exit)(args, missing)
+    assert caught.value.code == (2 if invalid_length else 1)
+    assert isinstance(
+        caught.value.__cause__, ValueError if invalid_length else FileNotFoundError
+    )
+    _assert_failed_start(
+        events,
+        reason="usage_error" if invalid_length else "exception",
+        error_class="other" if invalid_length else "download_failed",
+    )
+
+
+@pytest.mark.parametrize(
+    "mode", ["dflash_suffix", "ddtree_disabled", "ddtree_ineligible"]
+)
+def test_block_diffusion_preflight_exit_diagnostic(monkeypatch, mode):
+    events = _capture(monkeypatch)
+    args = SimpleNamespace(
+        model="private/model",
+        enable_dflash=mode == "dflash_suffix",
+        suffix_decoding=mode == "dflash_suffix",
+        no_spec_decode=mode == "ddtree_disabled",
+        _speculative_config=SimpleNamespace(
+            method="dflash" if mode == "dflash_suffix" else "ddtree",
+            model=None,
+            num_speculative_tokens=None,
+            tree_budget=None,
+        ),
+    )
+    if mode == "ddtree_ineligible":
+        from rapid_mlx.speculative.ddtree import DDTreeUnavailable, eligibility
+
+        def ineligible(*args, **kwargs):
+            raise DDTreeUnavailable("private target is ineligible")
+
+        monkeypatch.setattr(eligibility, "report", ineligible)
+    guard = (
+        cli._preflight_dflash_mutexes_or_exit
+        if mode == "dflash_suffix"
+        else cli._preflight_ddtree_or_exit
+    )
+    server_start.attempted()
+    with pytest.raises(SystemExit):
+        cli._capture_start_failures(guard)(args)
+    _assert_failed_start(events)
+
+
+@pytest.fixture
+def startup_serve_args(monkeypatch, scheduler_config_stub):
+    """Use real parser defaults; stub I/O before the startup validation sites."""
+    from rapid_mlx.cli_parser import build_parser
+
+    args = build_parser().parse_args(["serve", "private/model", "--no-mllm"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
+    )
+    for name in (
+        "_ensure_model_downloaded",
+        "_check_disk_space",
+        "_check_memory_capacity",
+        "_check_alias_min_memory",
+    ):
+        monkeypatch.setattr(cli, name, lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_resolve_serve_port", lambda *a, **kw: 8000)
+    monkeypatch.setattr(
+        cli, "_gather_kv_cache_dtype_inputs", lambda *a, **kw: ({}, None)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_auto_config.detect_model_config", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.models.media_backend.native_media_model_type", lambda *a: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.weightless_stub_notice", lambda *a: None
+    )
+    monkeypatch.setattr(
+        server, "load_model", lambda *a, **kw: pytest.fail("model loading must not run")
+    )
+    return args
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"vision_min_pixels": 2, "vision_max_pixels": 1}, "pixels"),
+        (
+            {"enable_auto_tool_choice": True, "tool_call_parser": None},
+            "requires --tool-call-parser",
+        ),
+        ({"tool_call_parser": "private-invalid-parser"}, "invalid choice"),
+        ({"idle_cache_clear_seconds": -1}, "must be finite"),
+        (
+            {"tool_call_parser": "hermes", "no_tool_call_parser": True},
+            "mutually exclusive",
+        ),
+        (
+            {"reasoning_parser": "qwen3", "no_reasoning_parser": True},
+            "mutually exclusive",
+        ),
+        ({"force_spec_decode": True, "no_spec_decode": True}, "mutually exclusive"),
+        ({"mllm": True, "no_mllm": True}, "mutually exclusive"),
+    ],
+)
+def test_serve_validation_exit_diagnostic(
+    monkeypatch, capsys, startup_serve_args, overrides, message
+):
+    events = _capture(monkeypatch)
+    for name, value in overrides.items():
+        setattr(startup_serve_args, name, value)
+    server_start.attempted()
+    with pytest.raises(SystemExit):
+        cli._capture_start_failures(cli.serve_command)(startup_serve_args)
+    output = capsys.readouterr()
+    assert message in output.out + output.err
+    _assert_failed_start(events)
+
+
+@pytest.mark.parametrize(
+    "error_type, reason",
+    [
+        (KeyError, "usage_error"),
+        (ImportError, "exception"),
+        (RuntimeError, "exception"),
+    ],
+)
+def test_reasoning_parser_startup_exit_diagnostic(
+    monkeypatch, startup_serve_args, error_type, reason
+):
+    from rapid_mlx import reasoning
+
+    events = _capture(monkeypatch)
+    startup_serve_args.reasoning_parser = "private-parser"
+
+    def broken(name):
+        if error_type is KeyError:
+            raise KeyError(name)
+
+        def parser():
+            raise error_type("private parser failure")
+
+        return parser
+
+    monkeypatch.setattr(reasoning, "get_parser", broken)
+    server_start.attempted()
+    with pytest.raises(SystemExit):
+        cli._capture_start_failures(cli.serve_command)(startup_serve_args)
+    _assert_failed_start(events, reason=reason)
+
+
+def test_dflash_missing_runtime_startup_diagnostic(monkeypatch, startup_serve_args):
+    from rapid_mlx.speculative.dflash import eligibility
+
+    events = _capture(monkeypatch)
+    startup_serve_args.speculative_config = (
+        '{"method":"dflash","model":"private/drafter"}'
+    )
+    monkeypatch.setattr(eligibility, "have_runtime", lambda: False)
+    server_start.attempted()
+    with pytest.raises(SystemExit) as caught:
+        cli._capture_start_failures(cli.serve_command)(startup_serve_args)
+    from rapid_mlx.runtime.optional_runtime import MissingServingExtraError
+
+    assert isinstance(caught.value.__cause__, MissingServingExtraError)
+    _assert_failed_start(events, reason="exception", error_class="missing_extra")
+
+
+@pytest.mark.parametrize("mode", ["dspark_missing", "dspark_block", "mtp_ineligible"])
+def test_checkpoint_speculation_gate_startup_diagnostic(
+    monkeypatch, capsys, startup_serve_args, mode
+):
+    # The startup gate rechecks metadata after prefetch; simulate an earlier
+    # successful selection followed by missing/incompatible checkpoint metadata.
+    events = _capture(monkeypatch)
+    method = "mtp" if mode == "mtp_ineligible" else "dspark"
+
+    def select(args):
+        args.spec_decode = method
+        args.enable_mtp = method == "mtp"
+
+    monkeypatch.setattr(cli, "_normalize_speculative_config_or_exit", select)
+    monkeypatch.setattr(cli, "_drop_unavailable_mtp_head", lambda *a: None)
+    monkeypatch.setattr(cli, "_provision_automatic_mtp_sidecar", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "resolve_serve_mtp_model_type", lambda *a: None)
+    if method == "dspark":
+        from rapid_mlx.spec_decode import dspark
+
+        monkeypatch.setattr(
+            dspark,
+            "detect_dspark_metadata",
+            lambda *a: (
+                None if mode == "dspark_missing" else SimpleNamespace(block_size=7)
+            ),
+        )
+    server_start.attempted()
+    with pytest.raises(SystemExit):
+        cli._capture_start_failures(cli.serve_command)(startup_serve_args)
+    assert (
+        "does not qualify" if method == "mtp" else "DSpark"
+    ) in capsys.readouterr().err
+    _assert_failed_start(events)
