@@ -736,11 +736,11 @@ class RerankEngine:
             return [tokenizer.cls_token_id] + encode(query) + [sep, sep], [sep]
         # Qwen3-Reranker exports ship incompatible chat templates (dedicated
         # query/document roles or ordinary chat). Pin the trained input format.
-        head = (
+        prompt_head = (
             _CHATML_PREFIX.format(system=self.prompt)
             + f"<Instruct>: {instruction}\n<Query>: {query}\n<Document>: "
         )
-        return encode(head), encode(_CHATML_SUFFIX + _NO_THINKING)
+        return encode(prompt_head), encode(_CHATML_SUFFIX + _NO_THINKING)
 
     def _build_sequences(
         self, query: str, documents: list[str], instruction: str | None
