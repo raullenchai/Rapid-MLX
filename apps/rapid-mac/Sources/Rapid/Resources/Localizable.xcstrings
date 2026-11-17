@@ -3579,6 +3579,26 @@
         }
       }
     },
+    "Couldn't load the image gallery: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载图像库：%@"
+          }
+        }
+      }
+    },
+    "Couldn't update the saved image gallery: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法更新已保存的图像库：%@"
+          }
+        }
+      }
+    },
     "Couldn't import the image: %@" : {
       "localizations" : {
         "zh-Hans" : {

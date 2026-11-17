@@ -1,15 +1,41 @@
 import Foundation
+import ImageIO
 
 /// One generated (or edited) image plus the seed that produced it, so the
 /// gallery can label results and an edit can re-target a specific image.
 struct GeneratedImage: Identifiable, Hashable, Sendable {
-    let id = UUID()
+    let id: UUID
+    let modelAlias: String
+    let size: String
+    let seed: Int?
+    let createdAt: Date
     /// Decoded PNG bytes (from the API's ``b64_json``).
     let pngData: Data
     /// The prompt that produced this image — shown as the gallery caption.
     let prompt: String
     /// True when this came from ``/v1/images/edits`` (vs. generations).
     let isEdit: Bool
+
+    init(id: UUID = UUID(), pngData: Data, prompt: String, isEdit: Bool,
+         modelAlias: String = "", size: String? = nil, seed: Int? = nil, createdAt: Date = Date()) {
+        self.id = id
+        self.pngData = pngData
+        self.prompt = prompt
+        self.isEdit = isEdit
+        self.modelAlias = modelAlias
+        self.seed = seed
+        self.createdAt = createdAt
+        if let size {
+            self.size = size
+        } else if let source = CGImageSourceCreateWithData(pngData as CFData, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int {
+            self.size = "\(width)x\(height)"
+        } else {
+            self.size = ""
+        }
+    }
 }
 
 /// Errors surfaced to the Images tab. Mirrors ``ChatStreamError`` in shape:
@@ -110,7 +136,7 @@ struct ImageClient {
             GenerationBody(model: model, prompt: prompt, n: count, size: size, seed: seed)
         )
         let images = try await sendAndDecode(req)
-        return images.map { GeneratedImage(pngData: $0, prompt: prompt, isEdit: false) }
+        return images.map { GeneratedImage(pngData: $0, prompt: prompt, isEdit: false, modelAlias: model, size: size, seed: seed) }
     }
 
     // MARK: - Edits
@@ -152,7 +178,7 @@ struct ImageClient {
             fileMime: "image/png", fileData: imagePNG, additionalFiles: additionalImages
         )
         let images = try await sendAndDecode(req)
-        return images.map { GeneratedImage(pngData: $0, prompt: prompt, isEdit: true) }
+        return images.map { GeneratedImage(pngData: $0, prompt: prompt, isEdit: true, modelAlias: model, seed: seed) }
     }
 
     // MARK: - Shared

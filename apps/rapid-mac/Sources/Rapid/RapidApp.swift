@@ -1207,7 +1207,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reapCUAServer: { AppDelegate.shared.cuaServer?.shutdownSync() },
             reapCatalog: { ModelCatalog.finishShutdown() },
             reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() },
-            flushConversations: { ConversationStore.flush() },
+            flushConversations: {
+                ConversationStore.flush()
+                ImageArtifactStore.flush()
+            },
             flushFolders: { ConversationFolderStore.flush() },
             flushDrafts: { ConversationDraftStore.flush() }
         )
