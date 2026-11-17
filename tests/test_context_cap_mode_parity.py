@@ -258,7 +258,7 @@ def _production_methods(filename, class_name, names, namespace):
 
 
 @pytest.mark.parametrize("cached", [0, 48000])
-@pytest.mark.parametrize("unsafe", [None, "mask", "extra", "media", "over_budget"])
+@pytest.mark.parametrize("unsafe", [None, "mask", "extra", "over_budget"])
 def test_mllm_long_text_dispatch_uses_fitting_chunk(prefill_scheduler, cached, unsafe):
     from rapid_mlx.mllm_prefill import effective_mllm_prefill_chunk
 
@@ -308,7 +308,7 @@ def test_mllm_long_text_dispatch_uses_fitting_chunk(prefill_scheduler, cached, u
         cached_tokens=cached,
         prefix_boundary=0,
         shared_prefix_store_at=0,
-        pixel_values=object() if unsafe == "media" else None,
+        pixel_values=None,
         attention_mask=object() if unsafe == "mask" else None,
         image_grid_thw=None,
         extra_kwargs={"token_type_ids": object()} if unsafe == "extra" else {},
@@ -334,6 +334,92 @@ def test_mllm_long_text_dispatch_uses_fitting_chunk(prefill_scheduler, cached, u
     )
     assert sum(calls) == cap - 1 - cached
     assert calls[-1] == 1
+
+
+@pytest.mark.parametrize("guard_enabled", [False, True])
+def test_mllm_16k_image_keeps_main_media_chunks(prefill_scheduler, guard_enabled):
+    """A small image must not make the text guard reserve a 16K query."""
+    from rapid_mlx.mllm_prefill import effective_mllm_prefill_chunk
+
+    class Tokens:
+        ndim = 2
+
+        def __init__(self, length):
+            self.shape = (1, length)
+
+        def __getitem__(self, key):
+            return Tokens(len(range(self.shape[1])[key[1]]))
+
+    calls = []
+    merges = []
+    guard_calls = []
+
+    def embeddings(ids, pixels, **kwargs):
+        merges.append(ids.shape[1])
+        assert pixels is not None
+        return SimpleNamespace(inputs_embeds=ids, to_dict=lambda: {})
+
+    def language_model(ids, **kwargs):
+        calls.append(ids.shape[1])
+        assert kwargs["inputs_embeds"].shape == ids.shape
+        return "last logits"
+
+    cls = _production_methods(
+        "mllm_batch_generator.py",
+        "MLLMBatchGenerator",
+        {
+            "_vision_encoding_steps",
+            "_media_prefill_chunk_tokens",
+            "_chunked_media_lm_prefill_steps",
+        },
+        dict(
+            effective_mllm_prefill_chunk=effective_mllm_prefill_chunk,
+            _is_text_only_request=lambda r: r.pixel_values is None,
+            mx=SimpleNamespace(eval=lambda _: None, clear_cache=lambda: None),
+        ),
+    )
+    gen = cls()
+    gen.model = SimpleNamespace(get_input_embeddings=embeddings)
+    gen.language_model = language_model
+    gen.prefill_step_size = 8192
+    gen.vision_prefill_token_budget = 8192
+    gen._media_prefill_chunkable = lambda *a: True
+
+    def media_forward(req, ids, cache, kwargs, *, chunked=False):
+        assert chunked
+        return (yield from gen._chunked_media_lm_prefill_steps(ids, cache, kwargs))
+
+    gen._media_forward_steps = media_forward
+
+    def guard(*args, **kwargs):
+        guard_calls.append(args)
+        return prefill_scheduler._mllm_prefill_chunk(*args, **kwargs)
+
+    if guard_enabled:
+        gen._prefill_memory_guard = guard
+    req = SimpleNamespace(
+        input_ids=Tokens(16000),
+        max_tokens=32,
+        cached_tokens=0,
+        prefix_boundary=0,
+        shared_prefix_store_at=0,
+        pixel_values=object(),
+        attention_mask=None,
+        image_grid_thw=None,
+        extra_kwargs={},
+        chunked_media_prefill=True,
+    )
+    steps = gen._vision_encoding_steps(req, [SimpleNamespace(state=None)])
+    while True:
+        try:
+            next(steps)
+        except StopIteration as done:
+            assert done.value == "last logits"
+            break
+    assert guard_calls == []
+    assert merges == [16000]
+    assert calls == [2048] * 7 + [1663, 1]
+    assert req.vision_encoded
 
 
 @pytest.mark.parametrize("chunkable", [False, True])

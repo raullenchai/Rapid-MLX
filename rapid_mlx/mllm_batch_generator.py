@@ -4519,7 +4519,11 @@ class MLLMBatchGenerator:
         is_text_only = _is_text_only_request(request)
         no_extra_kwargs = not request.extra_kwargs
         prompt_length = input_ids.shape[1]
-        memory_guard = getattr(self, "_prefill_memory_guard", None)
+        # Media retains its own admission and chunking policy. The text guard
+        # cannot infer the media forward's workspace from text chunkability.
+        memory_guard = (
+            getattr(self, "_prefill_memory_guard", None) if is_text_only else None
+        )
         needs_split = (
             prompt_length > chunk
             or 0 < request.prefix_boundary - request.cached_tokens < prompt_length
