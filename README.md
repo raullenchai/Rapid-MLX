@@ -150,7 +150,7 @@ available. These references describe measured workloads, not guaranteed speed.
 # Homebrew — prebuilt bottle from homebrew-core
 brew install rapid-mlx
 
-# Or the guided installer — detects RAM and recommends a starter model
+# Or the guided installer — detects RAM and offers to start a chat (RAPID_INSTALL_NO_CHAT=1 skips)
 curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
 
