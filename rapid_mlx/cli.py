@@ -17839,7 +17839,11 @@ def main():
                     failure_stage="resolve",
                 )
                 print(f"\n  Error: {exc}", file=sys.stderr)
-                raise SystemExit(1) from exc
+                exit_exc = SystemExit(1)
+                # This boundary already reported the failure with the original
+                # alias. The outer startup guard must only record its state.
+                exit_exc._rapid_mlx_serve_failure_reported = True  # type: ignore[attr-defined]
+                raise exit_exc from exc
 
     # Bring-your-own-model preflight: an uncataloged repo or local path that
     # provably cannot run here (GGUF/.bin-only, unsupported architecture, too

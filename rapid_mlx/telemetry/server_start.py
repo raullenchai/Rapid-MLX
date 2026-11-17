@@ -789,6 +789,8 @@ def fail_current(exc: BaseException | None = None) -> None:
     )
     try:
         if exc is not None and _attempted:
+            if getattr(exc, "_rapid_mlx_serve_failure_reported", False):
+                return
             from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
             from rapid_mlx.telemetry.model_events import (
                 emit_model_serve_failed,
