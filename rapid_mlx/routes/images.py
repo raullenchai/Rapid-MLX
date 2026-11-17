@@ -729,7 +729,8 @@ async def edit_image(
     _reject(not uploads, "image requires at least one reference image", "image")
     _reject(
         len(uploads) > limit,
-        f"This model accepts at most {limit} reference images",
+        f"This model accepts at most {limit} reference "
+        f"{'image' if limit == 1 else 'images'}",
         "image",
     )
 

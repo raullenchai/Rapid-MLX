@@ -261,7 +261,9 @@ final class ImageGenViewModel {
         if addingReference {
             guard isEditing else { return nil }
             guard urls.count + additionalReferences.count + pendingReferenceImports + 1 <= maxReferenceImages else {
-                errorMessage = String(localized: "This model accepts up to \(maxReferenceImages) reference images.")
+                errorMessage = maxReferenceImages == 1
+                    ? String(localized: "This model accepts up to 1 reference image.")
+                    : String(localized: "This model accepts up to \(maxReferenceImages) reference images.")
                 return nil
             }
         } else {

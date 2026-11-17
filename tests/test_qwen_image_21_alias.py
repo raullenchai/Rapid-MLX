@@ -341,7 +341,7 @@ def test_img2img_passes_one_path_and_strength(monkeypatch, tmp_path):
     assert call["image_strength"] == 0.4
     assert call["width"] == 1456 and call["height"] == 720
     assert "image_paths" not in call
-    with pytest.raises(ImageRuntimeError, match="reference images"):
+    with pytest.raises(ImageRuntimeError, match="reference image"):
         engine.generate(prompt="x", image_paths=[str(path)] * 11)
 
 

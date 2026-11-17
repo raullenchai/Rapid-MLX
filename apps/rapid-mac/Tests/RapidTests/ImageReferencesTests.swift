@@ -93,6 +93,19 @@ struct ImageReferencesTests {
         return model
     }
 
+    @Test @MainActor func referenceLimitMessageGrammar() {
+        for limit in [1, 3] {
+            let model = editingModel()
+            model.imageModels[0].maxReferenceImages = limit
+            let urls = (0..<limit).map { URL(fileURLWithPath: "/extra-\($0).png") }
+            #expect(model.importEditImages(at: urls, addingReference: true) == nil)
+            let expected = limit == 1
+                ? String(localized: "This model accepts up to 1 reference image.")
+                : String(localized: "This model accepts up to \(limit) reference images.")
+            #expect(model.errorMessage == expected)
+        }
+    }
+
     @Test @MainActor func submissionWaitsForEntireImportBatch() async throws {
         let model = editingModel()
         #expect(model.canSubmit)
