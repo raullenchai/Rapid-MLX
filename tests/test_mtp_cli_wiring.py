@@ -33,7 +33,10 @@ from types import SimpleNamespace
 
 import pytest
 
-pytestmark = pytest.mark.requires_mlx
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.usefixtures("preserve_mlx_generation_streams"),
+]
 
 # ---------------------------------------------------------------------------
 # 1. detect_mtp_eligibility(has_external_sidecar=...) contract
@@ -1233,6 +1236,7 @@ def test_start_llm_calls_apply_mtp_dispatch():
     engine._engine = None
     engine._loaded = False
     engine._engine_started = False
+    engine._model_load_executor = None
 
     # 2. Stub the model loader so we don't touch HF / MLX weights.
     def _fake_load(model_name, tokenizer_config=None, *, return_source=False):
@@ -1296,6 +1300,8 @@ def test_start_llm_calls_apply_mtp_dispatch():
             assert serve_failure_subtype(exc) == "draft_attach"
 
     finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)
         monkeypatch.undo()
 
     # 5. The recorder MUST have fired exactly once with the fields

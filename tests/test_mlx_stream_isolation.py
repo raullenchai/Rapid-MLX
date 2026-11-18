@@ -114,13 +114,22 @@ def test_worker_stream_restored_after_executor_shutdown(
         assert restored.eval() == 7
 
 
-def test_leaking_suites_request_stream_restoration():
-    """Guard the actual fixture wiring, including module-scope executor teardown."""
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "test_batching.py",
+        "test_mtp_cli_wiring.py",
+        "test_qwen36_native_text_cache.py",
+        "test_no_mllm_flag.py",
+    ],
+)
+def test_leaking_suites_request_stream_restoration(filename):
+    """Guard the module-level restoration of suites that initialize MLX workers."""
     root = Path(__file__).resolve().parent
-    batching = ast.parse((root / "test_batching.py").read_text())
+    suite = ast.parse((root / filename).read_text())
     marker = next(
         node
-        for node in batching.body
+        for node in suite.body
         if isinstance(node, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets)
     )
@@ -135,6 +144,46 @@ def test_leaking_suites_request_stream_restoration():
         )
         for node in ast.walk(marker)
     )
+
+
+@pytest.mark.parametrize("has_mlx", [False, True])
+def test_audio_suite_preserves_streams_only_when_mlx_is_available(has_mlx):
+    """Exercise optional fixture wiring without skipping the no-MLX audio lane."""
+    source = Path(__file__).with_name("test_audio_model_worker.py")
+    tree = ast.parse(source.read_text())
+    fixture = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_preserve_audio_generation_streams"
+    )
+    decorator = fixture.decorator_list[0]
+    assert isinstance(decorator, ast.Call)
+    assert isinstance(decorator.func, ast.Attribute)
+    assert decorator.func.attr == "fixture"
+    assert {
+        keyword.arg: ast.literal_eval(keyword.value) for keyword in decorator.keywords
+    } == {
+        "scope": "module",
+        "autouse": True,
+    }
+    fixture.decorator_list = []
+    namespace = {
+        "importlib": SimpleNamespace(
+            util=SimpleNamespace(find_spec=lambda _name: object() if has_mlx else None)
+        )
+    }
+    exec(
+        compile(ast.Module(body=[fixture], type_ignores=[]), source, "exec"), namespace
+    )
+    requested = []
+    namespace[fixture.name](SimpleNamespace(getfixturevalue=requested.append))
+    assert requested == (["preserve_mlx_generation_streams"] if has_mlx else [])
+
+
+def test_module_executor_joins_before_stream_restoration():
+    """The module executor must depend on restoration so it tears down first."""
+    root = Path(__file__).resolve().parent
     deterministic = ast.parse((root / "test_batching_deterministic.py").read_text())
     executor = next(
         node

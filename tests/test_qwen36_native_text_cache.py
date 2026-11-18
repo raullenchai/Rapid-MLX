@@ -9,7 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("mlx")
-pytestmark = pytest.mark.requires_mlx
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.usefixtures("preserve_mlx_generation_streams"),
+]
 
 import mlx.core as mx
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, KVCache
