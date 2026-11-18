@@ -1982,20 +1982,25 @@ start_fixture_chat_model() {
     # journeys test chat persistence/recovery, so explicitly choose their
     # fixture instead of starting whichever side of that race won.
     wait_identifier_enabled ModelPickerBar.ModelMenu "$OUT/fixture-picker-ready.json"
-    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
-        "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
-        || die "chat fixture model could not be selected"
+    if [[ "$(element_field "$OUT/fixture-picker-ready.json" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+        "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+            "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
+            || die "chat fixture model could not be selected"
+    fi
     for _ in {1..40}; do
         see_main "$OUT/fixture-model-selected.json"
         if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]]; then
-            # Selecting a cached model activates it. During that load the
-            # composer hides Readiness.Action, and ready has no action either.
-            # Observe the selected fixture's launch instead of pressing Start.
+            # Discovery may already have activated this fixture. The waiter
+            # accepts its existing launch event in this persona's log; no new
+            # launch is required. Starting and ready both hide Readiness.Action,
+            # so independently wait for the composer before sending a prompt.
             wait_fake_event_after_start \
                 ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
                 "chat fixture model did not become ready" \
                 readiness
             wait_send_idle "$OUT/fixture-model-ready.json"
+            [[ "$(element_field "$OUT/fixture-model-ready.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]] \
+                || die "chat fixture model changed while waiting for composer readiness"
             return
         fi
         sleep 0.25

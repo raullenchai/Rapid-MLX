@@ -23,6 +23,9 @@ class HarnessIsolationTests(unittest.TestCase):
             for initial_alias, selection in (
                 ("lfm2.5-2.6b-4bit", "delayed"),
                 ("fake-alias", "delayed"),
+                ("fake-alias", "ready"),
+                ("fake-alias", "never-ready"),
+                ("fake-alias", "alias-drift"),
                 ("lfm2.5-2.6b-4bit", "ready"),
                 ("lfm2.5-2.6b-4bit", "missing-event"),
                 ("lfm2.5-2.6b-4bit", "disabled-picker"),
@@ -39,6 +42,8 @@ class HarnessIsolationTests(unittest.TestCase):
                             for name in (
                                 "wait_identifier_enabled",
                                 "start_fixture_chat_model",
+                                "wait_fake_event_after_start",
+                                "wait_send_idle",
                                 flow,
                             )
                         )
@@ -52,7 +57,18 @@ selected_alias="$2"
 selection="$3"
 polls=0
 selection_requested=0
-launch_observed=0
+selection_attempts=0
+initial_alias="$selected_alias"
+if [[ "$selected_alias" == fake-alias ]]; then
+    printf '{"event":"server_started","alias":"fake-alias"}\n' > "$OUT/fake-events.jsonl"
+fi
+follow_memory_confirmation_edge() {
+    MEMORY_CONFIRMATION_SIGNATURE=''
+    MEMORY_CONFIRMATION_POLLS=0
+    MEMORY_CONFIRMATION_ATTEMPTS=0
+    MEMORY_CONFIRMATION_CLICKED=0
+    MEMORY_CONFIRMATION_VISIBLE=0
+}
 log() { :; }
 start_persona() { :; }
 dismiss_first_run() { :; }
@@ -61,8 +77,14 @@ die() { echo "$*" >&2; exit 1; }
 fixture_driver() {
     [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 2
     [[ "$polls" -ge 2 ]] || die "picker used before enabled"
+    selection_attempts=$((selection_attempts + 1))
+    # Reselecting the current item succeeds without emitting a launch event.
+    [[ "$selected_alias" != fake-alias ]] || return 0
     [[ "$selection" != failed ]] || return 1
     selection_requested=1
+    if [[ "$selection" != missing-event ]]; then
+        printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
+    fi
 }
 see_main() {
     polls=$((polls + 1))
@@ -76,9 +98,15 @@ see_main() {
     fi
     # The old selection may expose a disabled action. The selected cached
     # fixture can already be ready and expose no readiness action at all.
-    if [[ "$selection" == delayed && "$selection_requested" == 1 ]]; then
+    if [[ "$selection" == never-ready ]] \
+       || { [[ "$selection" == delayed ]] && [[ "$polls" -lt 6 ]]; }; then
         readiness=',{"identifier":"Composer.LoadStatus"}'
-    elif [[ "$selection_requested" == 0 ]]; then
+    elif [[ "$selected_alias" == fake-alias || "$selection" == alias-drift ]]; then
+        readiness=',{"identifier":"ChatView.SendOrStopButton","description":"Send message","enabled":true}'
+        if [[ "$selection" == alias-drift && "$polls" -ge 4 ]]; then
+            selected_alias=lfm2.5-2.6b-4bit
+        fi
+    else
         readiness=',{"identifier":"Readiness.Action","enabled":false}'
     fi
     if [[ "$selection" == missing-picker ]]; then
@@ -90,18 +118,17 @@ see_main() {
 }
 element_field() { jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"; }
 start_model() { die "cached fixture must not be started twice"; }
-wait_fake_event_after_start() {
-    [[ "$selected_alias" == fake-alias && "$selection_requested" == 1 ]] || exit 3
-    [[ "$1" == '.event == "server_started" and .alias == "fake-alias"' ]] || exit 4
-    [[ "$3" == readiness ]] || exit 5
-    [[ "$selection" != missing-event ]] || die "$2"
-    launch_observed=1
-}
-wait_send_idle() {
-    [[ "$launch_observed" == 1 ]] || die "composer checked before launch"
+send_prompt() {
+    if [[ "$initial_alias" == fake-alias ]]; then
+        [[ "$selection_attempts" == 0 ]] || die "fixture model unnecessarily reselected"
+    else
+        [[ "$selection_attempts" == 1 ]] || die "fixture model not selected exactly once"
+    fi
+    [[ "$(element_field "$OUT/fixture-model-ready.json" ModelPickerBar.ModelMenu value)" == fake-alias ]] \
+        || die "prompt sent on wrong alias"
     echo "started $selected_alias"
+    exit 0
 }
-send_prompt() { exit 0; }
 """
                         + "\n"
                         + flow
@@ -127,13 +154,19 @@ send_prompt() { exit 0; }
                         "missing-event",
                         "disabled-picker",
                         "missing-picker",
+                        "never-ready",
+                        "alias-drift",
                     ):
                         self.assertNotEqual(result.returncode, 0)
                         self.assertNotIn("started", result.stdout)
                         self.assertIn(
                             "ModelPickerBar.ModelMenu"
                             if selection in ("disabled-picker", "missing-picker")
-                            else "fixture model",
+                            else (
+                                "composer never settled"
+                                if selection == "never-ready"
+                                else "fixture model"
+                            ),
                             result.stderr,
                         )
                     else:
@@ -164,7 +197,7 @@ driver() {
     [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 1
     touch "$OUT/fixture-selected"
 }
-wait_identifier_enabled() { :; }
+wait_identifier_enabled() { echo starter > "$2"; }
 wait_fake_event_after_start() {
     [[ -f "$OUT/fixture-selected" ]] || die "started without selecting fixture"
     printf '{"event": "server_started", "alias": "fake-alias"}\n' > "$OUT/fake-events.jsonl"
@@ -173,7 +206,8 @@ see_main() {
     printf '{"data":{"ui_elements":[{"identifier":"ChatView.SendOrStopButton"}]}}\n' > "$1"
 }
 element_field() {
-    if [[ "$2" == ModelPickerBar.ModelMenu ]]; then echo fake-alias
+    if [[ "$1" == */fixture-picker-ready.json ]]; then echo starter
+    elif [[ "$2" == ModelPickerBar.ModelMenu ]]; then echo fake-alias
     else echo 'Send message'; fi
 }
 wait_send_idle() { :; }
