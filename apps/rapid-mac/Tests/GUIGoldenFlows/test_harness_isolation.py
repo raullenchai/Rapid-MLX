@@ -16,6 +16,94 @@ def function(name):
 
 
 class HarnessIsolationTests(unittest.TestCase):
+    def test_fixture_selection_rechecks_snapshots_and_bounds_retries(self):
+        for scenario, initial, aliases, expected_polls in (
+            ("picker-reset", "fake-alias", ["starter", "fake-alias"], [1]),
+            ("never-sticks", "starter", ["starter"] * 60, [1, 9, 17, 25]),
+            ("delayed", "starter", ["starter"] * 5 + ["fake-alias"], [1]),
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                for index, alias in enumerate([initial, *aliases]):
+                    (directory / f"snapshot-{index}.json").write_text(
+                        json.dumps(
+                            {
+                                "data": {
+                                    "ui_elements": [
+                                        {
+                                            "identifier": "ModelPickerBar.ModelMenu",
+                                            "value": alias,
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+                    )
+                shell = (
+                    function("start_fixture_chat_model")
+                    + r"""
+OUT="$1"
+limit="$2"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=driver
+polls=0
+sleep() { :; }
+die() { echo "$*" >&2; exit 1; }
+wait_identifier_enabled() { cp "$OUT/snapshot-0.json" "$2"; }
+see_main() {
+    polls=$((polls + 1))
+    local index="$polls"
+    [[ "$index" -le "$limit" ]] || index="$limit"
+    cp "$OUT/snapshot-$index.json" "$1"
+}
+element_field() {
+    jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"
+}
+driver() {
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] \
+        || die "unexpected selection arguments"
+    echo "$polls" >> "$OUT/selections"
+}
+wait_fake_event_after_start() { :; }
+wait_send_idle() { cp "$OUT/fixture-model-selected.json" "$1"; }
+start_fixture_chat_model
+echo ready
+"""
+                )
+                result = subprocess.run(
+                    [
+                        "/bin/bash",
+                        "-eu",
+                        "-o",
+                        "pipefail",
+                        "-c",
+                        shell,
+                        "test",
+                        tmp,
+                        str(len(aliases)),
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                selections = directory / "selections"
+                observed_polls = (
+                    [int(poll) for poll in selections.read_text().splitlines()]
+                    if selections.exists()
+                    else []
+                )
+                self.assertEqual(observed_polls, expected_polls, result.stderr)
+                if scenario == "never-sticks":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(
+                        result.stderr,
+                        "chat fixture model selection did not settle on fake-alias\n",
+                    )
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "ready\n")
+
     def test_chat_lifecycle_flows_select_fixture_before_starting(self):
         # Exercise each journey's real setup through its first prompt. Skip
         # may win discovery (starter alias) or lose it (cached fixture alias).
@@ -272,14 +360,17 @@ wait_fake_event_after_start() {
     printf '{"event": "server_started", "alias": "fake-alias"}\n' > "$OUT/fake-events.jsonl"
 }
 see_main() {
-    printf '{"data":{"ui_elements":[{"identifier":"ChatView.SendOrStopButton"}]}}\n' > "$1"
+    local alias=starter
+    [[ ! -f "$OUT/fixture-selected" ]] || alias=fake-alias
+    printf '{"data":{"ui_elements":[{"identifier":"ModelPickerBar.ModelMenu","value":"%s"},{"identifier":"ChatView.SendOrStopButton"}]}}\n' "$alias" > "$1"
 }
 element_field() {
     if [[ "$1" == */fixture-picker-ready.json ]]; then echo starter
-    elif [[ "$2" == ModelPickerBar.ModelMenu ]]; then echo fake-alias
+    elif [[ "$2" == ModelPickerBar.ModelMenu ]]; then
+        jq -r '.data.ui_elements[] | select(.identifier == "ModelPickerBar.ModelMenu") | .value' "$1"
     else echo 'Send message'; fi
 }
-wait_send_idle() { :; }
+wait_send_idle() { see_main "$1"; }
 baseline() { touch "$OUT/baseline-checked"; }
 cleanup_persona() { :; }
 RESTARTED_ALIAS="$2"

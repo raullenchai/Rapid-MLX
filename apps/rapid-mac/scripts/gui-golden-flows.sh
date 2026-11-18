@@ -1982,13 +1982,26 @@ start_fixture_chat_model() {
     # journeys test chat persistence/recovery, so explicitly choose their
     # fixture instead of starting whichever side of that race won.
     wait_identifier_enabled ModelPickerBar.ModelMenu "$OUT/fixture-picker-ready.json"
-    if [[ "$(element_field "$OUT/fixture-picker-ready.json" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
-        "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
-            "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
-            || die "chat fixture model could not be selected"
-    fi
-    for _ in {1..40}; do
+    # The onboarding/discovery race can switch the picker back to the starter
+    # after any single snapshot, so (re)select whenever the observed alias is
+    # not the fixture, with a bounded number of selections.
+    # A selection takes a moment to show in the picker, so wait at least
+    # 8 polls (about 2 s) before selecting again to avoid repeated starts.
+    local selections=0 since_select=8
+    for _ in {1..60}; do
         see_main "$OUT/fixture-model-selected.json"
+        since_select=$((since_select + 1))
+        if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+            if (( selections < 4 && since_select >= 8 )); then
+                selections=$((selections + 1))
+                since_select=0
+                "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+                    "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
+                    || die "chat fixture model could not be selected"
+            fi
+            sleep 0.25
+            continue
+        fi
         if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]]; then
             # Discovery may already have activated this fixture. The waiter
             # accepts its existing launch event in this persona's log; no new
