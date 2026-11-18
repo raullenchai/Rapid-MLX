@@ -2008,7 +2008,11 @@ start_fixture_chat_model() {
                                    and (.description == "Start" or .description == "启动")
                                    and .enabled == true)' \
                     "$start_check" >/dev/null; then
-                    press "$start_check" Readiness.Action "$OUT/fixture-model-start.json"
+                    # Auto-start can remove Start between the snapshot and
+                    # the press. A failed press is not fatal: the startup
+                    # event check below decides whether the model came up.
+                    press "$start_check" Readiness.Action "$OUT/fixture-model-start.json" \
+                        || log "  Start vanished before press; checking startup evidence"
                     break
                 fi
                 sleep 0.25

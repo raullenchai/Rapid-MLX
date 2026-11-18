@@ -28,6 +28,8 @@ class HarnessIsolationTests(unittest.TestCase):
                 ("fake-alias", "idle-localized"),
                 ("fake-alias", "start-disabled-then-enabled"),
                 ("fake-alias", "auto-start"),
+                ("fake-alias", "start-press-missing-auto-start"),
+                ("fake-alias", "start-press-missing-no-event"),
                 ("fake-alias", "start-stays-disabled"),
                 ("fake-alias", "never-ready"),
                 ("fake-alias", "alias-drift"),
@@ -83,6 +85,10 @@ dismiss_first_run() { :; }
 sleep() { :; }
 die() { echo "$*" >&2; exit 1; }
 fixture_driver() {
+    if [[ "$*" == 'press 123 Readiness.Action' && "$selection" == start-press-missing-* ]]; then
+        echo 'AX identifier missing: Readiness.Action' >&2
+        return 1
+    fi
     [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 2
     [[ "$polls" -ge 2 ]] || die "picker used before enabled"
     selection_attempts=$((selection_attempts + 1))
@@ -106,7 +112,9 @@ see_main() {
     fi
     # The old selection may expose a disabled action. The selected cached
     # fixture can already be ready and expose no readiness action at all.
-    if [[ "$selection" == auto-start && "$polls" -ge 4 && "$fixture_started" == 0 ]]; then
+    if { [[ "$selection" == auto-start && "$polls" -ge 4 ]] \
+         || [[ "$selection" == start-press-missing-auto-start && "$start_presses" -gt 0 ]]; } \
+       && [[ "$fixture_started" == 0 ]]; then
         fixture_started=1
         printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
     fi
@@ -144,6 +152,10 @@ press() {
         "$1" >/dev/null || die "Start pressed before enabled"
     [[ "$fixture_started" == 0 ]] || die "fixture started twice"
     start_presses=$((start_presses + 1))
+    if [[ "$selection" == start-press-missing-* ]]; then
+        fixture_driver press "$APP_PID" "$2"
+        return $?
+    fi
     fixture_started=1
     printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
     printf '{}\n' > "$3"
@@ -151,7 +163,7 @@ press() {
 start_model() { die "cached fixture must not be started twice"; }
 send_prompt() {
     local expected_presses=0
-    if [[ "$selection" == idle* || "$selection" == start-disabled-then-enabled ]]; then
+    if [[ "$selection" == idle* || "$selection" == start-disabled-then-enabled || "$selection" == start-press-missing-* ]]; then
         expected_presses=1
     fi
     [[ "$start_presses" == "$expected_presses" ]] || die "unexpected Start press count: $start_presses"
@@ -198,13 +210,19 @@ send_prompt() {
                         "never-ready",
                         "alias-drift",
                         "start-stays-disabled",
+                        "start-press-missing-no-event",
                     ):
                         self.assertNotEqual(result.returncode, 0)
                         self.assertNotIn("started", result.stdout)
-                        if selection == "start-stays-disabled":
-                            self.assertEqual(
+                        if selection in (
+                            "start-stays-disabled",
+                            "start-press-missing-no-event",
+                        ):
+                            self.assertTrue(
+                                result.stderr.endswith(
+                                    "chat fixture model did not become ready\n",
+                                ),
                                 result.stderr,
-                                "chat fixture model did not become ready\n",
                             )
                         self.assertIn(
                             "ModelPickerBar.ModelMenu"
@@ -219,6 +237,10 @@ send_prompt() {
                     else:
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(result.stdout, "started fake-alias\n")
+                    if selection.startswith("start-press-missing-"):
+                        self.assertIn(
+                            "AX identifier missing: Readiness.Action\n", result.stderr
+                        )
 
     def test_crash_recovery_pins_fixture_before_start_and_checks_respawn_alias(self):
         for restarted_alias in ("fake-alias", "lfm2.5-2.6b-4bit"):
