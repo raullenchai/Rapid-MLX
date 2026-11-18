@@ -80,7 +80,7 @@ def _isolate_handler(monkeypatch, *, stdin, stderr) -> list[object]:
     monkeypatch.setattr(sys, "stderr", stderr)
     monkeypatch.setattr(
         "rapid_mlx.telemetry.server_start.failed",
-        lambda stage: order.append(("failed", stage)),
+        lambda stage, **_kw: order.append(("failed", stage)),
     )
     monkeypatch.setattr(
         "rapid_mlx.telemetry.model_events.emit_model_serve_failed",

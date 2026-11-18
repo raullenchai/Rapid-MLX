@@ -2313,6 +2313,7 @@ class BatchedEngine(BaseEngine):
                 config=engine_config,
                 executor=self._model_load_executor,
             )
+            candidate.engine.scheduler._mllm_context_accounting = self._no_spec_decode
             self._model_load_executor.submit(
                 candidate.engine.scheduler.preflight_metal_admission
             ).result()
@@ -2341,6 +2342,13 @@ class BatchedEngine(BaseEngine):
             return
 
         self._engine = candidate
+        # Plain singletons retain MLLM routing, so its existing text chunk
+        # loop must enforce the same workspace reserve as the served ceiling.
+        mllm = getattr(self, "_mllm_scheduler", None)
+        if mllm is not None and self._no_spec_decode:
+            mllm._prefill_memory_guard = candidate.engine.scheduler._mllm_prefill_chunk
+            if mllm.batch_generator is not None:
+                mllm.batch_generator._prefill_memory_guard = mllm._prefill_memory_guard
         self._bind_prompt_host_cache(candidate)
         self._mllm_native_text_engine = True
         self._engine_started = True

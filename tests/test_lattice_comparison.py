@@ -1196,12 +1196,13 @@ def test_default_cli_without_applicable_knobs_keeps_legacy_process(
     run = sample()
     run.pop("experiment")
     if task == "text_generation":
-        # Real registry decisions for an M3 text cell with no eligible knobs.
+        # Real registry decisions for an M3 compiled text cell with no eligible knobs.
         context = lattice.LatticeContext(
             lattice.HardwareProfile("applegpu_g15d", 15, "Ultra", 60, 274877906944),
             "0.32.4",
             "26.5.2",
             lattice.ModelProfile(),
+            mode="compiled",
         )
         run["lattice"]["context"] = json.loads(json.dumps(lattice.dump(context)))
         run["lattice"]["overrides"] = {}

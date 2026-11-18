@@ -275,6 +275,17 @@
             "lane_simd_probe": {
               "type": "boolean"
             },
+            "prefix_boundary_min_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "admission_window_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "mtp_lookup_max_copy": {
+              "enum": [31, 63]
+            },
             "mtp_max_depth": {
               "type": "integer",
               "minimum": 1,

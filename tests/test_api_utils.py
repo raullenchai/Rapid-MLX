@@ -1074,10 +1074,10 @@ class TestMllmBackboneIsHybrid:
 
         real_resolve_model = model_aliases.resolve_model
 
-        def resolve_with_stale_prior(name):
+        def resolve_with_stale_prior(name, **kwargs):
             if name == "removed-prior-alias":
                 raise UserAliasError("prior alias no longer exists")
-            return real_resolve_model(name)
+            return real_resolve_model(name, **kwargs)
 
         monkeypatch.setattr(model_aliases, "resolve_model", resolve_with_stale_prior)
         server._model_alias = "removed-prior-alias"

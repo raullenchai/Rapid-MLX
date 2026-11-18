@@ -123,7 +123,9 @@ service:
     `user_interrupt`, `declined_download`, `usage_error`, `port_in_use`,
     `memory_refused`, or `exception`; never the exception message, command line,
     or path. Ctrl+C at download confirmation is `user_interrupt`; answering
-    no is `declined_download`.
+    no is `declined_download`. Failed-start events also carry the existing
+    closed serve `error_class` and, for `other`, `failure_subtype`, so the cause
+    is available without joining another event. They add no identifiers or text.
   * A failed serve classified as `other` includes one closed startup boundary or exception type
     (`failure_subtype`): `config_parse`, `import_error`, `io_error`, `type_error`,
     `memory_error`, `key_error`, `attribute_error`, `assertion_error`,

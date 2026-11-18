@@ -63,6 +63,7 @@ from .kv_estimation import (  # noqa: E402
     _valid_layer_types,
     config_kv_dims,
     footprint_from_config,
+    footprint_from_model,
     kv_dtype_bytes,
     memory_fit_context,
     rotating_cache_slots,
@@ -165,6 +166,7 @@ from .hybrid_state_checkpoints import (  # noqa: E402
 from .hybrid_state_checkpoints import (  # noqa: E402
     record_checkpoints as _record_state_checkpoints,
 )
+from .lattice.scheduling import skip_prefix_boundary
 from .memory_cache import (  # noqa: E402
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
@@ -7143,20 +7145,29 @@ class Scheduler:
                     continue
         return largest
 
-    def _select_adaptive_prefill_size(self) -> int:
+    def _select_adaptive_prefill_size(
+        self, *, context: int | None = None, configured: int | None = None
+    ) -> int:
         """Choose a memory-safe size for the next long-prompt chunk.
 
         The thresholds intentionally start tightening at 70%: the 97k-token
         DeepSeek-V4 repro showed a roughly 50 GB transient gap between steady
         active memory and the prefill peak, so waiting until 90% is too late.
         """
-        configured = max(1, int(getattr(self.config, "prefill_step_size", 2048)))
+        configured = max(
+            1,
+            int(getattr(self.config, "prefill_step_size", 2048))
+            if configured is None
+            else int(configured),
+        )
         if not getattr(self.config, "adaptive_prefill", True):
             return configured
         minimum_prompt = max(
             1, int(getattr(self.config, "adaptive_prefill_min_tokens", 32_768))
         )
-        if self._active_prefill_token_count() < minimum_prompt:
+        if context is None:
+            context = self._active_prefill_token_count()
+        if context < minimum_prompt:
             return configured
         cap = self._resolve_metal_cap_bytes()
         if cap <= 0:
@@ -7461,6 +7472,8 @@ class Scheduler:
         sliding_window = 0
         try:
             model_config = getattr(self.model, "config", None)
+            if getattr(self, "_mllm_context_accounting", False):
+                model_config = None
             if model_config is not None:
                 estimate = footprint_from_config(model_config)
                 if estimate is not None:
@@ -7496,6 +7509,8 @@ class Scheduler:
 
     def _footprint_from_model_dims(self) -> KVFootprintEstimate | None:
         """Architecture-aware footprint from live config/args, text tower first."""
+        if getattr(self, "_mllm_context_accounting", False):
+            return footprint_from_model(self.model)
         for holder in (
             getattr(self.model, "config", None),
             getattr(self.model, "args", None),
@@ -7580,9 +7595,12 @@ class Scheduler:
             estimate = KVFootprintEstimate(
                 per_tok, fixed_baseline, sliding_slot_bytes, sliding_window
             )
-            value = memory_fit_context(
-                estimate, int(base * util) - resident, native_context
+            fit = (
+                self._prefill_memory_context
+                if getattr(self, "_mllm_context_accounting", False)
+                else memory_fit_context
             )
+            value = fit(estimate, int(base * util) - resident, native_context)
             self._memory_context_cache = (key, value)
             return value
         except Exception:  # noqa: BLE001
@@ -7759,6 +7777,11 @@ class Scheduler:
         active = self._current_metal_active_bytes()
         if active <= 0:
             return
+
+        if getattr(self, "_mllm_context_accounting", False):
+            # The shared MLLM owner can retain loaded weights/allocations
+            # outside the text wrapper. Sample before any request or APC KV.
+            self._steady_resident_bytes = max(self._model_weights_bytes or 0, active)
 
         def _request_kv_bytes(tokens: int) -> int:
             per_tok = self._resolve_kv_bytes_per_token()
@@ -9789,7 +9812,7 @@ class Scheduler:
                     position,
                 )
 
-    def _resolve_snapshot_boundary(self, request: Request) -> int:
+    def _resolve_snapshot_boundary(self, request: Request, *, batch: int = 1) -> int:
         """Return a usable prompt boundary, arming N-1 reuse when needed.
 
         A caller-provided boundary must lie strictly inside the scheduler's
@@ -9797,6 +9820,19 @@ class Scheduler:
         cannot suppress the bounded N-1 fallback for non-trimmable caches.
         """
         prompt_tokens = request.prompt_token_ids or []
+        if self.config.non_trimmable_exact_prefix_reuse and skip_prefix_boundary(
+            self.model,
+            len(prompt_tokens) - (request.cached_tokens or 0),
+            mode="mtp" if self.config.spec_decode == "mtp" else "plain",
+            batch=batch,
+        ):
+            # Explicit zero also disables callback fallback to prefix_boundary.
+            skipped_state: Any = request
+            skipped_state._cache_snapshot_boundary = 0
+            return 0
+        if getattr(request, "_cache_snapshot_boundary", None) == 0:
+            skipped_state = request
+            del skipped_state._cache_snapshot_boundary
         snapshot_boundary = int(getattr(request, "prefix_boundary", 0) or 0)
         # The snapshot machinery reads ``_cache_snapshot_boundary`` and falls
         # back to the caller's ``prefix_boundary``, so a boundary moved below
@@ -10037,6 +10073,281 @@ class Scheduler:
         chunk = min(self.config.prefill_step_size, remaining)
         return chunk * context
 
+    def _bounded_prefill_enabled(self) -> bool:
+        """The recurrent text layouts whose smaller KV exposes prefill peaks."""
+        return (
+            getattr(self, "_mllm_context_accounting", False)
+            and getattr(self, "model", None) is not None
+            and self._resolve_kv_fixed_baseline_bytes() > 0
+            and self._kv_sliding_slot_bytes == 0
+        )
+
+    def _mllm_kv_growth_reserve(self, context: int, growth: int) -> int:
+        """Extra full-attention buffer during MLLM lazy KV growth/evaluation.
+
+        mlx_vlm.models.cache.KVCache.update_and_fetch concatenates the old
+        buffer with 256-slot growth blocks. Old and new buffers can coexist
+        until the chunk's cache-state eval finishes. Reserve a second buffer
+        and round BOTH buffers up; recurrent state is not duplicated here.
+        mlx_lm has the same growth algorithm: this is a conservative reserve
+        for the measured MLLM failure, not a claim of MTP preallocation.
+        """
+        if not self._bounded_prefill_enabled() or context <= 0:
+            return 0
+        slots = ((context + 255) // 256) * 256
+        return growth * (2 * slots - context)
+
+    def _prefill_memory_context(
+        self,
+        estimate: KVFootprintEstimate,
+        available: int,
+        native_context: int | None = None,
+        *,
+        chunk_size: int | None = None,
+    ) -> int | None:
+        upper = memory_fit_context(estimate, available, native_context)
+        if upper is None or not self._bounded_prefill_enabled():
+            return upper
+        configured = getattr(self, "_mllm_prefill_step_size", 8192)
+        lo, hi = 0, upper
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            chunk = (
+                chunk_size
+                if chunk_size is not None
+                else self._largest_fitting_prefill_chunk(
+                    mid, configured, available, estimate
+                )
+            )
+            peak = (
+                estimate.fixed_baseline_bytes
+                + estimate.per_token_growth_bytes * mid
+                + self._mllm_kv_growth_reserve(mid, estimate.per_token_growth_bytes)
+                + self._prefill_workspace_at(mid, min(chunk, mid))
+            )
+            if chunk > 0 and peak < available:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo or None
+
+    def _largest_fitting_prefill_chunk(
+        self,
+        context: int,
+        configured_chunk: int,
+        available: int,
+        estimate: KVFootprintEstimate,
+    ) -> int:
+        """Keep the dispatch default if it fits, else find the largest safe chunk.
+
+        Keep at least 64 rows for the recurrent kernels (or the operator's
+        smaller chunk). Zero means even that minimum cannot fit.
+        """
+        from .mllm_prefill import effective_mllm_prefill_chunk
+
+        configured_chunk = effective_mllm_prefill_chunk(configured_chunk)
+        remaining = (
+            available
+            - estimate.fixed_baseline_bytes
+            - estimate.per_token_growth_bytes * context
+            - self._mllm_kv_growth_reserve(context, estimate.per_token_growth_bytes)
+        )
+
+        def fits(chunk: int) -> bool:
+            return self._prefill_workspace_at(context, min(context, chunk)) < remaining
+
+        if fits(configured_chunk):
+            return configured_chunk
+        lo, hi = min(64, configured_chunk), configured_chunk - 1
+        if not fits(lo):
+            return 0
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fits(mid):
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    def _prefill_chunk_for_context(self, context: int, configured_chunk: int) -> int:
+        """Use the same chunk search as the advertised capacity."""
+        chunk = max(1, int(configured_chunk))
+        if not self._bounded_prefill_enabled():
+            return chunk
+        cap = self._resolve_metal_cap_bytes()
+        resident = max(
+            getattr(self, "_model_weights_bytes", 0) or 0,
+            getattr(self, "_steady_resident_bytes", 0) or 0,
+        )
+        if cap <= 0:
+            return chunk
+        estimate = KVFootprintEstimate(
+            self._resolve_kv_bytes_per_token(),
+            self._resolve_kv_fixed_baseline_bytes(),
+            0,
+            0,
+        )
+        return self._largest_fitting_prefill_chunk(
+            context, chunk, cap - resident, estimate
+        )
+
+    def _mllm_prefill_chunk(
+        self,
+        prompt_tokens: int,
+        max_tokens: int,
+        configured_chunk: int,
+        *,
+        chunkable: bool,
+        cached_tokens: int = 0,
+        reclaim: Any = None,
+        idle: bool = False,
+        adaptive_only: bool = False,
+    ) -> int:
+        """Guard the shared-weight MLLM lane with the same prefill budget.
+
+        MLLM can only split ordinary text safely. Other forwards must reserve
+        their real query length, rather than claim the text chunk's peak.
+        Called on the shared model worker before the first forward.
+        """
+        # Subsequent chunks already passed admission. Sample live Metal/RSS
+        # pressure through the text lane's selector; the caller retains the
+        # smaller result for this request so pressure relief cannot grow it.
+        if adaptive_only:
+            return self._select_adaptive_prefill_size(
+                context=prompt_tokens, configured=configured_chunk
+            )
+        cap = self._resolve_metal_cap_bytes()
+        if cap <= 0 or not self._bounded_prefill_enabled():
+            return configured_chunk
+        from .mllm_prefill import effective_mllm_prefill_chunk
+
+        configured_chunk = effective_mllm_prefill_chunk(configured_chunk)
+        context = prompt_tokens + max_tokens
+        chunk = (
+            self._prefill_chunk_for_context(context, configured_chunk)
+            if chunkable
+            else max(1, prompt_tokens - cached_tokens)
+        )
+        fixed = self._resolve_kv_fixed_baseline_bytes()
+        growth = self._resolve_kv_bytes_per_token()
+        persistent = fixed + growth * context
+        growth_reserve = self._mllm_kv_growth_reserve(context, growth)
+        # Prefix restoration already owns its cache; reserve only missing KV.
+        cached = fixed + growth * cached_tokens if cached_tokens else 0
+        kv_needed = max(0, persistent - cached)
+        workspace = self._prefill_workspace_at(context, min(chunk, prompt_tokens))
+        resident = max(
+            getattr(self, "_model_weights_bytes", 0) or 0,
+            getattr(self, "_steady_resident_bytes", 0) or 0,
+        )
+        if chunk == 0 or resident + persistent + growth_reserve + workspace >= cap:
+            ceiling = self._prefill_memory_context(
+                KVFootprintEstimate(growth, fixed, 0, 0),
+                cap - resident,
+                chunk_size=None if chunkable else chunk,
+            )
+            logger.info(
+                "MLLM prefill rejected: limit=%d active=%d cache=%d "
+                "resident=%d kv_needed=%d growth_reserve=%d workspace=%d chunk=%d",
+                cap,
+                self._current_metal_active_bytes(),
+                mx.get_cache_memory(),
+                resident,
+                kv_needed,
+                growth_reserve,
+                workspace,
+                chunk,
+            )
+            raise MemoryContextExceededError(
+                prompt_tokens=prompt_tokens,
+                requested_tokens=context,
+                memory_ceiling=ceiling or 0,
+            )
+        # Other live rows/cached entries must not consume the chunk reserve.
+        need = kv_needed + growth_reserve + workspace
+        active = self._current_metal_active_bytes()
+        if active + need >= cap:
+            if reclaim is not None:
+                reclaim()
+            # Dropping prefix entries only releases their Python references.
+            # Flush allocator slabs before measuring the room they returned.
+            mx.clear_cache()
+            active = self._current_metal_active_bytes()
+            if active + need >= cap and idle:
+                self._reclaim_unreachable_metal()
+                active = self._current_metal_active_bytes()
+            # The steady-state search deliberately maximizes the chunk. Even
+            # small live overhead can consume its remaining margin. Search
+            # again with the same KV/workspace terms and actual residency,
+            # crediting only the prefix this request already owns.
+            live_resident = max(resident, active - cached)
+            if chunkable:
+                chunk = self._largest_fitting_prefill_chunk(
+                    context,
+                    configured_chunk,
+                    cap - live_resident,
+                    KVFootprintEstimate(growth, fixed, 0, 0),
+                )
+                workspace = self._prefill_workspace_at(
+                    context, min(chunk, prompt_tokens)
+                )
+                need = kv_needed + growth_reserve + workspace
+            if chunk == 0 or active + need >= cap:
+                logger.info(
+                    "MLLM prefill rejected: limit=%d active=%d cache=%d "
+                    "resident=%d kv_needed=%d growth_reserve=%d workspace=%d chunk=%d",
+                    cap,
+                    active,
+                    mx.get_cache_memory(),
+                    live_resident,
+                    kv_needed,
+                    growth_reserve,
+                    workspace,
+                    chunk,
+                )
+                if idle:
+                    # No peer can drain. Establish the post-reclamation floor
+                    # so subsequent admission and advertised capacity agree.
+                    self._steady_resident_bytes = live_resident
+                    ceiling = self._prefill_memory_context(
+                        KVFootprintEstimate(growth, fixed, 0, 0),
+                        cap - live_resident,
+                        chunk_size=None if chunkable else chunk,
+                    )
+                    raise MemoryContextExceededError(
+                        prompt_tokens=prompt_tokens,
+                        requested_tokens=context,
+                        memory_ceiling=ceiling or 0,
+                    )
+                raise MetalMemoryBackpressureError(
+                    "MLLM prefill workspace exceeds the current Metal memory "
+                    "budget; retry after other requests or cached state drain."
+                )
+        if chunkable:
+            chunk = self._select_adaptive_prefill_size(
+                context=prompt_tokens, configured=min(configured_chunk, chunk)
+            )
+        if chunkable and chunk < configured_chunk:
+            logger.info(
+                "MLLM prefill chunk bound: %d -> %d, context=%d",
+                configured_chunk,
+                chunk,
+                context,
+            )
+        return min(configured_chunk, chunk)
+
+    def _prefill_workspace_prior(self) -> float:
+        """Shared empirical cold-prefill workspace per chunk/context token."""
+        return (
+            _COLD_PREFILL_TRANSIENT_KV_MULTIPLE
+            * self._resolve_kv_bytes_per_token()
+            / 2048
+        )
+
+    def _prefill_workspace_at(self, context: int, chunk: int) -> int:
+        """Text-lane cold workspace prior, also used by MLLM admission/cap."""
+        return int(self._prefill_workspace_prior() * chunk * context)
+
     def _resolve_prefill_attention_beta(self) -> int | None:
         if hasattr(self, "_prefill_attention_beta"):
             return self._prefill_attention_beta
@@ -10071,11 +10382,7 @@ class Scheduler:
     ) -> int:
         # The geometry-based cold prior is a floor, not a universal workspace
         # coefficient. Until measured, admit only one prefill row.
-        prior = (
-            _COLD_PREFILL_TRANSIENT_KV_MULTIPLE
-            * self._resolve_kv_bytes_per_token()
-            / 2048
-        )
+        prior = self._prefill_workspace_prior()
         coefficient = max(prior, getattr(self, "_prefill_workspace_high_water", 0.0))
         units = max(padded_units, self._prefill_workspace_units(request))
         chunk = min(
@@ -10645,7 +10952,19 @@ class Scheduler:
             # A non-trimmable exact hit cannot use the usual trim-one then
             # re-forward-last-token kickoff. Capture the cold prompt at N-1;
             # an identical repeat becomes a safe one-token prefix extension.
-            snapshot_boundary = self._resolve_snapshot_boundary(request)
+            # Include this turn's prospective admissions before the first
+            # insert. Counting only running rows would qualify the first row
+            # of a burst for a singleton-only cell. Later admission deferrals
+            # may conservatively retain an extra snapshot.
+            boundary_batch = 1
+            if self.config.non_trimmable_exact_prefix_reuse:
+                boundary_batch = min(
+                    self._max_running_sequences(),
+                    len(self.running) + 1 + len(self.waiting),
+                )
+            snapshot_boundary = self._resolve_snapshot_boundary(
+                request, batch=boundary_batch
+            )
             if (
                 self.memory_aware_cache is not None
                 and snapshot_boundary > 0
@@ -10722,7 +11041,10 @@ class Scheduler:
                         retry_state._boundary_snapshot_taken = False
                         retry_state._cache_snapshot_is_internal = False
                         del retry_state._cache_snapshot_boundary
-                        self._resolve_snapshot_boundary(request)
+                        self._resolve_snapshot_boundary(request, batch=boundary_batch)
+                    elif getattr(request, "_cache_snapshot_boundary", None) == 0:
+                        # A skipped warm tail may now be a long cold prompt.
+                        self._resolve_snapshot_boundary(request, batch=boundary_batch)
                     if not self._prefill_cohort_fits(request):
                         if not shortest_tail:
                             self.waiting.insert(waiting_order.index(request), request)

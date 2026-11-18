@@ -77,6 +77,7 @@ from .nemotron_tool_parser import NemotronToolParser
 from .pythonic_tool_parser import PythonicToolParser
 from .qwen3coder_tool_parser import Qwen3CoderToolParser
 from .qwen_tool_parser import QwenToolParser
+from .raon_1_tool_parser import RaonToolParser
 from .seed_oss_tool_parser import SeedOssToolParser
 from .ui_tars_tool_parser import UiTarsToolParser
 from .xlam_tool_parser import xLAMToolParser
@@ -104,6 +105,7 @@ __all__ = [
     "Glm47ToolParser",
     "HarmonyToolParser",
     "HyV3ToolParser",
+    "RaonToolParser",
     "MiniCPMToolParser",
     "MiniMaxToolParser",
     "MuseToolParser",

@@ -512,6 +512,7 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
             "load_policy": "eager",
             "failure_stage": "preflight",
             "exit_reason": "exception",
+            "error_class": "missing_extra",
         }
     ]
     assert len(failures) == 1
@@ -605,7 +606,7 @@ def test_real_video_dispatch_missing_extra_prints_exact_install_command(
         child_executable=child_executable,
     )
     assert _contracted_failure_events(events) == [
-        ("server_start_state", "failed", "preflight", None, None),
+        ("server_start_state", "failed", "preflight", "missing_extra", None),
         ("model_serve_failed", None, "preflight", "missing_extra", "video"),
     ]
 
@@ -628,7 +629,7 @@ def test_real_image_dispatch_missing_extra_prints_exact_install_command(
         child_executable=child_executable,
     )
     assert _contracted_failure_events(events) == [
-        ("server_start_state", "failed", "preflight", None, None),
+        ("server_start_state", "failed", "preflight", "missing_extra", None),
         ("model_serve_failed", None, "preflight", "missing_extra", "image"),
     ]
 
@@ -666,7 +667,7 @@ def test_standalone_bonsai_dispatch_uses_same_handler_and_loopback_sink(
         )
 
     expected_events = [
-        ("server_start_state", "failed", "preflight", None, None),
+        ("server_start_state", "failed", "preflight", "missing_extra", None),
         ("model_serve_failed", None, "preflight", "missing_extra", "vision"),
     ]
     standalone_contract = _contracted_failure_events(standalone_events)
@@ -1049,6 +1050,6 @@ def test_yes_install_preserves_failure_terminals_at_loopback_sink(tmp_path) -> N
     assert "Install rapid-mlx[vision] now?" not in proc.stderr
     assert events, proc.stderr
     assert _contracted_failure_events(events) == [
-        ("server_start_state", "failed", "preflight", None, None),
+        ("server_start_state", "failed", "preflight", "missing_extra", None),
         ("model_serve_failed", None, "preflight", "missing_extra", "vision"),
     ]

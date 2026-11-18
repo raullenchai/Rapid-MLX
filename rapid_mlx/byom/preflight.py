@@ -64,6 +64,7 @@ RAPID_MODEL_TYPES: frozenset[str] = frozenset(
         "flint",
         "gpt_oss_puzzle",
         "hy_v3",
+        "raon1_nano",
         "k2_horizon",
         "lfm3",
         "lfm3_vl",
@@ -1094,16 +1095,16 @@ def catalog_memory_fit(
         if _enforced_memory_floor(profile, ram_bytes):
             fits, basis = False, "memory_floor"
         elif floor is not None and ram_bytes is not None and ram_bytes >= floor * _GIB:
-            footprint = (
-                (resident if resident is not None else weights)
-                if profile.modality == "text"
-                else estimate
-            )
+            # The published catalog minimum is the admission contract. Peaks
+            # measured on larger hosts and image generation headroom are
+            # planning estimates, so they do not refuse a supported Mac. The
+            # weights themselves must still fit Metal's working set.
+            resident_weights = resident if resident is not None else weights
             fits = not (
                 recommended_working_set_bytes is not None
-                and footprint is not None
+                and resident_weights is not None
                 and budget is not None
-                and footprint > budget
+                and resident_weights > budget
             )
             basis = "memory_floor"
         elif profile.modality != "text" and floor is not None and ram_bytes is not None:
@@ -1380,6 +1381,12 @@ def _check_catalog_memory_fit(args: Any) -> None:
             f"this Mac's GPU can use about {_gb(budget)} of its {_gb(ram)}.",
             file=sys.stderr,
         )
+    if profile.modality == "image-gen":
+        print(
+            "  The image estimate includes the model, text encoder, VAE "
+            "and generation headroom at the default image size.",
+            file=sys.stderr,
+        )
     print("  Nothing was downloaded.", file=sys.stderr)
     if pick:
         print(
@@ -1429,7 +1436,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
     from rapid_mlx.telemetry.server_start import set_exit_reason
 
     set_exit_reason("memory_refused", exc=exc)
-    raise exc
+    raise exc from PreflightRejectedError(INSUFFICIENT_MEMORY)
 
 
 def evaluate_inspection(
@@ -1550,7 +1557,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
             from rapid_mlx.telemetry.server_start import set_exit_reason
 
             set_exit_reason("memory_refused", exc=exc)
-        raise exc
+        raise exc from PreflightRejectedError(verdict.failure)
     funnel.set_preflight("passed")
     if not is_local and sys.stdout.isatty():
         print()

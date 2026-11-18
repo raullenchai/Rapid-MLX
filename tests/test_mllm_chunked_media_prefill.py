@@ -221,6 +221,23 @@ def test_synchronous_chunked_suffix_drains_steps(monkeypatch):
     assert calls == [(4, cache, delta), (4, cache, delta), (3, cache, delta)]
 
 
+def test_16k_image_admission_and_chunks_ignore_text_guard(monkeypatch):
+    gen = generator(monkeypatch)
+    gen.prefill_step_size = 8192
+    req = request(16000)
+    req.chunked_media_prefill = True
+
+    def text_guard(*args, **kwargs):
+        pytest.fail("media must retain its existing admission policy")
+
+    gen._prefill_memory_guard = text_guard
+    assert _prefill_cap_violation([req], 8192, gen._vision_token_count) is None
+    run(gen, req, [Cache()])
+
+    assert gen.model.embeddings == [16000]
+    assert [call[0] for call in gen.language_model.calls] == [2048] * 7 + [1663, 1]
+
+
 def test_chunked_media_metadata_and_last_token(monkeypatch):
     gen = generator(monkeypatch)
     run(gen, request(), [Cache()])

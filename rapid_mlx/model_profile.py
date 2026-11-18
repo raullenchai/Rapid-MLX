@@ -297,13 +297,12 @@ class ModelProfile:
     ddtree_draft_revision: str | None = None
     ddtree_speculative_tokens: int | None = None
     ddtree_tree_budget: int | None = None
-    # codex round 3 [NIT #3]: minimum unified-memory floor (in GB) for
-    # aliases that are unfit for smaller machines. ``None`` means "no
-    # hardware gate" — the default for every text/vision model we ship
-    # under 100 GB weights. Populated for the flagship-tier Ultra-only
-    # entries (currently ``hy3-preview-4bit`` at 166 GB weights + ~156
-    # GB peak RSS — needs 192 GB+ M3 Ultra). Enforced as a boot-time
-    # WARNING (not a hard block) in ``rapid_mlx/cli.py``.
+    # Published minimum unified memory in GiB, shared by the catalog and serve
+    # preflight. Meeting it guarantees preflight admission regardless of Metal's
+    # peak estimates measured on another host, as long as the weights fit the
+    # GPU working set. Below
+    # it, text models use the footprint check unless enforce_min_memory is set;
+    # other modalities refuse uncached loads. None leaves admission to estimates.
     min_memory_gb: float | None = None
     # Qualified peak resident memory in GiB when weights are partly offloaded.
     resident_memory_gb: float | None = None

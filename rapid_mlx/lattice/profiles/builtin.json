@@ -1,8 +1,96 @@
 {
   "schema_version": 1,
-  "profile_version": "2026.11.10.3",
-  "generated_at": "2026-11-11T01:05:33Z",
+  "profile_version": "2026.11.17.2",
+  "generated_at": "2026-11-17T00:00:00Z",
   "cells": [
+    {
+      "id": "mtp-lookup-17-max-36g-qwen38-27b",
+      "hardware": [
+        {
+          "gpu_generation": 17,
+          "tier": "Max",
+          "memory_size": [
+            38654705664,
+            38654705664
+          ]
+        }
+      ],
+      "software": {
+        "mlx": "===0.32.4",
+        "macos": "===27.0.1"
+      },
+      "model": {
+        "family": "qwen3_5_text",
+        "geometry": {
+          "hidden_size": 5120,
+          "bits": 4,
+          "group_size": 64
+        },
+        "quant_mode": "affine"
+      },
+      "workload": {
+        "mode": "mtp",
+        "width": 1,
+        "batch": 1
+      },
+      "knobs": {
+        "mtp_lookup_max_copy": 63
+      },
+      "provenance": {
+        "date": "2026-11-17",
+        "evidence": "docs/engineering/performance/2026-11-17-m5-mtp-lookup.md",
+        "memory_size": 38654705664,
+        "repetitions": 3,
+        "decision": "63-token ceiling: 267\u2013288 tok/s versus 191.7 tok/s at 31; byte-identical greedy output.",
+        "hardware_scope": "Exact M5 Max generation/tier and 36 GB memory; core variants are not distinguished. Model family, geometry and installed affine4/group64 format qualify; checkpoint names are not schema keys."
+      }
+    },
+    {
+      "id": "short-request-17-max-36g-qwen38-27b",
+      "hardware": [
+        {
+          "gpu_generation": 17,
+          "tier": "Max",
+          "memory_size": [
+            38654705664,
+            38654705664
+          ]
+        }
+      ],
+      "software": {
+        "mlx": "===0.32.4",
+        "macos": "===27.0.1"
+      },
+      "model": {
+        "family": "qwen3_5_text",
+        "geometry": {
+          "hidden_size": 5120,
+          "bits": 4,
+          "group_size": 64
+        },
+        "quant_mode": "affine"
+      },
+      "workload": {
+        "mode": "mtp",
+        "width": 1,
+        "batch": 1
+      },
+      "knobs": {
+        "prefix_boundary_min_tokens": 256,
+        "admission_window_ms": 0
+      },
+      "provenance": {
+        "date": "2026-11-17",
+        "evidence": "docs/engineering/performance/2026-11-17-m5-short-request-ttft.md",
+        "memory_size": 38654705664,
+        "repetitions": {
+          "warmups": 3,
+          "rounds": 2
+        },
+        "decision": "Skip boundaries below 256 tokens and the singleton admission hold: short first-turn TTFT 170.8/171.0 ms versus 189.4/185.6 ms; second-turn TTFT 170.7/169.0 ms versus 313.1/306.3 ms; 16/16 identical greedy outputs.",
+        "hardware_scope": "Exact M5 Max generation/tier and 36 GB memory; core variants are not distinguished. Model family, geometry and installed affine4/group64 format qualify; checkpoint names are not schema keys."
+      }
+    },
     {
       "id": "singleton-15-ultra",
       "hardware": [

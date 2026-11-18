@@ -5,6 +5,7 @@ import json
 import os
 import pty
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -48,7 +49,11 @@ def test_internal_commands_preserve_first_use_disclosure(
     home = tmp_path / "home"
     binaries = home / ".rapid-mlx" / "bin"
     binaries.mkdir(parents=True)
-    (binaries / "python").symlink_to(sys.executable)
+    python = binaries / "python"
+    # A relocated symlink loses pyvenv.cfg discovery and the test runner's deps.
+    # Invoke the original interpreter path without resolving its venv symlink.
+    python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+    python.chmod(0o755)
     events = tmp_path / "events.jsonl"
     cli = binaries / "rapid-mlx"
     # Exercise the real CLI/consent/tracking path as an official release, with

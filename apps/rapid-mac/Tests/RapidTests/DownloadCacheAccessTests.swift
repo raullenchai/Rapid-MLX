@@ -73,7 +73,7 @@ struct DownloadCacheAccessTests {
     @Test("Readable cache retains the existing terminal network stall message")
     func readableStall() async throws {
         let manager = DownloadManager(cacheAccessCheck: { nil })
-        let job = manager._testingSeedJob(alias: "starter", retryAttempt: 3)
+        let job = manager._testingSeedJob(alias: "starter", retryAttempt: DownloadManager.maxAutomaticRetries)
         manager._testingFinish(alias: job.alias, status: 9, reason: .uncaughtSignal, wasStalled: true)
         try await settle(job)
         #expect(job.status == .failed(

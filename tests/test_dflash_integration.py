@@ -2973,7 +2973,9 @@ def test_load_runtime_fails_closed_on_algorithm_mismatch(monkeypatch) -> None:
         runtime_module.load_runtime("known/drafter", expected_algorithm="dflash")
 
 
-def test_load_runtime_resolves_pinned_drafter_revision(monkeypatch) -> None:
+def test_load_runtime_resolves_pinned_drafter_revision(
+    monkeypatch, hub_online_env
+) -> None:
     import sys
     import types
     from types import SimpleNamespace

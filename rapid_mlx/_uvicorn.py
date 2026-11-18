@@ -396,5 +396,11 @@ def run_uvicorn(
     except BaseException as exc:
         from rapid_mlx.telemetry.server_start import exit_reason_for, failed
 
-        failed("bind", port_explicit=port_explicit, exit_reason=exit_reason_for(exc))
+        if not (isinstance(exc, SystemExit) and exc.code in (None, 0)):
+            failed(
+                "bind",
+                port_explicit=port_explicit,
+                exit_reason=exit_reason_for(exc),
+                exc=exc,
+            )
         raise

@@ -11,6 +11,9 @@ QSA_MLX_VERSIONS = frozenset({"0.32.2"})
 
 
 def requirement_reason(name: str, ctx: LatticeContext) -> str | None:
+    if name in {"prefix_boundary_min_tokens", "admission_window_ms"}:
+        # Scheduling policies need no numerical kernel or installed MTP head.
+        return None
     if name == "qwen35_eager_layer_dispatch":
         if ctx.mode == "compiled":
             return "compiled decode excludes eager submission"
@@ -24,6 +27,7 @@ def requirement_reason(name: str, ctx: LatticeContext) -> str | None:
         name
         in {
             "mtp_max_depth",
+            "mtp_lookup_max_copy",
             "mtp_forward_costs_ms",
             "mtp_prefill_block_size",
             "mtp_gdn_fusion",

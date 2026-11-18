@@ -14216,5 +14216,449 @@
       "content_deltas": 0,
       "input_chunks": 149
     }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      false,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      false,
+      "enabled",
+      "chat",
+      true,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      false,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      false,
+      "enabled",
+      "responses",
+      true,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      false,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      false,
+      "enabled",
+      "messages",
+      true,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      true,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      true,
+      "enabled",
+      "chat",
+      true,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      true,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      true,
+      "enabled",
+      "responses",
+      true,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      true,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
+  },
+  {
+    "key": [
+      "raon_1",
+      "raon_1",
+      "native_registry",
+      true,
+      "enabled",
+      "messages",
+      true,
+      "chars"
+    ],
+    "wire_label": "raon_native",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "sample.txt"
+        }
+      ]
+    ],
+    "raw": "<tool_call>\n<function=read_file>\n<parameter=path>sample.txt</parameter>\n</function>\n</tool_call>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "sample.txt"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 96
+    }
   }
 ]

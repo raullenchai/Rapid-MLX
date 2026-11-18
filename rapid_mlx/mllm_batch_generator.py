@@ -63,6 +63,8 @@ from .hybrid_state_checkpoints import (  # noqa: E402
     record_checkpoints,
     restore_recurrent_layer,
 )
+from .lattice.scheduling import skip_prefix_boundary
+from .memory_cache import _cache_has_non_trimmable
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .mllm_prefill import (  # noqa: E402
     MLLM_PREFILL_CHUNK_TOKENS,
@@ -1338,6 +1340,8 @@ class MLLMBatchGenerator:
         ...     for resp in responses:
         ...         print(f"Request {resp.request_id}: token={resp.token}")
     """
+
+    _prefill_memory_guard: Callable[..., int] | None = None
 
     def __init__(
         self,
@@ -4519,17 +4523,49 @@ class MLLMBatchGenerator:
         is_text_only = _is_text_only_request(request)
         no_extra_kwargs = not request.extra_kwargs
         prompt_length = input_ids.shape[1]
+        # Media retains its own admission and chunking policy. The text guard
+        # cannot infer the media forward's workspace from text chunkability.
+        memory_guard = (
+            getattr(self, "_prefill_memory_guard", None) if is_text_only else None
+        )
+        boundary = request.prefix_boundary - request.cached_tokens
         if (
-            cache is not None
-            and (
-                prompt_length > chunk
-                or 0 < request.prefix_boundary - request.cached_tokens < prompt_length
-                or request.shared_prefix_store_at > request.cached_tokens
+            is_text_only
+            and cache is not None
+            and _cache_has_non_trimmable(cache)
+            and skip_prefix_boundary(
+                self.model,
+                prompt_length,
+                batch=getattr(self, "_prefix_boundary_batch", 1),
             )
+        ):
+            boundary = 0
+        needs_split = (
+            prompt_length > chunk
+            or 0 < boundary < prompt_length
+            or request.shared_prefix_store_at > request.cached_tokens
+        )
+        chunkable = (
+            cache is not None
+            and (memory_guard is not None or needs_split)
             and is_text_only
             and no_extra_kwargs
             and _attention_mask_is_droppable(request.attention_mask)
-        ):
+        )
+        if memory_guard is not None:
+            chunk = memory_guard(
+                prompt_length + request.cached_tokens,
+                request.max_tokens,
+                chunk,
+                chunkable=chunkable,
+                cached_tokens=request.cached_tokens,
+                reclaim=lambda: self.clear_prefix_cache(reset_stats=False),
+                idle=(
+                    getattr(self, "completion_batch_size", 0) == 1
+                    and not getattr(self, "active_batch", None)
+                ),
+            )
+        if cache is not None and chunkable and (needs_split or prompt_length > chunk):
             # Positional correctness across chunks rests on the model deriving
             # RoPE positions from the *cache offset*, not from each chunk's
             # local length. This is the same contract every autoregressive
@@ -4542,7 +4578,6 @@ class MLLMBatchGenerator:
             # any working model; the numerical-equivalence test locks this in.
             prefix = input_ids[:, :-1]
             prefix_len = prefix.shape[1]
-            boundary = request.prefix_boundary - request.cached_tokens
             if not 0 < boundary <= prefix_len:
                 boundary = 0
             shared = request.shared_prefix_store_at - request.cached_tokens
@@ -4550,6 +4585,22 @@ class MLLMBatchGenerator:
                 shared = 0
             pos = 0
             while pos < prefix_len:
+                if memory_guard is not None:
+                    selected = memory_guard(
+                        prompt_length + request.cached_tokens,
+                        request.max_tokens,
+                        chunk,
+                        chunkable=True,
+                        adaptive_only=True,
+                    )
+                    if selected < chunk:
+                        logger.info(
+                            "[adaptive_prefill] MLLM chunk %d -> %d tokens prompt=%d",
+                            chunk,
+                            selected,
+                            prompt_length + request.cached_tokens,
+                        )
+                    chunk = min(chunk, selected)
                 n = min(chunk, prefix_len - pos)
                 if pos < boundary < pos + n:
                     n = boundary - pos
@@ -4730,6 +4781,9 @@ class MLLMBatchGenerator:
         # keeps the gate honest if that ever changes.)
         active_batch = getattr(self, "active_batch", None)
         no_active_batch = active_batch is None or len(active_batch) == 0
+        self._prefix_boundary_batch = len(requests) + (
+            len(active_batch) if active_batch is not None else 0
+        )
         self._media_singleton_turn = (
             getattr(self, "_media_structural_singleton", False)
             and no_active_batch

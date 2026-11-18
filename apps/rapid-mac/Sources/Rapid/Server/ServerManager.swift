@@ -1892,6 +1892,7 @@ final class ServerManager {
         estimatedMemoryGB: Double?,
         replacementGroup: ResidentModelReplacementGroup? = nil,
         imageMode: ResidentImageMode? = nil,
+        imageMinimumMemoryGB: Double? = nil,
         residencyEligible: Bool = true,
         catalogEntryHint: CatalogEntryHint? = nil,
         videoOutputDirectory: String? = nil
@@ -1899,6 +1900,21 @@ final class ServerManager {
         guard !communityBenchmarkReserved else { return false }
         let trimmed = ModelReference.normalized(alias)
         guard !trimmed.isEmpty else { return false }
+        if imageMode != nil, let minimum = imageMinimumMemoryGB {
+            let physicalGB = memorySnapshotProvider().map {
+                Double($0.totalBytes) / Double(1 << 30)
+            } ?? MacHardware.detect().physicalRAMGB
+            if !ModelSizing.imageMemoryFloorSatisfied(
+                minimumMemoryGB: minimum, physicalMemoryGB: physicalGB
+            ) {
+                let required = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: minimum * Double(1 << 30)))
+                let available = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: physicalGB * Double(1 << 30)))
+                let message = String(localized: "This image model needs at least \(required) of unified memory; this Mac has \(available).")
+                appendLogLines([message])
+                residentLoadFailures[trimmed] = ResidentLoadFailure(alias: trimmed, message: message)
+                return false
+            }
+        }
         let requiresCheckpointInspection = isOpenedCheckpoint(trimmed)
         var catalogGeneration = downloads?.cacheGeneration ?? 0
         if let validatedHint = Self.validatedCatalogHint(

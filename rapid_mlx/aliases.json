@@ -1,4 +1,22 @@
 {
+  "raon-1-nano": {
+    "hf_path": "KRAFTON/Raon-1-nano-mlx",
+    "revision": "81e25155d3332c261ba503c0ae63eb65ad868398",
+    "model_type": "raon1_nano",
+    "modality": "text",
+    "is_text_only": true,
+    "is_moe": false,
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "tool_call_parser": "raon_1",
+    "reasoning_parser": "raon_1",
+    "recommended_sampling": {
+      "temperature": 0.1,
+      "presence_penalty": 1.5
+    }
+  },
   "neohorse-9b-4bit": {
     "hf_path": "rapid-mlx/NeoHorse-1-9B-MLX-4bit",
     "revision": "a1d8caa7717d16f81be943ed4a1c9922a76287e2",

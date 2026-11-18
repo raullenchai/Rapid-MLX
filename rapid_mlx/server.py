@@ -955,7 +955,9 @@ async def lifespan(app: FastAPI):
         except Exception as _start_exc:
             from rapid_mlx.telemetry.server_start import exit_reason_for, failed
 
-            failed("engine_start", exit_reason=exit_reason_for(_start_exc))
+            failed(
+                "engine_start", exit_reason=exit_reason_for(_start_exc), exc=_start_exc
+            )
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(
@@ -4043,8 +4045,10 @@ def _capture_start_failures(func):
             )
         except BaseException as exc:
             try:
+                from rapid_mlx.cli import _print_unhandled_start_failure
                 from rapid_mlx.telemetry.server_start import fail_current
 
+                _print_unhandled_start_failure(exc)
                 fail_current(exc)
             except BaseException:
                 pass

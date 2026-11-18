@@ -117,7 +117,7 @@ def test_dflash_pinned_sidecar_path(fake_cache, monkeypatch, alias, drafter_repo
         drafter_revision=revision,
         expected_algorithm=None,
     )
-    assert calls == [(repo, revision)]
+    assert calls == []
     assert runtime.drafter_path == str(snapshot)
 
     monkeypatch.setattr(common, "_dflash_block_total", lambda *args: 16, raising=False)

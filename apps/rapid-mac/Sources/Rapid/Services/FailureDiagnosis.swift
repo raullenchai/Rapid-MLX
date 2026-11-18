@@ -508,10 +508,15 @@ enum FailureDiagnoser {
         let value = raw.lowercased()
         if containsAny(value, [
             "no space left on device", "insufficient disk", "not enough disk space", "gated", "hf auth login",
-            "sha256 mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt",
+            "sha256 mismatch", "sha256-mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt", "consistency check failed", "bad-content-range",
         ])
             || (!usingMirror && hasDownloadAuthSignal(value)) {
             return .downloadFailed
+        }
+        // The CLI may already have fallen through to HF inside a job that
+        // Desktop started with the mirror selected.
+        if value.contains("hugging face is temporarily unavailable") {
+            return .downloadSourceUnavailable
         }
         guard usingMirror else {
             return containsAny(value, hfUnreachableSignals)
@@ -529,7 +534,7 @@ enum FailureDiagnoser {
     nonisolated static func downloadFailureCause(raw: String, kind: FailureDiagnosis.Kind) -> DesktopFunnelReporter.DownloadFailureCause {
         let value = raw.lowercased()
         if containsAny(value, ["no space left on device", "insufficient disk", "not enough disk space"]) { return .diskFull }
-        if containsAny(value, ["sha256 mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt"]) { return .integrity }
+        if containsAny(value, ["sha256 mismatch", "sha256-mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt", "consistency check failed", "bad-content-range"]) { return .integrity }
         if containsAny(value, ["not found on huggingface", "repository not found", "repositorynotfound", "entrynotfound", "revisionnotfound", "404 client error", "http 404", "status 404", " 404 "]) { return .notFound }
         if value.contains("could not reach hugging face") { return .network }
         if kind == .downloadSourceUnavailable { return .sourceUnavailable }
@@ -684,7 +689,7 @@ enum FailureDiagnoser {
     }
 
     nonisolated private static let hfUnreachableSignals = [
-        "could not reach hugging face", "could not resolve host", "cannot find host", "cannot connect",
+        "hugging face is temporarily unavailable", "could not reach hugging face", "could not resolve host", "cannot find host", "cannot connect",
         "connection refused", "name resolution", "nodename nor servname", "name or service not known",
         "network is unreachable", "not connected to the internet",
     ]

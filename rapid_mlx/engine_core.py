@@ -29,6 +29,7 @@ import mlx.core as mx
 from ._env import env_truthy
 from .engine_startup_errors import startup_failure_boundary
 from .lattice.memory import memory_policy
+from .lattice.scheduling import scheduling_value
 from .model_registry import get_registry
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .request import (
@@ -619,11 +620,23 @@ class EngineCore:
         construction: a submission that lands after the last quiet tick
         joins the NEXT wave — a timed coalescer cannot promise more.
         """
-        tick_s = _env_float("RAPID_ADMISSION_WINDOW_MS", 8.0) / 1e3
-        if tick_s <= 0:
-            return
+        # Runs every engine-loop iteration: bail out before resolving the knob.
         get_running = getattr(self.scheduler, "get_num_running", None)
         if get_running is None or get_running() != 0:
+            return
+        window_ms = scheduling_value(
+            "admission_window_ms",
+            getattr(self, "model", None),
+            batch=max(1, getattr(self.scheduler, "get_num_waiting", lambda: 1)()),
+            mode=(
+                "mtp"
+                if getattr(getattr(self.scheduler, "config", None), "spec_decode", None)
+                == "mtp"
+                else "plain"
+            ),
+        )
+        tick_s = _env_float("RAPID_ADMISSION_WINDOW_MS", window_ms) / 1e3
+        if tick_s <= 0:
             return
         cap_s = _env_float("RAPID_ADMISSION_WINDOW_CAP_MS", 120.0) / 1e3
         deadline = time.monotonic() + cap_s
@@ -1583,7 +1596,7 @@ class EngineCore:
                                 f"[stream_outputs] {request_id[:12]} engine aborted: {output.error}"
                             )
                             raise InferenceAbortedError(
-                                output.error,
+                                str(output.error),
                                 error_kind=output.error_kind,
                                 prompt_tokens=output.prompt_tokens,
                                 completion_tokens=output.completion_tokens,
@@ -1702,7 +1715,7 @@ class EngineCore:
                 from .request import InferenceAbortedError
 
                 raise InferenceAbortedError(
-                    final_output.error,
+                    str(final_output.error),
                     error_kind=final_output.error_kind,
                     prompt_tokens=final_output.prompt_tokens,
                     completion_tokens=final_output.completion_tokens,

@@ -1155,25 +1155,25 @@ if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
         (
             "module-server",
             "watchdog",
-            ["server_start_state", "active_day", "server_start_state"],
+            ["server_start_state", "active_day"],
             "cli",
         ),
         (
             "cli-serve",
             "watchdog",
-            ["server_start_state", "active_day", "server_start_state"],
+            ["server_start_state", "active_day"],
             "cli",
         ),
         (
             "module-server",
             "desktop",
-            ["server_start_state", "active_day", "server_start_state"],
+            ["server_start_state", "active_day"],
             "desktop",
         ),
         (
             "cli-serve",
             "desktop",
-            ["server_start_state", "active_day", "server_start_state"],
+            ["server_start_state", "active_day"],
             "desktop",
         ),
         (
@@ -1183,7 +1183,6 @@ if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
                 "app_opened",
                 "server_start_state",
                 "active_day",
-                "server_start_state",
             ],
             "server",
         ),
@@ -1194,7 +1193,6 @@ if sys.argv[1:3] == ["serve", "gemma-4-e4b-4bit"]:
                 "app_opened",
                 "server_start_state",
                 "active_day",
-                "server_start_state",
             ],
             "server",
         ),
@@ -1289,9 +1287,9 @@ def test_entrypoint_role_surface_matrix(
         start_items = [item for item in items if item["event"] == "server_start_state"]
         assert [item["properties"]["state"] for item in start_items] == [
             "attempted",
-            "failed",
         ]
-        assert start_items[-1]["properties"]["failure_stage"] == "preflight"
+        # The fixture stops with SystemExit(0) before binding; that is not a
+        # failed startup (for example, an accepted upgrade can do the same).
         assert len({item["properties"]["session_id"] for item in start_items}) == 1
 
 
@@ -1898,10 +1896,14 @@ def test_server_module_entrypoint_starts_shared_v2_lifecycle(monkeypatch):
     with pytest.raises(StopAfterLifecycleError):
         server_module.main()
     assert calls == ["server"]
-    assert [item["properties"]["state"] for item in sender.items] == [
-        "attempted",
-        "failed",
-    ]
+    assert [
+        item["properties"]["state"]
+        for item in sender.items
+        if item["event"] == "server_start_state"
+    ] == ["attempted", "failed"]
+    failures = [item for item in sender.items if item["event"] == "model_serve_failed"]
+    assert len(failures) == 1
+    assert failures[0]["properties"]["failure_subtype"] == "unknown"
 
 
 def test_session_transport_guard_assertion_rejects_recorded_post(

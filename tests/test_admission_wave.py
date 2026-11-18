@@ -132,6 +132,26 @@ def test_no_wait_when_batch_active(sleep_spy):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "scheduler",
+    [_StubScheduler(num_running=1), _NoRunningApi()],
+    ids=["running", "no-api"],
+)
+def test_busy_loop_does_not_resolve_the_lattice_knob(sleep_spy, monkeypatch, scheduler):
+    # The engine loop calls this before every step; resolving the knob reads
+    # device facts and walks the model, which cost ~3 ms per decode step.
+    calls, _, holder = sleep_spy
+
+    def boom(*args, **kwargs):
+        raise AssertionError("resolved while a batch is running")
+
+    monkeypatch.setattr(engine_core, "scheduling_value", boom)
+    eng = _make_engine(scheduler=scheduler)
+    holder["eng"] = eng
+    _run(eng._await_admission_wave())
+    assert calls == []
+
+
 def test_no_wait_when_scheduler_lacks_api(sleep_spy):
     calls, _, holder = sleep_spy
     eng = _make_engine(scheduler=_NoRunningApi())
@@ -306,3 +326,44 @@ def test_hard_cap_bounds_never_quiet_stream(monkeypatch):
     # Ticks at t=0,10,20,30,40ms all pass the <45ms deadline check; the
     # sixth check (t=50ms) fails -> exactly 5 sleeps.
     assert len(calls) == 5
+
+
+@pytest.mark.parametrize(
+    "mode,window,expected",
+    [("mtp", 0, []), ("mtp", 8, [0.008]), ("plain", 0, [0.008])],
+)
+def test_lattice_admission_window(sleep_spy, monkeypatch, mode, window, expected):
+    import json
+    from types import SimpleNamespace
+
+    calls, _, holder = sleep_spy
+    monkeypatch.delenv("RAPID_ADMISSION_WINDOW_MS", raising=False)
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCHMARK_KNOBS", json.dumps({"admission_window_ms": window})
+    )
+    eng = _make_engine()
+    eng.scheduler.config = SimpleNamespace(spec_decode=mode)
+    holder["eng"] = eng
+    _run(eng._await_admission_wave())
+    assert calls == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "override,expected", [("25", [0.025]), ("-1", []), ("bad", [])]
+)
+@pytest.mark.parametrize("mode", ["mtp", "plain"])
+def test_admission_legacy_env_wins_over_lattice(
+    sleep_spy, monkeypatch, override, expected, mode
+):
+    from types import SimpleNamespace
+
+    calls, _, holder = sleep_spy
+    monkeypatch.setenv("RAPID_MLX_BENCHMARK_KNOBS", '{"admission_window_ms": 0}')
+    monkeypatch.setenv("RAPID_ADMISSION_WINDOW_MS", override)
+    eng = _make_engine()
+    eng.scheduler.config = SimpleNamespace(spec_decode=mode)
+    holder["eng"] = eng
+    _run(eng._await_admission_wave())
+    assert calls == pytest.approx(
+        [0.008] if mode == "plain" and override == "bad" else expected
+    )

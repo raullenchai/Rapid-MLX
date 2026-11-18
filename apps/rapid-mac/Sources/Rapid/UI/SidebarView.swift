@@ -684,7 +684,7 @@ struct SidebarView: View {
             )
             .accessibilityIdentifier("Sidebar.Audio")
             compactItem(
-                title: String(localized: "Launch"),
+                title: String(localized: "Agent"),
                 systemImage: "paperplane",
                 isSelected: selection == .launch,
                 action: { selection = .launch }

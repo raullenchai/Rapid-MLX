@@ -1205,3 +1205,30 @@ def test_mllm_capped_preflight_converts_pydantic_tools():
         )
         == 3
     )
+
+
+@pytest.mark.parametrize("kind", ["memory", "native", "operational"])
+def test_context_refusal_logs_reason_once(kind, monkeypatch, caplog):
+    import logging
+
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service import helpers
+
+    engine = _StubEngine(model=_StubModel(args=_StubArgs(max_position_embeddings=100)))
+    monkeypatch.setattr(get_config(), "context_length", None)
+    monkeypatch.setattr(
+        get_config(), "max_prompt_tokens", 50 if kind == "operational" else None
+    )
+    monkeypatch.setattr(
+        helpers, "memory_context_ceiling", lambda _: 80 if kind == "memory" else None
+    )
+    with (
+        caplog.at_level(logging.INFO, logger=helpers.__name__),
+        pytest.raises(HTTPException) as caught,
+    ):
+        helpers.enforce_context_length(engine, 101, max_tokens=256)
+    records = [r for r in caplog.records if "context_length_exceeded" in r.message]
+    assert len(records) == 1
+    assert caught.value.detail["error"]["message"] in records[0].message

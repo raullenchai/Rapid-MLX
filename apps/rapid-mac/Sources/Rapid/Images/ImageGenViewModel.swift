@@ -158,11 +158,11 @@ final class ImageGenViewModel {
     }
 
     // MARK: - Results
-    /// Cap on the in-memory session gallery. Each result holds a full-resolution
+    /// Cap on the durable gallery. Each result holds a full-resolution
     /// PNG (multiple MB), so an unbounded list would grow app memory without
     /// limit across a long session; older results roll off the end.
-    static let maxResults = 30
-    /// Newest-first session gallery (the filmstrip).
+    static let maxResults = ImageArtifactStore.defaultLimit
+    /// Newest-first durable gallery (the filmstrip).
     var results: [GeneratedImage] = []
     /// The focal image the stage shows; nil ⇒ newest, or empty state.
     var activeID: GeneratedImage.ID?
@@ -261,7 +261,9 @@ final class ImageGenViewModel {
         if addingReference {
             guard isEditing else { return nil }
             guard urls.count + additionalReferences.count + pendingReferenceImports + 1 <= maxReferenceImages else {
-                errorMessage = String(localized: "This model accepts up to \(maxReferenceImages) reference images.")
+                errorMessage = maxReferenceImages == 1
+                    ? String(localized: "This model accepts up to 1 reference image.")
+                    : String(localized: "This model accepts up to \(maxReferenceImages) reference images.")
                 return nil
             }
         } else {
@@ -300,6 +302,10 @@ final class ImageGenViewModel {
     var isEditing: Bool { editSource != nil }
     private var previousGenerationAlias: String?
 
+    @ObservationIgnored private let artifactStore: ImageArtifactStore
+    @ObservationIgnored private var deletedImageIDs: Set<UUID> = []
+    @ObservationIgnored private(set) var galleryLoadTask: Task<Void, Never>?
+
     private let client = ImageClient()
     private let server: ServerManager
     @ObservationIgnored
@@ -311,12 +317,35 @@ final class ImageGenViewModel {
 
     init(
         server: ServerManager,
+        artifactStore: ImageArtifactStore = ImageArtifactStore(),
         catalogLoader: @escaping (URL) async -> [ModelEntry] = {
             await ModelCatalog.imageEntries(binary: $0)
         }
     ) {
         self.server = server
         self.catalogLoader = catalogLoader
+        self.artifactStore = artifactStore
+        galleryLoadTask = Task { [weak self, artifactStore] in
+            do {
+                let loaded = try await artifactStore.load()
+                guard let self else { return }
+                let existing = Set(self.results.map(\.id))
+                self.results = Array((self.results + loaded.filter {
+                    !existing.contains($0.id) && !self.deletedImageIDs.contains($0.id)
+                }).sorted { $0.createdAt > $1.createdAt }.prefix(Self.maxResults))
+            } catch {
+                self?.errorMessage = String(localized: "Couldn't load the image gallery: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func storageCompletion() -> @Sendable (String?) -> Void {
+        { [weak self] message in
+            guard let message else { return }
+            Task { @MainActor [weak self] in
+                self?.errorMessage = String(localized: "Couldn't update the saved image gallery: \(message)")
+            }
+        }
     }
 
     func observeProductValue(
@@ -348,7 +377,7 @@ final class ImageGenViewModel {
         }
     }
 
-    /// Remove an image from the in-memory session gallery. Saved copies are
+    /// Remove an image from the durable gallery. Saved copies are
     /// independent files and are deliberately untouched.
     func delete(_ image: GeneratedImage) {
         let wasActive = activeImage?.id == image.id
@@ -358,6 +387,8 @@ final class ImageGenViewModel {
         guard removedIndex != nil || wasEditSource else { return }
         if let removedIndex {
             results.remove(at: removedIndex)
+            deletedImageIDs.insert(image.id)
+            artifactStore.delete(image.id, completion: storageCompletion())
         }
         if wasEditSource {
             cancelEdit()
@@ -410,6 +441,7 @@ final class ImageGenViewModel {
         guard canSubmit, let target = makeRequestTarget() else { return }
         isGenerating = true
         inFlightAlias = target.alias
+        await galleryLoadTask?.value
         if let source = editSource {
             await runEdit(source: source, target: target)
         } else {
@@ -444,6 +476,7 @@ final class ImageGenViewModel {
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
                 imageMode: .generation,
+                imageMinimumMemoryGB: target.minimumMemoryGB,
                 residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
@@ -459,6 +492,7 @@ final class ImageGenViewModel {
             )
             if !self.cancelling, !Task.isCancelled,
                let first = images.first, !first.pngData.isEmpty {
+                self.artifactStore.insert(images, completion: self.storageCompletion())
                 self.results.insert(contentsOf: images, at: 0)
                 if self.results.count > Self.maxResults {
                     self.results.removeLast(self.results.count - Self.maxResults)
@@ -481,6 +515,7 @@ final class ImageGenViewModel {
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
                 imageMode: .editing,
+                imageMinimumMemoryGB: target.minimumMemoryGB,
                 residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
@@ -496,6 +531,7 @@ final class ImageGenViewModel {
             )
             if !self.cancelling, !Task.isCancelled,
                let first = images.first, !first.pngData.isEmpty {
+                self.artifactStore.insert(images, completion: self.storageCompletion())
                 self.results.insert(contentsOf: images, at: 0)
                 if self.results.count > Self.maxResults {
                     self.results.removeLast(self.results.count - Self.maxResults)
@@ -612,7 +648,8 @@ final class ImageGenViewModel {
                 sizeText: selected.sizeOnDisk,
                 sizeBytes: selected.sizeBytes,
                 minimumMemoryGB: selected.minimumMemoryGB
-            )
+            ),
+            minimumMemoryGB: selected.minimumMemoryGB
         )
     }
 
@@ -620,5 +657,6 @@ final class ImageGenViewModel {
         let alias: String
         let hfPath: String?
         let estimatedMemoryGB: Double
+        let minimumMemoryGB: Double?
     }
 }

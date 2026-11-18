@@ -4373,12 +4373,17 @@ struct QuickstartView: View {
             return text
         }()
 
+        let retainedBytes: String? = {
+            guard pullMessage != nil, let bytes = job?.progress.bytesDownloaded, bytes > 0 else { return nil }
+            return String(localized: "\(DownloadProgress.formatBytes(bytes)) downloaded. Resume to continue.")
+        }()
         OnboardingOutcomeBlock(
             glyph: Self.failureGlyph(for: kind),
             tone: kind.severity == .notice ? .amber : .error,
             kicker: Self.failureKicker(for: kind, origin: coordinator.step),
             title: Self.failureTitle(for: kind),
-            message: startupFailure?.message ?? pullMessage ?? diagnosis.message
+            message: [startupFailure?.message ?? pullMessage ?? diagnosis.message, retainedBytes]
+                .compactMap { $0 }.joined(separator: " ")
         ) {
             OnboardingActionLane {
                 if startupFailure != nil {
@@ -4388,7 +4393,7 @@ struct QuickstartView: View {
                     .buttonStyle(.onboardingPrimary)
                     .accessibilityIdentifier("Quickstart.OpenStartupLog")
                 } else if let action = diagnosis.action {
-                    Button(action.title) {
+                    Button(pullMessage != nil && action == .retry ? String(localized: "Resume download") : action.title) {
                         handleQuickstartFailureAction(action)
                     }
                     .buttonStyle(.onboardingPrimary)
@@ -4409,7 +4414,7 @@ struct QuickstartView: View {
                 if startupFailure == nil,
                    job != nil,
                    kind == .downloadSourceUnavailable {
-                    Button("Retry") {
+                    Button("Resume download") {
                         handleQuickstartFailureAction(.retry)
                     }
                     .buttonStyle(.onboardingOutline)

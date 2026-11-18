@@ -634,8 +634,11 @@ class ImageGenerationEngine:
         if pinned_revision is None:
             return self.model_name
         from .._mirror import pinned_snapshot_download
+        from ..model_aliases import subfolder_allow_patterns
 
-        allow_patterns = IMAGE_MODEL_DATA_FILES.get(self.model_name)
+        allow_patterns = IMAGE_MODEL_DATA_FILES.get(
+            self.model_name
+        ) or subfolder_allow_patterns(self.model_name)
         # Vendored runtimes execute only reviewed local code. Fetch the pinned
         # model data they consume, never repository scripts — from the mirror
         # where its bytes are proven identical to the pin, else from HF.
@@ -1517,7 +1520,8 @@ class ImageGenerationEngine:
             and len(input_paths) > self.max_reference_images
         ):
             raise ImageRequestError(
-                f"{self.family} accepts at most {self.max_reference_images} reference images."
+                f"{self.family} accepts at most {self.max_reference_images} reference "
+                f"{'image' if self.max_reference_images == 1 else 'images'}."
             )
         if self.family == "minimax-h3-image":
             if num_inference_steps not in (None, 6):

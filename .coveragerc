@@ -28,6 +28,10 @@ omit =
     # Exact third-party numerical core; Rapid-owned adapter remains covered.
     rapid_mlx/image/bonsai_runtime/_vendor/*
     rapid_mlx/image/sd35_runtime/_vendor/*
+    # Pinned Raon release numerical core. Complete-source hashes and an exact
+    # compatibility/load-boundary/batch-guard inventory fail closed in
+    # test_raon_1_model.py; Rapid-owned loader and parser glue stay measured.
+    rapid_mlx/models/raon1_nano.py
     # Pinned upstream cache implementation. Keep this file-specific: the
     # Rapid-owned compatibility seam and future vendored modules remain gated.
     rapid_mlx/models/mlx_vlm_vendored/cache.py

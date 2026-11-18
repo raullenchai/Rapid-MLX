@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from .errors import MemoryContextExceededError, MetalMemoryBackpressureError
+
 if TYPE_CHECKING:
     from fastapi import HTTPException
 
@@ -657,8 +659,9 @@ class RequestOutput:
     logprobs: Any = None
     # Set when the engine aborts the request before completion (e.g. Metal
     # runtime error caught in the engine loop). HTTP layer converts this to
-    # 503. Plain finish reasons (stop / length / etc.) leave this as None.
-    error: str | None = None
+    # 503. A known MemoryContextExceededError retains its counts for HTTP 400.
+    # Plain finish reasons (stop / length / etc.) leave this as None.
+    error: str | MemoryContextExceededError | MetalMemoryBackpressureError | None = None
     # Number of prompt tokens served from the prefix cache for this
     # request. Mirrors ``Request.cached_tokens`` (set by the scheduler
     # during prefix-cache lookup) so the engine and API layers don't

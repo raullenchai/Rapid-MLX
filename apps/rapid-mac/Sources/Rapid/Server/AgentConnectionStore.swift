@@ -5,8 +5,19 @@ import Darwin
 /// and files are owner-only; no secret is passed in argv or written to logs.
 enum AgentConnectionStore {
     static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".rapid-mlx/connect", isDirectory: true)
+        directory(environment: ProcessInfo.processInfo.environment)
+    }
+
+    /// Match the CLI and ApplicationSupportLocator: an absolute HOME override
+    /// isolates dogfood launches; missing or relative HOME uses Foundation.
+    static func directory(environment: [String: String]) -> URL {
+        let home: URL
+        if let raw = environment["HOME"], raw.hasPrefix("/") {
+            home = URL(fileURLWithPath: raw, isDirectory: true)
+        } else {
+            home = FileManager.default.homeDirectoryForCurrentUser
+        }
+        return home.appendingPathComponent(".rapid-mlx/connect", isDirectory: true)
     }
 
     static func readKey() -> String? {

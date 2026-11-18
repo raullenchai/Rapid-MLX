@@ -64,6 +64,15 @@ def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
 class _PortContextArgumentParser(argparse.ArgumentParser):
     """Record bind-port provenance and explicit serve options after parsing."""
 
+    def error(self, message):
+        try:
+            super().error(message)
+        except SystemExit as exc:
+            from .telemetry.server_start import set_exit_reason
+
+            set_exit_reason("usage_error", exc=exc)
+            raise
+
     def parse_args(self, args=None, namespace=None):
         supplied_args = sys.argv[1:] if args is None else list(args)
         if args is None and namespace is None:

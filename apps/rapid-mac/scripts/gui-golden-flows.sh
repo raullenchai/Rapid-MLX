@@ -1981,14 +1981,21 @@ start_fixture_chat_model() {
     # leave the cached fixture selected if the picker resolved first. These
     # journeys test chat persistence/recovery, so explicitly choose their
     # fixture instead of starting whichever side of that race won.
-    wait_identifier_enabled Readiness.Action "$OUT/fixture-picker-ready.json"
+    wait_identifier_enabled ModelPickerBar.ModelMenu "$OUT/fixture-picker-ready.json"
     "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
         "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
         || die "chat fixture model could not be selected"
     for _ in {1..40}; do
         see_main "$OUT/fixture-model-selected.json"
         if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]]; then
-            start_model
+            # Selecting a cached model activates it. During that load the
+            # composer hides Readiness.Action, and ready has no action either.
+            # Observe the selected fixture's launch instead of pressing Start.
+            wait_fake_event_after_start \
+                ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
+                "chat fixture model did not become ready" \
+                readiness
+            wait_send_idle "$OUT/fixture-model-ready.json"
             return
         fi
         sleep 0.25
@@ -3070,6 +3077,10 @@ flow_model_crash_recovery() {
     done
     [[ "$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null || true)" -ge 2 ]] \
         || die "server did not respawn after the simulated crash"
+    jq -e -s --arg alias "$FAKE_ALIAS" \
+        '[.[] | select(.event == "server_started")] | length >= 2 and all(.[]; .alias == $alias)' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "crash recovery started a model other than the crash fixture"
     for _ in {1..80}; do
         see_main "$OUT/crash-ready.json"
         crash_send_label="$(element_field "$OUT/crash-ready.json" ChatView.SendOrStopButton description)"
