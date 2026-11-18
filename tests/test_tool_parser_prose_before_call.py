@@ -13,6 +13,7 @@ OPENERS = {
     "hermes": "<tool_call>",
     "qwen3_xml": "<tool_call>",
     "qwen3_coder_xml": "<tool_call>",
+    "raon_1": "<tool_call>",
     "hy_v3": "<tool_call:opensource>",
     "ui_tars": "Action:",
     "lfm": "[get_current_weather(",

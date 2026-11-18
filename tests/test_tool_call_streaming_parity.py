@@ -147,6 +147,12 @@ def _extract_stream(parser_name: str, text: str) -> list:
 # --------------------------------------------------------------------------
 PARITY_FIXTURES: list = [
     (
+        "raon_1",
+        "tool_call_xml_body",
+        "<tool_call>\n<function=run>\n<parameter=text>\nhello\nworld\n</parameter>\n</function>\n</tool_call>",
+        [("run", {"text": "hello\nworld"})],
+    ),
+    (
         "pythonic",
         "pythonic_bracket",
         '[get_current_weather(location="Paris", unit="celsius")]',

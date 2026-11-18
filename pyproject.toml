@@ -721,6 +721,7 @@ rapid_mlx = [
     "spec_decode/mtp/NOTICE-MTPLX",
     "models/embedding_gemma2/LICENSE",
     "models/embedding_gemma2/NOTICE",
+    "models/NOTICE-RAON",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 # Vendored LTX-2.5 runtime (scripts/vendor_ltx25.py). The provenance file and
@@ -750,6 +751,8 @@ include = [
 [tool.ruff]
 line-length = 88
 extend-exclude = [
+    # Vendored Raon release: preserve arithmetic and source shape for parity.
+    "rapid_mlx/models/raon1_nano.py",
     # Vendored CogVideoX-Fun MLX runtime. Keep iso-upstream.
     "videox_fun_mlx",
     # Vendored LTX-2.5 MLX runtime. Keep iso-upstream; only provenance and
@@ -891,4 +894,10 @@ ignore_errors = true
 # source syncable while the Rapid-owned compatibility seam remains under the
 # repository-wide shrink-only error budget.
 module = "rapid_mlx.models.mlx_vlm_vendored.cache"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Vendored numerical core kept near-verbatim for parity and upstream syncs.
+# Rapid-owned Raon parsers remain under the shrink-only error budget.
+module = "rapid_mlx.models.raon1_nano"
 ignore_errors = true
