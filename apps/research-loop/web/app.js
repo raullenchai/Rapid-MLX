@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const colors = {supported:'#176345',refuted:'#a33432',crashed:'#a33432','no effect':'#795919',baseline:'#526476',testing:'#285e89'};
+const colors = {improved:'#176345',worse:'#a33432',supported:'#176345',refuted:'#a33432',crashed:'#a33432','no effect':'#795919',baseline:'#526476',testing:'#285e89'};
 const state = {slug:null, stage:'discuss', data:null, run:null, rounds:new Map(), selected:0, best:0, follow:true, replay:false, speed:8, source:null, files:[], projects:[], templates:[], domain:'', chatBusy:false, chatDraft:null, generation:0, loadingRun:null};
 let noticeTimer, paintPending = false, artifactKey = '', artifactGeneration = 0;
 const artifactText = {code:null,diff:null};
@@ -25,6 +25,7 @@ function format(value, task=state.data?.task, signed=false) {
   return `${signed && value>0 ? '+' : ''}${number}${task?.unit ? (percent ? '%' : ' '+task.unit) : ''}`;
 }
 function changeLabel(r) { return (r.change || r.hypothesis || (r.round === 0 ? 'Original settings' : 'Change pending')).replaceAll('->','→'); }
+function experimentVerdict(verdict) { return ({supported:'improved',refuted:'worse','not run':'crashed'})[verdict] || verdict; }
 function color(verdict) { return colors[verdict] || colors.testing; }
 function statusClass(verdict) { return (verdict || 'testing').replaceAll(' ','-'); }
 function directionMark(task) {
@@ -62,11 +63,17 @@ function getRound(number) {
 function ledgerRows() { return [...state.rounds.values()].filter(r => r.round===0 ? Number.isFinite(r.value) : Boolean(r.hypothesis || r.verdict !== 'testing')).sort((a,b)=>a.round-b.round); }
 function apply(event, paint=true) {
   const r = getRound(event.round ?? 0);
+  if(event.error) {
+    r.errorSeeds ??= {};
+    const key=errorSummary(event.error), seeds=r.errorSeeds[key] ??= [];
+    const active=Object.entries(r.seeds).filter(([,v])=>v==='running').map(([seed])=>seed);
+    for(const seed of event.seed===undefined?active:[String(event.seed)])if(!seeds.includes(seed))seeds.push(seed);
+  }
   switch(event.event) {
     case 'baseline': if(paint && !state.replay)refreshFiles(); Object.assign(r,{change:'Original settings',hypothesis:'Baseline',value:event.result?.[event.metric || state.data.task.metric],verdict:'baseline',result:event.result}); break;
     case 'idea':
       Object.assign(r,{parent:state.best},event); if(state.follow) state.selected=r.round;
-      if(!state.replay && ['human','you'].includes(event.source)) {
+      if(!state.replay && ['human','you'].includes(event.source) && state.data.ideas) {
         const i=state.data.ideas.findIndex(idea=>idea.hypothesis===event.hypothesis && (!idea.ts || event.ts>=idea.ts));
         if(i>=0){state.data.ideas.splice(i,1);renderQueue();}
       }
@@ -77,8 +84,8 @@ function apply(event, paint=true) {
     case 'run_end': r.seeds[event.seed]='complete'; r.seedResults ??= []; r.seedResults.push({seed:event.seed,...event.result}); break;
     case 'run_error': r.errors.push(event.error || 'Experiment failed'); markCrashed(r,event.seed); break;
     case 'edit_rejected': r.errors.push('Edit rejected: '+event.reason); break;
-    case 'idea_error': r.errors.push(event.error); notice(`Round ${event.round}: ${event.error}`); break;
-    case 'result': Object.assign(r,event); if(event.error && r.errors.at(-1)!==event.error)r.errors.push(event.error); if(event.verdict==='crashed')markCrashed(r,event.seed); r.value ??= event.result?.[state.data.task.metric]; if(event.verdict==='supported') state.best=r.round; if(paint && !state.replay)refreshFiles(); break;
+    case 'hypothesis_error': case 'idea_error': r.errors.push(event.error); notice(`Experiment ${event.round}: ${event.error}`); break;
+    case 'result': Object.assign(r,event,{verdict:experimentVerdict(event.verdict)}); if(event.reason && !r.errors.includes(event.reason))r.errors.push(event.reason); if(event.error && r.errors.at(-1)!==event.error)r.errors.push(event.error); if(event.verdict==='crashed')markCrashed(r,event.seed); r.value ??= event.result?.[state.data.task.metric]; if(experimentVerdict(event.verdict)==='improved') state.best=r.round; if(paint && !state.replay)refreshFiles(); break;
     case 'goal_reached': notice('Goal reached. The measured result is recorded.'); break;
     case 'done':
       state.run.active=false; state.run.finished=true; state.data.runs.forEach(run=>{if(run.id===state.run.id)run.active=false;}); state.source?.close(); notice(event.reason || 'Run complete. Explore the ledger and artifacts in Results.');
@@ -96,8 +103,19 @@ function errorSummary(error) {
   const lines=String(error || '').trim().split('\n').map(s=>s.trim()).filter(Boolean);
   return [...lines].reverse().find(line=>/^[\w.]*(?:Error|Exception|Interrupt|Exit)(?::|$)/.test(line)) || lines.at(-1) || 'Experiment failed';
 }
-function errorMarkup(error) {
-  return `<p class="error error-summary" title="${esc(errorSummary(error))}">${esc(errorSummary(error))}</p><details class="error-details"><summary>Show error</summary><pre tabindex="0" aria-label="Experiment error">${esc(error)}</pre></details>`;
+function errorMarkup(error,scope='') {
+  return `<p class="error error-summary" title="${esc(errorSummary(error))}">${esc(errorSummary(error))}${scope?' · '+esc(scope):''}</p><details class="error-details"><summary>Show error</summary><pre tabindex="0" aria-label="Experiment error">${esc(error)}</pre></details>`;
+}
+function groupedErrors(r) {
+  const groups=new Map();
+  for(const error of r.errors) {
+    const key=errorSummary(error), previous=groups.get(key);
+    if(!previous || String(error).length>String(previous).length)groups.set(key,error);
+  }
+  return [...groups].map(([key,error])=>{
+    const seeds=r.errorSeeds?.[key] || [], all=state.data.task.seeds.every(s=>seeds.includes(String(s)));
+    return {error,scope:seeds.length?(all && seeds.length>1?'on all seeds':'on seed'+(seeds.length>1?'s ':' ')+seeds.join(', ')):''};
+  });
 }
 function domainChip(domain) { return domain ? `<span class="domain-chip">${esc(domain)}</span>` : ''; }
 function scheduleRender() {
@@ -146,7 +164,7 @@ function renderMath(el) {
   try { window.renderMathInElement(el, {delimiters:[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}], throwOnError:false, strict:'ignore'}); } catch (_) {}
 }
 function starterPrompts(task=state.data?.task) {
-  return [`Why does the baseline fail on ${metricLabel(task).toLowerCase()}?`, 'What should we try first?', 'What would refute our best idea?'];
+  return [`Why does the baseline fail on ${metricLabel(task).toLowerCase()}?`, 'What should we try first?', 'What would refute our best hypothesis?'];
 }
 function goalDescription(program='') {
   const lines=program.split('\n').map(line=>line.trim()).filter(Boolean);
@@ -158,7 +176,7 @@ function projectHistory(runs, task) {
   for(const run of [...runs].sort((a,b)=>(a.created || 0)-(b.created || 0))) {
     for(const e of run.events || []) {
       if(!['baseline','result'].includes(e.event))continue;
-      const candidate=e.event==='baseline' ? e.result?.[e.metric || task.metric] : e.verdict==='supported' ? e.value ?? e.result?.[task.metric] : null;
+      const candidate=e.event==='baseline' ? e.result?.[e.metric || task.metric] : experimentVerdict(e.verdict)==='improved' ? e.value ?? e.result?.[task.metric] : null;
       if(Number.isFinite(candidate))best=best===null ? candidate : task.direction==='min' ? Math.min(best,candidate) : Math.max(best,candidate);
       if(best!==null)progress.push(best);
     }
@@ -188,6 +206,7 @@ async function projectSummary(project) {
     return {...r,...data.run,events:data.events,created:r.created ?? data.run.created ?? data.events.find(e=>Number.isFinite(e.ts))?.ts ?? r.updated ?? 0};
   }));
   project.experiments=runs.reduce((sum,r)=>sum+r.events.filter(e=>e.event==='result').length,0);
+  project.hypotheses=detail.hypotheses?.length ?? new Set(runs.flatMap(r=>r.events.filter(e=>e.event==='idea').map(e=>e.hypothesis_id || e.hypothesis || e.change))).size;
   project.progress=projectHistory(runs,project.task);
   project.best=project.progress.at(-1) ?? null;
   project.updated=Math.max(project.updated || 0,...runs.map(r=>r.events.at(-1)?.ts ?? r.updated ?? 0));
@@ -199,7 +218,7 @@ function renderProjects() {
   $('domain-filters').hidden=!domains.length;
   $('domain-filters').innerHTML=['',...domains].map(d=>`<button type="button" class="secondary domain-filter" data-domain="${esc(d)}" aria-pressed="${state.domain===d}">${esc(d || 'All domains')}</button>`).join('');
   const projects=state.projects.filter(p=>!state.domain || p.task?.domain===state.domain).sort((a,b)=>b.updated-a.updated);
-  $('project-list').innerHTML=projects.length ? projects.map(p=>`<article class="project-row"><div class="project-intro"><a href="#/p/${esc(p.slug)}">${esc(p.title)}</a>${domainChip(p.task?.domain)}<p class="project-description muted" title="${esc(p.description || '')}">${esc(p.description || 'Open the project to review its research goal.')}</p></div><div class="project-template"><span class="muted">Template</span><span>${esc(p.template)}</span><div><span class="project-status ${p.status==='Running'?'is-running':''}">${esc(p.status || 'Status unavailable')}</span></div></div><div><span class="muted">Experiments</span><span class="project-number">${p.experiments}</span></div><div class="project-metric"><div><span class="muted">Best ${esc(metricLabel(p.task))} ${directionMark(p.task)}</span><strong>${esc(format(p.best,p.task))}</strong></div>${sparkline(p.progress,p.task)}</div><div><span class="muted">Last activity</span><time datetime="${new Date(p.updated*1000).toISOString()}">${esc(activityTime(p.updated))}</time></div></article>`).join('') : '<div class="empty project-empty"><h3>Your next question starts here</h3><p>Create a project from a template to keep your goal, ideas, experiments, and evidence together.</p><button type="button" class="secondary" id="first-project">Create your first project</button></div>';
+  $('project-list').innerHTML=projects.length ? projects.map(p=>`<article class="project-row"><div class="project-intro"><a href="#/p/${esc(p.slug)}">${esc(p.title)}</a>${domainChip(p.task?.domain)}<p class="project-description muted" title="${esc(p.description || '')}">${esc(p.description || 'Open the project to review its research goal.')}</p></div><div class="project-template"><span class="muted">Template</span><span>${esc(p.template)}</span><div><span class="project-status ${p.status==='Running'?'is-running':''}">${esc(p.status || 'Status unavailable')}</span></div></div><div><span class="muted">Research</span><span class="project-number project-counts">${p.hypotheses ?? 0} hypotheses · ${p.experiments} experiments</span></div><div class="project-metric"><div><span class="muted">Best ${esc(metricLabel(p.task))} ${directionMark(p.task)}</span><strong>${esc(format(p.best,p.task))}</strong></div>${sparkline(p.progress,p.task)}</div><div><span class="muted">Last activity</span><time datetime="${new Date(p.updated*1000).toISOString()}">${esc(activityTime(p.updated))}</time></div></article>`).join('') : '<div class="empty project-empty"><h3>Your next question starts here</h3><p>Create a project from a template to keep your goal, hypotheses, experiments, and evidence together.</p><button type="button" class="secondary" id="first-project">Create your first project</button></div>';
   if(!projects.length)$('first-project').onclick=()=>$('new-project').onclick();
   if(focusedDomain!==undefined)[...$('domain-filters').querySelectorAll('[data-domain]')].find(button=>button.dataset.domain===focusedDomain)?.focus({preventScroll:true});
 }
@@ -283,6 +302,7 @@ async function route() {
       // A discussion saved in another tab must appear in either discussion host.
       const data=await api(projectAPI());if(generation!==state.generation)return;
       await resolveRunTimes(data.runs);if(generation!==state.generation)return;
+      state.data.hypotheses=data.hypotheses;state.data.ideas=data.ideas;
       state.data.discussion=data.discussion;
       state.data.runs=data.runs;renderRunPicker();
     }
@@ -336,17 +356,72 @@ async function refreshFiles() {
     if(slug!==state.slug || id!==state.run?.id)return;
     state.files=data.files;
     const run=state.data.runs.find(r=>r.id===id);if(run)Object.assign(run,data.run,{active:state.run.finished ? false : data.run.active});
-    renderRunPicker(); renderResults(); controls();
+    const project=await api(projectAPI());
+    if(slug!==state.slug || id!==state.run?.id)return;
+    state.data.hypotheses=project.hypotheses;state.data.ideas=project.ideas;
+    renderRunPicker();renderQueue(); renderResults(); controls();
   }catch(e){notice(e.message);}
 }
+function hypothesisStatus(experiments, task=state.data.task) {
+  const verdicts=experiments.map(e=>experimentVerdict(e.verdict));
+  if(verdicts.includes('improved'))return 'supported';
+  const finished=verdicts.filter(v=>['worse','no effect','crashed'].includes(v));
+  if(finished.length>=(task.experiments_per_hypothesis ?? 2))return finished.every(v=>v==='crashed')?'inconclusive':'refuted';
+  return experiments.length?'testing':'untested';
+}
+function legacyHypothesisId(statement) {
+  let hash=14695981039346656037n;
+  for(const byte of new TextEncoder().encode(statement))hash=BigInt.asUintN(64,(hash^BigInt(byte))*1099511628211n);
+  return 'legacy-'+hash.toString(16).padStart(16,'0');
+}
+function hypothesisGroups() {
+  const groups=new Map((state.data?.hypotheses || []).map(h=>[h.id,{...h,experiments:(h.experiments || []).filter(e=>e.run!==state.run?.id)}]));
+  for(const r of ledgerRows().filter(r=>r.round>0)) {
+    const statement=r.hypothesis || changeLabel(r);
+    let id=r.hypothesis_id || [...groups.values()].find(h=>h.statement===statement)?.id;
+    if(!id)id=legacyHypothesisId(statement);
+    if(!groups.has(id))groups.set(id,{id,statement,why:r.why || '',prediction:r.prediction || '',source:r.source==='human'?'you':r.source || 'model',experiments:[]});
+    groups.get(id).experiments.push({...r,verdict:r.event==='result'?r.verdict:'testing',run:state.run?.id,hypothesis_id:id});
+  }
+  // Older servers still expose a project queue, including the loop already in memory.
+  for(const [i,entry] of (state.data?.ideas || []).entries())if(![...groups.values()].some(h=>h.statement===entry.hypothesis))groups.set('pending-'+i,{id:'pending-'+i,statement:entry.hypothesis,source:'you',experiments:[]});
+  let legacy=0;
+  return [...groups.values()].map(h=>({...h,label:h.id.startsWith('legacy-')?'hL'+(++legacy):h.id,status:hypothesisStatus(h.experiments)}));
+}
+function hypothesisFor(r) { return hypothesisGroups().find(h=>h.experiments.some(e=>e.round===r.round && e.run===state.run?.id)); }
+function hypothesisColor(h) {
+  const palette=['#285e89','#705187','#87601f','#176345','#984c46','#376b70'];
+  const index=Array.from(h?.id || '').reduce((n,c)=>n+c.charCodeAt(0),0);
+  return palette[index%palette.length];
+}
+function hypothesisCaption(r) {
+  const h=hypothesisFor(r);if(!h)return 'Baseline';
+  const index=h.experiments.findIndex(e=>e.round===r.round && e.run===state.run?.id)+1;
+  const limit=state.data.task.experiments_per_hypothesis ?? 2, total=h.id.startsWith('legacy-')?Math.max(limit,h.experiments.length):limit;
+  return `${h.label || h.id} · ${h.statement} · experiment ${index} of ${total}`;
+}
+function hypothesisRule() { return `Supported after any improvement beyond noise; after ${state.data.task.experiments_per_hypothesis ?? 2} experiments without improvement: refuted, or inconclusive if all crashed.`; }
+function pill(status) { return `<span class="verdict-pill ${statusClass(status)}">${esc(status)}</span>`; }
+function changeMarkup(r) {
+  const label=changeLabel(r), code=/\b(?:for|return|def|import)\b|\b[A-Z][A-Z_]+\b|(?:np|scipy)\.|[=(){}]|\w+_\w+/.test(label);
+  return `<span class="ledger-change${code?' code-change':''}" title="${esc(label)}">${esc(label)}</span>`;
+}
+function experimentLink(e) {
+  return `<a href="${stageURL('results',{run:e.run,round:e.round,replay:e.run===state.run?.id && state.replay})}" title="${esc(changeLabel(e))}">Experiment ${e.round} · ${changeMarkup(e)}</a>`;
+}
 function renderQueue() {
-  const ideas=state.data?.ideas || [];
-  $('queue-count').textContent=String(ideas.length);
-  $('queue').innerHTML=ideas.length ? ideas.map(i=>`<li><span>${esc(i.change || i.hypothesis)}</span></li>`).join('') : '<li class="queue-empty muted">No ideas queued yet. Discuss an approach, then choose “Queue this idea”, or queue your own text.</li>';
+  const claims=hypothesisGroups();
+  $('queue-count').textContent=String(claims.length);
+  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${h.experiments.length} experiments · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
+  $('hypothesis-rule').textContent=hypothesisRule();
+  const openGroups=[...$('experiment-groups').querySelectorAll('details[open]')].map(d=>d.dataset.group), focusedExperiment=document.activeElement?.dataset?.experiment;
+  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${h.experiments.length} experiments</small></summary><ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${e.round}" aria-pressed="${e.round===state.selected}">Experiment ${e.round} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
+  for(const d of $('experiment-groups').querySelectorAll('details'))if(openGroups.includes(d.dataset.group))d.open=true;
+  if(focusedExperiment!==undefined)$('experiment-groups').querySelector(`[data-experiment="${focusedExperiment}"]`)?.focus({preventScroll:true});
 }
 function renderConversation() {
   const messages=[...(state.data?.discussion || [])]; if(state.chatDraft)messages.push(state.chatDraft);
-  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header><div class="message-content">${markdown(m.content || 'Thinking…')}</div>${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Queue this idea</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Queue a promising idea when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
+  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header><div class="message-content">${markdown(m.content || 'Thinking…')}</div>${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
   $('conversation').scrollTop=messages.length ? $('conversation').scrollHeight : 0;
   controls();
 }
@@ -367,6 +442,8 @@ function controls() {
   $('stop').disabled=state.replay || !active;
   $('send').disabled=state.replay || state.chatBusy || !state.data;
   $('queue-message').disabled=state.replay || !state.data;
+  $('add-hypothesis').disabled=state.replay || !state.data;
+  for(const id of ['hypothesis-statement','hypothesis-why','hypothesis-prediction'])$(id).readOnly=state.replay;
   $('model').disabled=state.chatBusy || state.replay;
   $('save-program').disabled=state.replay || anyActive;
   $('edit-program').disabled=state.replay || anyActive;
@@ -377,20 +454,20 @@ function controls() {
   $('replay').hidden=!state.replay;
   $('replay').textContent=`Replay · ${state.speed}× speed`;
   const latest=getRound(Math.max(0,...state.rounds.keys())), seed=Object.entries(latest.seeds).find(([,v])=>v==='running')?.[0];
-  $('run-state').textContent=state.replay ? 'Replaying recorded events' : active ? state.run.paused ? 'Pause requested' : `Running · ${latest.round ? 'round '+latest.round+' of '+(state.run.rounds || $('round-count').value || 10) : 'baseline'}${seed!==undefined?' · seed '+seed:''}` : state.run ? 'Run finished' : 'Ready for experiments';
+  $('run-state').textContent=state.replay ? 'Replaying recorded events' : active ? state.run.paused ? 'Pause requested' : `Running · ${latest.round ? 'experiment '+latest.round+' of '+(state.run.rounds || $('round-count').value || 10) : 'baseline'}${latest.round && hypothesisFor(latest)?' · '+(hypothesisFor(latest).label || hypothesisFor(latest).id):''}${seed!==undefined?' · seed '+seed:''}` : state.run ? 'Run finished' : 'Ready for experiments';
   $('run-state').className=active && !state.run.paused && !state.replay ? 'is-live' : '';
-  $('start-summary').textContent=`Baseline + ${$('round-count').value || 10} rounds · seeds ${state.data?.task.seeds.join(', ') || '—'} · fixed budget`;
+  $('start-summary').textContent=`Baseline + ${$('round-count').value || 10} experiments · seeds ${state.data?.task.seeds.join(', ') || '—'} · fixed budget`;
   $('run-model').textContent=state.run ? modelName(state.run.model)+' · '+state.run.id : 'Start from Discuss when your goal is ready.';
   for(const button of $('conversation').querySelectorAll('[data-queue]'))button.disabled=state.replay;
 }
 function renderRun() {
   if(!state.data)return;
-  controls();
+  controls();renderQueue();
   drawProgress();renderCurrent();renderResults();
 }
 function progressData(rows=ledgerRows(), task=state.data.task) {
   let best=null;
-  return rows.filter(r=>Number.isFinite(r.value) || r.verdict==='crashed').map(r=>{const kept=Number.isFinite(r.value) && (r.round===0 || r.verdict==='supported');if(kept)best=r.value;return {...r,kept,runningBest:best,direction:task.direction};});
+  return rows.filter(r=>Number.isFinite(r.value) || r.verdict==='crashed').map(r=>{const kept=Number.isFinite(r.value) && (r.round===0 || r.verdict==='improved');if(kept)best=r.value;return {...r,kept,runningBest:best,direction:task.direction};});
 }
 function progressScale(values, task) {
   if(task.unit==='%')return {low:0,high:1,step:.25,ticks:[0,.25,.5,.75,1]};
@@ -449,7 +526,7 @@ function drawProgress() {
   }
   const labelBoxes=[];
   for(const p of points){
-    const label=changeLabel(p), short=label.length>28 ? label.slice(0,27)+'…' : label;
+    const label=changeLabel(p), hypothesisLabel=p.round ? ((hypothesisFor(p)?.label || hypothesisFor(p)?.id)+' · '+(hypothesisFor(p)?.statement || label)) : label, short=hypothesisLabel.length>28 ? hypothesisLabel.slice(0,27)+'…' : hypothesisLabel;
     const px=x(p.round), measured=Number.isFinite(p.value), py=measured?y(p.value):bottom-6;
     const text=p.round===0?'Baseline':short, textWidth=text.length*7;
     const flip=px+8+textWidth>width-8;
@@ -468,13 +545,13 @@ function drawProgress() {
       const chosen=candidates.find(c=>!c.overlaps) || candidates.sort((a,b)=>a.overlaps-b.overlaps)[0];
       if(chosen){labelY=chosen.ly;angle=(chosen.above?-25:25)*(flip?-1:1);labelBoxes.push(chosen.box);}
     }
-    const fill=p.kept?'#176345':p.verdict==='refuted'?'#d9a19f':'#b3bdc5';
+    const fill=p.round===0?'#176345':hypothesisColor(hypothesisFor(p));
     const outside=measured && (p.value<low?'low':p.value>high?'high':'');
     const value=measured?format(p.value)+(outside?'; outside plotted range, clamped at '+outside+' edge':''):'No measurement; marker at bottom edge';
-    const caret=outside ? `<path data-clamped="${outside}" d="M${px-5},${py+(outside==='high'?7:-7)} l5,${outside==='high'?-7:7} l5,${outside==='high'?7:-7}" fill="none" stroke="${p.verdict==='refuted'?'#a33432':color(p.verdict)}" stroke-width="2"/>` : '';
+    const caret=outside ? `<path data-clamped="${outside}" d="M${px-5},${py+(outside==='high'?7:-7)} l5,${outside==='high'?-7:7} l5,${outside==='high'?7:-7}" fill="none" stroke="${p.verdict==='worse'?'#a33432':color(p.verdict)}" stroke-width="2"/>` : '';
     const age=p.arrived===undefined?Infinity:Date.now()-p.arrived;
     const live=state.run?.active && !state.run.paused && !state.replay && p.round===points.at(-1).round;
-    html+=`<g id="point-${p.round}" role="button" tabindex="0" class="progress-dot" aria-label="Inspect experiment ${p.round}: ${esc(label)}, ${esc(value)}, ${esc(p.verdict)}" data-round="${p.round}"><title>${esc(label)} · ${esc(value)} · ${esc(p.verdict)}</title><circle cx="${px}" cy="${py}" r="13" fill="transparent"/>${live?`<circle class="live-point" style="animation-delay:-${Date.now()%1800}ms" cx="${px}" cy="${py}" r="11"/>`:''}${state.selected===p.round ? `<circle cx="${px}" cy="${py}" r="9" fill="none" stroke="#285e89" stroke-width="2"/>` : ''}${caret || (p.verdict==='crashed'?`<path data-crashed="true" d="M${px-4},${py-4} l8,8 m-8,0 l8,-8" fill="none" stroke="#a33432" stroke-width="2"/>`:`<circle class="${age<200?'new-dot':''}" style="animation-delay:-${age<200?age:0}ms" cx="${px}" cy="${py}" r="${p.kept?5:3.5}" fill="${fill}" stroke="${p.kept?'#154f39':p.verdict==='refuted'?'#93625f':'#687b89'}" stroke-width="1.5"/>`)}${p.kept ? `${Math.abs(labelY-py)>25?`<path class="label-leader" d="M${px},${py+(labelY>py?7:-7)} V${labelY+(labelY>py?-10:8)}"/>`:''}<text data-kept-label="true" transform="translate(${px+(flip?-8:8)} ${labelY}) rotate(${angle})" text-anchor="${flip?'end':'start'}" fill="#176345" font-size="12"><title>${esc(label)}</title>${esc(text)}</text>` : ''}</g>`;
+    html+=`<g id="point-${p.round}" role="button" tabindex="0" class="progress-dot" aria-label="Inspect experiment ${p.round}: ${esc(hypothesisCaption(p))}, ${esc(label)}, ${esc(value)}, ${esc(p.verdict)}" data-round="${p.round}"><title>${esc(hypothesisCaption(p))} · ${esc(label)} · ${esc(value)} · ${esc(p.verdict)}</title><circle cx="${px}" cy="${py}" r="13" fill="transparent"/>${live?`<circle class="live-point" style="animation-delay:-${Date.now()%1800}ms" cx="${px}" cy="${py}" r="11"/>`:''}${state.selected===p.round ? `<circle cx="${px}" cy="${py}" r="9" fill="none" stroke="#285e89" stroke-width="2"/>` : ''}${caret || (p.verdict==='crashed'?`<path data-crashed="true" d="M${px-4},${py-4} l8,8 m-8,0 l8,-8" fill="none" stroke="#a33432" stroke-width="2"/>`:`<circle class="${age<200?'new-dot':''}" style="animation-delay:-${age<200?age:0}ms" cx="${px}" cy="${py}" r="${p.kept?5:3.5}" fill="${fill}" stroke="${p.kept?'#154f39':p.verdict==='worse'?'#93625f':'#687b89'}" stroke-width="1.5"/>`)}${p.kept ? `${Math.abs(labelY-py)>25?`<path class="label-leader" d="M${px},${py+(labelY>py?7:-7)} V${labelY+(labelY>py?-10:8)}"/>`:''}<text data-kept-label="true" transform="translate(${px+(flip?-8:8)} ${labelY}) rotate(${angle})" text-anchor="${flip?'end':'start'}" fill="${p.round?hypothesisColor(hypothesisFor(p)):'#176345'}" font-size="12"><title>${esc(label)}</title>${esc(text)}</text>` : ''}</g>`;
   }
   html+=`<text x="${right}" y="${height-5}" text-anchor="end" fill="#526476" font-size="12">Experiment #</text>`;
   svg.innerHTML=html;if(focused!==undefined)document.getElementById('point-'+focused)?.focus({preventScroll:true});svg.setAttribute('aria-label',`${metricLabel()}, ${task.direction==='min'?'lower':'higher'} is better. ${points.filter(p=>Number.isFinite(p.value)).length} measured points. Running best ${format(kept.at(-1)?.value)}. Unmeasured crashes are marked at the bottom edge.`);
@@ -502,13 +579,14 @@ function drawCurve(svg,r) {
   const parent=state.rounds.get(r.parent), primary=series[0];
   const parentData=config && primary?.style!=='points' && parent && parent!==r ? meanSeries(parent.curves,primary.key) : [];
   const all=[...data,...parentData];
-  let low=Math.min(...all.map(d=>d[1])), high=Math.max(...all.map(d=>d[1]));
-  if(task.unit==='%'){low=Math.min(0,low);high=Math.max(1,high);}
-  if(task.unit!=='%'){const padding=(high-low)*.06 || Math.abs(high)*.05 || 1;low-=padding;high+=padding;}
-  const min=Math.min(0,...all.map(d=>d[0])),max=Math.max(...all.map(d=>d[0]));
+  const yScale=progressScale(all.map(d=>d[1]),task);
+  const {low,high}=yScale;
+  const xScale=progressScale([Math.min(0,...all.map(d=>d[0])),Math.max(...all.map(d=>d[0]))],{});
+  const min=Math.min(0,...all.map(d=>d[0])), max=Math.max(...all.map(d=>d[0]));
   const curveTask=task;
-  const yLabels=[low,(low+high)/2,high].map(v=>format(v,curveTask));
-  const left=Math.max(45,...yLabels.map(t=>t.length*6+10)),right=Math.max(left+40,width-16);
+  const yLabels=yScale.ticks.map(v=>progressTick(v,curveTask,yScale.step));
+  const left=Math.max(64,...yLabels.map(t=>t.length*7+20));
+  const right=Math.max(left+40,width-42);
   const keys=[...series,...(parentData.length?[{label:'Parent',color:'#697684',dashed:true}]:[])];
   let keyX=left,keyY=10,html='';
   for(const key of keys){
@@ -520,10 +598,9 @@ function drawCurve(svg,r) {
   // Keep a positive plot area even when many configured legend keys wrap.
   height=Math.max(height,keyY+134);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   const top=keyY+14,bottom=height-40, x=v=>left+(v-min)/(max-min || 1)*(right-left), y=v=>bottom-(v-low)/(high-low)*(bottom-top);
-  for(let i=0;i<=2;i++){
-    const v=low+(high-low)*i/2, a=min+(max-min)*i/2;
-    html+=`<line x1="${left}" x2="${right}" y1="${y(v)}" y2="${y(v)}" stroke="#e1e7ec"/><text x="${left-8}" y="${y(v)+4}" text-anchor="end" font-size="11" fill="#526476">${esc(yLabels[i])}</text><text x="${x(a)}" y="${height-24}" text-anchor="middle" fill="#526476" font-size="11">${a.toLocaleString(undefined,{maximumFractionDigits:2})}</text>`;
-  }
+  for(const [i,v] of yScale.ticks.entries())html+=`<line x1="${left}" x2="${right}" y1="${y(v)}" y2="${y(v)}" stroke="#e1e7ec"/><text data-curve-y-tick="${v}" x="${left-12}" y="${y(v)+4}" text-anchor="end" font-size="11" fill="#526476">${esc(yLabels[i])}</text>`;
+  const xTicks=xScale.ticks.filter(v=>v>=min && v<=max);
+  for(const a of xTicks)html+=`<text data-curve-x-tick="${a}" x="${x(a)}" y="${height-24}" text-anchor="${a===min?'start':a===max?'end':'middle'}" fill="#526476" font-size="11">${esc(progressTick(a,{},xScale.step))}</text>`;
   if(parentData.length)html+=`<polyline points="${parentData.map(([a,b])=>`${x(a)},${y(b)}`).join(' ')}" fill="none" stroke="#697684" stroke-dasharray="5 4" stroke-width="1.5"/>`;
   for(const seriesItem of series) {
     if(seriesItem.style==='points' || seriesItem.data.length===1)for(const [a,b] of seriesItem.data)html+=`<circle data-series="${esc(seriesItem.key)}" cx="${x(a)}" cy="${y(b)}" r="3.5" fill="${seriesItem.color}"><title>${esc(seriesItem.label)}: ${esc(format(b,curveTask))} · ${esc(config?.x_label || 'Steps')} ${a}</title></circle>`;
@@ -543,9 +620,9 @@ function renderTitle(id, toggle, text) {
 }
 function renderCurrent() {
   const r=getRound(state.selected);
-  $('round-label').textContent=state.run ? `${r.round ? 'Round '+r.round : 'Baseline'}${state.follow ? ' · following latest' : ' · selected'}` : 'No experiments yet';
+  $('round-label').textContent=state.run ? `${r.round ? 'Experiment '+r.round : 'Baseline'}${state.follow ? ' · following latest' : ' · selected'}` : 'No experiments yet';
   renderTitle('change','expand-change',state.run ? changeLabel(r) : 'Turn a hypothesis into a measured result');
-  $('hypothesis').textContent=r.hypothesis || 'Discuss your goal, queue ideas, then start experiments.';$('hypothesis').title=r.hypothesis || '';
+  $('hypothesis').textContent=r.round && hypothesisFor(r) ? hypothesisCaption(r) : 'Discuss your goal, add hypotheses, then start experiments.';$('hypothesis').title=r.hypothesis || '';
   $('seeds').innerHTML=Object.entries(r.seeds).map(([s,v])=>`<span class="seed-chip" data-status="${esc(v)}">Seed ${esc(s)} <span>${esc(v)}</span></span>`).join('');
   $('verdict').textContent=Number.isFinite(r.value) ? `${Number.isFinite(r.best_before) ? format(r.best_before)+' → ' : ''}${format(r.value)} · ${r.verdict}` : state.run ? r.verdict==='testing' ? 'Measuring…' : r.verdict : '';
   if(Number.isFinite(r.value) && Number.isFinite(r.best_before))$('verdict').textContent+=` · Δ ${format(r.value-r.best_before,state.data.task,true)}`;
@@ -553,12 +630,12 @@ function renderCurrent() {
   $('verdict').className='verdict '+statusClass(r.verdict);
   $('follow').hidden=state.follow || !state.run;
   $('inspect-result').href=stageURL('results',{round:r.round});$('inspect-result').hidden=!state.run;
-  const error=r.errors.at(-1) || '';
-  $('round-error').textContent=error ? errorSummary(error) : '';$('round-error').title=$('round-error').textContent;
+  const errors=groupedErrors(r), error=errors.at(-1)?.error || '', scope=errors.at(-1)?.scope || '';
+  $('round-error').textContent=error ? errorSummary(error)+(scope?' · '+scope:'') : '';$('round-error').title=$('round-error').textContent;
   const errorKey=`${state.run?.id}/${r.round}/${error}`;
   if($('round-error-details').dataset.error!==errorKey){$('round-error-details').open=false;$('round-error-details').dataset.error=errorKey;}
   $('round-error-details').hidden=!error;$('round-traceback').textContent=error;
-  $('curve-label').textContent=state.data.task.curve ? `${state.data.task.curve.x_label || 'Steps'} · selected round` : 'Selected round · per-seed measurements';
+  $('curve-label').textContent=state.data.task.curve ? `${state.data.task.curve.x_label || 'Steps'} · selected experiment` : 'Selected experiment · per-seed measurements';
   drawCurve($('curve'),r);
 }
 function renderResults() {
@@ -568,19 +645,30 @@ function renderResults() {
   const bestFile='best_'+task.editable;
   const available=state.files.includes(bestFile) || state.files.includes(`round${state.best}_${task.editable}`);
   $('downloads').innerHTML=state.run ? (available ? `<a class="download" href="${fileURL(bestFile,true)}">Download best ${esc(task.editable)}</a>` : '')+['events.jsonl','loop.log'].filter(f=>state.files.includes(f)).map(f=>`<a href="${fileURL(f,true)}">${f}</a>`).join('') : '';
-  $('metric-heading').textContent=metricLabel()+(task.unit?' ('+task.unit+')':'');
+  $('metric-heading').textContent='Best '+metricLabel().toLowerCase()+(task.unit?' ('+task.unit+')':'');
   const reference=task.reference, reached=Number.isFinite(best?.value) && Number.isFinite(reference?.value) && Math.abs(best.value-reference.value)<=(task.noise || 0);
-  const reachedRound=reached ? rows.find(r=>(r.round===0 || r.verdict==='supported') && Number.isFinite(r.value) && Math.abs(r.value-reference.value)<=(task.noise || 0)) : null;
+  const reachedRound=reached ? rows.find(r=>(r.round===0 || r.verdict==='improved') && Number.isFinite(r.value) && Math.abs(r.value-reference.value)<=(task.noise || 0)) : null;
   $('result-reference').hidden=!Number.isFinite(reference?.value);
   $('result-reference').textContent=Number.isFinite(reference?.value) ? `${reference.label || 'Reference'} ${format(reference.value).replace(/^-/,'−')}${reachedRound ? reachedRound.round===0?' · reached at baseline':' · reached in round '+reachedRound.round : ''}` : '';
-  $('ledger-note').textContent=`${metricLabel()} · ${task.direction==='min'?'lower':'higher'} is better. Δ is the signed metric change from the kept best before that round.`;
+  $('ledger-note').textContent=hypothesisRule()+' Evidence spans project runs. Best result includes all measured experiments; Δ compares each experiment with its kept parent.';
   const focused=document.activeElement?.dataset?.ledger;
-  const html=rows.map(r=>`<tr class="${state.selected===r.round?'selected-row ':''}${r.round===state.best?'best-row':''}"><td>${r.round}${r.round===state.best?'<span class="best-marker" title="Kept best" aria-label="Kept best"></span>':''}</td><td><button type="button" data-ledger="${r.round}" aria-pressed="${state.selected===r.round}" title="${esc(changeLabel(r))}"><span class="ledger-change">${esc(changeLabel(r))}</span></button></td><td>${format(r.value)}</td><td class="${deltaClass(r.value-r.best_before,task)}">${Number.isFinite(r.value) && Number.isFinite(r.best_before) ? format(r.value-r.best_before,task,true) : '—'}</td><td><span class="verdict-pill ${statusClass(r.verdict)}">${esc(r.verdict)}</span></td><td>${r.round===0 ? 'baseline' : r.source==='human' || r.source==='you' ? 'you' : esc(modelName(state.run?.model || 'model'))}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No results yet. Your baseline and every experiment will appear here, including failed attempts.</td></tr>';
-  if($('ledger').innerHTML!==html){$('ledger').innerHTML=html;if(focused!==undefined)$('ledger').querySelector(`[data-ledger="${focused}"]`)?.focus({preventScroll:true});}
-  $('learned').innerHTML=[['supported','Supported changes'],['refuted','Refuted changes'],['no effect','No measured effect'],['crashed','Failed attempts'],['not run','Unapplied changes']].map(([verdict,title])=>{const items=rows.filter(r=>r.verdict===verdict);return items.length ? `<h3 class="${statusClass(verdict)}">${title}</h3><ul>${items.map(r=>`<li>Round ${r.round}: ${esc(changeLabel(r))}${Number.isFinite(r.value)?' · '+format(r.value):''}</li>`).join('')}</ul>` : '';}).join('') || '<p class="muted">After experiments finish, their recorded verdicts will be grouped here. There are no conclusions yet.</p>';
+  const claims=hypothesisGroups();
+  const experimentRows=experiments=>experiments.map(r=>`<tr class="${state.selected===r.round && r.run===state.run?.id?'selected-row ':''}${r.round===state.best && r.run===state.run?.id?'best-row':''}"><td>${r.run===state.run?.id?`<button type="button" data-ledger="${r.round}" aria-pressed="${state.selected===r.round}" title="${esc(changeLabel(r))}">${changeMarkup(r)}</button>`:experimentLink(r)}<small class="muted">Experiment ${r.round} · ${esc(r.run)}</small></td><td>${format(r.value ?? r.result?.[task.metric])}</td><td class="${deltaClass(r.value-r.best_before,task)}">${Number.isFinite(r.value) && Number.isFinite(r.best_before)?format(r.value-r.best_before,task,true):'—'}</td><td>${pill(experimentVerdict(r.verdict) || 'testing')}</td></tr>`).join('');
+  const html=claims.map(h=>{
+    const values=h.experiments.map(e=>e.value ?? e.result?.[task.metric]).filter(Number.isFinite);
+    const bestValue=values.length?(task.direction==='min'?Math.min(...values):Math.max(...values)):null;
+    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div></details></td><td>${pill(h.status)}</td><td>${format(bestValue)}</td><td>${h.experiments.length}</td></tr>`;
+  }).join('') || '<tr><td colspan="4" class="empty">No results yet. Add a hypothesis in Discuss, then start experiments.</td></tr>';
+  if($('ledger').innerHTML!==html){
+    const open=[...$('ledger').querySelectorAll('details[open]')].map(d=>d.dataset.hypothesis);
+    $('ledger').innerHTML=html;
+    for(const id of open)for(const d of $('ledger').querySelectorAll('details'))if(d.dataset.hypothesis===id)d.open=true;
+    if(focused!==undefined)$('ledger').querySelector(`[data-ledger="${focused}"]`)?.focus({preventScroll:true});
+  }
+  $('learned').innerHTML=[['supported','Supported hypotheses'],['refuted','Refuted hypotheses'],['inconclusive','Inconclusive hypotheses']].map(([status,title])=>{const items=claims.filter(h=>h.status===status);return items.length ? `<h3 class="${statusClass(status)}">${title}</h3><ul>${items.map(h=>`<li>${esc(h.label || h.id)} · ${esc(h.statement)} · ${h.experiments.length} experiments</li>`).join('')}</ul>` : '';}).join('') || '<p class="muted">No conclusions yet. Open hypotheses stay untested or testing until the evidence meets the rule.</p>';
   const r=getRound(state.selected);
   renderTitle('detail-title','expand-detail',state.run ? `Experiment ${r.round} · ${changeLabel(r)}` : 'Select an experiment');
-  const detailHTML=state.run ? `<p>${esc(r.hypothesis || 'The unchanged starting code.')}</p>${r.why?'<p><strong>Why:</strong> '+esc(r.why)+'</p>':''}${r.prediction?'<p><strong>Prediction:</strong> '+esc(r.prediction)+'</p>':''}<p><span class="verdict-pill ${statusClass(r.verdict)}">${esc(r.verdict)}</span>${Number.isFinite(r.value)?' <strong>'+format(r.value)+'</strong>':''}</p>${r.errors.map(errorMarkup).join('')}` : '<p>Each row opens its hypothesis, evidence, code, and diff against the kept parent.</p>';
+  const detailHTML=state.run ? `<p>${esc(r.hypothesis || 'The unchanged starting code.')}</p>${r.why?'<p><strong>Why:</strong> '+esc(r.why)+'</p>':''}${r.prediction?'<p><strong>Prediction:</strong> '+esc(r.prediction)+'</p>':''}<p><span class="verdict-pill ${statusClass(r.verdict)}">${esc(r.verdict)}</span>${Number.isFinite(r.value)?' <strong>'+format(r.value)+'</strong>':''}</p>${groupedErrors(r).map(e=>errorMarkup(e.error,e.scope)).join('')}` : '<p>Each row opens its hypothesis, evidence, code, and diff against the kept parent.</p>';
   if($('detail-text').innerHTML!==detailHTML)$('detail-text').innerHTML=detailHTML;
   drawCurve($('result-curve'),r);
   $('diff-label').textContent=`Diff vs parent experiment ${r.parent ?? 0} · ${task.editable}`;
@@ -607,13 +695,15 @@ async function loadArtifacts(r) {
     $('diff-stats').textContent=`+${diff.added} −${diff.removed}`;$('copy-diff').disabled=false;
   }else $('diff').textContent='No reproducible diff is available. '+result.reason.message;}
 }
-async function queueIdea(hypothesis) {
+async function addHypothesis(statement, source='you', why='', prediction='') {
   if(state.replay)return;
   const slug=state.slug;
-  const result=await api(projectAPI('/ideas'),{hypothesis});
+  const result=await api(projectAPI('/hypotheses'),{statement,source,why,prediction});
   if(slug!==state.slug)return;
-  state.data.ideas=result.ideas;renderQueue();notice('Idea queued. Your ideas are tested before model proposals.');
+  state.data.hypotheses=result.hypotheses;renderRun();notice('Hypothesis added. Your untested hypotheses go first.');
 }
+$('hypothesis-form').onsubmit=async event=>{event.preventDefault();$('add-hypothesis').disabled=true;try{await addHypothesis($('hypothesis-statement').value,'you',$('hypothesis-why').value,$('hypothesis-prediction').value);$('hypothesis-form').reset();}catch(e){notice(e.message);}finally{controls();}};
+$('experiment-groups').onclick=event=>{const target=event.target.closest('[data-experiment]');if(!target)return;state.selected=Number(target.dataset.experiment);state.follow=false;renderRun();};
 $('new-project').onclick=()=>{$('new-form').hidden=false;$('new-title').focus();};
 $('cancel-project').onclick=()=>{$('new-form').hidden=true;$('new-project').focus();};
 $('template').onchange=templateNote;
@@ -628,11 +718,11 @@ $('save-program').onclick=async()=>{$('save-program').disabled=true;const slug=s
 $('edit-program').onclick=()=>{state.programEditing=!state.programEditing;renderProgram();if(state.programEditing)$('program').focus();};
 for(const [id,toggle] of [['change','expand-change'],['detail-title','expand-detail']])$(toggle).onclick=()=>{$(id).dataset.expanded=String($(id).dataset.expanded!=='true');renderTitle(id,toggle,$(id).textContent);};
 $('program').oninput=()=>{state.programDirty=$('program').value!==state.data?.program;controls();};
-$('queue-message').onclick=async()=>{try{await queueIdea($('message').value);$('message').value='';}catch(e){notice(e.message);}};
+$('queue-message').onclick=async()=>{try{await addHypothesis($('message').value);$('message').value='';}catch(e){notice(e.message);}};
 $('conversation').onclick=async event=>{
   const prompt=event.target.closest('[data-prompt]');
   if(prompt){if(state.replay)return;$('message').value=starterPrompts()[Number(prompt.dataset.prompt)] || '';$('message').focus();return;}
-  const button=event.target.closest('[data-queue]');if(!button)return;const message=state.data.discussion[Number(button.dataset.queue)];if(!message)return;button.disabled=true;try{await queueIdea(message.content);}catch(e){notice(e.message);}finally{button.disabled=state.replay;}
+  const button=event.target.closest('[data-queue]');if(!button)return;const message=state.data.discussion[Number(button.dataset.queue)];if(!message)return;button.disabled=true;try{await addHypothesis(message.content,'discussion');}catch(e){notice(e.message);}finally{button.disabled=state.replay;}
 };
 $('composer').onsubmit=async event=>{
   event.preventDefault();const message=$('message').value.trim();if(!message || state.chatBusy || state.replay)return;

@@ -8,4 +8,4 @@ Goal: minimise `score` = time-weighted absolute error (ITAE) plus a penalty of 1
 Rules:
 - Edit only `make_controller()` (and helpers): it returns a function of (error, dt) that may keep internal state.
 - Keep DT, T_END, SETPOINT, U_MAX, the plant model, the load and the scoring unchanged. The controller sees only the error.
-- One idea per experiment. The simulation is deterministic; differences under 0.05 are noise.
+- One concrete change per experiment to test a hypothesis. The simulation is deterministic; differences under 0.05 are noise.

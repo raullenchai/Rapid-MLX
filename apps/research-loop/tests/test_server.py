@@ -260,7 +260,13 @@ def test_create_run_routes_model_and_preserves_current_python(app, monkeypatch):
         )["status"]
         == 201
     )
-    assert json.loads((run / "inbox.jsonl").read_text())["source"] == "you"
+    assert not (run / "inbox.jsonl").exists()
+    assert (
+        server.hypotheses.collect(
+            app.project_path(slug), app.task(app.project_path(slug))
+        )[0]["source"]
+        == "you"
+    )
     (run / "PAUSE").touch()
     assert (
         request(app, f"/api/projects/{slug}/runs/{run.name}/stop", {})["status"] == 200
@@ -277,8 +283,8 @@ def test_queue_before_start_and_validation(app):
         )["status"]
         == 201
     )
-    idea = request(app, f"/api/projects/{slug}")["json"]["ideas"][0]
-    assert idea["hypothesis"] == "Fewer comparisons" and idea["source"] == "you"
+    idea = request(app, f"/api/projects/{slug}")["json"]["hypotheses"][0]
+    assert idea["statement"] == "Fewer comparisons" and idea["source"] == "you"
     for data in (
         {},
         {"hypothesis": ""},
@@ -617,10 +623,10 @@ def test_loop_consumes_project_queue_first_and_keeps_min_verdicts(tmp_path, upst
     ]
     assert all(e["source"] == "you" for e in ideas)
     assert [e["verdict"] for e in events if e["event"] == "result"] == [
-        "supported",
+        "improved",
         "no effect",
     ]
-    assert not (project / "ideas.jsonl").exists()
+    assert len(server.hypotheses.read_rows(project / "hypotheses.jsonl")) == 2
     assert "VALUE = 8\n" in (run / "best_sort.py").read_text()
     assert len(received) == 2  # Edits only; no generated proposals.
 
@@ -686,8 +692,13 @@ def test_loop_carries_untried_ideas_to_next_run(tmp_path, upstream):
         timeout=20,
     )
     assert result.returncode == 0, result.stderr
-    queued = json.loads((project / "ideas.jsonl").read_text())
-    assert queued["hypothesis"] == "Idea 2" and queued["source"] == "you"
+    claims = server.hypotheses.collect(
+        project,
+        json.loads((project / "task.json").read_text()),
+        [tmp_path / "run" / "events.jsonl"],
+    )
+    assert claims[1]["statement"] == "Idea 2" and claims[1]["status"] == "untested"
+    assert claims[1]["source"] == "you"
 
 
 def test_http_asset_and_api_framing(app):
@@ -813,3 +824,83 @@ def test_active_project_counts_finished_rounds_across_runs(app, monkeypatch):
     assert summary["best"] == 70
     assert summary["progress"] == [100, 80, 80, 80, 70, 70]
     assert summary["task"]["domain"] == "Computer science"
+
+
+def test_project_hypotheses_api_and_counts_during_legacy_run(app):
+    slug = create(app)
+    run = make_run(
+        app,
+        slug,
+        [
+            {
+                "event": "idea",
+                "round": 1,
+                "hypothesis": "Search multiple basins",
+                "change": "Try 20 starts",
+            },
+            {"event": "result", "round": 1, "verdict": "supported", "value": 8},
+        ],
+    )
+    before = (run / "events.jsonl").read_bytes()
+    response = request(
+        app,
+        f"/api/projects/{slug}/hypotheses",
+        {
+            "statement": "Regularization reduces error",
+            "why": "Less overfitting",
+            "prediction": "Lower error",
+            "source": "discussion",
+            "status": "supported",
+        },
+    )
+    assert response["status"] == 201
+    assert response["json"]["hypothesis"]["id"] == "h1"
+    claims = response["json"]["hypotheses"]
+    assert [h["status"] for h in claims] == ["untested", "supported"]
+    assert (
+        claims[0]["why"] == "Less overfitting"
+        and claims[0]["prediction"] == "Lower error"
+    )
+    detail = request(app, f"/api/projects/{slug}")["json"]
+    assert (
+        detail["project"]["hypotheses"] == 2 and detail["project"]["experiments"] == 1
+    )
+    assert (run / "events.jsonl").read_bytes() == before
+    assert not (run / "inbox.jsonl").exists()
+    for data in (
+        {"statement": "x", "source": "invalid"},
+        {"statement": "x", "why": []},
+        {"statement": "x", "prediction": 4},
+    ):
+        assert request(app, f"/api/projects/{slug}/hypotheses", data)["status"] == 400
+
+
+def test_new_experiment_verdicts_keep_best_summaries_and_download(app):
+    slug = create(app)
+    run = make_run(
+        app,
+        slug,
+        [
+            {
+                "event": "baseline",
+                "round": 0,
+                "metric": "runtime_ms",
+                "result": {"runtime_ms": 10},
+            },
+            {"event": "idea", "round": 1, "hypothesis_id": "h1", "hypothesis": "Claim"},
+            {
+                "event": "result",
+                "round": 1,
+                "hypothesis_id": "h1",
+                "verdict": "improved",
+                "value": 8,
+            },
+            {"event": "result", "round": 2, "verdict": "worse", "value": 20},
+        ],
+    )
+    assert app.info(run)["best"] == 8
+    assert app.summary(app.project_path(slug))["progress"] == [10, 8, 8]
+    assert (
+        app.artifact(app.project_path(slug), run, "best_sort.py").name
+        == "round1_sort.py"
+    )

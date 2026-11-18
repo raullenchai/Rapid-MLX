@@ -10,4 +10,4 @@ an error of 1%). The live curve shows log10 relative energy drift over time.
 Rules:
 - Edit only `step(q, p, dt)` (and helpers). Keep ECC, ORBITS, STEPS, FORCE_BUDGET, `force`, the start state, the loop and the scoring.
 - Use `force(q)` for accelerations; do not compute gravity yourself or exceed the budget (2 calls per step on average).
-- One idea per experiment. The simulation is deterministic; differences under 0.1 are noise.
+- One concrete change per experiment to test a hypothesis. The simulation is deterministic; differences under 0.1 are noise.

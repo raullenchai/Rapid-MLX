@@ -10,4 +10,4 @@ Rules:
 - Edit only `search(rng, deadline)` and helpers you add. Keep N, BUDGET_S, `report`, `is_valid`, and the final checks unchanged.
 - Return a list of integers; it is verified from scratch. Stop by the deadline (6 seconds).
 - Call `report(candidate)` whenever you find a better valid set so progress can be plotted.
-- One idea per experiment. Each experiment runs with 2 seeds; results are averaged. Differences under 0.5 are noise.
+- One concrete change per experiment to test a hypothesis. Each experiment runs with 2 seeds; results are averaged. Differences under 0.5 are noise.

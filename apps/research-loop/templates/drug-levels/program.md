@@ -10,4 +10,4 @@ Goal: minimise `loo_rmse`, the error in mg/L when predicting each sample (after 
 Rules:
 - Edit only `fit(time, conc, dose)` (and helpers): it returns a function of time. numpy and scipy are available.
 - Keep the data, the leave-one-out evaluation and the scoring unchanged. Use only the data passed in.
-- One idea per experiment. The evaluation is deterministic; differences under 0.05 are noise.
+- One concrete change per experiment to test a hypothesis. The evaluation is deterministic; differences under 0.05 are noise.

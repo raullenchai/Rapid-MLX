@@ -6,5 +6,5 @@ Goal: raise **test accuracy at the end of a fixed 8,000-step budget** (higher is
 
 Rules:
 - You may edit anything in `train.py` except the task constants `P = 97` and `TRAIN_FRAC = 0.4`, the data split, the step budget, and the RESULT line.
-- One idea per experiment: change one thing (or one tightly related group of things), so the result says something about the idea.
+- One concrete change per experiment to test a hypothesis: change one thing (or one tightly related group of things), so the result provides evidence about the hypothesis.
 - Each experiment runs with 2 random seeds; results are averaged. Differences under 0.02 are noise.

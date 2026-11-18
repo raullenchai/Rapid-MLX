@@ -12,18 +12,21 @@ Experiments, and Results share the same quiet controls and type hierarchy.
 | Ink | `#172b3b` |
 | Muted | `#526476` |
 | Selection | `#d8e5f0` |
-| Supported / running best | `#176345` |
-| Refuted / crashed | `#a33432` |
+| Supported / improved / running best | `#176345` |
+| Refuted / worse / crashed | `#a33432` |
 | No effect | `#795919` |
 | Testing / focus | `#285e89` |
 | Rule | `#ccd6de` |
 
-Grey progress dots (`#b3bdc5`) mean no effect, light red (`#d9a19f`) means
-refuted, and red crosses mean crashed. Unmeasured crashes sit at the bottom
-edge with an explicit tooltip; their position is not a metric. Kept dots and the
-step line are green. Selection adds a blue ring. Words, values, and accessible names accompany
-colour. The selected round's first configured series follows its verdict colour; other
-series use neutral ink, and the primary parent comparison is dashed. SVG contains only real data.
+Progress dots use stable hypothesis colours from a muted ink palette. The
+running-best step remains green; a green outline/larger dot marks improvements,
+a red outline marks worse measurements, and a neutral outline marks no effect.
+Red crosses mean crashed. Unmeasured crashes sit at the bottom edge with an
+explicit tooltip; their position is not a metric. Hover and accessible names say
+“h3 · claim · experiment 2 of 2” plus the concrete change, value, and verdict.
+Selection adds a blue ring. Every colour has a textual equivalent. The selected
+experiment’s first configured curve follows its experiment verdict colour; other
+series use neutral ink, and the primary parent comparison is dashed.
 
 Public Sans is self-hosted from `fonts/PublicSans.ttf`, SIL OFL 1.1; see
 [font provenance](fonts/README.md). All numerals are tabular. Code uses local
@@ -35,7 +38,7 @@ content 12–14px. Controls have 6px corners and 3px blue focus outlines.
 
 Projects remains a flat list with title, first research-goal content line,
 domain chip, template, Running / Finished / No runs status on a separate line,
-completed experiment count across all runs (including an active run), best metric with
+hypothesis count and completed experiment count across all runs (including an active run), best metric with
 unit and direction arrow, and relative/short last activity. A compact step
 sparkline tracks cumulative kept best across runs in creation order, including
 each baseline and result event. Rejected or inconclusive changes hold the line;
@@ -51,12 +54,12 @@ before a run ends.
 
 The project shell has a 64px app bar, 52px research strip, and 64px stage/run bar.
 The research strip places step names over quiet “any tool” labels and pairs
-Ideas / Experiments in one clearly active segment. Discuss, Experiments, and
+Hypotheses / Experiments in one clearly active segment. Discuss, Experiments, and
 Results remain the main navigation, with hover, current, and keyboard states. URLs retain run selection and replay state, while explicit ledger
 selection adds the round number.
 
 Discuss has three columns: a rendered markdown-lite goal with Edit/Preview and
-Save, persistent discussion, and queued ideas plus a rounds field and Start
+Save, persistent discussion, and Hypotheses plus an experiments field and Start
 experiments. Goal editing is disabled during a run
 to keep its instructions fixed. The single discussion component moves into the
 experiment rail, preserving its draft and model selector between stages. Stage
@@ -65,13 +68,15 @@ An empty discussion starts at scroll position zero, including in the shorter
 experiment rail. The empty discussion offers three generic, metric-aware starter prompts; choosing
 one fills and focuses the composer without sending. User messages have a pale
 surface; model messages show the local model name, a streaming caret while
-pending, and a secondary Queue this idea action after completion. Queued ideas
-use numbered separators and a count badge. The Start area names baseline,
-rounds, actual configured seeds, and the fixed budget.
+pending, and a secondary Add as hypothesis action after completion. Hypotheses use separators, claim text,
+status pills, experiment counts, and a count badge. The Add hypothesis form accepts
+a claim. The empty state explains that a claim gets one or more experiments. A
+quiet line explains the deterministic conclusion rule. The Start area names baseline,
+experiment limit, actual configured seeds, and the fixed budget.
 Default run selection prefers an active run, then the newest run with results by
 creation time. Explicit run selections remain in the URL.
 
-Experiments reserves a 330px discussion/control rail (295px at 1440) and gives
+Experiments reserves a 330px hypothesis/discussion/control rail (295px at 1440) and gives
 the remaining width to evidence. The main area divides 1.8:1 between the hero
 progress figure and current round, with a 14px gap. Progress gets labelled kept
 points, verdict-specific discarded markers, optional goal/reference lines, direction, and a
@@ -85,20 +90,25 @@ above/below points, and turn inward at the right edge to stay inside the SVG.
 Candidate label boxes alternate sides and avoid prior labels when space permits;
 displaced labels have leader lines and a white text underpaint. It
 plots recorded values at their natural numeric orientation: a minimum improves
-downward. The step line advances only on supported verdicts. Dense runs scroll
+downward. The step line advances only on improved verdicts. Dense runs scroll
 horizontally within the figure; every point has a full tooltip and keyboard
-inspection target. The lower area has current change, hypothesis, seeds, verdict,
+inspection target. The rail groups hypotheses with nested selectable experiments, status, and counts.
+The live heading identifies the hypothesis being tested. Discussion remains below
+the internally scrolling groups. The lower area has current change, hypothesis, seeds, verdict,
 a Results link, and a smaller curve. Curves use `task.curve.x`, `x_label`, and all configured series. Missing values
 are skipped independently per series; fractional x values and extra metadata
 do not affect aggregation. Series with `style: "points"` show dots, and an isolated
 line-series sample also remains visible as a dot. Config labels form a wrapping
-legend; the x label appears below the plot. Parent data participates in the extent.
+legend; the x label appears below the plot. Parent data participates in the extent. Round curves share nice 1–2–5 tick steps
+with progress charts, reserve measured text width for signed y labels, and leave
+42px at the right for rounded x labels. Rounded ticks do not change the recorded measurements.
 Templates without live curves show per-seed final metrics instead of invented
 training traces. Seed statuses are small inline chips; failed seeds say crashed.
-Errors show the last exception type/message on one line with Show error opening
+Identical error summaries collapse across retries/seeds, with observed “on all seeds”
+or “on seed 1” scope and one full traceback disclosure. Errors show the last exception type/message on one line with Show error opening
 a bounded, scrollable monospace traceback. Both result-event and run-error
 failures use this disclosure. Current change titles clamp to two lines, Results titles to three, with
-hover text and explicit expansion; ledger changes clamp to two lines. A live
+hover text and explicit expansion; ledger changes clamp to two lines; code-like text uses monospace with a full hover title. A live
 status names current round, configured round limit, and active seed. The latest
 recorded point pulses during an active run; new baseline/result points arrive
 over 200ms without restarting the animation on inspection. Current-round verdicts
@@ -108,13 +118,21 @@ Parent key when comparison data exists.
 
 Results shows a configured reference label/value and the first kept round within
 its noise tolerance when the current best is within that tolerance. It also shows
-best-code download and log links, a selectable ledger, and a detail
+best-code download and log links, a Hypotheses ledger (claim, status, best measured
+result, experiment count), and a detail
 column for the full hypothesis, why, prediction, curve, parent diff, and code.
-The learned section groups event verdicts deterministically. Missing artifacts
+Each hypothesis expands into experiments with change, value, Δ, experiment verdict,
+and selection linking to code/diff. Cross-run experiments link to their own run.
+The learned section groups supported, refuted, and inconclusive hypotheses
+deterministically. Open claims remain untested/testing. The same quiet conclusion
+rule appears above the ledger. Any beyond-noise improvement supports a claim;
+after N completed attempts (task default 2), no improvement refutes it unless
+every attempt crashed, which is inconclusive. Failed edits count as crashes.
+Legacy experiments dedupe by identical hypothesis text without altering artifacts. Missing artifacts
 have explicit empty/error states. Code and diff start collapsed and scroll inside
 their disclosures. Ledger headers stick within the scrolling table, verdicts
 have semantic pills, delta colors follow metric direction, and the kept best row
-has a pale surface and a small marker. Code uses a local, handwritten Python
+has a pale surface. Code uses a local, handwritten Python
 syntax tokenizer with escaped tokens, line numbers, and raw-source copy. Diff
 lines have added/removed backgrounds, exact +added / −removed counts excluding
 file headers, and a raw diff copy action. The filesystem destination stays

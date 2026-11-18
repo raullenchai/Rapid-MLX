@@ -17,6 +17,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+import hypotheses
+
 ROOT = Path(__file__).resolve().parent
 INBOX_LOCK = threading.RLock()
 SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
@@ -79,7 +81,7 @@ def append_idea(run, data):
     if not isinstance(hypothesis, str) or not hypothesis.strip():
         raise ValueError("Write a hypothesis first.")
     if not isinstance(change, str) or len(hypothesis) + len(change) > 16000:
-        raise ValueError("Idea must be text under 16,000 characters.")
+        raise ValueError("Hypothesis must be text under 16,000 characters.")
     with INBOX_LOCK, safe_path(run, "inbox.jsonl", exists=False).open("a") as stream:
         stream.write(
             json.dumps(
@@ -157,7 +159,9 @@ def vendor_asset(path):
     parts = path.split("/")
     if len(parts) not in (4, 5) or parts[:2] != ["", "vendor"]:
         return None
-    if not all(re.fullmatch(r"[A-Za-z0-9_.-]+", p) and not p.startswith(".") for p in parts[2:]):
+    if not all(
+        re.fullmatch(r"[A-Za-z0-9_.-]+", p) and not p.startswith(".") for p in parts[2:]
+    ):
         return None
     file = ROOT / "web" / "/".join(parts[1:])
     mime = VENDOR_TYPES.get(file.suffix)
@@ -210,6 +214,7 @@ class App(ThreadingHTTPServer):
         safe_path(folder, "program.md")
         if task.get("direction") not in ("max", "min"):
             raise ValueError("Metric direction must be max or min.")
+        hypotheses.limit(task)
         return task
 
     def run_path(self, project, name):
@@ -222,7 +227,28 @@ class App(ThreadingHTTPServer):
 
     def active(self, run):
         process = self.processes.get(str(run))
-        return process is not None and process.poll() is None
+        if process is not None:
+            return process.poll() is None
+        # A loop started by an earlier server process keeps running after a
+        # restart; treat it as active while its event log is fresh and open.
+        events = Path(run) / "events.jsonl"
+        try:
+            fresh = time.time() - events.stat().st_mtime < 600
+        except OSError:
+            return False
+        if not fresh or any(
+            e.get("event") == "done" for e in jsonl(Path(run), "events.jsonl")
+        ):
+            return False
+        try:
+            found = subprocess.run(
+                ["pgrep", "-f", f"loop.py .* {run} --base-url"],
+                capture_output=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return found.returncode == 0
 
     def info(self, run):
         path = safe_path(run, "run.json", exists=False)
@@ -237,7 +263,7 @@ class App(ThreadingHTTPServer):
         for event in values:
             if event["event"] == "baseline":
                 best = event.get("result", {}).get(event.get("metric"))
-            elif event.get("verdict") == "supported":
+            elif hypotheses.experiment_verdict(event.get("verdict")) == "improved":
                 best = event.get("value", best)
             elif event["event"] == "done":
                 best = event.get("best", best)
@@ -280,6 +306,7 @@ class App(ThreadingHTTPServer):
                 "program.md",
                 "discussion.jsonl",
                 "ideas.jsonl",
+                "hypotheses.jsonl",
             )
             if safe_path(project, name, exists=False).exists()
         ]
@@ -300,7 +327,7 @@ class App(ThreadingHTTPServer):
                     event.get("result", {}).get(event.get("metric", task["metric"]))
                     if event["event"] == "baseline"
                     else event.get("value", event.get("result", {}).get(task["metric"]))
-                    if event.get("verdict") == "supported"
+                    if hypotheses.experiment_verdict(event.get("verdict")) == "improved"
                     else None
                 )
                 if isinstance(candidate, (int, float)) and math.isfinite(candidate):
@@ -326,6 +353,7 @@ class App(ThreadingHTTPServer):
             meta,
             slug=project.name,
             task=task,
+            hypotheses=len(hypotheses.collect(project, task)),
             experiments=experiments,
             best=running_best if running_best is not None else best,
             progress=progress,
@@ -355,7 +383,8 @@ class App(ThreadingHTTPServer):
             "task": self.task(project),
             "runs": runs,
             "discussion": jsonl(project, "discussion.jsonl"),
-            "ideas": ideas,
+            "ideas": ideas,  # Legacy API alias; new clients use hypotheses.
+            "hypotheses": hypotheses.collect(project, self.task(project)),
             "models": list(self.models),
             "default_model": self.model,
             "rounds": self.rounds,
@@ -378,7 +407,8 @@ class App(ThreadingHTTPServer):
             for event in jsonl(run, "events.jsonl"):
                 if (
                     event.get("event") == "result"
-                    and event.get("verdict") == "supported"
+                    and hypotheses.experiment_verdict(event.get("verdict"))
+                    == "improved"
                 ):
                     best = event["round"]
             path = safe_path(run, f"round{best}_" + task["editable"])
@@ -605,46 +635,17 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json({"program": text})
                     if method == "POST" and action == "chat":
                         return self.chat(project, data)
-                    if method == "POST" and action == "ideas":
-                        with INBOX_LOCK:
-                            active = [
-                                r for r in self.server.runs(project) if r["active"]
-                            ]
-                            if active:
-                                append_idea(
-                                    self.server.run_path(project, active[0]["id"]), data
-                                )
-                            else:
-                                # Reuse inbox validation while writing the project queue.
-                                hypothesis, change = (
-                                    data.get("hypothesis"),
-                                    data.get("change", ""),
-                                )
-                                if (
-                                    not isinstance(hypothesis, str)
-                                    or not hypothesis.strip()
-                                    or not isinstance(change, str)
-                                    or len(hypothesis) + len(change) > 16000
-                                ):
-                                    raise ValueError(
-                                        "Idea must contain a hypothesis and text under 16,000 characters."
-                                    )
-                                with safe_path(
-                                    project, "ideas.jsonl", exists=False
-                                ).open("a") as stream:
-                                    stream.write(
-                                        json.dumps(
-                                            dict(
-                                                hypothesis=hypothesis.strip(),
-                                                change=change,
-                                                source="you",
-                                                ts=time.time(),
-                                            )
-                                        )
-                                        + "\n"
-                                    )
+                    if method == "POST" and action in ("hypotheses", "ideas"):
+                        hypotheses.migrate_queue(project)
+                        row = hypotheses.add(project, data, data.get("source", "you"))
                         return self.json(
-                            {"ideas": self.server.detail(project)["ideas"]}, 201
+                            {
+                                "hypothesis": row,
+                                "hypotheses": hypotheses.collect(
+                                    project, self.server.task(project)
+                                ),
+                            },
+                            201,
                         )
                     if method == "POST" and action == "runs":
                         return self.start_run(project, data)
@@ -653,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
                     action = parts[5]
                     if not self.server.active(run):
                         raise ValueError(
-                            "Run is no longer active. Start a new run to test more ideas."
+                            "Run is no longer active. Start a new run to test more hypotheses."
                         )
                     with INBOX_LOCK:
                         if action == "idea":
@@ -714,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
             (project / "project.json").write_text(json.dumps(meta, indent=2) + "\n")
             (project / "runs").mkdir()
             (project / "discussion.jsonl").touch()
-            (project / "ideas.jsonl").touch()
+            (project / "hypotheses.jsonl").touch()
         return self.json(self.server.detail(project), 201)
 
     def start_run(self, project, data):
@@ -728,8 +729,9 @@ class Handler(BaseHTTPRequestHandler):
             if any(r["active"] for r in self.server.runs(project)):
                 raise ValueError("This project already has an active run.")
             task = self.server.task(project)
-            for name in ("ideas.jsonl", "discussion.jsonl"):
+            for name in ("hypotheses.jsonl", "discussion.jsonl"):
                 safe_path(project, name, exists=False)
+            hypotheses.migrate_queue(project)
             name = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
             runs = safe_path(project, "runs", exists=False)
             runs.mkdir(exist_ok=True)
@@ -796,18 +798,25 @@ class Handler(BaseHTTPRequestHandler):
                                 "run": run["id"],
                                 "round": e.get("round", 0),
                                 "change": ideas.get(e.get("round"), "Baseline"),
-                                "verdict": e.get("verdict", "baseline"),
+                                "verdict": hypotheses.experiment_verdict(
+                                    e.get("verdict", "baseline")
+                                ),
                                 "value": e.get(
                                     "value", e.get("result", {}).get(task["metric"])
                                 ),
                             }
                         )
             system = (
-                "Discuss concrete, testable ideas briefly. Experiments run locally. Do not invent results.\n"
+                "Discuss testable hypotheses: claims about the system, with why and prediction. "
+                "A hypothesis is tested by one or more experiments (concrete changes). "
+                "Experiment verdicts are improved, worse, no effect, crashed; hypothesis statuses "
+                "are untested, testing, supported, refuted, inconclusive. Do not invent results.\n"
                 + safe_path(project, "program.md").read_text()
                 + "\nMetric and fixed budget:\n"
                 + json.dumps(task)
-                + "\nObserved verdict ledger (latest 60):\n"
+                + "\nHypotheses with derived statuses and experiments:\n"
+                + json.dumps(hypotheses.collect(project, task))
+                + "\nObserved experiment ledger (latest 60):\n"
                 + json.dumps(history[-60:])
             )
             messages = [

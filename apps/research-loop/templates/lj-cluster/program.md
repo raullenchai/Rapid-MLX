@@ -9,4 +9,4 @@ Goal: minimise `energy` of the returned arrangement (lower is better), using at 
 Rules:
 - Edit only `optimize(rng)` (and helpers). Keep ATOMS, EVAL_BUDGET, `energy_and_grad`, and the final check. numpy and scipy are available.
 - Every energy or gradient must come from `energy_and_grad`; scipy optimizers are fine if they call it.
-- One idea per experiment. Each experiment runs 3 seeds; results are averaged. Differences under 0.3 are noise.
+- One concrete change per experiment to test a hypothesis. Each experiment runs 3 seeds; results are averaged. Differences under 0.3 are noise.

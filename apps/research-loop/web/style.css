@@ -1591,3 +1591,47 @@ summary:hover { color:var(--blue); }
     transition:none!important;
   }
 }
+
+/* Hypotheses use the established separators and verdict palette. */
+.improved { color:var(--supported); }
+.worse { color:var(--refuted); }
+.verdict-pill.improved { color:var(--supported); background:#e3f0e8; }
+.verdict-pill.worse { color:var(--refuted); background:#f7e8e7; }
+.verdict-pill.testing { color:var(--blue); background:#e1edf6; }
+.verdict-pill.inconclusive { color:var(--neutral); background:#f5eedf; }
+.project-counts { font-size:13px; max-width:24ch; line-height:1.6; }
+.hypothesis-rule { font-size:12px; line-height:1.6; }
+.hypothesis-statement { display:block; margin:7px 0; line-height:1.5; overflow-wrap:anywhere; }
+#hypothesis-form { margin-top:20px; }
+#hypothesis-form label { font-size:14px; font-weight:600; margin-bottom:8px; }
+#hypothesis-form textarea { width:100%; margin-bottom:10px; }
+.experiment-rail { grid-template-rows:auto minmax(100px,.8fr) minmax(180px,1fr); }
+.hypothesis-rail { padding:16px 18px; border-bottom:1px solid var(--rule); }
+.hypothesis-rail h2 { font-size:16px; margin-bottom:12px; }
+.hypothesis-group { padding:12px 0; border-bottom:1px solid var(--rule); }
+.hypothesis-group summary { font-size:13px; cursor:pointer; }
+.hypothesis-group ol { padding-left:20px; margin-top:12px; }
+.hypothesis-group li { padding:8px 0; font-size:12px; overflow-wrap:anywhere; }
+.hypothesis-group li.is-selected { background:var(--selection); }
+.hypothesis-group li button { white-space:normal; text-align:left; }
+.hypothesis-group .verdict-pill { font-size:11px; }
+.hypothesis-id { font-weight:650; }
+.hypothesis-row>td:first-child { width:60%; min-width:240px; }
+.hypothesis-row>td:nth-child(2) { min-width:100px; }
+.hypothesis-row summary { cursor:pointer; line-height:1.6; overflow-wrap:anywhere; }
+.hypothesis-row details>p { margin-top:12px; }
+.hypothesis-row small { display:block; margin-top:6px; font-size:11px; }
+.nested-experiments { margin-top:16px; overflow:auto; }
+.nested-experiments table { min-width:540px; }
+.nested-experiments td:first-child { min-width:220px; max-width:340px; }
+.nested-experiments td:nth-child(2) { min-width:90px; }
+.nested-experiments th { position:static; }
+.code-change { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+@media(max-width:1099px) { .experiment-rail { grid-template-rows:auto auto minmax(300px,1fr); } .hypothesis-rail { max-height:360px; } }
+
+.queue-panel #queue { max-height:300px; overflow:auto; overscroll-behavior:contain; }
+.hypothesis-rationale { margin-bottom:12px; font-size:13px; }
+.hypothesis-rationale summary { cursor:pointer; margin-bottom:10px; }
+.legend .kept-key:before,.legend .refuted-key:before,.legend .discard-key:before { background:transparent; border-width:2px; }
+.legend .kept-key:before { border-color:var(--supported); }
+.legend .refuted-key:before { border-color:var(--refuted); }

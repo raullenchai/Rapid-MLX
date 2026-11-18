@@ -9,4 +9,4 @@ that never saw it.
 Rules:
 - Edit only `fit(conc, rate)` (and helpers). Keep the data, `predict`, and the evaluation unchanged. numpy and scipy are available.
 - `fit` must return (vmax, km) estimated from its inputs only.
-- One idea per experiment. The evaluation is deterministic; differences under 0.5 are noise.
+- One concrete change per experiment to test a hypothesis. The evaluation is deterministic; differences under 0.5 are noise.
