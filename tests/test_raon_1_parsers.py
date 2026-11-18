@@ -307,3 +307,344 @@ def test_empty_malformed_call_does_not_invent_a_function():
     result = RaonToolParser().extract_tool_calls(text, REQUEST)
     assert not result.tools_called and result.content == "Before.After."
     assert stream_tools(text, list(text)) == ("Before.After.", [])
+
+
+class TokenFixture:
+    """Small detokenizer with real marker IDs and controllable decoded gaps."""
+
+    all_special_tokens = ["<think>", "</think>", "<tool_call>", "</tool_call>", "<eos>"]
+    all_special_ids = [10, 11, 12, 13, 14]
+    texts = {
+        10: "<think>",
+        11: "</think>",
+        12: "<tool_call>",
+        13: "</tool_call>",
+        14: "<eos>",
+        20: "why",
+        21: "answer",
+        22: " ",
+        23: "",
+        24: "<",
+    }
+
+    def get_vocab(self):
+        return dict(zip(self.all_special_tokens, self.all_special_ids))
+
+    def decode(self, ids):
+        return "".join(self.texts[i] for i in ids)
+
+
+def test_reasoning_engine_lifecycle_and_token_accounting():
+    parser = RaonReasoningParser(TokenFixture())
+    assert (parser.reasoning_start_str, parser.reasoning_end_str) == (
+        "<think>",
+        "</think>",
+    )
+    request = SimpleNamespace(chat_template_kwargs={"force_nonempty_content": True})
+    assert parser.adjust_request(request) is request
+    assert request.skip_special_tokens is False
+    assert parser.count_reasoning_tokens([]) == 0
+    assert parser.count_reasoning_tokens([10, 20, 22, 11, 21]) == 2
+    assert parser.count_reasoning_tokens([20, 11]) == 1
+    assert parser.extract_content_ids([20, 11, 21]) == [21]
+    assert parser.extract_content_ids([20]) == [20]
+    for ids, ended in [
+        ([], False),
+        ([10], False),
+        ([11], True),
+        ([12], True),
+        ([12, 13], False),
+        ([20], False),
+    ]:
+        assert parser.is_reasoning_end(ids) is ended
+    assert parser.is_open_in_think("why")
+    assert not parser.is_open_in_think("why</think>")
+    assert not parser.has_engine_confirmed_reasoning_end()
+    assert parser._extract_reasoning("why", request) == (None, "why")
+    parser.reset_state()
+    assert parser.get_streaming_fallback_content("", request) is None
+    delta = parser._extract_reasoning_streaming(
+        "", "why ", "why ", [], [20, 22], [20, 22]
+    )
+    assert delta.reasoning == "why"
+    assert parser.count_reasoning_tokens([]) == 2
+    assert parser.get_streaming_fallback_content("", request) == "why "
+    assert parser.get_streaming_fallback_content("", SimpleNamespace()) is None
+    parser._extract_reasoning_streaming(
+        "why ", "why </think>", "</think>", [20, 22], [20, 22, 11], [11]
+    )
+    assert parser.has_engine_confirmed_reasoning_end()
+    parser.set_enable_thinking(False)
+    assert parser.is_reasoning_end([])
+    assert not parser.is_open_in_think("why")
+
+
+def test_markup_token_validation_and_minimal_tokenizers():
+    from rapid_mlx.reasoning.raon_1_parser import RaonMarkupTokens
+
+    with pytest.raises(ValueError, match="missing from the tokenizer"):
+        RaonMarkupTokens(SimpleNamespace(get_vocab=lambda: {}))
+    tokens = RaonMarkupTokens(
+        SimpleNamespace(get_vocab=TokenFixture().get_vocab, decode=lambda _: None)
+    )
+    assert tokens.text(20) == ""
+    assert tokens.text(20) == ""  # cached non-string decode
+
+
+def test_delayed_special_tokens_and_eof_preserve_text_and_counts():
+    from rapid_mlx.reasoning.raon_1_parser import RaonMarkupStream, RaonMarkupTokens
+
+    stream = RaonMarkupStream(RaonMarkupTokens(TokenFixture()))
+    assert stream.feed("", [20, 11, 21]) == []
+    assert stream.feed("partial", [22]) == []
+    pieces = stream.feed("</think>answer", [21])
+    assert [(p.kind, p.value) for p in pieces] == [
+        (None, "partial"),
+        ("</think>", "</think>"),
+        (None, "answer"),
+    ]
+    stream.reset()
+    assert stream.feed("", [20, 11, 21]) == []
+    pieces = stream.finish()
+    assert [(p.kind, p.value, p.count) for p in pieces] == [
+        ("</think>", "</think>", 0),
+        (None, "", 1),
+    ]
+    stream.reset()
+    assert stream.feed("prefix", [11]) == []
+    assert [(p.kind, p.value) for p in stream.finish()] == [
+        (None, "prefix"),
+        ("</think>", "</think>"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text,ids,expected",
+    [
+        (
+            "why</think>answer",
+            [20, 11, 21],
+            [(None, "why"), ("</think>", "</think>"), (None, "answer")],
+        ),
+        ("prefix</think>", [11], [(None, "prefix"), ("</think>", "</think>")]),
+        (
+            "WHY</think>ANSWER",
+            [20, 11, 21],
+            [(None, "WHY"), ("</think>", "</think>"), (None, "ANSWER")],
+        ),
+        ("</think>", [10, 11], [("</think>", "</think>")]),
+        ("<think>", [24], [(None, "<think>")]),
+    ],
+)
+def test_token_alignment_uses_detokenized_text(text, ids, expected):
+    from rapid_mlx.reasoning.raon_1_parser import RaonMarkupStream, RaonMarkupTokens
+
+    stream = RaonMarkupStream(RaonMarkupTokens(TokenFixture()))
+    assert [(p.kind, p.value) for p in stream.feed(text, ids)] == expected
+
+
+@pytest.mark.parametrize(
+    "value,schema,expected",
+    [
+        ({"n": "2"}, {"properties": {"n": {"type": "integer"}}}, {"n": 2}),
+        ({"n": 2}, {}, {"n": 2}),
+        (["2", "3"], {"items": {"type": "integer"}}, [2, 3]),
+        ([1], {}, [1]),
+        (True, {"type": "integer"}, True),
+        ("0", {"type": "boolean"}, False),
+    ],
+)
+def test_recursive_schema_conformance(value, schema, expected):
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _conform
+
+    result, _ = _conform(value, schema)
+    assert result == expected
+
+
+def test_schema_enum_inventory_and_unknown_properties():
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _conform_object, _schema_types
+
+    assert _schema_types(None) == {"string"}
+    assert _schema_types({"enum": [None, True, 1, 1.5, "x", [], {}]}) == {
+        "null",
+        "boolean",
+        "integer",
+        "number",
+        "string",
+        "array",
+        "object",
+    }
+    values = {"unknown": "2"}
+    assert not _conform_object(values, {"unknown": None})
+    assert values == {"unknown": "2"}
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ('{"name":"run","arguments":{"x":2}}', ("run", '{"x": 2}')),
+        ('{"name":"run","parameters":"raw"}', ("run", "raw")),
+        ('{"name":"run","x":2}', ("run", '{"x": 2}')),
+        ("[]", ("", "[]")),
+        ("broken", ("", "broken")),
+    ],
+)
+def test_json_call_body_fallback(body, expected):
+    assert RaonToolParser._json_call(body) == expected
+
+
+@pytest.mark.parametrize(
+    "text,count,content",
+    [
+        ("<tool_call></tool_call>", 0, ""),
+        ("<function=run</function>", 1, ""),
+        ("<function=run>", 1, ""),
+        ("<tool_call><function=run>", 1, ""),
+        ("<function=run></function><function=run></function>", 2, ""),
+        ("<function=run></function><tool_call><function=run></function>", 2, ""),
+        ("<tool_call>ignored</tool_call>", 0, ""),
+        ("<eos>", 0, ""),
+        ("   ", 0, "   "),
+    ],
+)
+def test_incomplete_and_adjacent_calls_flush_exactly_once(text, count, content):
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _wire
+
+    parser = RaonToolParser(TokenFixture())
+    deltas = [parser.extract_tool_calls_streaming("", text, text)]
+    deltas.append(_wire(parser.finish_streaming()))
+    assert parser.finish_streaming() is None
+    calls = [tc for delta in deltas if delta for tc in delta.get("tool_calls", [])]
+    assert [tc["index"] for tc in calls] == list(range(count))
+    assert len({tc["id"] for tc in calls}) == count
+    assert [tc["function"] for tc in calls] == [
+        {"name": "run", "arguments": "{}"}
+    ] * count
+    assert "".join(delta.get("content", "") for delta in deltas if delta) == content
+    parser.reset()
+    assert parser.extract_tool_calls("plain").content == "plain"
+
+
+def test_tool_suppression_and_internal_reasoning_state():
+    parser = RaonToolParser(TokenFixture())
+    result = parser.extract_tool_calls_streaming(
+        "", call({}), call({}), request={**REQUEST, "tool_choice": "none"}
+    )
+    assert result is None or "tool_calls" not in result
+    parser.reset()
+    # The shared engine may start in the grammar's pre-content state.
+    pieces = parser._stream.feed("why</think><function=run></function>", [])
+    parser._reset("before")
+    result = parser._delta(parser._events(pieces), finished=True)
+    assert result.reasoning == "why"
+    assert result.tool_calls[0].function.name == "run"
+    parser._reset("before")
+    assert parser._finish_events() == [("reasoning_end", "", -1)]
+
+
+def test_tool_schema_objects_and_invalid_json_are_preserved():
+    tool = SimpleNamespace(model_dump=lambda: REQUEST["tools"][0])
+    parser = RaonToolParser(tools=[None, tool])
+    assert parser._properties("run") == PROPERTIES
+    assert parser._typed("bad", "run") == "bad"
+    assert parser._typed("[]", "run") == "[]"
+    assert parser._typed("{}", "missing") == "{}"
+    assert parser._string_keys("missing") is None
+    assert parser._string_keys("run") == {"text"}
+
+
+def test_markup_rejects_ambiguous_literal_prefixes(monkeypatch):
+    from rapid_mlx.reasoning import raon_1_parser as module
+
+    monkeypatch.setattr(module, "TEXT_TAGS", (*module.TEXT_TAGS, "<think>x"))
+    with pytest.raises(ValueError, match="must not prefix"):
+        module.RaonMarkupTokens(TokenFixture())
+
+
+def test_alignment_empty_decodes_and_unmatched_token_text():
+    from rapid_mlx.reasoning.raon_1_parser import (
+        RaonMarkupStream,
+        RaonMarkupTokens,
+        _Text,
+    )
+
+    stream = RaonMarkupStream(RaonMarkupTokens(TokenFixture()))
+    assert [p.text for p in stream._align("text", [])] == ["text"]
+    assert [p.text for p in stream._align("text", [_Text("", (), 1)])] == ["text", ""]
+    assert [p.text for p in stream._align("text", [_Text("different")])] == ["text"]
+    assert stream._char_counts("", (), 2) == []
+    assert stream._char_counts("text", ("", "missing"), 2) == [2, 0, 0, 0]
+    parser = RaonReasoningParser()
+    from rapid_mlx.reasoning.raon_1_parser import Piece
+
+    assert parser._events([Piece(None, "")]) == []
+
+
+def test_waiting_tokens_resolve_at_start_and_before_another_special():
+    from rapid_mlx.reasoning.raon_1_parser import RaonMarkupStream, RaonMarkupTokens
+
+    stream = RaonMarkupStream(RaonMarkupTokens(TokenFixture()))
+    assert stream.feed("", [11, 21]) == []
+    pieces = stream.feed("</think><eos>", [14])
+    assert [(p.kind, p.value, p.count) for p in pieces] == [
+        ("</think>", "</think>", 0),
+        (None, "", 1),
+        ("<discard>", "<eos>", 0),
+    ]
+
+
+def test_stable_prefix_retains_unterminated_string_with_escapes():
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _stable_prefix
+
+    raw = '{"text":"a\\"b'
+    assert _stable_prefix(raw, {"text"}) == raw
+
+
+def test_delta_merge_fills_missing_metadata_and_appends_arguments():
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import (
+        DeltaFunctionCall,
+        DeltaToolCall,
+    )
+
+    parts = [
+        DeltaToolCall(0),
+        DeltaToolCall(0, id="call_1", type="function"),
+        DeltaToolCall(0, function=DeltaFunctionCall(arguments="{")),
+        DeltaToolCall(0, function=DeltaFunctionCall(name="run", arguments="}")),
+    ]
+    merged = RaonToolParser._merge(parts)
+    assert len(merged) == 1
+    assert merged[0].id == "call_1" and merged[0].type == "function"
+    assert merged[0].function.name == "run"
+    assert merged[0].function.arguments == "{}"
+
+
+def test_before_content_tool_transition_and_out_of_range_close():
+    parser = RaonToolParser()
+    pieces = parser._stream.feed("<tool_call><function=run></function>", [])
+    result = parser._delta(parser._events(pieces))
+    assert result.tool_calls[0].function.name == "run"
+    deltas = []
+    parser._on_close(100, deltas)
+    assert deltas == []
+
+
+def test_json_body_and_empty_named_call_complete_extraction():
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _Call
+
+    parser = RaonToolParser()
+    # Bare JSON is a fallback when the grammar has accumulated a call body
+    # without a function header (the supported low-level engine event path).
+    delta = parser._delta(
+        [("open", "", 0), ("args", '{"name":"run","arguments":{}}', 0)]
+    )
+    assert delta.tool_calls[0].function.name == "run"
+    parser._calls[0].name = ""
+    calls = parser._calls_found()
+    assert calls[0].function.name == "run"
+    assert json.loads(calls[0].function.arguments) == {}
+    empty = _Call()
+    empty.name = "run"
+    parser._calls = [empty]
+    calls = parser._calls_found()
+    assert calls[0].function.arguments == "{}"

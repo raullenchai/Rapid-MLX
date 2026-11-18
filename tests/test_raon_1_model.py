@@ -336,3 +336,86 @@ def test_generation_config_registers_both_stop_ids(tmp_path):
     tokenizer = types.SimpleNamespace(eos_token_id=259202)
     augment_eos_token_ids_from_generation_config(tokenizer, str(tmp_path))
     assert set(getattr(tokenizer, RAPID_EXTRA_EOS_ATTR)) == {259202, 259200}
+
+
+# Complete-source contract for KRAFTON/Raon-1-nano-mlx, revision
+# 81e25155d3332c261ba503c0ae63eb65ad868398, raon_mlx_model.py.
+# Exact old/new hunks inventory the compatibility setup, five typed load
+# boundaries, and two singleton-batch guards. No network or MLX is needed.
+_RAON_RELEASE_SHA256 = (
+    "e5b529325e3bab845f15fd545a02e52b1aa813300331149580f353eac3041409"
+)
+_RAON_REVIEWED_SHA256 = (
+    "c6a3d72b48f7025dc7d32446bd1a9fbe8136009eb70832008a5387596017e7a5"
+)
+_RAON_DEVIATIONS = (
+    (
+        "",
+        "\nfrom rapid_mlx import _mlx_compat\nfrom rapid_mlx.model_load_errors import typed_mlx_load_boundaries, typed_weight_boundary\n\n_mlx_compat.install()\n",
+    ),
+    (
+        "        weights.update(mx.load(shard))\n",
+        "        with typed_weight_boundary():\n            weights.update(mx.load(shard))\n",
+    ),
+    (
+        "    model.load_weights(list(weights.items()), strict=True)\n",
+        "    with typed_mlx_load_boundaries():\n        model.load_weights(list(weights.items()), strict=True)\n",
+    ),
+    (
+        "    nn.quantize(model, class_predicate=predicate)\n",
+        "    with typed_mlx_load_boundaries():\n        nn.quantize(model, class_predicate=predicate)\n",
+    ),
+    (
+        "        folded = _rda_fold_prep(self, y.reshape(1, -1), sizes, states[0], dt32, a_exp) if 'rda_fold' in _RDA_ON else None\n",
+        "        folded = _rda_fold_prep(self, y.reshape(1, -1), sizes, states[0], dt32, a_exp) if 'rda_fold' in _RDA_ON and batch == 1 else None\n",
+    ),
+    (
+        "        kv_all = self._kv_rows(cache, latent, length) if self.kv_keep and cache is not None else None\n",
+        "        kv_all = self._kv_rows(cache, latent, length) if self.kv_keep and batch == 1 and cache is not None else None\n",
+    ),
+    (
+        "    model = load_model(path)\n",
+        "    with typed_mlx_load_boundaries():\n        model = load_model(path)\n",
+    ),
+    (
+        "        result = super().load_weights(*args, **kwargs)\n",
+        "        with typed_mlx_load_boundaries():\n            result = super().load_weights(*args, **kwargs)\n",
+    ),
+)
+
+
+def test_numerical_core_matches_pinned_release_with_exact_deviations():
+    import hashlib
+
+    source = (Path(__file__).parents[1] / "rapid_mlx/models/raon1_nano.py").read_text()
+    assert hashlib.sha256(source.encode()).hexdigest() == _RAON_REVIEWED_SHA256
+    assert len(_RAON_DEVIATIONS) == 8
+    for release, rapid in _RAON_DEVIATIONS:
+        assert source.count(rapid) == 1, rapid
+        source = source.replace(rapid, release, 1)
+    assert hashlib.sha256(source.encode()).hexdigest() == _RAON_RELEASE_SHA256
+
+
+def test_registration_failure_keeps_remote_model_file_disabled(
+    tmp_path, registered_stub, monkeypatch, caplog
+):
+    import builtins
+
+    loader, _ = registered_stub
+    loader._VENDORED_MODEL_TYPES.discard("raon1_nano")
+    original_import = builtins.__import__
+
+    def unavailable(name, globals=None, locals=None, fromlist=(), level=0):
+        if fromlist and "raon1_nano" in fromlist:
+            raise ImportError("Raon numerical runtime unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", unavailable)
+    loader._register_vendored_archs()
+    assert "raon1_nano vendored module failed to register" in caplog.text
+    assert "raon1_nano" not in loader._VENDORED_MODEL_TYPES
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "raon1_nano", "model_file": "raon_mlx_model.py"})
+    )
+    with pytest.raises(RuntimeError, match="refusing to execute"):
+        loader._rapid_owned_model_config(str(tmp_path))

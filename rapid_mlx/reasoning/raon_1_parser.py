@@ -588,8 +588,6 @@ class RaonReasoningParser(ReasoningParser):
                 return False
         # A tool call without its closing tag also ends the reasoning.
         for index in range(len(input_ids) - 1, -1, -1):
-            if input_ids[index] == ids[THINK_START]:
-                return False
             if input_ids[index] == ids[TOOL_CALL_START]:
                 if ids[TOOL_CALL_END] in input_ids[index + 1 :]:
                     continue
