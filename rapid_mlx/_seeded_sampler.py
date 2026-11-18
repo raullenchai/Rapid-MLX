@@ -131,9 +131,29 @@ def _apply_argmax_rescue(mask: mx.array, argmax_idx: mx.array) -> mx.array:
 
 
 def _make_seeded_logits_filter(
-    *, temperature: float, top_p: float = 0.0, min_p: float = 0.0, top_k: int = 0
-) -> Callable[[mx.array], mx.array]:
-    """Share seeded serving's FP32 masks, tie order, rescue and temperature."""
+    *,
+    temperature: float,
+    top_p: float = 0.0,
+    min_p: float = 0.0,
+    top_k: int = 0,
+    min_tokens_to_keep: int = 1,
+    xtc_probability: float = 0.0,
+    xtc_threshold: float = 0.0,
+    xtc_special_tokens: list[int] | None = None,
+) -> Callable[..., mx.array]:
+    """Share seeded serving's masks and temperature with speculative sampling.
+
+    XTC runs on the retained distribution before temperature, preserves the
+    least probable candidate above its threshold, and exempts special tokens.
+    Its caller supplies a request-owned draw so draft and verify can reuse it.
+    Minimum token retention applies only to min-p, preserving other masks.
+    """
+    if min_p > 0 and (
+        not isinstance(min_tokens_to_keep, int) or min_tokens_to_keep < 1
+    ):
+        raise ValueError("min_tokens_to_keep must be a positive integer")
+    if xtc_probability > 0 and not (xtc_probability <= 1 and 0 <= xtc_threshold <= 0.5):
+        raise ValueError("XTC requires probability in [0, 1] and threshold in [0, 0.5]")
     temp_inv = 1.0 / float(temperature)
     use_top_p = 0.0 < top_p < 1.0
     use_top_k = top_k > 0
@@ -142,7 +162,9 @@ def _make_seeded_logits_filter(
     min_p_val = float(min_p)
     top_k_val = int(top_k)
 
-    def filter_logits(logprobs: mx.array) -> mx.array:
+    def filter_logits(
+        logprobs: mx.array, *, xtc_draw: mx.array | None = None
+    ) -> mx.array:
         work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
         vocab = work.shape[-1]
 
@@ -177,10 +199,31 @@ def _make_seeded_logits_filter(
             probs_for_min = mx.exp(work)
             max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
             min_p_mask = probs_for_min >= (min_p_val * max_prob)
+            if min_tokens_to_keep > 1:
+                positions = mx.argsort(-work, axis=-1)[..., :min_tokens_to_keep]
+                min_p_mask = mx.put_along_axis(
+                    min_p_mask,
+                    positions,
+                    mx.ones(positions.shape, dtype=mx.bool_),
+                    axis=-1,
+                )
             mask = mask & min_p_mask
 
         argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
         mask = _apply_argmax_rescue(mask, argmax_idx)
+
+        if xtc_probability > 0:
+            if xtc_draw is None:
+                raise ValueError("seeded XTC requires a request-owned draw")
+            filtered = mx.where(mask, work, -mx.inf)
+            probs = mx.softmax(filtered, axis=-1)
+            floor = mx.min(
+                mx.where(probs > xtc_threshold, probs, mx.inf), axis=-1, keepdims=True
+            )
+            remove = probs > floor
+            if xtc_special_tokens:
+                remove[..., xtc_special_tokens] = False
+            mask = mask & ((xtc_draw > xtc_probability) | ~remove)
 
         masked = mx.where(mask, work * temp_inv, -mx.inf)
 
@@ -196,6 +239,10 @@ def make_seeded_sampler(
     top_p: float = 0.0,
     min_p: float = 0.0,
     top_k: int = 0,
+    min_tokens_to_keep: int = 1,
+    xtc_probability: float = 0.0,
+    xtc_threshold: float = 0.0,
+    xtc_special_tokens: list[int] | None = None,
 ) -> Callable[[mx.array], mx.array]:
     """Build a per-request sampler that threads an explicit PRNG key.
 
@@ -211,6 +258,10 @@ def make_seeded_sampler(
         top_p: Nucleus cutoff in ``[0, 1]``. ``0.0`` (default) disables.
         min_p: Min-p cutoff in ``[0, 1]``. ``0.0`` (default) disables.
         top_k: Top-k cutoff. ``0`` (default) disables.
+        min_tokens_to_keep: Minimum number retained by the min-p mask.
+        xtc_probability: Probability of excluding high-probability candidates.
+        xtc_threshold: Probability floor for XTC candidates before temperature.
+        xtc_special_tokens: Token IDs exempt from XTC exclusion.
 
     Returns:
         ``sampler(logprobs) -> token_ids`` matching the shape contract
@@ -246,7 +297,14 @@ def make_seeded_sampler(
         )
 
     filter_logits = _make_seeded_logits_filter(
-        temperature=temperature, top_p=top_p, min_p=min_p, top_k=top_k
+        temperature=temperature,
+        top_p=top_p,
+        min_p=min_p,
+        top_k=top_k,
+        min_tokens_to_keep=min_tokens_to_keep,
+        xtc_probability=xtc_probability,
+        xtc_threshold=xtc_threshold,
+        xtc_special_tokens=xtc_special_tokens,
     )
 
     # Per-request key state lives in a one-element list so the closure
@@ -301,8 +359,6 @@ def make_seeded_sampler(
     state_lock = threading.Lock()
 
     def sampler(logprobs: mx.array) -> mx.array:
-        masked = filter_logits(logprobs)
-
         # Pull a fresh subkey for this step. Held under the per-closure
         # lock so the read-split-write is atomic — two concurrent
         # callers can't both read the same carried key and then both
@@ -310,7 +366,13 @@ def make_seeded_sampler(
         # See the ``state_lock`` block above for why this is defensive
         # rather than load-bearing under the current scheduler.
         with state_lock:
+            xtc_draw = (
+                mx.random.uniform(key=lane_rng.next_key())
+                if xtc_probability > 0
+                else None
+            )
             key = lane_rng.next_key()
+        masked = filter_logits(logprobs, xtc_draw=xtc_draw)
         return mx.random.categorical(masked, key=key)
 
     # The priming sample and the speculative verifier execute on the same

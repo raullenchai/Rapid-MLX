@@ -782,7 +782,14 @@ def mtp_generate_step(
 
     _seeded_filter = (
         _make_seeded_logits_filter(
-            temperature=temp, top_p=top_p, min_p=min_p, top_k=top_k
+            temperature=temp,
+            top_p=top_p,
+            min_p=min_p,
+            top_k=top_k,
+            min_tokens_to_keep=min_tokens_to_keep,
+            xtc_probability=xtc_probability,
+            xtc_threshold=xtc_threshold,
+            xtc_special_tokens=xtc_special_tokens,
         )
         if lane_rng is not None and not _is_greedy
         else None
@@ -806,7 +813,10 @@ def mtp_generate_step(
             xtc_special_tokens,
         )
         if not _is_greedy and not _use_fused_sampler and _seeded_filter is None
-        else ([], None)
+        else (
+            [],
+            [None] if _seeded_filter is not None and xtc_probability > 0 else None,
+        )
     )
 
     quantize_cache_fn = partial(
@@ -864,7 +874,9 @@ def mtp_generate_step(
             lp_accept = logprobs
         else:
             if _seeded_filter is not None:
-                scaled = _seeded_filter(logprobs)
+                if xtc_probability > 0 and xtc_draw is None:
+                    xtc_draw = _uniform()
+                scaled = _seeded_filter(logprobs, xtc_draw=xtc_draw)
             elif _use_fused_sampler:
                 sorted_scaled, indices = _fused_top_p_logits(
                     logprobs, 1.0 / float(temp), 1.0 - float(top_p), int(top_k)

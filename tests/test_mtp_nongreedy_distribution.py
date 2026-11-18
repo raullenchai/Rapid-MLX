@@ -508,17 +508,28 @@ def test_fallback_distribution_matches_serving(
 @pytest.mark.parametrize(
     "top_p,min_p,top_k", [(0.95, 0, 3), (0, 0.1, 3), (1e-9, 1, 100)]
 )
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"min_tokens_to_keep": 3},
+        {"xtc_probability": 0.5, "xtc_threshold": 0.1, "xtc_special_tokens": [5]},
+        {"min_tokens_to_keep": 3, "xtc_probability": 0.5, "xtc_threshold": 0.2},
+    ],
+)
 def test_seeded_mtp_filtered_probabilities_match_serving(
-    monkeypatch, dtype_name, top_p, min_p, top_k
+    monkeypatch, dtype_name, top_p, min_p, top_k, options
 ):
     from rapid_mlx._seeded_sampler import make_seeded_sampler
     from tests.test_mtp_sampling_parity import sampling_harness
 
     env, captured, _ = sampling_harness(
-        mx, temp=0.7, top_p=top_p, min_p=min_p, top_k=top_k, seeded=True
+        mx, temp=0.7, top_p=top_p, min_p=min_p, top_k=top_k, seeded=True, **options
     )
+    draw = mx.array(0.25)
+    monkeypatch.setattr(mx.random, "uniform", lambda *, key: draw)
     logits = mx.array([-3, -2, 0, 0, 0, 2], dtype=getattr(mx, dtype_name))
-    _, logprobs, acceptance = env["_process_and_sample"](None, logits)
+    _, logprobs, acceptance = env["_process_and_sample"](None, logits, draw)
     mtp_scaled = captured.pop()
 
     def capture(logits, *, key):
@@ -527,12 +538,12 @@ def test_seeded_mtp_filtered_probabilities_match_serving(
 
     monkeypatch.setattr(mx.random, "categorical", capture)
     make_seeded_sampler(
-        seed=42, temperature=0.7, top_p=top_p, min_p=min_p, top_k=top_k
+        seed=42, temperature=0.7, top_p=top_p, min_p=min_p, top_k=top_k, **options
     )(logprobs)
     serving_scaled = captured.pop()
     assert mx.array_equal(mtp_scaled, serving_scaled)
     assert mx.allclose(mx.exp(acceptance), mx.softmax(serving_scaled), atol=1e-7)
-    if (top_p, min_p, top_k) == (0.95, 0, 3):
+    if not options and (top_p, min_p, top_k) == (0.95, 0, 3):
         assert mx.isfinite(mtp_scaled).tolist() == [
             False,
             False,
@@ -541,3 +552,29 @@ def test_seeded_mtp_filtered_probabilities_match_serving(
             False,
             True,
         ]
+
+
+def test_seeded_xtc_interleaving_preserves_rng_isolation():
+    from rapid_mlx._seeded_sampler import make_seeded_sampler
+
+    def sampler(seed):
+        return make_seeded_sampler(
+            seed=seed,
+            temperature=0.7,
+            min_p=0.9,
+            min_tokens_to_keep=3,
+            xtc_probability=0.5,
+            xtc_threshold=0.2,
+        )
+
+    row = mx.log(mx.array([0.5, 0.3, 0.15, 0.05]))
+    baseline = sampler(42)
+    expected = [baseline(row).item() for _ in range(30)]
+    first, second, unrelated = sampler(42), sampler(42), sampler(99)
+    actual_first, actual_second = [], []
+    for _ in range(30):
+        actual_first.append(first(row).item())
+        unrelated(row).item()
+        actual_second.append(second(row).item())
+    assert expected == actual_first == actual_second
+    assert first.lane_rng.draws == second.lane_rng.draws == 60

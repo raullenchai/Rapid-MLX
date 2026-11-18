@@ -28,7 +28,7 @@ def _load_functions(path, names, env):
     nodes = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name in names
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names
     ]
     assert {node.name for node in nodes} == set(names)
     module = ast.Module(body=nodes, type_ignores=[])
@@ -50,7 +50,19 @@ def _put_along_axis(x, indices, values, axis):
 
 
 def sampling_harness(
-    mx, *, temp=0.7, top_p=0.95, top_k=0, min_p=0, seeded=False, fused=True, chain=()
+    mx,
+    *,
+    temp=0.7,
+    top_p=0.95,
+    top_k=0,
+    min_p=0,
+    seeded=False,
+    fused=True,
+    chain=(),
+    min_tokens_to_keep=1,
+    xtc_probability=0.0,
+    xtc_threshold=0.0,
+    xtc_special_tokens=None,
 ):
     """Capture categorical inputs from both actual production callables."""
     captured = []
@@ -78,10 +90,10 @@ def sampling_harness(
         top_p=top_p,
         top_k=top_k,
         min_p=min_p,
-        min_tokens_to_keep=1,
-        xtc_probability=0.0,
-        xtc_threshold=0.0,
-        xtc_special_tokens=[],
+        min_tokens_to_keep=min_tokens_to_keep,
+        xtc_probability=xtc_probability,
+        xtc_threshold=xtc_threshold,
+        xtc_special_tokens=xtc_special_tokens or [],
         env_truthy=lambda name: not fused,
         _make_sampler_chain=lambda *args: (list(chain), None),
         _categorical=categorical,
@@ -119,6 +131,8 @@ def cpu_mx():
         ones=np.ones,
         any=np.any,
         max=np.max,
+        min=np.min,
+        softmax=lambda x, axis: np.exp(x - _logsumexp(x, axis=axis)),
         inf=np.inf,
         exp=np.exp,
         argsort=lambda x, axis: np.argsort(x, axis=axis, kind="stable"),
@@ -369,3 +383,204 @@ def test_cpu_generator_imports_shared_filters(monkeypatch, cpu_mx):
         env["_fused_top_p_logits"]
         is modules["rapid_mlx._sampler_fast_path"]._fused_top_p_logits
     )
+
+
+@pytest.mark.parametrize("draw", [0.0, 0.5, 0.5001, 1.0])
+@pytest.mark.parametrize("special", [[], [0], [0, 1, 2, 3]])
+@pytest.mark.parametrize("keep", [1, 3, 20])
+@pytest.mark.parametrize("threshold", [0.0, 0.2, 0.5])
+def test_cpu_seeded_optional_filters_match_serving(
+    cpu_mx, draw, special, keep, threshold
+):
+    options = dict(
+        min_p=0.9,
+        min_tokens_to_keep=keep,
+        xtc_probability=0.5,
+        xtc_threshold=threshold,
+        xtc_special_tokens=special,
+    )
+    env, captured, categorical = sampling_harness(
+        cpu_mx, temp=0.7, top_p=0, seeded=True, **options
+    )
+    draws = []
+
+    def uniform(**kwargs):
+        draws.append(kwargs)
+        return np.array(draw, dtype=np.float32)
+
+    env.update(
+        threading=threading,
+        _uniform=uniform,
+        RequestSeededRNG=lambda seed: SimpleNamespace(next_key=lambda: seed),
+    )
+    _load_functions(SEEDED, {"make_seeded_sampler"}, env)
+    cpu_mx.random = SimpleNamespace(
+        categorical=lambda logits, key: categorical(logits), uniform=uniform
+    )
+    serving = env["make_seeded_sampler"](seed=42, temperature=0.7, top_p=0, **options)
+    logits = np.log(np.array([[0.5, 0.3, 0.15, 0.05], [0.25] * 4], dtype=np.float32))
+    _, logprobs, acceptance = env["_process_and_sample"](None, logits, np.array(draw))
+    mtp_scaled = captured.pop()
+    assert not draws  # Supplied draft/verify draws must never be replaced.
+    assert env["_xtc_cell"] is not None  # Enables shared draws in draft generation.
+    serving(logprobs)
+    np.testing.assert_array_equal(mtp_scaled, captured.pop())
+    np.testing.assert_array_equal(acceptance, mtp_scaled - _logsumexp(mtp_scaled))
+    assert len(draws) == 1 and "key" in draws[0]
+    # A bonus/target call without a shared draw must draw from the request RNG.
+    env["_process_and_sample"](None, logits)
+    np.testing.assert_array_equal(mtp_scaled, captured.pop())
+    assert len(draws) == 2
+
+
+@pytest.mark.parametrize(
+    "keep,expected", [(1, [0]), (3, [0, 1, 2]), (20, [0, 1, 2, 3])]
+)
+def test_cpu_seeded_minimum_token_retention(cpu_mx, keep, expected):
+    env, captured, _ = sampling_harness(
+        cpu_mx, top_p=0, min_p=0.9, min_tokens_to_keep=keep, seeded=True
+    )
+    env["_process_and_sample"](
+        None, np.log(np.array([0.5, 0.3, 0.15, 0.05], dtype=np.float32))
+    )
+    np.testing.assert_array_equal(np.flatnonzero(np.isfinite(captured.pop())), expected)
+
+
+@pytest.mark.parametrize("draw,expected", [(0.5, [1, 2, 3]), (0.5001, [0, 1, 2, 3])])
+def test_cpu_seeded_xtc_removes_only_above_candidate_floor(cpu_mx, draw, expected):
+    env, captured, _ = sampling_harness(
+        cpu_mx, temp=0.3, top_p=0, seeded=True, xtc_probability=0.5, xtc_threshold=0.2
+    )
+    env["_process_and_sample"](
+        None, np.log(np.array([0.5, 0.3, 0.15, 0.05], dtype=np.float32)), np.array(draw)
+    )
+    np.testing.assert_array_equal(np.flatnonzero(np.isfinite(captured.pop())), expected)
+
+
+@pytest.mark.parametrize(
+    "options,message",
+    [
+        ({"min_p": 0.5, "min_tokens_to_keep": 0}, "min_tokens"),
+        ({"min_p": 0.5, "min_tokens_to_keep": -1}, "min_tokens"),
+        ({"min_p": 0.5, "min_tokens_to_keep": 1.5}, "min_tokens"),
+        ({"xtc_probability": 1.1}, "XTC"),
+        ({"xtc_probability": 0.5, "xtc_threshold": -0.1}, "XTC"),
+        ({"xtc_probability": 0.5, "xtc_threshold": 0.6}, "XTC"),
+    ],
+)
+def test_cpu_seeded_optional_filter_validation(cpu_mx, options, message):
+    with pytest.raises(ValueError, match=message):
+        sampling_harness(cpu_mx, seeded=True, **options)
+
+
+def test_cpu_seeded_xtc_requires_owned_draw(cpu_mx):
+    env, _, _ = sampling_harness(cpu_mx, seeded=True, xtc_probability=0.5)
+    with pytest.raises(ValueError, match="request-owned draw"):
+        env["_seeded_filter"](np.array([-1, -2], dtype=np.float32))
+
+
+def test_cpu_seeded_minimum_preserves_other_masks(cpu_mx):
+    env, captured, _ = sampling_harness(
+        cpu_mx, top_p=0, top_k=2, min_p=0.9, min_tokens_to_keep=4, seeded=True
+    )
+    env["_process_and_sample"](None, np.array([4, 3, 2, 1], dtype=np.float32))
+    np.testing.assert_array_equal(np.flatnonzero(np.isfinite(captured.pop())), [0, 1])
+
+
+@pytest.mark.parametrize("xtc", [0, 0.5])
+def test_cpu_seeded_sampler_owned_rng(cpu_mx, xtc):
+    env = dict(mx=cpu_mx, threading=threading)
+    _load_functions(
+        SEEDED,
+        {
+            "RequestSeededRNG",
+            "_apply_argmax_rescue",
+            "_make_seeded_logits_filter",
+            "make_seeded_sampler",
+        },
+        env,
+    )
+    calls = []
+
+    def categorical(logits, *, key):
+        calls.append((key, logits.copy()))
+        return np.argmax(logits, axis=-1)
+
+    cpu_mx.random = SimpleNamespace(
+        key=lambda seed: seed,
+        split=lambda key: (key * 2 + 1, key * 2 + 2),
+        uniform=lambda *, key: np.array((key % 100) / 100),
+        categorical=categorical,
+    )
+
+    def sampler(seed):
+        return env["make_seeded_sampler"](
+            seed=seed,
+            temperature=0.7,
+            min_p=0.9,
+            min_tokens_to_keep=3,
+            xtc_probability=xtc,
+            xtc_threshold=0.2,
+        )
+
+    row = np.log(np.array([0.5, 0.3, 0.15, 0.05], dtype=np.float32))
+    baseline = sampler(42)
+    for _ in range(4):
+        baseline(row)
+    expected, calls[:] = calls[:], []
+    first, second, unrelated = sampler(42), sampler(42), sampler(99)
+    first_calls, second_calls = [], []
+    for _ in range(4):
+        first(row)
+        first_calls.append(calls.pop())
+        unrelated(row)
+        calls.pop()
+        second(row)
+        second_calls.append(calls.pop())
+    for reference, a, b in zip(expected, first_calls, second_calls, strict=True):
+        assert reference[0] == a[0] == b[0]
+        np.testing.assert_array_equal(reference[1], a[1])
+        np.testing.assert_array_equal(reference[1], b[1])
+    assert first.lane_rng.draws == second.lane_rng.draws == (8 if xtc else 4)
+    assert first.lane_rng.key == baseline.lane_rng.key
+    greedy = env["make_seeded_sampler"](seed=42, temperature=0)
+    assert greedy(row) == 0
+    assert greedy.lane_rng is None and greedy.request_seeded
+    with pytest.raises(ValueError, match="temperature"):
+        env["make_seeded_sampler"](seed=42, temperature=-1)
+
+
+@pytest.mark.parametrize(
+    "transactional,tentative", [(False, None), (True, None), (True, [7, 8])]
+)
+def test_cpu_seeded_filters_follow_processors(cpu_mx, transactional, tentative):
+    env, captured, _ = sampling_harness(
+        cpu_mx, top_p=0, min_p=0.9, min_tokens_to_keep=2, seeded=True
+    )
+    cpu_mx.array, cpu_mx.uint32 = np.array, np.uint32
+    history = np.array([6])
+    seen = []
+
+    def apply(tokens, prefix, logits):
+        np.testing.assert_array_equal(tokens, history)
+        seen.append(prefix)
+        return logits + np.array([[0, 4, 6, 0]], dtype=np.float32)
+
+    if transactional:
+        processor = SimpleNamespace(mtp_apply=apply)
+    else:
+        processor = lambda tokens, logits: apply(tokens, None, logits)
+    env.update(
+        logits_processors=[processor],
+        transactional_processor_ids={id(processor)} if transactional else set(),
+    )
+    logits = np.array([4, 3, 2, 1], dtype=np.float32)
+    _, logprobs, _ = env["_process_and_sample"](
+        history, logits, tentative_tokens=tentative
+    )
+    np.testing.assert_array_equal(np.flatnonzero(np.isfinite(captured.pop())), [1, 2])
+    np.testing.assert_allclose(np.exp(logprobs).sum(), 1, atol=1e-6)
+    if transactional:
+        np.testing.assert_array_equal(seen[0], [] if tentative is None else tentative)
+    else:
+        assert seen == [None]
