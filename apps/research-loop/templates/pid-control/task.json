@@ -1,0 +1,3 @@
+{"title": "Tune a motor speed controller", "domain": "Engineering", "editable": "control.py", "metric": "score", "metric_label": "Control error score", "unit": "", "direction": "min", "noise": 0.05, "seeds": [0],
+ "fixed": ["^DT = 0\\.01$", "^T_END = 10\\.0$", "^SETPOINT = 1\\.0$", "^U_MAX = 5\\.0$", "^    command = float\\(np\\.clip", "^    current \\+= ", "^    load = ", "^    speed \\+= ", "^    cost \\+= ", "^score = "],
+ "curve": {"x": "t", "x_label": "Time (s)", "series": [{"key": "speed", "label": "Motor speed"}, {"key": "target", "label": "Target"}]}}

@@ -55,11 +55,72 @@ run('state.selected=1;state.follow=false;renderRun()');
 assert.match(get('detail-text').innerHTML,/&lt;img/);
 assert.doesNotMatch(get('detail-text').innerHTML,/<img/);
 assert.match(get('verdict').textContent,/10.0% → 60.0% · supported/);
-assert.match(get('curve').innerHTML,/polyline/);
+assert.match(get('curve').innerHTML,/<(?:polyline|circle) data-series=/);
 assert.match(get('detail-text').innerHTML,/Prediction/);
 assert.equal(run('meanSeries(getRound(1).curves,"score")[0][1]'),.6);
 assert.equal(run('progressData().at(-1).runningBest'),.6);
 assert.equal(run('progressData().filter(p=>p.kept).length'),2);
+
+// Generic configured x keys, sparse measured series, neutral comparisons, and reference/outliers.
+const drugTask={title:'Drug levels',editable:'pk.py',seeds:[0],metric:'rmse',metric_label:'Held-out error',unit:'mg/L',direction:'min',noise:.05,domain:'Medicine',curve:{x:'hours',x_label:'Hours after dose',series:[{key:'model',label:'Model'},{key:'measured',label:'Measured',style:'points'},{key:'other',label:'Other'}]}};
+setup(drugTask);
+event({event:'baseline',metric:'rmse',result:{rmse:6.283}});
+event({event:'idea',round:1,hypothesis:'Fit absorption'});
+for(const p of [{hours:0,model:0},{hours:.5,model:6},{hours:1,model:9},{hours:.25,measured:4},{hours:.75,measured:8},{hours:1,other:7}])event({event:'curve',round:1,seed:0,ts:123,...p});
+event({event:'result',round:1,value:.864,best_before:6.283,verdict:'supported'});
+event({event:'idea',round:2,hypothesis:'An outlier'});
+event({event:'result',round:2,value:140.582,best_before:.864,verdict:'refuted'});
+run('state.selected=1;renderRun()');
+assert.match(get('curve').innerHTML,/data-series="model"/);
+assert.match(get('curve').innerHTML,/data-series="measured"/);
+assert.equal((get('curve').innerHTML.match(/data-series="measured"/g)||[]).length,2);
+assert.doesNotMatch(get('curve').innerHTML,/<polyline[^>]*data-series="measured"/);
+assert.match(get('curve').innerHTML,/data-series="model"[^>]*stroke="#176345"/);
+assert.match(get('curve').innerHTML,/Hours after dose/);
+assert.match(get('curve').innerHTML,/data-series="other"/);
+assert.deepEqual(JSON.parse(run('JSON.stringify(meanSeries(getRound(1).curves,"model"))')),[[0,0],[.5,6],[1,9]]);
+assert.deepEqual(JSON.parse(run('JSON.stringify(meanSeries(getRound(1).curves,"measured"))')),[[.25,4],[.75,8]]);
+assert.doesNotMatch(get('curve').innerHTML,/<(?:polyline|circle) data-series="(?:measured|other)"[^>]*(?:stroke|fill)="#176345"/);
+assert.match(get('metric-heading').textContent,/Held-out error \(mg\/L\)/);
+assert.match(get('verdict').innerHTML,/class="metric-value">0.864 mg\/L<\/span>/);
+assert.doesNotMatch(get('progress').innerHTML,/data-y-tick="(?:50|100|150|200)"/);
+assert.match(get('progress').innerHTML,/data-clamped="high"/);
+assert.match(get('progress').innerHTML,/140.582 mg\/L/);
+assert.doesNotMatch(get('curve').innerHTML,/NaN|Infinity|undefined/);
+const clusterTask={...drugTask,metric:'energy',metric_label:'Cluster energy',unit:'',noise:.3,reference:{value:-44.326801,label:'Known global minimum'},curve:{x:'evals',x_label:'Energy evaluations',series:[{key:'energy',label:'Best energy'}]}};
+setup(clusterTask);
+event({event:'baseline',metric:'energy',result:{energy:-41.2}});
+event({event:'idea',round:1,hypothesis:'Local search'});event({event:'result',round:1,value:-41.5,verdict:'supported'});
+event({event:'idea',round:2,hypothesis:'Multiple starts'});event({event:'result',round:2,value:-44.3268,verdict:'supported'});
+event({event:'idea',round:3,hypothesis:'Too much work'});event({event:'run_start',round:3,seed:0});
+event({event:'result',round:3,verdict:'crashed',error:'Traceback (most recent call last):\n  File "private.py", line 1\nRuntimeError: evaluation budget exceeded\n'});
+run('state.selected=3;renderRun()');
+assert.match(get('progress').innerHTML,/data-reference="true"/);
+assert.match(get('result-reference').textContent,/Known global minimum.*−44.3268.*reached in round 2/);
+assert.match(get('seeds').innerHTML,/Seed 0 <span>crashed<\/span>/);
+assert.equal(get('round-error').textContent,'RuntimeError: evaluation budget exceeded');
+assert.match(get('round-traceback').textContent,/Traceback/);
+assert.match(get('detail-text').innerHTML,/<summary>Show error<\/summary>/);
+run('$("round-error-details").open=true;renderCurrent()');assert.equal(get('round-error-details').open,true);
+run('state.selected=2;renderCurrent()');assert.equal(get('round-error-details').hidden,true);assert.equal(get('round-error-details').open,false);
+run('state.selected=3;renderCurrent()');
+assert.equal(get('round-error-details').hidden,false);
+// Both reference and goal contribute to the domain; rejected lower outliers keep their values.
+setup({...clusterTask,metric:'score',direction:'max',noise:0,goal:30,reference:{value:40,label:'Reference'}});
+event({event:'baseline',metric:'score',result:{score:10}});
+event({event:'idea',round:1,hypothesis:'Improve'});event({event:'result',round:1,value:20,verdict:'supported'});
+event({event:'idea',round:2,hypothesis:'Too low'});event({event:'result',round:2,value:-200,verdict:'refuted'});
+run('renderRun()');
+assert.match(get('progress').innerHTML,/data-clamped="low"/);
+assert.match(get('progress').innerHTML,/-200; outside plotted range/);
+assert.match(get('progress').innerHTML,/data-y-tick="40"/);
+assert.match(get('progress').innerHTML,/data-goal="true"/);
+assert.match(get('progress').innerHTML,/data-reference="true"/);
+assert.doesNotMatch(get('result-reference').textContent,/reached/);
+setup();
+event({event:'baseline',metric:'score',result:{score:.1}});
+event({event:'idea',round:1,hypothesis:'Improve score'});event({event:'result',round:1,value:.6,verdict:'supported'});
+event({event:'idea',round:2,hypothesis:'Regresses'});event({event:'result',round:2,value:.2,verdict:'refuted'});
 
 // Crashes remain inspectable even when there is no numeric result.
 event({event:'idea',round:3,hypothesis:'A failed attempt'});
@@ -138,8 +199,14 @@ assert.match(get('verdict').textContent,/100 ms → 80 ms · supported/);
 assert.match(get('code-label').textContent,/round1_sort.py/);
 run('state.stage="results";renderRun()');
 await new Promise(resolve=>setImmediate(resolve));
-assert.equal(get('code').textContent,'<script>not HTML</script>\nVALUE = 2');
+assert.match(get('code').innerHTML.replace(/<[^>]+>/g,''),/&lt;script&gt;not HTML&lt;\/script&gt;/);
+assert.doesNotMatch(get('code').innerHTML,/<script>/);
+assert.match(get('code').innerHTML,/class="line-number"/);
+assert.match(get('code').innerHTML,/syntax-number/);
+assert.equal(run('artifactText.code'),'<script>not HTML</script>\nVALUE = 2');
+assert.equal(get('copy-code').disabled,false);
 assert.match(get('diff').innerHTML,/class="add"/);
+assert.equal(get('diff-stats').textContent,'+1 −1');
 assert.equal(run('parseRoute("#/p/sorting-study/results?run=r1&round=2").stage'),'results');
 assert.equal(run('parseRoute("#/p/sorting-study/results?run=r1&round=2").round'),2);
 assert.equal(run('parseRoute("#/p/a_b").invalid'),true);
@@ -250,11 +317,123 @@ assert.match(css,/#detail-title\s*\{[^}]*-webkit-line-clamp:3;/);
 const index=fs.readFileSync(new URL('../web/index.html',import.meta.url),'utf8');
 assert.match(index,/<link rel="icon" href="data:image\/svg\+xml,/);
 
+// Project summaries agree with verdicts and metric direction, across chronological runs.
+context.historyRuns=[{created:2,events:[{event:'baseline',result:{score:.2}},{event:'result',value:.99,verdict:'no effect'},{event:'result',value:.9,verdict:'supported'}]},{created:1,events:[{event:'baseline',result:{score:.1}},{event:'result',value:.8,verdict:'supported'},{event:'result',value:.4,verdict:'refuted'},{event:'result',verdict:'crashed'}]}];
+assert.deepEqual(Array.from(run('projectHistory(historyRuns,{metric:"score",direction:"max"})')),[.1,.8,.8,.8,.8,.8,.9]);
+context.historyRuns=[{created:1,events:[{event:'baseline',result:{runtime_ms:100}},{event:'result',value:80,verdict:'supported'},{event:'result',value:79.9,verdict:'no effect'},{event:'result',value:90,verdict:'refuted'}]}];
+assert.deepEqual(Array.from(run('projectHistory(historyRuns,{metric:"runtime_ms",direction:"min"})')),[100,80,80,80]);
+const minSpark=run('sparkline([100,80,80],{direction:"min",unit:"ms"})');
+assert.match(minSpark,/lower is better/);
+assert.match(minSpark,/M5,7 H55 V31 H105 V31/); // The lower metric sits lower on its natural axis.
+assert.match(run('sparkline([.1,.8,.8],{direction:"max",unit:"%"})'),/M5,31 H55 V7 H105 V7/);
+assert.doesNotMatch(run('sparkline([5,5,5],{})'),/NaN|Infinity/);
+assert.match(run('sparkline([],{})'),/Awaiting baseline/);
+assert.equal(run(String.raw`goalDescription("\n# Research goal\nOther content")`),'Other content');
+assert.equal(run('deltaClass(-1,{direction:"min"})'),'supported');
+assert.equal(run('deltaClass(1,{direction:"min"})'),'refuted');
+assert.equal(run('deltaClass(1,{direction:"max"})'),'supported');
+assert.equal(run('deltaClass(-1,{direction:"max"})'),'refuted');
+assert.equal(run('deltaClass(0,{})'),'');
+assert.equal(run('deltaClass(NaN,{})'),'');
+// Home renders new server summaries without any run-detail requests.
+testProjects=[{slug:'fast',title:'Fast sort',template:'sort-speed',description:'<img src=x onerror=alert(1)>',status:'Finished',progress:[100,80],task:minTask,best:80,experiments:1,updated:now/1000}];
+const beforeSummary=requests.length;await run('loadHome()');
+assert.equal(requests.length-beforeSummary,2);
+assert.match(get('project-list').innerHTML,/Finished/);
+assert.match(get('project-list').innerHTML,/80 ms/);
+assert.match(get('project-list').innerHTML,/class="sparkline"/);
+assert.match(get('project-list').innerHTML,/&lt;img/);
+assert.doesNotMatch(get('project-list').innerHTML,/<img/);
+assert.match(get('template-cards').innerHTML,/type="radio"/);
+assert.match(get('template-cards').innerHTML,/Higher is better/);
+testProjects=[];await run('loadHome()');
+assert.match(get('project-list').innerHTML,/Create your first project/);
+get('first-project').onclick();assert.equal(get('new-form').hidden,false);
+get('cancel-project').onclick();assert.equal(get('new-form').hidden,true);
+
+// Domain chips filter without losing the activity ordering or unknown-domain projects.
+const homeProject=(slug,domain,updated)=>({slug,title:slug,template:'generic',task:{...minTask,domain},description:'A research goal',status:'Finished',progress:[10,8],experiments:2,best:8,updated});
+context.domainProjects=[homeProject('older','Physics',100),homeProject('newer','Medicine',200),homeProject('unclassified','',300)];
+run('state.projects=domainProjects;state.domain="";renderProjects()');
+assert.match(get('domain-filters').innerHTML,/All domains/);
+assert.match(get('domain-filters').innerHTML,/data-domain="Medicine"/);
+assert.ok(get('project-list').innerHTML.indexOf('unclassified')<get('project-list').innerHTML.indexOf('newer'));
+assert.match(get('project-list').innerHTML,/class="domain-chip">Physics/);
+context.domainClick={target:{closest:()=>({dataset:{domain:'Medicine'}})}};
+get('domain-filters').onclick(context.domainClick);
+assert.match(get('project-list').innerHTML,/newer/);assert.doesNotMatch(get('project-list').innerHTML,/older|unclassified/);
+assert.match(get('domain-filters').innerHTML,/data-domain="Medicine" aria-pressed="true"/);
+run('state.projects=[];renderProjects()');assert.equal(get('domain-filters').hidden,true);
+assert.equal(run('format(1,{unit:""})'),'1');assert.equal(run('format(1,{unit:"mg/L"})'),'1 mg/L');
+// Stale active summaries are rebuilt from completed results in every run, before done arrives.
+detail={...detail,task:minTask,runs:[{id:'old',created:10},{id:'live',created:20,active:true}]};
+testRun={id:'live',model:'q35',active:true};
+testEvents=[{event:'baseline',metric:'runtime_ms',result:{runtime_ms:100},ts:100},{event:'result',value:80,verdict:'supported',ts:110},{event:'result',verdict:'crashed',ts:120},{event:'run_start',round:3,seed:0,ts:130}];
+context.activeProject={...homeProject('active','Computer science',50),status:'Running',experiments:0};
+await run('projectSummary(activeProject)');
+assert.equal(run('activeProject.experiments'),4);
+assert.equal(run('activeProject.best'),80);
+assert.equal(run('activeProject.updated'),130);
+// Empty discussion always begins at the heading, including after moving to the rail.
+setup(minTask);run('state.data.discussion=[];renderConversation()');assert.equal(get('conversation').scrollTop,0);
+
+// Generic starters fill the composer; they never send a request or queue an idea.
+setup(minTask);run('state.run=null;renderConversation()');
+assert.equal((get('conversation').innerHTML.match(/data-prompt=/g)||[]).length,3);
+assert.match(get('conversation').innerHTML,/Why does the baseline fail on runtime/);
+const requestCount=requests.length;
+context.promptEvent={target:{closest:selector=>selector==='[data-prompt]'?{dataset:{prompt:'0'}}:null}};
+await get('conversation').onclick(context.promptEvent);
+assert.equal(get('message').value,'Why does the baseline fail on runtime?');
+assert.equal(document.activeElement.id,'message');assert.equal(requests.length,requestCount);
+run('state.replay=true');get('message').value='Keep draft';
+await get('conversation').onclick(context.promptEvent);assert.equal(get('message').value,'Keep draft');
+context.unsafeMetric='<script>alert(1)</script>';
+run('state.replay=false;state.data.task.metric_label=unsafeMetric;renderConversation()');
+assert.match(get('conversation').innerHTML,/&lt;script&gt;/);assert.doesNotMatch(get('conversation').innerHTML,/<script>/);
+run('state.data.discussion=[{role:"user",content:"Question"}];state.chatDraft={role:"assistant",model:"q27",content:"Answer",pending:true};renderConversation()');
+assert.match(get('conversation').innerHTML,/chat user/);
+assert.match(get('conversation').innerHTML,/chat assistant streaming/);
+assert.match(get('conversation').innerHTML,/27B · q27/);
+assert.match(get('conversation').innerHTML,/streaming-caret/);
+assert.doesNotMatch(get('conversation').innerHTML,/data-queue/);
+run('state.chatDraft=null;state.data.discussion.push({role:"assistant",content:"A testable idea"});renderConversation()');
+assert.match(get('conversation').innerHTML,/queue-action/);
+
+// Tokenization retains exact source and never allows code to become markup.
+context.sourceCode=`# <img src=x onerror=alert(1)>\nimport math\nx = "<script>&'\\"</script>"\nvalue = 1.25e-3\ntext = """first\n# still a string\nlast"""\nif value: return False`;
+assert.equal(run('tokenizeCode(sourceCode).map(t=>t.text).join("")'),context.sourceCode);
+const tinted=run('codeMarkup(sourceCode)');
+assert.doesNotMatch(tinted,/<img|<script|<\/script>/);
+assert.match(tinted,/&lt;img/);assert.match(tinted,/&lt;script/);
+for(const kind of ['comment','keyword','number','string'])assert.match(tinted,new RegExp(`syntax-${kind}`));
+assert.equal((tinted.match(/class="code-line"/g)||[]).length,context.sourceCode.split('\n').length);
+assert.match(run(String.raw`codeMarkup("unterminated = \"<img src=x>\n# safe")`),/&lt;img/);
+const diffInfo=run(String.raw`diffMarkup("--- before\n+++ after\n@@ -1 +1 @@\n-<script>\n+<img>\n context")`);
+assert.equal(diffInfo.added,1);assert.equal(diffInfo.removed,1);
+assert.match(diffInfo.html,/diff-meta/);assert.doesNotMatch(diffInfo.html,/<img|<script/);
+const trickyDiff=run(String.raw`diffMarkup("--- old\n+++ new\n@@ -1 +1 @@\n--- comment\n+++ comment")`);
+assert.equal(trickyDiff.added,1);assert.equal(trickyDiff.removed,1);
+context.navigator={clipboard:{writeText:async text=>{context.copied=text;}}};
+run('artifactText.code=sourceCode');await get('copy-code').onclick();assert.equal(context.copied,context.sourceCode);
+// Live status and pulse follow the active round/seed, independently of inspection.
+setup(task);event({event:'baseline',metric:'score',result:{score:.1}});
+event({event:'idea',round:3,hypothesis:'Try this'});event({event:'run_start',round:3,seed:1});
+run('state.run.active=true;state.run.rounds=10;state.selected=0;renderRun()');
+assert.equal(get('run-state').textContent,'Running · round 3 of 10 · seed 1');
+assert.match(get('progress').innerHTML,/live-point/);
+assert.match(get('start-summary').textContent,/Baseline \+ 5 rounds · seeds 0, 1/);
+run('state.run.paused=true;renderRun()');assert.doesNotMatch(get('progress').innerHTML,/live-point/);
+assert.match(css,/@media\(prefers-reduced-motion:reduce\)/);
+assert.match(css,/th\s*\{[^}]*position:sticky/);
+assert.match(index,/class="brand-mark"/);
+
 // Default route selection also respects creation time, refreshed active runs, and explicit choice.
-detail={...detail,project:{slug:'default-study',title:'Default run study'},runs:[{id:'z-old',created:10,updated:100,experiments:1},{id:'a-new',created:20,experiments:1},{id:'empty',created:30,experiments:0}]};
+detail={...detail,project:{slug:'default-study',title:'Default run study'},task:{...minTask,domain:'Physics'},runs:[{id:'z-old',created:10,updated:100,experiments:1},{id:'a-new',created:20,experiments:1},{id:'empty',created:30,experiments:0}]};
 testRun={id:'a-new',model:'q35',active:false};testEvents=[{event:'baseline',metric:'runtime_ms',result:{runtime_ms:80}}];
 context.location.hash='#/p/default-study/experiments';await run('route()');
 assert.equal(run('state.run.id'),'a-new');
+assert.equal(get('project-domain').textContent,'Physics');assert.equal(get('project-domain').hidden,false);
 assert.ok(requests.some(r=>r.path==='/api/projects/default-study/runs/a-new'));
 detail.runs[0].active=true;testRun={id:'z-old',model:'q35',active:true};
 context.location.hash='#/p/default-study/discuss';await run('route()');
@@ -278,5 +457,32 @@ for(const name of ['20261118-113651-acde31','recorded-q35-curves']) {
   if(done.event==='done')assert.equal(run('progressData().at(-1).runningBest'),done.best);
   console.log(`Real stream checked: ${name}, ${run('ledgerRows().length')} ledger rows`);
 }
+// All six domain runs exercise configured x keys, sparse measurements, crash summaries, and finite charts.
+const projectsDir=new URL('../projects/',import.meta.url);
+let domainRuns=0;
+for(const entry of (fs.existsSync(projectsDir)?fs.readdirSync(projectsDir,{withFileTypes:true}):[]).filter(e=>e.isDirectory())) {
+  const projectDir=new URL(`${entry.name}/`,projectsDir), runsDir=new URL('runs/',projectDir);
+  if(!fs.existsSync(runsDir))continue;
+  for(const id of fs.readdirSync(runsDir).filter(id=>id.startsWith('20261118-133652-'))) {
+    const config=JSON.parse(fs.readFileSync(new URL('task.json',projectDir),'utf8'));
+    setup(config);
+    const events=fs.readFileSync(new URL(`${id}/events.jsonl`,runsDir),'utf8').trim().split('\n').map(JSON.parse);
+    for(const e of events)event(e);
+    run('renderRun()');
+    assert.doesNotMatch(get('progress').innerHTML,/NaN|Infinity|undefined/);
+    for(const round of run('ledgerRows().map(r=>r.round)')) {
+      context.round=round;run('state.selected=round;renderCurrent()');
+      assert.doesNotMatch(get('curve').innerHTML,/NaN|Infinity|undefined/);
+      const hasCurve=run('getRound(round).curves.some(p=>Number.isFinite(p[state.data.task.curve.x]) && state.data.task.curve.series.some(s=>Number.isFinite(p[s.key])))');
+      if(hasCurve)assert.match(get('curve').innerHTML,/data-series=/,`${entry.name} round ${round} renders real curves`);
+      if(run('getRound(round).verdict')==='crashed')assert.doesNotMatch(get('seeds').innerHTML,/>running</);
+    }
+    const done=events.at(-1);if(done.event==='done')assert.equal(run('progressData().at(-1).runningBest'),done.best);
+    if(config.domain==='Medicine')assert.match(get('progress').innerHTML,/data-clamped="high"/);
+    if(config.reference)assert.match(get('result-reference').textContent,/reached in round 2/);
+    domainRuns++;console.log(`Real domain stream checked: ${entry.name}, ${run('ledgerRows().length')} ledger rows`);
+  }
+}
+if(domainRuns)console.log(`Local domain streams checked: ${domainRuns}`);
 clearTimeout(run('noticeTimer'));
-console.log('Web checks passed: routing/default run, nice axes, verdict markers/noise band, label bounds, title expansion, seed chips, persisted discussion, goal editing, project metadata, favicon, ledger, artifacts, replay, empty states, real streams.');
+console.log('Web checks passed: configured sparse curves, robust domains/carets, references, domain filters, active counts, compact errors/seed state, empty rail scroll; sparklines, starter prompts, tokenizer safety, copy/diff counts, live status, directional deltas, template cards; routing/default run, nice axes, verdict markers/noise band, label bounds, title expansion, seed chips, persisted discussion, goal editing, project metadata, favicon, ledger, artifacts, replay, empty states, real streams.');

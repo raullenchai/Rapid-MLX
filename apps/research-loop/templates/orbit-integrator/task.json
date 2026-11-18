@@ -1,0 +1,3 @@
+{"title": "Keep a simulated planet on its orbit", "domain": "Physics", "editable": "integrate.py", "metric": "log_error", "metric_label": "log10 position error", "unit": "", "direction": "min", "noise": 0.1, "seeds": [0],
+ "fixed": ["^ECC = 0\\.6$", "^ORBITS = 10$", "^STEPS = 4000$", "^FORCE_BUDGET = 2 \\* STEPS$", "^def force\\(q\\):$", "^        raise RuntimeError", "^position_error = "],
+ "curve": {"x": "orbit", "x_label": "Orbits", "series": [{"key": "drift", "label": "log10 energy drift"}]}}

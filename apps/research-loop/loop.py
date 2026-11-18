@@ -111,15 +111,18 @@ def run(src, rnd):
         log("run_start", round=rnd, seed=seed)
         env = {**os.environ, **task_cfg.get("env", {}), "SEED": str(seed), "CURVE_OUT": f"{out}/round{rnd}_seed{seed}_curve.json"}
         p = subprocess.Popen([args.python, path], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=out)
-        result = None
+        result, points = None, []
         for line in p.stdout:
             line = line.strip()
             if line.startswith("RESULT "):
                 result = json.loads(line[7:])
             elif line.startswith("{"):
-                try: log("curve", round=rnd, seed=seed, **json.loads(line))
+                try:
+                    point = json.loads(line); points.append(point); log("curve", round=rnd, seed=seed, **point)
                 except json.JSONDecodeError: pass
         p.wait()
+        if points and not os.path.exists(env["CURVE_OUT"]):
+            json.dump(points, open(env["CURVE_OUT"], "w"))
         if p.returncode or result is None:
             return None, p.stderr.read()[-2000:]
         per_seed.append(result)
@@ -127,13 +130,15 @@ def run(src, rnd):
     return {METRIC: round(statistics.mean(r[METRIC] for r in per_seed), 4), "per_seed": per_seed}, None
 
 def history_text():
-    base = "; ".join(f"train_acc {r.get('train_acc')}, test_acc {r.get('test_acc')}" for r in baseline_seeds)
+    def fields(r):
+        return ", ".join(f"{k} {v}" for k, v in r.items() if isinstance(v, (int, float, type(None))) and not isinstance(v, bool) and k not in ("seconds", "steps"))
+    base = "; ".join(fields(r) for r in baseline_seeds)
     lines = [f"- Baseline (unchanged file): {METRIC} {baseline_value} | per seed: {base}"]
     if not history:
         return lines[0]
     def detail(h):
         seeds = h.get("per_seed") or []
-        extra = "; ".join(", ".join(f"{k} {v}" for k, v in r.items() if k in ("train_acc", "test_acc", "grok_step")) for r in seeds)
+        extra = "; ".join(fields(r) for r in seeds)
         return f" | per seed: {extra}" if extra else ""
     return "\n".join(lines + [f"- Round {h['round']} ({h['source']}): {h['hypothesis']} | change: {h['change']} | {METRIC}: {h.get('value')} (best before: {h['best_before']}) | verdict: {h['verdict']}{detail(h)}" for h in history])
 

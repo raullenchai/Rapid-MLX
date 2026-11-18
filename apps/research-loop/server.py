@@ -149,6 +149,23 @@ def parse_models(value, base_url, model):
     return models or {model: base_url.rstrip("/")}
 
 
+VENDOR_TYPES = {".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2"}
+
+
+def vendor_asset(path):
+    """Self-hosted third-party files under web/vendor (KaTeX). Plain names only, no traversal or symlinks."""
+    parts = path.split("/")
+    if len(parts) not in (4, 5) or parts[:2] != ["", "vendor"]:
+        return None
+    if not all(re.fullmatch(r"[A-Za-z0-9_.-]+", p) and not p.startswith(".") for p in parts[2:]):
+        return None
+    file = ROOT / "web" / "/".join(parts[1:])
+    mime = VENDOR_TYPES.get(file.suffix)
+    if not mime or file.is_symlink() or not file.is_file():
+        return None
+    return file, mime
+
+
 class App(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -272,12 +289,52 @@ class App(ThreadingHTTPServer):
             if values
             else None
         )
+        progress, running_best, experiments = [], None, 0
+        for run in sorted(runs, key=lambda r: r["created"]):
+            for event in jsonl(self.run_path(project, run["id"]), "events.jsonl"):
+                if event.get("event") == "result":
+                    experiments += 1
+                if event.get("event") not in ("baseline", "result"):
+                    continue
+                candidate = (
+                    event.get("result", {}).get(event.get("metric", task["metric"]))
+                    if event["event"] == "baseline"
+                    else event.get("value", event.get("result", {}).get(task["metric"]))
+                    if event.get("verdict") == "supported"
+                    else None
+                )
+                if isinstance(candidate, (int, float)) and math.isfinite(candidate):
+                    running_best = (
+                        candidate
+                        if running_best is None
+                        else (min if task["direction"] == "min" else max)(
+                            running_best, candidate
+                        )
+                    )
+                if running_best is not None:
+                    progress.append(running_best)
+        lines = [
+            line.strip()
+            for line in safe_path(project, "program.md").read_text().splitlines()
+            if line.strip()
+        ]
+        description = next(
+            (line for line in lines if not re.match(r"^#{1,6}\s", line)),
+            re.sub(r"^#{1,6}\s+", "", lines[0]) if lines else "",
+        )
         return dict(
             meta,
             slug=project.name,
             task=task,
-            experiments=sum(r["experiments"] for r in runs),
-            best=best,
+            experiments=experiments,
+            best=running_best if running_best is not None else best,
+            progress=progress,
+            description=description,
+            status="Running"
+            if any(r["active"] for r in runs)
+            else "Finished"
+            if runs
+            else "No runs",
             updated=max(activity + [r["updated"] for r in runs if r.get("updated")]),
         )
 
@@ -493,6 +550,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in assets:
                 file, mime = assets[parsed.path]
                 return self.bytes((ROOT / "web" / file).read_bytes(), mime)
+            vendor = vendor_asset(parsed.path)
+            if vendor:
+                return self.bytes(vendor[0].read_bytes(), vendor[1])
             self.json({"error": "Not found"}, 404)
         except (ValueError, TypeError, OSError, KeyError) as exc:
             if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):

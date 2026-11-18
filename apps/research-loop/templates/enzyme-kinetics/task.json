@@ -1,0 +1,35 @@
+{
+ "title": "Fit enzyme kinetics to predict unseen measurements",
+ "domain": "Biology",
+ "editable": "fit.py",
+ "metric": "loo_rmse",
+ "metric_label": "Held-out error",
+ "unit": "",
+ "direction": "min",
+ "noise": 0.5,
+ "seeds": [
+  0
+ ],
+ "fixed": [
+  "^CONC = np\\.array",
+  "^RATE = np\\.array",
+  "^def predict\\(conc, vmax, km\\):$",
+  "^    return vmax \\* conc / \\(km \\+ conc\\)$",
+  "^rmse = "
+ ],
+ "curve": {
+  "x": "conc",
+  "x_label": "Substrate concentration (ppm)",
+  "series": [
+   {
+    "key": "observed",
+    "label": "Measured",
+    "style": "points"
+   },
+   {
+    "key": "fitted",
+    "label": "Model"
+   }
+  ]
+ }
+}

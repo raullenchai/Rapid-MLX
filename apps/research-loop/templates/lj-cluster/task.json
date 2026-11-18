@@ -1,0 +1,37 @@
+{
+ "title": "Find the most stable shape of a 13-atom cluster",
+ "domain": "Chemistry",
+ "editable": "cluster.py",
+ "metric": "energy",
+ "metric_label": "Cluster energy",
+ "unit": "",
+ "direction": "min",
+ "noise": 0.3,
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "fixed": [
+  "^ATOMS = 13$",
+  "^EVAL_BUDGET = 30000$",
+  "^def energy_and_grad\\(x\\):$",
+  "^        raise RuntimeError",
+  "^_evals -= 1",
+  "^final, _ = energy_and_grad"
+ ],
+ "curve": {
+  "x": "evals",
+  "x_label": "Energy evaluations",
+  "series": [
+   {
+    "key": "energy",
+    "label": "Best energy"
+   }
+  ]
+ },
+ "reference": {
+  "value": -44.326801,
+  "label": "Known global minimum (icosahedron)"
+ }
+}

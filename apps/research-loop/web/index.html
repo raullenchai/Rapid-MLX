@@ -4,15 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Research Loop</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23172b3b'/%3E%3Cpath d='M7 24h7v-8h7V8h5' fill='none' stroke='%239bc9b2' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23172b3b'/%3E%3Cpath d='M23 9H12a7 7 0 0 0 0 14h8a7 7 0 0 0 0-14M19 5l4 4-4 4' fill='none' stroke='%23c5e5d5' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
   <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/katex/katex.min.js" defer></script>
+  <script src="/vendor/katex/auto-render.min.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/">Research Loop</a>
+    <a class="brand" href="#/"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M23 9H12a7 7 0 0 0 0 14h8a7 7 0 0 0 0-14M19 5l4 4-4 4"/></svg>Research Loop</a>
     <span class="top-rule" aria-hidden="true"></span>
     <h1 id="title">Projects</h1>
+    <span id="project-domain" class="domain-chip" hidden></span>
     <span class="local">Runs on this Mac</span>
   </header>
   <div id="notice" role="status" aria-live="polite"></div>
@@ -20,15 +24,18 @@
     <div class="section-heading"><div><h2>Your research projects</h2><p>Set a goal, discuss ideas, let the evidence guide the next experiment.</p></div><button id="new-project">New project</button></div>
     <form id="new-form" class="new-form" hidden>
       <h2>New project</h2>
-      <div class="form-pair"><label>Project title<input id="new-title" required maxlength="200" placeholder="What do you want to investigate?"></label><label>Starting template<select id="template" required></select></label></div>
+      <label>Project title<input id="new-title" required maxlength="200" placeholder="What do you want to investigate?"></label>
+      <fieldset class="template-field"><legend>Starting template</legend><div id="template-cards" class="template-cards"></div></fieldset>
+      <select id="template" required hidden aria-label="Starting template"></select>
       <p id="template-note" class="muted"></p>
       <label>Research goal<textarea id="new-goal" rows="4" maxlength="60000" placeholder="What should improve? What constraints matter?"></textarea></label>
       <div class="actions"><button id="create-project">Create project</button><button type="button" id="cancel-project" class="secondary">Cancel</button></div>
     </form>
+    <nav id="domain-filters" class="domain-filters" aria-label="Filter projects by domain" hidden></nav>
     <div id="project-list" class="project-list">Loading projects…</div>
   </main>
   <main id="project" class="project-shell" hidden>
-    <div class="research-strip" aria-label="Research cycle"><span>1 Question <small>any tool</small></span><span>2 Literature <small>any tool</small></span><strong>3 Ideas ⇄ 4 Experiments <small>Your ideas and data stay here</small></strong><span>5 Writing <small>any tool</small></span></div>
+    <div class="research-strip" role="list" aria-label="Research cycle"><div class="research-step" role="listitem"><span><b>1</b> Question</span><small>any tool</small></div><div class="research-step" role="listitem"><span><b>2</b> Literature</span><small>any tool</small></div><div class="research-step research-active" role="listitem" aria-current="step"><strong><b>3</b> Ideas <svg viewBox="0 0 20 16" aria-hidden="true"><path d="M2 5h15m-3-3 3 3-3 3M18 11H3m3-3-3 3 3 3"/></svg> <b>4</b> Experiments</strong><small>Your ideas and data stay here</small></div><div class="research-step" role="listitem"><span><b>5</b> Writing</span><small>any tool</small></div></div>
     <div class="stagebar">
       <nav aria-label="Project stages" id="stages"><a id="discuss-link">Discuss</a><a id="experiments-link">Experiments</a><a id="results-link">Results</a></nav>
       <div id="run-toolbar" class="run-toolbar"><label>Run <select id="runs" aria-label="Select run"></select></label><span id="replay" class="badge" hidden></span><button id="replay-run" class="secondary">Replay</button></div>
@@ -36,18 +43,18 @@
     <section id="discuss" class="stage discuss-layout" hidden aria-label="Discuss research">
       <div class="goal-panel scroll"><div class="section-heading"><h2>Research goal</h2><button id="edit-program" type="button" class="secondary" aria-controls="program" aria-expanded="false">Edit</button></div><p class="muted">A living brief for every discussion and experiment.</p><label class="sr-only" for="program">Research goal and constraints</label><div id="program-view" class="markdown-body"></div><textarea id="program" spellcheck="false" hidden></textarea><div class="actions"><button id="save-program" class="secondary" hidden>Save goal</button><span id="goal-state" class="muted" role="status"></span></div><div id="task-summary" class="task-summary"></div></div>
       <div id="discussion-host" class="discussion-host"></div>
-      <aside class="queue-panel scroll"><h2>Queued ideas <span id="queue-count"></span></h2><p class="muted">Your ideas go first, one per round.</p><ol id="queue"></ol><div class="start-block"><label>Rounds<input id="round-count" type="number" min="1" max="100" value="10"></label><button id="start">Start experiments</button><p class="muted">The baseline runs first. Each round changes one file within the fixed budget.</p></div></aside>
+      <aside class="queue-panel scroll"><div class="section-heading"><h2>Queued ideas</h2><span id="queue-count" class="count-badge"></span></div><p class="muted">Your ideas go first, one per round.</p><ol id="queue"></ol><div class="start-block"><label>Rounds<input id="round-count" type="number" min="1" max="100" value="10"></label><button id="start">Start experiments</button><p id="start-summary" class="muted"></p><p class="muted">Each round tests one change within the fixed budget.</p></div></aside>
     </section>
     <section id="experiments" class="stage experiment-layout" hidden aria-label="Experiments">
       <div class="experiment-main">
         <figure class="progress-figure"><figcaption><div><h2>Research progress</h2><span id="progress-subtitle" class="muted"></span></div><div class="legend"><span class="kept-key">Kept</span><span class="refuted-key">Refuted</span><span class="discard-key">No effect</span><span class="crashed-key"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="m1 1 8 8m-8 0 8-8"/></svg>Crashed</span><span class="best-key">Running best</span></div></figcaption><div class="progress-scroll"><svg id="progress" role="img" aria-label="Experiment progress"></svg></div><div class="figure-footer"><span id="best-caption"></span><span id="noise-caption" class="muted"></span></div></figure>
-        <article class="current-round"><div class="current-copy scroll"><div class="section-heading"><span id="round-label" class="muted"></span><button id="follow" class="text-button" hidden>Follow latest</button></div><h2 id="change"></h2><button id="expand-change" type="button" class="text-button" aria-controls="change" aria-expanded="false" hidden>Show full change</button><p id="hypothesis"></p><p id="seeds" class="muted"></p><p id="verdict" class="verdict"></p><a id="inspect-result">Inspect code and results</a><p id="round-error" class="error"></p></div><figure class="curve-figure"><figcaption id="curve-label">Round measurements</figcaption><svg id="curve" role="img" aria-label="Round measurements"></svg></figure></article>
+        <article class="current-round"><div class="current-copy scroll"><div class="section-heading"><span id="round-label" class="muted"></span><button id="follow" class="text-button" hidden>Follow latest</button></div><h2 id="change"></h2><button id="expand-change" type="button" class="text-button" aria-controls="change" aria-expanded="false" hidden>Show full change</button><p id="hypothesis"></p><p id="seeds" class="muted"></p><p id="verdict" class="verdict"></p><a id="inspect-result">Inspect code and results</a><p id="round-error" class="error error-summary"></p><details id="round-error-details" class="error-details" hidden><summary>Show error</summary><pre id="round-traceback" tabindex="0" aria-label="Experiment error"></pre></details></div><figure class="curve-figure"><figcaption id="curve-label">Round measurements</figcaption><svg id="curve" role="img" aria-label="Round measurements"></svg></figure></article>
       </div>
       <aside class="experiment-rail"><div class="run-controls"><h2 id="run-state">Ready</h2><p id="run-model" class="muted"></p><div class="actions"><button id="pause" class="secondary">Pause</button><button id="resume" class="secondary">Resume</button><button id="stop" class="secondary">Stop</button></div><p class="muted">Controls take effect after the current step.</p></div><div id="rail-discussion" class="discussion-host"></div></aside>
     </section>
     <section id="results" class="stage results-layout scroll" hidden aria-label="Results and artifacts">
-      <div class="result-top"><div><h2 id="result-best">Results</h2><p id="result-location" class="muted"></p></div><div id="downloads" class="actions"></div></div>
-      <div class="results-columns"><div class="ledger-column"><h2>Experiment ledger</h2><p id="ledger-note" class="muted"></p><div class="table-scroll"><table><thead><tr><th scope="col">#</th><th scope="col">Change</th><th scope="col" id="metric-heading">Metric</th><th scope="col">Δ vs best</th><th scope="col">Verdict</th><th scope="col">Source</th></tr></thead><tbody id="ledger"></tbody></table></div><section class="learned"><h2>What we learned</h2><p class="muted">Verdicts use the configured noise threshold; they do not establish causality.</p><div id="learned"></div></section></div><article id="result-detail" class="result-detail"><h2 id="detail-title" tabindex="-1">Select an experiment</h2><button id="expand-detail" type="button" class="text-button" aria-controls="detail-title" aria-expanded="false" hidden>Show full change</button><div id="detail-text"></div><svg id="result-curve" role="img" aria-label="Selected experiment measurements"></svg><details id="diff-disclosure"><summary id="diff-label">Diff vs parent</summary><pre id="diff">Select an experiment to inspect its change.</pre></details><details id="code-disclosure"><summary id="code-label">Full experiment code</summary><pre id="code">Select an experiment to inspect its code.</pre></details></article></div>
+      <div class="result-top"><div><h2 id="result-best">Results</h2><p id="result-reference" class="reference-note" hidden></p><p id="result-location" class="muted"></p></div><div id="downloads" class="actions"></div></div>
+      <div class="results-columns"><div class="ledger-column"><h2>Experiment ledger</h2><p id="ledger-note" class="muted"></p><div class="table-scroll"><table><thead><tr><th scope="col">#</th><th scope="col">Change</th><th scope="col" id="metric-heading">Metric</th><th scope="col">Δ vs best</th><th scope="col">Verdict</th><th scope="col">Source</th></tr></thead><tbody id="ledger"></tbody></table></div><section class="learned"><h2>What we learned</h2><p class="muted">Verdicts use the configured noise threshold; they do not establish causality.</p><div id="learned"></div></section></div><article id="result-detail" class="result-detail"><h2 id="detail-title" tabindex="-1">Select an experiment</h2><button id="expand-detail" type="button" class="text-button" aria-controls="detail-title" aria-expanded="false" hidden>Show full change</button><div id="detail-text"></div><svg id="result-curve" role="img" aria-label="Selected experiment measurements"></svg><details id="diff-disclosure"><summary id="diff-label">Diff vs parent</summary><div class="code-toolbar"><span id="diff-stats" class="muted"></span><button id="copy-diff" type="button" class="secondary" disabled>Copy diff</button></div><pre id="diff" tabindex="0" aria-label="Code difference">Select an experiment to inspect its change.</pre></details><details id="code-disclosure"><summary id="code-label">Full experiment code</summary><div class="code-toolbar"><span class="muted">Line numbers · original source</span><button id="copy-code" type="button" class="secondary" disabled>Copy code</button></div><pre id="code" tabindex="0" aria-label="Experiment source code">Select an experiment to inspect its code.</pre></details></article></div>
     </section>
   </main>
   <section id="chat-panel" class="chat-panel" hidden aria-label="Project discussion">

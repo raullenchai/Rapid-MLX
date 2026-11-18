@@ -1,0 +1,3 @@
+{"title": "Large sets with no three-term progression", "domain": "Mathematics", "editable": "search.py", "metric": "size", "metric_label": "Set size", "unit": "", "direction": "max", "noise": 0.5, "seeds": [0, 1],
+ "fixed": ["^N = 243$", "^BUDGET_S = 6.0$", "^assert is_valid\\(result\\)", "^def is_valid\\(s\\):$", "^def report\\(candidate\\):$"],
+ "curve": {"x": "t", "x_label": "Seconds of search", "series": [{"key": "size", "label": "Best size"}]}}

@@ -17,5 +17,6 @@
     "^values = tuple\\(rng\\.randrange\\(100000\\) for _ in range\\(SIZE\\)\\)$",
     "^    result = sort_values\\(list\\(values\\)\\)$",
     "^assert list\\(result\\) == sorted\\(values\\)$"
-  ]
+  ],
+  "domain": "Computer science"
 }

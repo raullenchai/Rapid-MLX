@@ -173,7 +173,17 @@ def make_run(app, slug, events=None):
 
 def test_projects_templates_and_persistent_goal(app):
     templates = request(app, "/api/templates")["json"]["templates"]
-    assert {t["slug"] for t in templates} == {"grokking", "sort-speed"}
+    assert {t["slug"] for t in templates} == {
+        "grokking",
+        "sort-speed",
+        "drug-levels",
+        "enzyme-kinetics",
+        "lj-cluster",
+        "no-three-ap",
+        "orbit-integrator",
+        "pid-control",
+    }
+    assert all(t.get("domain") for t in templates)
     slug = create(app)
     detail = request(app, f"/api/projects/{slug}")["json"]
     assert detail["project"]["template"] == "sort-speed"
@@ -311,6 +321,11 @@ def test_artifacts_diff_summary_and_download(app):
     summary = request(app, f"/api/projects/{slug}")["json"]
     assert summary["project"]["best"] == 8
     assert summary["project"]["experiments"] == 1
+    assert summary["project"]["progress"] == [10, 8]
+    assert summary["project"]["status"] == "Finished"
+    assert summary["project"]["description"] == (
+        "Reduce runtime without changing the input."
+    )
     assert request(app, f"/api/projects/{slug}/runs/example")["json"]["files"] == [
         "best_sort.py",
         "events.jsonl",
@@ -709,3 +724,92 @@ def test_http_asset_and_api_framing(app):
     finally:
         app.shutdown()
         thread.join()
+
+
+@pytest.mark.parametrize(
+    ("direction", "baseline", "improved", "nearby", "worse"),
+    [("min", 100, 80, 79.9, 110), ("max", 0.1, 0.8, 0.801, 0.05)],
+)
+def test_project_sparkline_summary(
+    app, monkeypatch, direction, baseline, improved, nearby, worse
+):
+    slug = create(app)
+    project = app.project_path(slug)
+    task_path = project / "task.json"
+    task = json.loads(task_path.read_text())
+    task["direction"] = direction
+    task_path.write_text(json.dumps(task))
+    (project / "program.md").write_text(
+        "\n# Goal\n\nResearch question\n\nConstraints below.\n"
+    )
+    empty = app.summary(project)
+    assert empty["progress"] == [] and empty["status"] == "No runs"
+    assert empty["description"] == "Research question"
+    run = make_run(
+        app,
+        slug,
+        [
+            {"event": "baseline", "result": {"runtime_ms": baseline}},
+            {"event": "result", "value": improved, "verdict": "supported"},
+            {"event": "result", "value": nearby, "verdict": "no effect"},
+            {"event": "result", "value": worse, "verdict": "refuted"},
+            {"event": "result", "verdict": "crashed"},
+        ],
+    )
+    (run / "run.json").write_text(json.dumps({"created": 10}))
+    summary = app.summary(project)
+    assert summary["progress"] == [baseline, improved, improved, improved, improved]
+    assert summary["status"] == "Finished"
+    # A later run's weaker baseline cannot reset the project's running best.
+    later = project / "runs" / "later"
+    later.mkdir()
+    (later / "run.json").write_text(json.dumps({"created": 20}))
+    (later / "events.jsonl").write_text(
+        json.dumps({"event": "baseline", "result": {"runtime_ms": worse}}) + "\n"
+    )
+    assert app.summary(project)["progress"][-1] == improved
+    monkeypatch.setattr(app, "active", lambda path: path == later)
+    assert app.summary(project)["status"] == "Running"
+    # GET summaries leave all source artifacts unchanged.
+    original = (run / "events.jsonl").read_bytes()
+    response = request(app, "/api/projects")["json"]["projects"][0]
+    assert response["progress"] == [baseline] + [improved] * 5
+    assert (run / "events.jsonl").read_bytes() == original
+
+
+def test_active_project_counts_finished_rounds_across_runs(app, monkeypatch):
+    slug = create(app)
+    project = app.project_path(slug)
+    run = make_run(
+        app,
+        slug,
+        [
+            {
+                "event": "baseline",
+                "metric": "runtime_ms",
+                "result": {"runtime_ms": 100},
+            },
+            {"event": "result", "round": 1, "value": 80, "verdict": "supported"},
+            {"event": "result", "round": 2, "verdict": "crashed"},
+        ],
+    )
+    later = project / "runs" / "active"
+    later.mkdir()
+    (later / "run.json").write_text(json.dumps({"created": 200}))
+    events = [
+        {"event": "baseline", "metric": "runtime_ms", "result": {"runtime_ms": 100}},
+        {"event": "result", "round": 1, "value": 70, "verdict": "supported"},
+        {"event": "result", "round": 2, "value": 71, "verdict": "no effect"},
+        {"event": "run_start", "round": 3, "seed": 0},
+    ]
+    (later / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    (run / "run.json").write_text(json.dumps({"created": 100}))
+    monkeypatch.setattr(app, "active", lambda path: path == later)
+    summary = app.summary(project)
+    assert (
+        summary["experiments"] == 4
+    )  # Includes completed crashes, excludes baseline/in-flight.
+    assert summary["status"] == "Running"
+    assert summary["best"] == 70
+    assert summary["progress"] == [100, 80, 80, 80, 70, 70]
+    assert summary["task"]["domain"] == "Computer science"

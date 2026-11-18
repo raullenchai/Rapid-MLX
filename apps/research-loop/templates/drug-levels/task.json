@@ -1,0 +1,35 @@
+{
+ "title": "Model drug levels in the blood after a pill",
+ "domain": "Medicine",
+ "editable": "pk.py",
+ "metric": "loo_rmse",
+ "metric_label": "Held-out error",
+ "unit": "mg/L",
+ "direction": "min",
+ "noise": 0.05,
+ "seeds": [
+  0
+ ],
+ "fixed": [
+  "^DOSE = 4\\.02$",
+  "^TIME = np\\.array",
+  "^CONC = np\\.array",
+  "^for i in range\\(1, len\\(TIME\\)\\):$",
+  "^rmse = "
+ ],
+ "curve": {
+  "x": "hours",
+  "x_label": "Hours after dose",
+  "series": [
+   {
+    "key": "model",
+    "label": "Model"
+   },
+   {
+    "key": "measured",
+    "label": "Measured",
+    "style": "points"
+   }
+  ]
+ }
+}
