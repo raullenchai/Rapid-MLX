@@ -753,7 +753,9 @@ def test_materialized_checkpoint_keeps_catalog_vision_memory_floor(monkeypatch):
     from rapid_mlx.api import utils as api_utils
     from rapid_mlx.model_profile import ModelProfile
 
-    monkeypatch.setattr(model_aliases, "resolve_model", lambda _name: "publisher/model")
+    monkeypatch.setattr(
+        model_aliases, "resolve_model", lambda _name, **_kw: "publisher/model"
+    )
     monkeypatch.setattr(
         model_aliases,
         "resolve_profile",

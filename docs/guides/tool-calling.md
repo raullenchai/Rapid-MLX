@@ -89,6 +89,7 @@ Use `--tool-call-parser` to select a parser for your model family:
 | `pythonic` | | Gemma 3 12B/27B | Python-list call syntax: `[get_weather(city='Paris')]` |
 | `qwen` | `qwen3`, `qwen3_xml` | Qwen, Qwen3 | `<tool_call>` XML or `[Calling tool:]` |
 | `qwen3_coder_xml` | | Qwen3-Coder (XML function blocks) | `<function=name><parameter=key>` XML |
+| `raon_1` | | Raon-1 | `<tool_call><function=name><parameter=key>` with schema-typed arguments |
 | `seed_oss` | `seed`, `gpt_oss` | Seed-OSS, GPT-OSS | `<seed:tool_call><function=name><parameter=key>` |
 | `ui_tars` | `ui-tars`, `uitars` | UI-TARS GUI-agent VLMs | `Action: verb(args)` computer-use lines |
 | `xlam` | | Salesforce xLAM | JSON with `tool_calls` array |

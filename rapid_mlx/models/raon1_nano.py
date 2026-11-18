@@ -22,6 +22,11 @@
 """Raon-1 nano (raon1_nano) for mlx-lm, in one file. See NOTICE for the sources it includes."""
 """Metal kernels for Raon single-token bfloat16 inference."""
 
+from rapid_mlx import _mlx_compat
+from rapid_mlx.model_load_errors import typed_mlx_load_boundaries, typed_weight_boundary
+
+_mlx_compat.install()
+
 import mlx.core as mx
 
 
@@ -2259,14 +2264,16 @@ def load_model(path, dtype=None):
             quantize_model(model, q['bits'], q['embedding_bits'], q['group_size'])
     weights = {}
     for shard in sorted(path.glob("*.safetensors")):
-        weights.update(mx.load(shard))
+        with typed_weight_boundary():
+            weights.update(mx.load(shard))
     if dtype is not None:
         if config.get('raon_weight_format') == 'mlx':
             raise ValueError('Explicit dtype is supported only for floating HF weights')
         weights={name:value.astype(dtype) for name,value in weights.items()}
     if config.get('raon_weight_format') != 'mlx':
         weights = model.sanitize(weights)
-    model.load_weights(list(weights.items()), strict=True)
+    with typed_mlx_load_boundaries():
+        model.load_weights(list(weights.items()), strict=True)
     model.eval()
     return model
 
@@ -2277,7 +2284,8 @@ def quantize_model(model, bits=4, embedding_bits=8, group_size=64):
             return False
         return {'bits':embedding_bits if isinstance(module, nn.Embedding) else bits,
                 'group_size':group_size, 'mode':'affine'}
-    nn.quantize(model, class_predicate=predicate)
+    with typed_mlx_load_boundaries():
+        nn.quantize(model, class_predicate=predicate)
 
 
 def set_optimized(model, enabled=True, enable_decode=False):
@@ -4388,7 +4396,8 @@ def load(path, variants='all', ple='mmap'):
     the file each step, decode about 12% slower). 'resident' loads the table into memory as before."""
     from pathlib import Path
     path = Path(path)
-    model = load_model(path)
+    with typed_mlx_load_boundaries():
+        model = load_model(path)
     set_optimized(model, True, enable_decode=False)
     if ple in ('mmap', 'defer'):
         offload_ple_table(model, path / 'model.safetensors', defer=ple == 'defer', mmap=ple == 'mmap')
@@ -4604,7 +4613,8 @@ class Model(Model):
         return super().sanitize(weights)
 
     def load_weights(self, *args, **kwargs):
-        result = super().load_weights(*args, **kwargs)
+        with typed_mlx_load_boundaries():
+            result = super().load_weights(*args, **kwargs)
         set_optimized(self, True, enable_decode=False)
         install(self, self.args.raon_variants)
         return result

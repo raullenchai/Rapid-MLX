@@ -88,8 +88,10 @@ def test_declared_types_have_a_loader():
     if root is None:
         pytest.skip("VLM dependency is not installed")
     # Reviewed dispatch: models/media_backend.py, models/mllm.py, and
-    # spec_decode/mtp/gemma4_inject.py (_ASSISTANT_MODEL_TYPES).
+    # spec_decode/mtp/gemma4_inject.py (_ASSISTANT_MODEL_TYPES), and
+    # utils/tokenizer.py (_register_vendored_archs) for the text-only Raon model.
     native = {
+        "raon1_nano",
         "lfm3_vl",
         "minicpmv4_7",
         "prism_hadamard_qwen35",
