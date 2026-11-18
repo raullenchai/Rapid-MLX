@@ -129,8 +129,8 @@ def next_idea(rnd):
             return idea, 0, {}
     prompt = (f"{program}\n\nCurrent best {EDITABLE}:\n```python\n{best_src}\n```\n\nBest {METRIC} so far: {best}\n\nExperiments so far:\n{history_text()}\n\n"
               "Propose the single most promising next hypothesis. Learn from the results above: do not repeat a refuted idea. "
-              'Reply with one JSON object in a ```json block: {"hypothesis": "<one testable sentence>", "why": "<one or two sentences>", '
-              '"change": "<the exact change, e.g. WEIGHT_DECAY 0.01 -> 1.0>", "prediction": "<expected effect on the metric>"}')
+              'Reply with one JSON object in a ```json block: {"hypothesis": "<one testable sentence, at most 15 words>", "why": "<at most 30 words>", '
+              '"change": "<the exact change, as short as possible, e.g. WEIGHT_DECAY 0.01 -> 1.0>", "prediction": "<expected effect on the metric, at most 12 words>"}')
     text, secs, usage = chat(prompt, 2000)
     idea = last_json(text); idea["source"] = "model"
     tried = {norm(h["change"]) for h in history}

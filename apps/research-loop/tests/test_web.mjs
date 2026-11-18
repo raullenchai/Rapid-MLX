@@ -8,7 +8,7 @@ function element() {
     scrollTop:0,scrollHeight:0,clientHeight:0,append(){},setAttribute(){}};
 }
 const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
-const context = vm.createContext({
+const context = vm.createContext({ setTimeout, clearTimeout,
   document:{getElementById:get,querySelector:()=>get('scroll'),createElement:element},
   location:{search:'?run=test&replay=1&speed=8',href:'http://localhost/?run=test&replay=1&speed=8',toString(){return this.href}},
   history:{replaceState(){}}, URL, URLSearchParams, console,

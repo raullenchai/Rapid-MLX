@@ -1,15 +1,77 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Research Loop</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#eef2f5">
+<title>Research Loop</title>
+<link rel="stylesheet" href="/style.css">
+<script defer src="/app.js"></script>
+</head>
 <body>
-<header><div class="brand">Research Loop <span id="replay" hidden></span></div><div class="cycle" aria-label="Research cycle"><div class="muted">1 Question<small>any tool</small></div><div class="muted">2 Literature<small>any tool</small></div><div class="active">3 Ideas <b>⇄</b> 4 Experiments<small>Runs on this Mac — your ideas and data stay here</small></div><div class="muted">5 Writing<small>any tool</small></div></div></header>
+<header class="app-header">
+  <div class="topbar">
+    <div class="task-heading"><span class="brand">Research Loop</span><h1 id="title">From an idea to evidence.</h1><span id="replay" hidden></span></div>
+    <div class="run-tools">
+      <label for="runs">Run</label><select id="runs"><option value="">New run</option></select>
+      <label for="task">Task</label><select id="task"></select>
+      <button id="start">Start research</button>
+    </div>
+  </div>
+  <nav class="cycle" aria-label="Research cycle">
+    <div class="muted"><span>1 Question</span><small>any tool</small></div>
+    <div class="muted"><span>2 Literature</span><small>any tool</small></div>
+    <div class="active"><div><span>3 Ideas</span><b aria-hidden="true">⇄</b><span>4 Experiments</span></div><small>Runs on this Mac — your ideas and data stay here</small></div>
+    <div class="muted"><span>5 Writing</span><small>any tool</small></div>
+  </nav>
+</header>
 <main>
-<div class="toolbar"><div><h1 id="title">From an idea to evidence.</h1><p id="subtitle">Discuss a hypothesis. Test it. Learn from the result.</p></div><div class="run-tools"><label>Run <select id="runs"><option value="">New run</option></select></label><label>Task <select id="task"></select></label><button id="start">Start research</button></div></div>
-<div id="notice" role="status" aria-live="polite"></div>
-<div class="workspace">
-<section class="ideas"><div class="section-head"><h2>3 <span>Ideas</span></h2><span id="idea-count">Research discussion</span></div><div class="idea-scroll"><div id="conversation"><div class="welcome">What could help this network generalise?<p>Explore an idea with your local model, or send your own hypothesis to the next experiment.</p></div></div><div id="cards"></div></div><form id="composer"><label for="message">Discuss or propose an idea</label><textarea id="message" rows="2" placeholder="Could stronger weight decay help it generalise?"></textarea><div><span id="queue-status">One idea. One experiment.</span><button type="button" class="secondary" id="test">Test this idea</button><button id="send" type="submit">Discuss</button></div></form></section>
-<section class="experiments"><div class="section-head"><h2>4 <span>Experiments</span></h2><span id="round-label">Waiting to begin</span></div><div class="experiment-body"><div class="experiment-heading"><h3 id="change">A small experiment, measured.</h3><span id="experiment-status" class="badge">Ready</span></div><div id="seeds" class="seeds"></div><div class="chart-head"><strong>Accuracy</strong><div><span class="key test"></span>Test <span class="key train"></span>Train <span class="key previous"></span>Previous best</div></div><svg id="chart" viewBox="0 0 800 285" role="img" aria-label="Train and test accuracy over training steps"></svg><div id="verdict" aria-live="polite">Results will guide the next idea.</div><details id="changes" open><summary>What changed <span id="diff-label"></span></summary><pre id="diff">The model’s exact edit will appear here.</pre></details><div id="errors"></div></div></section>
-</div>
-<section class="map"><div class="section-head"><h2>Map <span>How the ideas connect</span></h2><span>Click a round to inspect it · outlined node = best result</span></div><div id="map-scroll"><svg id="map" height="135" role="img" aria-label="Experiment ancestry map"></svg></div></section>
-</main><footer><span id="model">Local model · running on this Mac</span><div><span id="run-state">Ready</span><button class="secondary" id="pause" disabled>Pause</button><button class="secondary" id="resume" disabled>Resume</button><button class="secondary" id="stop" disabled>Stop</button></div></footer>
-</body></html>
+  <div id="notice" role="status" aria-live="polite"></div>
+  <div class="workspace">
+    <section class="ideas" aria-labelledby="ideas-title">
+      <div class="section-head"><h2 id="ideas-title">Ideas</h2><span id="idea-count">Research discussion</span></div>
+      <div class="idea-tabs" role="tablist" aria-label="Ideas and discussion">
+        <button id="rounds-tab" type="button" role="tab" aria-controls="rounds-panel" aria-selected="true">Rounds</button>
+        <button id="discussion-tab" type="button" role="tab" aria-controls="discussion-panel" aria-selected="false" tabindex="-1">Discussion</button>
+      </div>
+      <div id="rounds-panel" class="idea-scroll" role="tabpanel" aria-labelledby="rounds-tab"><div id="cards"></div></div>
+      <div id="discussion-panel" class="idea-scroll" role="tabpanel" aria-labelledby="discussion-tab" hidden>
+        <div id="conversation"><div class="welcome">Discuss an idea with your local model, or send a hypothesis to the next experiment.</div></div>
+      </div>
+      <form id="composer">
+        <label for="message" class="sr-only">Discuss or propose an idea</label>
+        <textarea id="message" rows="1" placeholder="Discuss or propose an idea"></textarea>
+        <div class="composer-expanded">
+          <div class="composer-actions"><button type="button" class="secondary" id="test">Test this idea</button><button id="send" type="submit">Discuss</button></div>
+          <span id="queue-status" role="status">One idea. One experiment.</span>
+        </div>
+      </form>
+    </section>
+    <section class="experiments" aria-labelledby="experiments-title">
+      <div class="section-head"><h2 id="experiments-title">Evidence</h2><div class="round-navigation"><span id="experiment-status" class="badge">Ready</span><span id="round-label">Waiting to begin</span><button id="follow" class="text-button" hidden>Follow latest</button></div></div>
+      <div class="experiment-body">
+        <div class="experiment-heading">
+          <h3 id="change">A small experiment, measured.</h3>
+          <details id="hypothesis-details"><summary><span id="hypothesis"></span></summary><div id="hypothesis-full"></div></details>
+          <div id="seeds" class="seeds" aria-label="Experiment seeds"></div>
+        </div>
+        <figure class="evidence" aria-labelledby="chart-title">
+          <figcaption class="chart-head"><strong id="chart-title">Accuracy</strong><div class="legend"><span><i id="chart-test-key" class="key test"></i>Test</span><span><i class="key train"></i>Train</span><span><i class="key previous"></i>Previous best</span></div></figcaption>
+          <svg id="chart" viewBox="0 0 1000 285" role="img" aria-label="Train and test accuracy over training steps"></svg>
+          <div id="verdict" aria-live="polite">Results will guide the next idea.</div>
+        </figure>
+        <div class="experiment-details">
+          <details id="changes"><summary><span id="diff-summary">What changed</span><span id="diff-label"></span></summary><pre id="diff">The model’s exact edit will appear here.</pre></details>
+          <div id="errors"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+  <section class="map" aria-labelledby="map-title">
+    <div class="section-head"><h2 id="map-title">Map <span>How the ideas connect</span></h2><span>Choose a round to inspect · dark ring = best · blue ring = selected</span></div>
+    <div id="map-scroll"><svg id="map" height="86" role="group" aria-label="Experiment ancestry map"></svg></div>
+    <footer><span id="model">Local model · running on this Mac</span><div><span id="run-state" role="status">Ready</span><button class="secondary" id="pause" disabled>Pause</button><button class="secondary" id="resume" disabled>Resume</button><button class="secondary" id="stop" disabled>Stop</button></div></footer>
+  </section>
+</main>
+</body>
+</html>

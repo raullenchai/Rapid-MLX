@@ -5,10 +5,15 @@ const speed = Math.max(0.1, Math.min(1000, Number(params.get('speed')) || 8));
 let runId = params.get('run') || '', source, selected = 0, follow = true, best = 0;
 let rounds = new Map(), messages = [], active = false, paused = false, chatBusy = false;
 let catalog = [], model = '';
+let expandedRound = null, displayedRound = null;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—';
-const statusClass = value => (value || '').replaceAll(' ', '-');
-function notice(text = '') { $('notice').textContent = text; }
+const statusClass = value => value === 'testing…' ? 'testing' : (value || '').replaceAll(' ', '-');
+const verdictColors = {supported:'#176345', refuted:'#a33432', crashed:'#a33432', 'no effect':'#795919', baseline:'#526476'};
+const verdictColor = verdict => verdictColors[verdict] || '#285e89';
+const changeLabel = value => String(value || '').replaceAll('->', '→');
+let noticeTimer;
+function notice(text = '') { $('notice').textContent = text; clearTimeout(noticeTimer); if (text) noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function round(n) {
   if (!rounds.has(n)) rounds.set(n, {round:n, parent:0, curves:[], seeds:{}, diffs:[], errors:[], verdict:'testing…'});
   return rounds.get(n);
@@ -29,6 +34,7 @@ function controls() {
 }
 function connect(id) {
   source?.close(); runId = id; rounds = new Map(); selected = best = 0; follow = true;
+  expandedRound = displayedRound = null;
   messages = []; $('conversation').innerHTML = ''; $('cards').innerHTML = '';
   const meta = catalog.find(r => r.id === id);
   active = Boolean(meta?.active); paused = Boolean(meta?.paused);
@@ -49,7 +55,7 @@ function apply(event) {
     case 'baseline':
       r.hypothesis = 'Baseline'; r.change = 'Original settings'; r.value = event.result[event.metric || 'test_acc']; r.metric = event.metric || 'test_acc'; r.verdict = 'baseline';
       $('title').textContent = event.task || 'Research Loop';
-      $('subtitle').textContent = 'Discuss an idea. Run it on this Mac. Let the evidence guide the next step.';
+      $('title').title = $('title').textContent;
       break;
     case 'idea': Object.assign(r, {parent:best}, event); if (follow) selected = event.round; break;
     case 'code': case 'fix': r.verdict = 'testing…'; r.diffs.push({kind:event.event, diff:event.diff}); break;
@@ -67,23 +73,51 @@ function apply(event) {
 }
 function render() {
   const r = round(selected);
+  if (displayedRound !== selected) {
+    $('changes').open = false; $('hypothesis-details').open = false;
+    displayedRound = selected;
+  }
   $('round-label').textContent = selected ? `Round ${selected}${follow ? ' · following live' : ' · selected'}` : 'Baseline';
-  $('change').textContent = r.change || r.hypothesis || (runId ? 'Measuring the baseline…' : 'A small experiment, measured.');
-  $('experiment-status').textContent = r.verdict;
+  $('change').textContent = changeLabel(r.change) || (selected ? 'Hypothesis proposed' : runId ? 'Measuring the baseline…' : 'A small experiment, measured.');
+  $('change').title = $('change').textContent;
+  $('hypothesis').textContent = r.hypothesis || 'Choose a round to inspect its evidence.';
+  $('hypothesis').title = r.hypothesis || '';
+  $('hypothesis-full').textContent = [r.hypothesis, r.why].filter(Boolean).join('\n\n');
+  $('hypothesis-details').hidden = !r.hypothesis;
+  $('follow').hidden = follow || !rounds.size;
+  $('experiment-status').textContent = !selected && r.verdict === 'testing…' ? 'measuring…' : r.verdict;
   $('experiment-status').className = `badge ${statusClass(r.verdict)}`;
   $('seeds').innerHTML = Object.entries(r.seeds).map(([seed,state]) => `<span class="seed">Seed ${esc(seed)} · ${state === 'done' ? 'complete' : 'running…'}</span>`).join('');
   const metric = rounds.get(0)?.metric || 'test_acc';
   const accuracy = metric.endsWith('acc');
   const format = value => accuracy ? pct(value) : Number.isFinite(value) ? String(value) : '—';
-  const label = metric.replaceAll('_', ' ');
-  $('verdict').textContent = Number.isFinite(r.value) ? `${label} ${Number.isFinite(r.best_before) ? format(r.best_before) + ' → ' : ''}${format(r.value)} · ${r.verdict}` : r.verdict === 'testing…' ? (runId ? 'Testing the idea…' : 'Results will guide the next idea.') : r.verdict;
-  $('verdict').className = statusClass(r.verdict);
+  const label = metric === 'test_acc' ? 'Test accuracy' : metric.replaceAll('_', ' ');
+  $('chart-title').textContent = accuracy ? 'Accuracy' : label;
+  $('verdict').textContent = Number.isFinite(r.value) ? `${Number.isFinite(r.best_before) ? format(r.best_before) + ' → ' : ''}${format(r.value)} · ${r.verdict}` : r.verdict === 'testing…' ? (runId ? selected ? 'Testing the idea…' : 'Measuring the baseline…' : 'Results will guide the next idea.') : r.verdict;
+  if (Number.isFinite(r.value)) {
+    const values = `${Number.isFinite(r.best_before) ? format(r.best_before) + ' → ' : ''}${format(r.value)}`;
+    $('verdict').innerHTML = `<span>${esc(values)}</span><span class="verdict-word"> · ${esc(r.verdict)}</span>`;
+  }
+  $('verdict').className = !runId && r.verdict === 'testing…' ? 'ready' : statusClass(r.verdict);
+  $('chart-test-key').setAttribute('style', `border-color:${verdictColor(r.verdict)}`);
   $('diff-label').textContent = r.diffs.some(d => d.kind === 'fix') ? 'crashed → fixed by the model' + (Object.values(r.seeds).includes('done') ? ' → ran' : '') : '';
+  const diffLines = r.diffs.flatMap(d => d.diff.split('\n'));
+  const files = [...new Set(diffLines.filter(line => line.startsWith('+++ ')).map(line => line.slice(4).replace(/^b\//, '').split('\t')[0]))];
+  const added = diffLines.filter(line => line.startsWith('+') && !line.startsWith('+++')).length;
+  const removed = diffLines.filter(line => line.startsWith('-') && !line.startsWith('---')).length;
+  $('diff-summary').textContent = r.diffs.length ? `${files.join(', ') || 'Experiment edit'} · +${added} −${removed}` : 'What changed · awaiting edit';
+  $('diff-summary').title = $('diff-summary').textContent;
   $('diff').innerHTML = r.diffs.length ? r.diffs.map(d => `<span>${d.kind === 'fix' ? 'Model’s fix' : 'Experiment edit'}</span>\n` + d.diff.split('\n').map(line => `<span class="${line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : ''}">${esc(line)}</span>`).join('\n')).join('\n\n') : 'The model’s exact edit will appear here.';
   $('errors').innerHTML = r.errors.map(e => `<details class="error"><summary>${esc(e.split('\n')[0].slice(0,160))}</summary><pre>${esc(e)}</pre></details>`).join('');
-  const scroll = document.querySelector('.idea-scroll'), nearEnd = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 90;
-  $('cards').innerHTML = [...rounds.values()].filter(r => r.round && r.hypothesis).map(r => `<article class="card ${selected === r.round ? 'selected' : ''}" tabindex="0" data-round="${r.round}"><header><span>Round ${r.round}</span><span class="badge">${r.source === 'human' ? 'you' : 'model'}</span></header><h3>${esc(r.hypothesis)}</h3><p>${esc(r.why)}</p><p class="change">${esc(r.change)}</p><div class="outcome ${statusClass(r.verdict)}">${esc(r.verdict)}${Number.isFinite(r.value) ? ' · ' + format(r.value) : ''}</div></article>`).join('');
-  $('idea-count').textContent = `${[...rounds.values()].filter(r => r.hypothesis && r.round).length} hypotheses`;
+  const scroll = $('rounds-panel'), nearEnd = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 90;
+  const ideas = [...rounds.values()].filter(r => r.round && r.hypothesis);
+  const cards = ideas.map(r => `<article class="card ${selected === r.round ? 'selected' : ''}"><button type="button" id="idea-${r.round}" class="idea-row" aria-expanded="${expandedRound === r.round}" aria-controls="idea-detail-${r.round}" aria-pressed="${selected === r.round}" aria-label="Inspect round ${r.round}: ${esc(changeLabel(r.change) || r.hypothesis)}, ${esc(r.verdict)}" data-round="${r.round}"><span class="round-number" title="Round ${r.round}">${r.round}</span><span class="idea-change" title="${esc(changeLabel(r.change) || r.hypothesis)}">${esc(changeLabel(r.change) || 'Hypothesis proposed')}</span><span class="outcome ${statusClass(r.verdict)}">${esc(r.verdict)}${Number.isFinite(r.value) ? ' · ' + format(r.value) : ''}</span></button><div id="idea-detail-${r.round}" class="idea-detail"${expandedRound === r.round ? '' : ' hidden'}><h3>${esc(r.hypothesis)}</h3><p>${esc(r.why)}</p><span class="badge">${r.source === 'human' ? 'you' : 'model'}</span></div></article>`).join('');
+  if ($('cards').innerHTML !== cards) {
+    const focused = document.activeElement?.closest?.('.idea-row')?.id;
+    $('cards').innerHTML = cards || '<p class="welcome">New hypotheses will appear here, one round at a time. Discuss or propose an idea below.</p>';
+    if (focused) $(focused)?.focus({preventScroll:true});
+  }
+  $('idea-count').textContent = `${ideas.length} hypotheses`;
   if (nearEnd && follow) scroll.scrollTop = scroll.scrollHeight;
   drawChart(r); drawMap(format);
 }
@@ -95,44 +129,88 @@ function series(points, field) {
 function drawChart(r) {
   const comparison = rounds.get(r.parent ?? 0);
   const max = Math.max(5000, ...r.curves.map(p=>p.step), ...(comparison?.curves || []).map(p=>p.step));
-  const x = step => 55 + step / max * 715, y = value => 240 - value * 215;
-  let svg = [0,.25,.5,.75,1].map(v => `<line x1="55" x2="770" y1="${y(v)}" y2="${y(v)}" stroke="#eee"/><text x="43" y="${y(v)+5}" text-anchor="end" fill="#888" font-size="14">${v*100}%</text>`).join('');
-  for (let i=0;i<=5;i++) svg += `<text x="${x(max*i/5)}" y="263" text-anchor="middle" fill="#888" font-size="14">${Math.round(max*i/5).toLocaleString()}</text>`;
-  svg += '<text x="770" y="282" text-anchor="end" fill="#888" font-size="13">training steps · mean across seeds</text>';
-  function line(points, field, color, width, dash='') {
+  const width = $('chart').clientWidth || 1000, height = $('chart').clientHeight || 285;
+  const right = width - 38, bottom = height - 53;
+  const x = step => 62 + step / max * (right - 62), y = value => bottom - value * (bottom - 22);
+  $('chart').setAttribute('viewBox', `0 0 ${width} ${height}`);
+  const color = verdictColor(r.verdict);
+  let svg = [0,.25,.5,.75,1].map(v => `<line x1="62" x2="${right}" y1="${y(v)}" y2="${y(v)}" stroke="#dce3e9"/><text x="48" y="${y(v)+5}" text-anchor="end" fill="#526476" font-size="15">${v*100}%</text>`).join('');
+  for (let i=0;i<=5;i++) svg += `<text x="${x(max*i/5)}" y="${height-29}" text-anchor="middle" fill="#526476" font-size="14">${Math.round(max*i/5).toLocaleString()}</text>`;
+  svg += `<text x="${right}" y="${height-5}" text-anchor="end" fill="#526476" font-size="13">training steps · mean across seeds</text>`;
+  function line(points, field, stroke, width, dash='') {
     const data = series(points, field);
-    if (data.length) svg += `<polyline points="${data.map(([a,b])=>`${x(a)},${y(b)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" ${dash ? `stroke-dasharray="${dash}"` : ''}/>`;
+    if (data.length) svg += `<polyline points="${data.map(([a,b])=>`${x(a)},${y(b)}`).join(' ')}" fill="none" stroke="${stroke}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round" ${dash ? `stroke-dasharray="${dash}"` : ''}/>`;
   }
-  if (comparison && comparison !== r) line(comparison.curves, 'test_acc', '#bad7c6', 3, '5 5');
-  line(r.curves, 'train_acc', '#aaa', 2);
-  line(r.curves, 'test_acc', '#188257', 4);
-  if (!r.curves.length) svg += '<text x="415" y="135" text-anchor="middle" fill="#aaa" font-size="17">Waiting for measurements</text>';
+  // Draw the comparison first; a solid test curve remains visible at a shared value.
+  if (comparison && comparison !== r) line(comparison.curves, 'test_acc', '#697684', 2, '7 6');
+  line(r.curves, 'train_acc', '#66798b', 2);
+  line(r.curves, 'test_acc', color, 4);
+  const test = series(r.curves, 'test_acc').at(-1);
+  if (test) svg += `<circle cx="${x(test[0])}" cy="${y(test[1])}" r="5" fill="${color}" stroke="white" stroke-width="2"/>`;
+  if (!r.curves.length) svg += `<text x="${(62+right)/2}" y="${height/2-10}" text-anchor="middle" fill="#526476" font-size="18">${!selected && runId ? 'Measuring the baseline…' : 'Waiting for measurements'}</text>`;
   $('chart').innerHTML = svg;
+  $('chart').setAttribute('aria-label', `Round ${r.round}: train and test accuracy over training steps. ${Number.isFinite(r.value) ? `Test accuracy ${pct(r.value)}. ` : ''}${r.verdict}.`);
 }
 function drawMap(format) {
   const nodes = [...rounds.values()].filter(r=>r.hypothesis || r.curves.length).sort((a,b)=>a.round-b.round);
-  const width = Math.max(1000, nodes.length * 225 + 100), positions = new Map();
-  nodes.forEach((r,i) => positions.set(r.round, {x:110+i*225, y:r.round === 0 || r.verdict === 'supported' ? 48 : 88}));
+  const width = Math.max($('map').clientWidth || 1000, nodes.length * 150), positions = new Map();
+  const step = width / Math.max(1, nodes.length);
+  nodes.forEach((r,i) => positions.set(r.round, {x:step*(i+.5), y:r.round === 0 || r.verdict === 'supported' ? 23 : 41}));
   let svg = '';
   for (const r of nodes) {
     const p = positions.get(r.round), parent = positions.get(r.parent);
-    if (r.round && parent) svg += `<path d="M${parent.x+17},${parent.y} C${p.x-100},${parent.y} ${p.x-100},${p.y} ${p.x-17},${p.y}" stroke="#d8d8d8" stroke-width="2" fill="none"/>`;
+    if (r.round && parent) svg += `<path d="M${parent.x+18},${parent.y} C${p.x-step*.5},${parent.y} ${p.x-step*.5},${p.y} ${p.x-18},${p.y}" stroke="#9baab7" stroke-width="1.5" fill="none"/>`;
   }
   for (const r of nodes) {
-    const p = positions.get(r.round), fill = ({supported:'#188257',refuted:'#bd5555',crashed:'#bd5555','no effect':'#e5e5e5',baseline:'#aaa'})[r.verdict] || '#bbb';
-    const text = r.change || r.hypothesis || 'Baseline';
-    svg += `<g tabindex="0" role="button" aria-label="Round ${r.round}: ${esc(text)}" data-round="${r.round}"><title>${esc(text)}</title><circle cx="${p.x}" cy="${p.y}" r="${best === r.round ? 22 : 18}" fill="white" stroke="${best === r.round ? '#181818' : selected === r.round ? '#888' : 'transparent'}" stroke-width="2"/><circle cx="${p.x}" cy="${p.y}" r="16" fill="${fill}"/><text x="${p.x}" y="${p.y+5}" text-anchor="middle" font-size="13" fill="${['supported','refuted','crashed'].includes(r.verdict) ? 'white' : '#333'}">${r.round}</text><text x="${p.x}" y="${p.y+39}" text-anchor="middle" fill="#333" font-size="14">${esc(text.length > 27 ? text.slice(0,26)+'…' : text)}</text><text x="${p.x}" y="${p.y+60}" text-anchor="middle" fill="#777" font-size="14">${format(r.value)}</text></g>`;
+    const p = positions.get(r.round), color = verdictColor(r.verdict);
+    const text = changeLabel(r.change) || r.hypothesis || 'Baseline';
+    svg += `<g tabindex="0" role="button" aria-pressed="${selected === r.round}" aria-label="Inspect ${r.round ? 'round '+r.round : 'baseline'}: ${esc(text)}, ${esc(r.verdict)}, ${format(r.value)}" data-round="${r.round}"><title>${esc(text)} · ${esc(r.verdict)}</title><circle cx="${p.x}" cy="${p.y}" r="22" fill="#eef2f5" stroke="${best === r.round ? '#181818' : 'transparent'}" stroke-width="2"/><circle cx="${p.x}" cy="${p.y}" r="18" fill="#eef2f5" stroke="${selected === r.round ? '#285e89' : 'transparent'}" stroke-width="2"/><circle class="node-fill" cx="${p.x}" cy="${p.y}" r="14" fill="${color}"/><text x="${p.x}" y="${p.y+4.5}" text-anchor="middle" font-size="12" font-weight="600" fill="white">${r.round}</text><text x="${p.x}" y="${p.y+36}" text-anchor="middle" fill="#172b3b" font-size="13">${esc(text.length > 17 ? text.slice(0,16)+'…' : text)}</text><text x="${p.x}" y="${p.y+51}" text-anchor="middle" fill="${color}" font-size="12">${format(r.value)} · ${esc(r.verdict)}</text></g>`;
   }
-  $('map').setAttribute('width', width); $('map').innerHTML = svg;
+  if (!nodes.length) svg = '<text x="0" y="64" fill="#526476" font-size="16">Each experiment becomes a node. Choose one to inspect its evidence.</text>';
+  $('map').setAttribute('viewBox', `0 0 ${width} 104`);
+  $('map').setAttribute('style', `min-width:${width}px`);
+  $('map').innerHTML = svg;
+}
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => {
+    drawChart(round(selected));
+    const metric = rounds.get(0)?.metric || 'test_acc';
+    drawMap(value => metric.endsWith('acc') ? pct(value) : Number.isFinite(value) ? String(value) : '—');
+  }).observe($('chart'));
 }
 function inspect(event) {
   const node = event.target.closest('[data-round]');
   if (!node) return;
   selected = Number(node.dataset.round); follow = false; render();
 }
-for (const id of ['cards','map']) {
-  $(id).onclick = inspect;
-  $(id).onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(event); } };
+$('follow').onclick = () => {
+  selected = Math.max(0, ...rounds.keys()); follow = true; render();
+};
+$('cards').onclick = event => {
+  const row = event.target.closest('[data-round]');
+  if (!row) return;
+  const n = Number(row.dataset.round);
+  expandedRound = expandedRound === n ? null : n;
+  inspect(event);
+};
+$('map').onclick = inspect;
+$('map').onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(event); } };
+function showIdeaTab(name) {
+  for (const tab of ['rounds', 'discussion']) {
+    const chosen = tab === name;
+    $(`${tab}-tab`).setAttribute('aria-selected', String(chosen));
+    $(`${tab}-tab`).tabIndex = chosen ? 0 : -1;
+    $(`${tab}-panel`).hidden = !chosen;
+  }
+}
+for (const name of ['rounds', 'discussion']) {
+  $(`${name}-tab`).onclick = () => showIdeaTab(name);
+  $(`${name}-tab`).onkeydown = event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'rounds' : event.key === 'End' ? 'discussion' : name === 'rounds' ? 'discussion' : 'rounds';
+    showIdeaTab(next); $(`${next}-tab`).focus();
+  };
 }
 async function submitIdea(hypothesis) {
   try { await api(`/api/runs/${runId}/idea`, {hypothesis}); notice('Idea queued for the next round.'); $('queue-status').textContent = 'Your idea is queued'; }
@@ -143,6 +221,7 @@ $('composer').onsubmit = async event => {
   event.preventDefault();
   const content = $('message').value.trim();
   if (!content || chatBusy || !runId || replay) return;
+  showIdeaTab('discussion');
   messages.push({role:'user', content});
   const user = document.createElement('div'); user.className = 'chat user'; user.textContent = content; $('conversation').append(user);
   $('message').value = '';
