@@ -16,6 +16,87 @@ def function(name):
 
 
 class HarnessIsolationTests(unittest.TestCase):
+    def test_fixture_reselects_after_picker_drift_during_start_wait(self):
+        for drift_poll in (2, 40, 81):
+            for starter_action in ("enabled", "disabled", "absent"):
+                with (
+                    self.subTest(drift_poll=drift_poll, starter_action=starter_action),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    shell = (
+                        function("start_fixture_chat_model")
+                        + r"""
+OUT="$1"
+drift_poll="$2"
+starter_action="$3"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=driver
+polls=0
+selection_requests=0
+presses=0
+sleep() { :; }
+log() { :; }
+die() { echo "$*" >&2; exit 1; }
+wait_identifier_enabled() { :; }
+see_main() {
+    polls=$((polls + 1))
+    local alias=fake-alias enabled=false action
+    action='{"identifier":"Readiness.Action","description":"Start","enabled":false}'
+    if (( selection_requests > 0 )); then
+        enabled=true
+    elif (( polls >= drift_poll )); then
+        alias=starter
+        [[ "$starter_action" != enabled ]] || enabled=true
+        [[ "$starter_action" != absent ]] || action=null
+    fi
+    jq -n --arg alias "$alias" --argjson action "$action" --argjson enabled "$enabled" \
+        '{data: {ui_elements: ([{identifier: "ModelPickerBar.ModelMenu", value: $alias}]
+          + (if $action == null then [] else [$action + {enabled: $enabled}] end))}}' > "$1"
+}
+element_field() {
+    jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"
+}
+driver() {
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] \
+        || die "unexpected selection arguments"
+    selection_requests=$((selection_requests + 1))
+    (( polls >= drift_poll )) || die "fixture unnecessarily reselected"
+}
+press() {
+    [[ "$(element_field "$1" ModelPickerBar.ModelMenu value)" == fake-alias ]] \
+        || die "Start pressed for starter"
+    [[ "$2" == Readiness.Action ]] || die "unexpected press"
+    presses=$((presses + 1))
+}
+wait_fake_event_after_start() {
+    [[ "$selection_requests" == 1 && "$presses" == 1 ]] || die "fixture was not reselected and started"
+}
+wait_send_idle() { see_main "$1"; }
+start_fixture_chat_model
+echo "$selection_requests $presses"
+"""
+                    )
+                    result = subprocess.run(
+                        [
+                            "/bin/bash",
+                            "-eu",
+                            "-o",
+                            "pipefail",
+                            "-c",
+                            shell,
+                            "test",
+                            tmp,
+                            str(drift_poll),
+                            starter_action,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "1 1\n")
+
     def test_fixture_selection_rechecks_snapshots_and_bounds_retries(self):
         for scenario, initial, aliases, expected_polls in (
             ("picker-reset", "fake-alias", ["starter", "fake-alias"], [1]),

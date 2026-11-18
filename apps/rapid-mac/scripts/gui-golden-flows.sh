@@ -2031,6 +2031,11 @@ start_fixture_chat_model() {
                 sleep 0.25
                 start_check="$OUT/fixture-model-start-ready.json"
                 see_main "$start_check"
+                # Discovery can reset the picker while Start is disabled.
+                # Re-enter bounded selection before acting on another alias.
+                if [[ "$(element_field "$start_check" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+                    continue 2
+                fi
             done
             wait_fake_event_after_start \
                 ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
