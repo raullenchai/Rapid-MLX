@@ -28,10 +28,10 @@ from rapid_mlx.tool_parsers import (
 from tests.test_hermes_malformed_tool_feedback import (  # noqa: F401
     test_parser_accepts_typed_request_tool_models,
     test_parser_does_not_promote_name_nested_inside_malformed_arguments,
-    test_parser_does_not_promote_undeclared_malformed_function,
-    test_parser_surfaces_declared_malformed_call_with_unparseable_arguments,
+    test_parser_forwards_unknown_name_in_unclosed_xml,
+    test_parser_recovers_unclosed_xml_at_outer_boundary,
     test_parser_surfaces_declared_malformed_json_call_for_executor_feedback,
-    test_stream_does_not_wedge_on_undeclared_malformed_function,
+    test_stream_defers_unclosed_xml_until_eof,
     test_stream_finalize_emits_standard_tool_call_not_raw_xml,
     test_stream_malformed_then_valid_in_one_chunk_suppresses_only_final_prose,
     test_stream_preserves_later_prose_across_processing_modes,

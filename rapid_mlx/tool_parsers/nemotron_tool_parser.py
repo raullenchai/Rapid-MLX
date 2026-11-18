@@ -592,8 +592,9 @@ class NemotronToolParser(ToolParser):
                         "arguments": json.dumps(arguments, ensure_ascii=False),
                     }
                 )
-            elif content:
-                # Raw content without parameter tags
+            elif content and model_output.endswith("</function>", 0, _span_end):
+                # Raw bodies need a completed function. EOF alone must not
+                # promote stray/unclosed openers without parseable arguments.
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
@@ -604,7 +605,7 @@ class NemotronToolParser(ToolParser):
 
         # Clean the text: drop the function bodies and any residual bare
         # <tool_call>/</tool_call> wrapper tags so they don't leak as content.
-        if matches or rejected:
+        if tool_calls or rejected:
             # Share streaming's projection, including formatting-only gaps
             # between removed siblings and overlapping accepted payload spans.
             cleaned_text = self._visible_content_between(

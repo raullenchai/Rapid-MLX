@@ -2994,8 +2994,8 @@ class TestRequestForwardedToToolParser:
         )
 
     @pytest.mark.parametrize("closer", ["</parameter>", "</function>", "</tool_call>"])
-    def test_qwen3_coder_finalize_preserves_closer_in_legacy_raw_value(self, closer):
-        """#1515: ambiguous raw XML is resolved from the complete EOS buffer."""
+    def test_qwen3_coder_stream_uses_upstream_first_closer(self, closer):
+        """SGLang qwen3_coder_detector: the first XML closer ends the value."""
         from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
@@ -3032,8 +3032,10 @@ class TestRequestForwardedToToolParser:
             event for piece in pieces for event in pp.process_chunk(_make_output(piece))
         ]
         final_events = pp.finalize()
-        tool_events = [event for event in final_events if event.type == "tool_call"]
-        assert len(tool_events) == 1
+        tool_events = [
+            event for event in [*streamed, *final_events] if event.type == "tool_call"
+        ]
+        assert tool_events
         all_tool_events = [
             event for event in [*streamed, *final_events] if event.type == "tool_call"
         ]
@@ -3041,7 +3043,9 @@ class TestRequestForwardedToToolParser:
             event.tool_calls[0]["function"].get("arguments", "")
             for event in all_tool_events
         )
-        assert json.loads(arguments) == {"content": value}
+        assert json.loads(arguments) == {
+            "content": "before " if closer in {"</parameter>", "</function>"} else value
+        }
 
     def test_qwen3_coder_finalize_recovers_truncated_legacy_raw_call(self):
         """EOS recovery retains the pre-#1515 malformed-call contract."""
@@ -3081,8 +3085,8 @@ class TestRequestForwardedToToolParser:
         )
         assert json.loads(arguments) == {"value": value}
 
-    def test_qwen3_coder_later_legacy_raw_parameter_defers_whole_call(self):
-        """A canonical first parameter must not hide a later raw parameter."""
+    def test_qwen3_coder_later_raw_parameter_uses_upstream_boundary(self):
+        """SGLang qwen3_coder_detector: a later value ends at its first closer."""
         from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
@@ -3120,16 +3124,18 @@ class TestRequestForwardedToToolParser:
             event for piece in pieces for event in pp.process_chunk(_make_output(piece))
         ]
         final_events = pp.finalize()
-        tool_events = [event for event in final_events if event.type == "tool_call"]
-        assert len(tool_events) == 1
+        tool_events = [
+            event for event in [*streamed, *final_events] if event.type == "tool_call"
+        ]
+        assert tool_events
         arguments = "".join(
             event.tool_calls[0]["function"].get("arguments", "")
             for event in [*streamed, *final_events]
             if event.type == "tool_call"
         )
-        assert json.loads(arguments) == {"path": "a.md", "content": value}
+        assert json.loads(arguments) == {"path": "a.md", "content": "before "}
 
-    def test_qwen3_coder_finalize_targets_later_deferred_call(self):
+    def test_qwen3_coder_later_call_uses_upstream_boundary(self):
         from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
@@ -3172,7 +3178,8 @@ class TestRequestForwardedToToolParser:
                 by_index.setdefault(call["index"], "")
                 by_index[call["index"]] += call["function"].get("arguments", "")
         assert json.loads(by_index[0]) == {"value": "first"}
-        assert json.loads(by_index[1]) == {"value": second_value}
+        # SGLang python/sglang/srt/function_call/qwen3_coder_detector.py.
+        assert json.loads(by_index[1]) == {"value": "second "}
 
 
 @pytest.mark.parametrize("path", ["channel_routed", "with_reasoning", "standard"])

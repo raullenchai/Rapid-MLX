@@ -2315,7 +2315,8 @@ def test_rc_xml_forced_header_at_tiny_budget(monkeypatch, budget, tail, stream):
         assert not message.get("content"), message
         assert message["tool_calls"][0]["function"] == {
             "name": "write_file",
-            "arguments": "{}",
+            # SGLang qwen3_coder_detector recovers a completed header at EOF.
+            "arguments": '{"content": "# Write"}' if budget == 8 else "{}",
         }
 
 
@@ -2385,15 +2386,21 @@ def test_unclosed_xml_header_hidden_by_buffered_route(forced):
             "enable_thinking": False,
         },
     )
+    # Upstream recovers the function at EOF; named choice still rejects an
+    # explicitly different function rather than synthesizing the pinned name.
+    if forced:
+        assert response.status_code == 422, response.text
+        assert "other_tool" in response.text
+        return
     assert response.status_code == 200, response.text
     message = response.json()["choices"][0]["message"]
     # An unclosed header outside Markdown remains a truncated call even
     # after narration. Keep the narration and the forced-call contract.
     assert message["content"] == "Example:"
-    if forced:
-        assert message["tool_calls"][0]["function"]["name"] == "write_file"
-    else:
-        assert not message.get("tool_calls")
+    assert message["tool_calls"][0]["function"] == {
+        "name": "write_file",
+        "arguments": "{}",
+    }
 
 
 @pytest.mark.parametrize("narration", ["", "Calling now.\n"])
@@ -2602,22 +2609,33 @@ def test_dogfood_forced_stream_truncation_parity(
     errors = [chunk["error"] for chunk in chunks if "error" in chunk]
     finishes = [c["finish_reason"] for c in choices if c.get("finish_reason")]
     assert streamed.text.count("data: [DONE]") == 1
-    if required_city:
-        assert buffered.status_code == 422, buffered.text
+    # SGLang qwen3_coder_detector recovers an empty parameter at EOF once
+    # its header is complete. Without a header, existing required validation
+    # rejects the recovered empty object (400, the parsed-call contract).
+    recovered_parameter = tail == "<parameter=city>\n"
+    if required_city and not recovered_parameter:
+        assert buffered.status_code == 400, buffered.text
         assert "city" in buffered.json()["detail"]
+    else:
+        assert buffered.status_code == 200, buffered.text
+        choice = buffered.json()["choices"][0]
+        assert not choice["message"].get("content")
+        assert choice["finish_reason"] == "length"
+        expected = {
+            "name": "get_weather",
+            "arguments": '{"city": ""}' if recovered_parameter else "{}",
+        }
+        assert choice["message"]["tool_calls"][0]["function"] == expected
+    # Auto parsing is disabled in this fixture. Its streaming forced-prefix
+    # path retains the existing synthesis policy and required-field refusal.
+    if required_city:
         assert [error["code"] for error in errors] == ["tool_choice_violation"]
         assert not calls
         assert not finishes
         assert "error" in chunks[-1]
     else:
-        assert buffered.status_code == 200, buffered.text
-        choice = buffered.json()["choices"][0]
-        assert not choice["message"].get("content")
-        # max_tokens ended generation, so the synthesized call keeps the
-        # truthful "length" finish rather than claiming a completed call.
-        assert choice["finish_reason"] == "length"
-        expected = choice["message"]["tool_calls"][0]["function"]
-        assert expected == {"name": "get_weather", "arguments": "{}"}
-        assert [call["function"] for call in calls] == [expected]
+        assert [call["function"] for call in calls] == [
+            {"name": "get_weather", "arguments": "{}"}
+        ]
         assert finishes == ["length"]
         assert not errors

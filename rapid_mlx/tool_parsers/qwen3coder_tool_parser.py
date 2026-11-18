@@ -899,6 +899,8 @@ class Qwen3CoderToolParser(ToolParser):
             return None
         current = result.tool_calls[self.current_tool_index]
         arguments = json.loads(current["arguments"], object_pairs_hook=_ObjectPairs)
+        if getattr(self, "in_param", False) and self.param_count >= len(arguments):
+            return None
         remaining = arguments[self.param_count :]
         prefix = ", " if self.param_count and remaining else ""
         suffix = ""

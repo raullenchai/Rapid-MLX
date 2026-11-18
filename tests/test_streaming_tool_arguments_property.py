@@ -284,19 +284,27 @@ def test_hermes_escaped_json_string_can_contain_literal_wrapper_close():
     assert _run("hermes", wire, request, list(wire)) == expected_calls
 
 
-def test_hermes_does_not_close_xml_function_inside_parameter_value():
+def test_hermes_closes_xml_function_at_upstream_first_closer():
+    # SGLang python/sglang/srt/function_call/qwen3_coder_detector.py:
+    # a function close ends the call even before a parameter close.
     parser = ToolParserManager.get_tool_parser("hermes")(None)
     wire = "<tool_call><function=lookup><parameter=text>abc</function>def</parameter>"
-    assert (
-        parser.extract_tool_calls_streaming("", wire, wire, request=_request("lookup"))
-        is None
+    delta = parser.extract_tool_calls_streaming(
+        "", wire, wire, request=_request("lookup")
     )
+    assert json.loads(delta["tool_calls"][0]["function"]["arguments"]) == {
+        "text": "abc"
+    }
 
 
-def test_qwen3_coder_incremental_raw_string_and_invalid_quoted_prefix():
-    parser = Qwen3CoderToolParser(None)
-    fragment = parser._emit_string_increment("text", 'hello "world"' + "x" * 20)
-    assert fragment.startswith('"text": "hello \\"world\\"')
+def test_qwen3_coder_raw_string_and_invalid_quoted_prefix():
+    # Upstream waits for a parameter boundary; test the wire result rather
+    # than the removed speculative string-emission helper.
+    value = 'hello "world"' + "x" * 20
+    wire = _xml_wire("lookup", value)
+    assert _run("qwen3_coder_xml", wire, _request("lookup"), list(wire)) == [
+        ("lookup", json.dumps({"text": value}))
+    ]
     assert Qwen3CoderToolParser._decoded_json_string_prefix('"bad\nvalue') == ""
 
 
@@ -686,7 +694,8 @@ def test_qwen3_coder_keeps_fragments_before_raw_string_fallback():
     assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
 
-def test_qwen3_coder_quoted_parameter_marker_is_value_text():
+def test_qwen3_coder_quoted_parameter_marker_uses_upstream_boundary():
+    # SGLang qwen3_coder_detector does not escape XML markers with JSON quotes.
     wire = (
         '<tool_call><function=lookup><parameter=text>"<parameter=nested>x"'
         "</parameter></function></tool_call>"
@@ -696,7 +705,7 @@ def test_qwen3_coder_quoted_parameter_marker_is_value_text():
         None
     ).extract_tool_calls(wire, request)
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
-    assert json.loads(expected_calls[0][1]) == {"text": "<parameter=nested>x"}
+    assert json.loads(expected_calls[0][1]) == {"text": "", "nested": 'x"'}
     for chunks in (list(wire), *([wire[:i], wire[i:]] for i in range(1, len(wire)))):
         assert _run("qwen3_coder_xml", wire, request, chunks) == expected_calls
 
@@ -853,7 +862,10 @@ def test_qwen3_coder_quoted_string_across_parameter_boundaries(value):
         None
     ).extract_tool_calls(wire, request)
     expected_calls = [(call["name"], call["arguments"]) for call in expected.tool_calls]
-    assert json.loads(expected_calls[0][1]) == {"text": value}
+    # SGLang qwen3_coder_detector: the next opener ends even a quoted value.
+    assert json.loads(expected_calls[0][1]) == {
+        "text": 'x"' if value.startswith("<parameter=") else value
+    }
     for stream_chunks in (chunks, [chunks[0], chunks[1] + chunks[2]]):
         assert _run("qwen3_coder_xml", wire, request, stream_chunks) == expected_calls
 

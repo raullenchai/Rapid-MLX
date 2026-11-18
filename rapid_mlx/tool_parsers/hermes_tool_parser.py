@@ -420,6 +420,23 @@ class HermesToolParser(ToolParser):
         )
         if arguments is None:
             return None
+        if not arguments and parameters.strip() and "<parameter=" not in parameters:
+            try:
+                json_body = json.loads(parameters)
+            except json.JSONDecodeError:
+                json_body = None
+            if isinstance(json_body, dict):
+                return end, name, json.dumps(json_body, ensure_ascii=False)
+            # EOF recovery must not turn arbitrary prose (including a seeded
+            # forced-choice prefix) into executable empty arguments. A
+            # wrapper with a declared name still gets executor feedback.
+            declared = {
+                _field(_field(tool, "function"), "name")
+                for tool in (_field(request, "tools", []) or [])
+            }
+            if wrapped and name in declared:
+                return end, name, f"<malformed_function_body>{parameters.strip()}"
+            return None
         return end, name, json.dumps(arguments, ensure_ascii=False)
 
     _GRAMMAR_SENTINELS = ("<tool_call>", "</tool_call>")
@@ -829,9 +846,13 @@ class HermesToolParser(ToolParser):
             # remains provisional until its function closes.
             completed, _ = self._scan_tool_call_shapes(current_text, request)
             if any(
-                "<function=" in current_text[start:end]
+                re.match(r"(?:<tool_call>\s*)?<function=", current_text[start:end])
                 and "</function>" not in current_text[start:end]
-                for start, end, _, _ in completed
+                and not (
+                    arguments.startswith("<malformed_function_body>")
+                    and current_text.endswith("</tool_call>", 0, end)
+                )
+                for start, end, _, arguments in completed
             ):
                 return None
             if self._has_incomplete_structured_block(current_text, request):

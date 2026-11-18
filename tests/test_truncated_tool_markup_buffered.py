@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Buffered suffix cleanup with unchanged streaming behavior."""
+"""Buffered cleanup and upstream XML EOF recovery across API surfaces."""
 
 import json
 
@@ -31,6 +31,12 @@ TRUNCATED = [
     "<tool_call>\n<function=get_weather>\n<parameter=city>\nPar",
 ]
 COMPLETE = "<tool_call>\n<function=get_weather>\n<parameter=city>Paris</parameter>\n</function>\n</tool_call>"
+
+
+def _call_arguments(call):
+    function = call.get("function", call)
+    arguments = function.get("arguments", function.get("input"))
+    return json.loads(arguments) if isinstance(arguments, str) else arguments
 
 
 class _Engine:
@@ -296,13 +302,23 @@ def test_buffered_truncated(client, parser, route, text, narration, finish_reaso
     content, calls, finish = _reply(
         client, route, narration + text, budget=4, finish_reason=finish_reason
     )
+    # SGLang python/sglang/srt/function_call/qwen3_coder_detector.py:
+    # a complete parameter header recovers its value at EOF.
+    recovered = text == TRUNCATED[2]
     assert content == (
-        narration.strip() if finish_reason == "length" else (narration + text).strip()
+        narration.strip()
+        if recovered or finish_reason == "length"
+        else (narration + text).strip()
     )
-    assert not calls
-    assert (
-        finish
-        == {
+    if recovered:
+        assert len(calls) == 1
+        assert _call_arguments(calls[0]) == {"city": "Par"}
+    else:
+        assert not calls
+    assert finish == (
+        {"chat": "tool_calls", "messages": "tool_use", "responses": "completed"}[route]
+        if recovered and finish_reason == "stop"
+        else {
             "length": {
                 "chat": "length",
                 "messages": "max_tokens",
@@ -499,19 +515,18 @@ def test_linear_cleanup(client, parser, record_property):
 def test_undeclared_xml_policy(client, parser):
     client[1].tool_call_parser = parser
     raw = "<tool_call>\n<function=unknown>\n<parameter=city>Paris"
-    expected = raw if parser == "qwen3_coder_xml" else ""
-    assert _reply(client, "chat", raw)[0] == expected
+    # Upstream EOF recovery forwards the same parameter value for unknown names.
+    content, calls, _ = _reply(client, "chat", raw)
+    assert content == ""
+    assert len(calls) == 1
+    assert calls[0]["function"] == {"name": "unknown", "arguments": '{"city": "Paris"}'}
     content, calls, reason = _reply(client, "chat", raw, stream=True)
     assert content == ""
-    assert reason == "length"
-    if parser == "qwen3_coder_xml":
-        # #5693: unknown names use the same incremental header path as
-        # declared calls. The truncated argument remains incomplete.
-        calls = [call for batch in calls for call in batch]
-        assert len(calls) == 1
-        assert calls[0]["function"] == {"name": "unknown", "arguments": "{"}
-    else:
-        assert not calls
+    assert reason == ("tool_calls" if parser == "qwen3_coder_xml" else "length")
+    calls = [call for batch in calls for call in batch]
+    arguments = "".join(call["function"].get("arguments", "") for call in calls)
+    assert json.loads(arguments) == {"city": "Paris"}
+    assert calls[0]["function"]["name"] == "unknown"
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -556,228 +571,32 @@ def test_structured_content_authoritative(client):
     assert len(calls) == 1
 
 
-def _stream_snapshots():
-    """Review reproducers at the shared streaming seam, including EOF events."""
-    from dataclasses import asdict
-
-    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+@pytest.mark.parametrize("parser_name", PARSERS)
+@pytest.mark.parametrize("size", [1, 7, 1000])
+def test_streaming_uses_upstream_eof_boundary(parser_name, size):
+    # SGLang python/sglang/srt/function_call/qwen3_coder_detector.py.
+    # A behavioral EOF contract replaces the old rollback-source AST comparison.
     from rapid_mlx.service.postprocessor import StreamingPostProcessor
-    from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
+    from rapid_mlx.tool_parsers import ToolParserManager
     from tests.test_postprocessor import _make_cfg, _make_output
 
-    def stable(value):
-        if isinstance(value, dict):
-            return {k: stable(v) for k, v in value.items() if k != "id"}
-        if isinstance(value, list):
-            return [stable(v) for v in value]
-        return value
-
-    reproducers = [
-        '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>\n<tool_call>\n',
-        "Use <tool_call> {json} to describe the format.",
-        "Use the <tool_call> tag.\nLet me check.\n<tool_call>\n<function=get_weather",
-        "<think>Let me think.</think><tool_call>\n<function=get_weather",
-        "<think>I should use <tool_call>\n<function=get_weather> to look this up.</think>Final answer.",
-        "Let me check.\n<tool_call>\n<function=get_weather>\n",
-        "Hello\n<tool_call>\n<function=get_weather>\n<parameter=city>P",
-        "<tool_call>\n<function",
-        '<tool_call>\n{"name',
-        "<tool_call>\n<function=unknown>\n<parameter=city>Paris",
-        "Use `code\n<tool_call>\n<function=get_weather\n` here.",
-        'Use <tool_call> {"name":"get_weather"} as a template.',
-        'Use <tool_call> {json} for examples.\nHe is 6" tall.\nLet me check.\n<tool_call>\n<function=get_weather',
-        '<tool_call>{"name":"get_weather","arguments":{"city":"</tool_call>',
-        '<tool_call>{"name":"get_weather","arguments":{"city":"<tool_call>',
-        "<tool_call>{",
-        "<think>I should use <tool_call>\n<function=get_weather> to look this up.</think>Let me check.\n<tool_call>\n<function=get_weather",
-        "Use `code` here.\n<tool_call>\n<function=get_weather",
-        "<tool_call>\n<function=get_weather></function>",
-    ]
-    rows = []
-    for parser_name in PARSERS:
-        for raw in reproducers:
-            # Fragmented XML leakage for the Qwen parser is a separate issue.
-            sizes = [len(raw)]
-            if parser_name == "hermes" and raw in (
-                reproducers[0],
-                reproducers[5],
-                reproducers[6],
-                reproducers[9],
-            ):
-                sizes.append(1)
-            for size in sizes:
-                parser = ToolParserManager.get_tool_parser(parser_name)(None)
-                processor = StreamingPostProcessor(
-                    _make_cfg(
-                        enable_auto_tool_choice=True,
-                        tool_call_parser=parser_name,
-                        tool_parser_instance=parser,
-                        reasoning_parser=Qwen3ReasoningParser(None)
-                        if "<think>" in raw
-                        else None,
-                    ),
-                    tools_requested=True,
-                    request={"tools": TOOLS, "tool_choice": "auto"},
-                )
-                processor.reset()
-                events = []
-                for i in range(0, len(raw), size):
-                    events.extend(
-                        processor.process_chunk(_make_output(raw[i : i + size]))
-                    )
-                events.extend(processor.finalize())
-                rows.append(stable([asdict(event) for event in events]))
-    return rows
-
-
-def test_streaming_unchanged_against_base():
-    """Streaming definitions match the pre-#5267 rollback target."""
-    import ast
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    import rapid_mlx
-
-    root = Path(rapid_mlx.__file__).resolve().parents[1]
-    # The release rollback intentionally changes streaming relative to main.
-    # Pin the exact pre-#5267 definitions instead of exempting changed methods.
-    base_ref = "a9593a7bb"
-    for name in ("hermes_tool_parser", "qwen3coder_tool_parser"):
-        relative = f"rapid_mlx/tool_parsers/{name}.py"
-        try:
-            base = subprocess.check_output(
-                ["git", "show", f"{base_ref}:{relative}"],
-                cwd=root,
-                text=True,
-                stderr=subprocess.PIPE,
-            )
-        except OSError as exc:
-            pytest.skip(f"Git unavailable for streaming base comparison: {exc}")
-        except subprocess.CalledProcessError as exc:
-            pytest.skip(
-                f"Cannot resolve {base_ref}:{relative} for streaming base comparison "
-                f"(requires a Git checkout with the base ref/path): {exc.stderr.strip()}"
-            )
-
-        def existing_definitions(source):
-            tree = ast.parse(source)
-            for node in tree.body:
-                if isinstance(node, ast.ClassDef):
-                    node.body = [
-                        method
-                        for method in node.body
-                        if not (
-                            isinstance(method, ast.FunctionDef)
-                            and method.name
-                            in {
-                                "strip_trailing_tool_envelope",
-                                # #4714 intentionally changes these scans;
-                                # dedicated fence tests pin their output.
-                                "_first_opener_pos",
-                                "_new_opener_position",
-                                "_function_start_positions",
-                                "_content_without_admitted_calls",
-                                "__init__",
-                                "_reset_streaming_state",
-                                "inside_fence",
-                                "skip_fence_span",
-                                "_fence_state",
-                                "_restore_fence_state",
-                                "_feed_fence",
-                                "_feed_fence_plain",
-                                "_finish_fence_line",
-                                "_fence_result",
-                                "mask_markdown_fenced_regions",
-                                "flush_held_content",
-                                "_streaming_step_once",
-                                # #4788 treats CR and CRLF as line boundaries.
-                                "_feed",
-                                "inside",
-                                # #5318: buffered extraction honors
-                                # skip_reasoning_parsing for the request-local
-                                # owner; test_selected_owner pins its output.
-                                "extract_tool_calls",
-                                # #5636 rejects ambiguous undeclared-parameter
-                                # splicing; test_qwen3coder_undeclared_parameter
-                                # pins its streaming and final output.
-                                "finalize_legacy_raw_stream",
-                                "_parse_xml_function_call",
-                                # #5693 forwards unknown names;
-                                # test_unknown_tool_reaches_client in
-                                # test_undeclared_tool_passthrough.py pins
-                                # streaming names, arguments, and stop reasons.
-                                "extract_tool_calls_streaming",
-                            }
-                        )
-                    ]
-            # The opt-in buffered Markdown query leaves the original streaming
-            # methods unchanged. Normalize its new dispatch before comparison.
-            for node in tree.body:
-                if (
-                    isinstance(node, ast.ClassDef)
-                    and node.name == "_MarkdownCodeTracker"
-                ):
-                    node.body = [
-                        m
-                        for m in node.body
-                        if not (
-                            isinstance(m, ast.FunctionDef)
-                            and m.name == "_inside_buffered"
-                        )
-                    ]
-                    for method in node.body:
-                        if (
-                            isinstance(method, ast.FunctionDef)
-                            and method.name == "inside"
-                            and method.args.kwonlyargs
-                        ):
-                            method.args.kwonlyargs = []
-                            method.args.kw_defaults = []
-                            method.body = method.body[1:]
-            tree.body = [
-                node
-                for node in tree.body
-                if not (
-                    isinstance(node, ast.FunctionDef)
-                    and node.name
-                    in {
-                        "_strip_trailing_tool_envelope",
-                        # #5692 accepts integral floats for integer params;
-                        # test_qwen3coder_integer_decimal_5692 pins its output.
-                        "_convert_param_value",
-                    }
-                )
-                # #5692's exact decimal parsing adds this import and constant.
-                and not (isinstance(node, ast.ImportFrom) and node.module == "decimal")
-                and not (
-                    isinstance(node, ast.Assign)
-                    and any(
-                        isinstance(target, ast.Name)
-                        and target.id == "_MAX_INTEGER_EXPONENT"
-                        for target in node.targets
-                    )
-                )
-            ]
-            return ast.dump(tree, include_attributes=False)
-
-        assert existing_definitions(
-            (root / relative).read_text()
-        ) == existing_definitions(base)
-
-    # Load the same test helper with base production modules on PYTHONPATH.
-    base_root = os.environ.get("TRUNCATED_TOOL_BASE")
-    if base_root is None:
-        return  # Definitions prove parity in CI; opt in to cross-worktree events.
-    script = "import json,runpy,sys; m=runpy.run_path(sys.argv[1]); print(json.dumps(m['_stream_snapshots']()))"
-    output = subprocess.check_output(
-        [sys.executable, "-c", script, str(Path(__file__).resolve())],
-        cwd=base_root,
-        env={**os.environ, "PYTHONPATH": base_root, "PYTHONDONTWRITEBYTECODE": "1"},
-        text=True,
+    parser = ToolParserManager.get_tool_parser(parser_name)(None)
+    processor = StreamingPostProcessor(
+        _make_cfg(enable_auto_tool_choice=True, tool_parser_instance=parser),
+        tools_requested=True,
+        request={"tools": TOOLS},
     )
-    assert _stream_snapshots() == json.loads(output)
+    raw = "<tool_call><function=get_weather><parameter=city>Paris"
+    events = []
+    for offset in range(0, len(raw), size):
+        events.extend(
+            processor.process_chunk(_make_output(raw[offset : offset + size]))
+        )
+    events.extend(processor.finalize())
+    calls = [call for event in events for call in event.tool_calls or []]
+    arguments = "".join(call["function"].get("arguments", "") for call in calls)
+    assert json.loads(arguments) == {"city": "Paris"}
+    assert calls[0]["function"]["name"] == "get_weather"
 
 
 def test_xml_without_declared_tools(client):
@@ -1160,8 +979,17 @@ def test_escaped_backtick_before_truncated_call(
     prefix += "I will update the documentation.\n"
     raw = prefix + suffix
     content, calls, _ = _reply(client, route, raw, tools=tools)
-    assert content == (raw if kept else prefix.rstrip())
-    assert not calls
+    if suffix.startswith("<tool_call>\n<function="):
+        # XML has an upstream EOF boundary; a JSON string still needs its close.
+        expected_prefix = (
+            " ".join(prefix.splitlines()) if parser == "hermes" else prefix.rstrip()
+        )
+        assert content == expected_prefix.rstrip()
+        assert len(calls) == 1
+        assert _call_arguments(calls[0]) == {"path": "README"}
+    else:
+        assert content == (raw if kept else prefix.rstrip())
+        assert not calls
 
 
 @pytest.mark.parametrize("parser", PARSERS)
