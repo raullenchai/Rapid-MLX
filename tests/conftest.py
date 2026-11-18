@@ -1502,6 +1502,34 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_no_mlx)
 
 
+@pytest.fixture(scope="module")
+def preserve_mlx_generation_streams():
+    """Restore stream globals after a suite shuts down its MLX workers.
+
+    The step-thread initializer overwrites process-global generation streams.
+    Keep this fixture outside executor lifetimes so restoration happens only
+    after their workers have joined, including on failed or skipped tests.
+    """
+    mx = pytest.importorskip("mlx.core", exc_type=ImportError)
+    default = mx.default_stream(mx.default_device())
+    names = ("mlx_lm.generate", "mlx_vlm.generate")
+    previous = {
+        name: sys.modules[name].generation_stream
+        for name in names
+        if name in sys.modules
+    }
+    try:
+        yield
+    finally:
+        mx.set_default_stream(default)
+        for name in names:
+            module = sys.modules.get(name)
+            if module is not None:
+                # A module first imported by the worker has no prior stream
+                # to restore. Bind it to the surviving caller's default.
+                module.generation_stream = previous.get(name, default)
+
+
 @pytest.fixture(scope="session")
 def server_url(request):
     """Get server URL from command line."""
