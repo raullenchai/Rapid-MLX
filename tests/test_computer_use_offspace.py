@@ -914,6 +914,81 @@ def test_drag_without_a_captured_window_fails(monkeypatch, dragging):
 # --- backend: background fill and popup typeahead ----------------------------------
 
 
+@pytest.mark.parametrize("parent_role", [None, "AXWebArea", "AXWindow"])
+def test_web_incrementor_without_datetime_ancestor_is_not_a_segment(attrs, parent_role):
+    attrs["live"] = {"AXRole": "AXIncrementor", "AXParent": "parent"}
+    attrs["parent"] = {"AXRole": parent_role}
+    # A date field beyond the document/window boundary must not classify an
+    # ordinary spin button as a date/time editor.
+    if parent_role is not None:
+        attrs["parent"]["AXParent"] = "time"
+        attrs["time"] = {"AXRole": "AXTimeField"}
+    entry = {"web": True, "role": "AXIncrementor"}
+    assert backend._is_web_datetime_segment(entry, "live") is False
+
+
+@pytest.mark.parametrize("boundary_role", ["AXWebArea", "AXWindow"])
+def test_datetime_fill_does_not_collect_siblings_beyond_field(
+    monkeypatch, keyboard, attrs, boundary_role
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": "Minutes"}])
+    # The date/time ancestor disappeared after classification. Other controls
+    # under the document/window are not sibling segments of this editor.
+    attrs.update(
+        live={"AXParent": "boundary", "AXValueDescription": "15"},
+        boundary={"AXRole": boundary_role, "AXChildren": ["unrelated"]},
+        unrelated={"AXRole": "AXIncrementor", "AXValueDescription": "1"},
+    )
+    monkeypatch.setattr(backend, "_focus_without_commit", lambda *a: "AXFocused")
+
+    def press(pid, code):
+        keyboard.append(("press_key", (pid, code)))
+        attrs["live"]["AXValueDescription"] = "02"
+        attrs["unrelated"]["AXValueDescription"] = "2"
+        return True
+
+    monkeypatch.setattr(background_input, "press_key", press)
+    result = backend._fill_datetime_segment(snapshot, "live", 0, "02")
+    assert result["before"] == "15"
+    assert result["actual"] == "02"
+    assert result["verified"] is True
+    assert result["changed_siblings"] == []
+    assert [call[1] for call in keyboard if call[0] == "press_key"] == [
+        (4, backend.KEY_ALIASES["delete"]),
+        (4, ax_driver._keycode_for("0")),
+        (4, ax_driver._keycode_for("2")),
+    ]
+
+
+def test_transient_datetime_segment_blocks_keystrokes(monkeypatch, keyboard, attrs):
+    snapshot = _snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXIncrementor",
+                "web": True,
+                "source_window_id": "cg:102",
+            }
+        ]
+    )
+    attrs.update(
+        live={"AXParent": "time"},
+        time={"AXRole": "AXTimeField"},
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(
+        backend,
+        "_fill_datetime_segment",
+        lambda *a: pytest.fail("transient companion received date/time input"),
+    )
+    with pytest.raises(
+        errors.ComputerUseError, match="transient companion cannot receive date/time"
+    ) as exc:
+        backend.set_value("App", 0, "02", expected_snapshot=snapshot)
+    assert exc.value.code == "synthetic_input_blocked"
+    assert keyboard == []
+
+
 @pytest.mark.parametrize(
     ("label", "before", "requested", "after", "keys", "verified"),
     [

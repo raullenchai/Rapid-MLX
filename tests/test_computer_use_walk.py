@@ -68,6 +68,13 @@ def _walk(root, **kw):
     return out
 
 
+@pytest.mark.parametrize("raw", [None, False, True, {}, []])
+def test_datetime_segment_missing_or_invalid_value_is_unverifiable(raw):
+    actual = ax_driver._datetime_segment_text({"AXValue": raw})
+    assert actual is None
+    assert ax_driver._datetime_segment_matches(actual, "00") is False
+
+
 @pytest.mark.parametrize(
     "description,raw,expected",
     [
@@ -78,6 +85,9 @@ def _walk(root, **kw):
         ("PM", 2, "PM"),
         ("02", 2, "02"),
         (None, 0, "(unknown; possibly empty)"),
+        (None, 2, "2"),
+        (None, "02", "02"),
+        (None, 2.5, "2.5"),
     ],
 )
 def test_datetime_segment_visible_text(tree, description, raw, expected):
