@@ -88,6 +88,11 @@ def test_datetime_segment_missing_or_invalid_value_is_unverifiable(raw):
         (None, 2, "2"),
         (None, "02", "02"),
         (None, 2.5, "2.5"),
+        (None, None, None),
+        (None, True, None),
+        (None, 2, "2"),
+        (None, "09", "09"),
+        (None, [], None),
     ],
 )
 def test_datetime_segment_visible_text(tree, description, raw, expected):
@@ -872,3 +877,22 @@ def test_set_value_writes_a_field_scrolled_out_of_view(monkeypatch):
     monkeypatch.setattr(backend, "_read_value", lambda live: "a\nb")
     out = backend.set_value("A", 0, "a\nb", expected_snapshot=snapshot)
     assert out["verified"] is True and asked == [False]
+
+
+@pytest.mark.parametrize(
+    "actual,requested,expected",
+    [
+        ("--", "00", False),
+        ("(unknown; possibly empty)", "00", False),
+        ("00", "0", True),
+        ("02", "2", True),
+        ("0001", "1", True),
+        ("P.M.", "PM", True),
+        ("a. m.", "A", True),
+        ("午後", "PM", False),
+        (None, "2", False),
+        ("", "0", False),
+    ],
+)
+def test_datetime_segment_matching(actual, requested, expected):
+    assert ax_driver._datetime_segment_matches(actual, requested) is expected

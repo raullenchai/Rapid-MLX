@@ -3443,14 +3443,18 @@ def _fill_datetime_segment(
         "second": (0, 59),
     }
     kind = next((name for name in defaults if name in label.lower()), None)
-    letters = value.strip().upper()
-    if "am/pm" in label.lower():
+    letters = ax_driver._datetime_period_text(value)
+    if "AM/PM" in ax_driver._datetime_period_text(label):
         if letters not in {"A", "AM", "P", "PM"}:
             raise ComputerUseError(
                 "invalid_argument", "AM/PM segment requires A/AM/P/PM"
             )
         keys = letters[0].lower()
     else:
+        if kind is None and raw_maximum in (1, 2):
+            raise ComputerUseError(
+                "invalid_argument", "unrecognized date/time period segment label"
+            )
         fallback_min, fallback_max = defaults.get(kind or "", (0, 99))
         minimum = (
             int(raw_minimum) if isinstance(raw_minimum, (int, float)) else fallback_min
@@ -3487,6 +3491,8 @@ def _fill_datetime_segment(
         if ax_driver._get(field, "AXRole") in {"AXWebArea", "AXWindow"}:
             field = None
             break
+    if field is None or ax_driver._get(field, "AXRole") not in _WEB_DATETIME_ROLES:
+        raise ComputerUseError("target_drift", "date/time field ancestry changed")
     siblings = []
 
     def collect(parent, depth=0):
@@ -3525,6 +3531,18 @@ def _fill_datetime_segment(
         # value. No Cmd+A or AXSelectedTextRange: segments are not text fields.
         codes = [KEY_ALIASES["delete"], *(ax_driver._keycode_for(ch) for ch in keys)]
         for code in codes:
+            # A digit can advance focus, or a page handler can move it. Never
+            # send the rest of the replacement into a different segment.
+            focused = _focused_ax_element(snapshot["app"])
+            if focused != live and not (
+                focused is None and ax_driver._get(live, "AXFocused") is True
+            ):
+                raise ComputerUseError("target_drift", "date/time segment lost focus")
+            _validate_focused_window(
+                snapshot,
+                require_active_app=not background,
+                require_exact_window_id=True,
+            )
             if background:
                 if not _synthesize(
                     background_input.press_key, _target_ids(snapshot)[0], code
@@ -3596,7 +3614,10 @@ def set_value(
     # An AX write names the element, not a point: a field scrolled out of
     # view is written where it is. The typing fallback checks its own point.
     live = _live_element(snapshot, element_index, validate_point=False)
-    if _is_web_datetime_segment(entry, live):
+    is_datetime_segment = _is_web_datetime_segment(entry, live)
+    if entry.get("datetime_segment") and not is_datetime_segment:
+        raise ComputerUseError("target_drift", "date/time field ancestry changed")
+    if is_datetime_segment:
         if is_transient:
             raise ComputerUseError(
                 "synthetic_input_blocked",

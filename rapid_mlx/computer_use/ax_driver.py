@@ -471,15 +471,21 @@ def _datetime_segment_text(node: dict) -> str | None:
     return str(raw) if isinstance(raw, (str, int, float)) else None
 
 
+def _datetime_period_text(text: str) -> str:
+    """Normalize case, spacing and punctuation in AM/PM labels and values."""
+    return "".join(ch for ch in text.upper() if ch != "." and not ch.isspace())
+
+
 def _datetime_segment_matches(actual: str | None, requested: str) -> bool:
     if actual is None or not actual.strip():
         return False
     actual, requested = actual.strip(), requested.strip()
     if actual.isdecimal() and requested.isdecimal():
         return int(actual) == int(requested)
-    if requested.upper() in {"A", "AM", "P", "PM"}:
-        return actual.upper() == {"A": "AM", "P": "PM"}.get(
-            requested.upper(), requested.upper()
+    period = _datetime_period_text(requested)
+    if period in {"A", "AM", "P", "PM"}:
+        return _datetime_period_text(actual) == {"A": "AM", "P": "PM"}.get(
+            period, period
         )
     return actual == requested
 

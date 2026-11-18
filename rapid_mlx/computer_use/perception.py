@@ -1005,6 +1005,16 @@ class PerceptionSession:
             expected is not None
             and target_after is not None
             and _holds(target_after, expected)
+            # Segment verification also checks siblings; a matching target
+            # alone cannot replace a completed field-wide readback.
+            and not (
+                (
+                    (op == "fill" and row is not None and row.datetime_segment)
+                    or result.get("mode")
+                    in {"SkyLight-segment-fill", "CGEvent-segment-fill"}
+                )
+                and result.get("verified") is not True
+            )
         )
         if observed_match and error is not None and row is not None:
             # A route can refuse after its first attempt landed: the value
