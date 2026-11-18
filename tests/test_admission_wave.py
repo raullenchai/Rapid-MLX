@@ -132,6 +132,26 @@ def test_no_wait_when_batch_active(sleep_spy):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "scheduler",
+    [_StubScheduler(num_running=1), _NoRunningApi()],
+    ids=["running", "no-api"],
+)
+def test_busy_loop_does_not_resolve_the_lattice_knob(sleep_spy, monkeypatch, scheduler):
+    # The engine loop calls this before every step; resolving the knob reads
+    # device facts and walks the model, which cost ~3 ms per decode step.
+    calls, _, holder = sleep_spy
+
+    def boom(*args, **kwargs):
+        raise AssertionError("resolved while a batch is running")
+
+    monkeypatch.setattr(engine_core, "scheduling_value", boom)
+    eng = _make_engine(scheduler=scheduler)
+    holder["eng"] = eng
+    _run(eng._await_admission_wave())
+    assert calls == []
+
+
 def test_no_wait_when_scheduler_lacks_api(sleep_spy):
     calls, _, holder = sleep_spy
     eng = _make_engine(scheduler=_NoRunningApi())
