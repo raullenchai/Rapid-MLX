@@ -147,6 +147,15 @@ def _extract_stream(parser_name: str, text: str) -> list:
 # --------------------------------------------------------------------------
 PARITY_FIXTURES: list = [
     (
+        "hy_v4",
+        "hy4_native",
+        "<tool_calls:opensource><tool_call:opensource>search"
+        "<arg_key:opensource>query</arg_key:opensource>"
+        "<arg_value:opensource>hi</arg_value:opensource>"
+        "</tool_call:opensource></tool_calls:opensource>",
+        [("search", {"query": "hi"})],
+    ),
+    (
         "raon_1",
         "tool_call_xml_body",
         "<tool_call>\n<function=run>\n<parameter=text>\nhello\nworld\n</parameter>\n</function>\n</tool_call>",

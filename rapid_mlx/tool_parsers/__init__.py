@@ -65,6 +65,7 @@ from .granite_tool_parser import GraniteToolParser
 from .harmony_tool_parser import HarmonyToolParser
 from .hermes_tool_parser import HermesToolParser
 from .hy_v3_tool_parser import HyV3ToolParser
+from .hy_v4_tool_parser import HyV4ToolParser
 from .k2_horizon_tool_parser import K2HorizonToolParser
 from .kimi_tool_parser import KimiToolParser
 from .lfm_tool_parser import LfmToolParser
@@ -105,6 +106,7 @@ __all__ = [
     "Glm47ToolParser",
     "HarmonyToolParser",
     "HyV3ToolParser",
+    "HyV4ToolParser",
     "RaonToolParser",
     "MiniCPMToolParser",
     "MiniMaxToolParser",

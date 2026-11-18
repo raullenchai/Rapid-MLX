@@ -4680,6 +4680,10 @@ class Scheduler:
         # (Initialised before the prefix cache: its agent-session floor is
         # derived from this cap — see ``_prefix_cache_session_floor_bytes``.)
 
+        if getattr(self.model, "supports_prefix_cache", True) is False:
+            logger.info("Prefix cache disabled by the model's cache capability")
+            self.config = replace(self.config, enable_prefix_cache=False)
+
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None

@@ -48,6 +48,7 @@ GOLDEN_MODELS = REPO_ROOT / "scripts" / "pr_validate" / "golden_models.yaml"
 #   - TODOs: parser is registered but no model is in the matrix yet;
 #     ticket should be filed and referenced here
 MATRIX_EXEMPT: dict[str, str] = {
+    "hy_v4": "phase-one text runtime; real-weight qualification and public alias deferred",
     # Meta-parsers / routers — no wire format of their own.
     "auto": "auto-routing meta-parser, not a wire-format parser",
     "generic": "generic fallback router, not a wire-format parser",

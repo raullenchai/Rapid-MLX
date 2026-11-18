@@ -157,6 +157,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "qwen3_coder_xml_named",
         "ui_tars_action",
         "hy3_native",
+        "hy4_native",
         "minicpm_native",
         "muse_atem",
         "k2_ifm",

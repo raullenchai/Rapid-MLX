@@ -682,7 +682,7 @@ _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
 # still rely on checkpoint-specific loading behavior and must not inherit the
 # stricter "weights/tokenizer only" trust boundary implicitly.
 _RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset(
-    {"k2_horizon", "lfm3", "raon1_nano"}
+    {"k2_horizon", "lfm3", "raon1_nano", "hy_v4_flash"}
 )
 
 
@@ -694,6 +694,12 @@ def _register_vendored_archs() -> None:
     sys.modules under that path lets it find them transparently. Idempotent.
     """
     import sys
+
+    if "mlx_lm.models.hy_v4_flash" not in sys.modules:
+        from ..models import hy_v4_flash
+
+        sys.modules["mlx_lm.models.hy_v4_flash"] = hy_v4_flash
+    _VENDORED_MODEL_TYPES.add("hy_v4_flash")
 
     if "mlx_lm.models.deepseek_v4" not in sys.modules:
         try:
