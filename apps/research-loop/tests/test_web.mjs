@@ -500,7 +500,7 @@ run('renderRun()');
 assert.equal(run('hypothesisGroups()[0].status'),'testing');
 assert.equal(run('hypothesisGroups()[1].status'),'untested');
 assert.match(get('queue').innerHTML,/H1.*testing/s);
-assert.match(get('queue').innerHTML,/1 experiments/);
+assert.match(get('queue').innerHTML,/1 experiment\b(?!s)/);
 assert.match(get('ledger').innerHTML,/data-hypothesis="h1"/);
 assert.match(get('ledger').innerHTML,/code-change/);
 assert.match(get('ledger').innerHTML,/title="WEIGHT_DECAY 0.01 → 1.0"/);

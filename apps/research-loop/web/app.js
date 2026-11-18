@@ -413,6 +413,7 @@ function hypothesisCaption(r) {
   const limit=state.data.task.experiments_per_hypothesis ?? 2, total=h.id.startsWith('legacy-')?Math.max(limit,h.experiments.length):limit;
   return `${h.label || h.id} · ${h.statement} · experiment ${index} of ${total}`;
 }
+function countLabel(n,word){return `${n} ${word}${n===1?'':'s'}`;}
 function hypothesisRule() { return `Complete improvements support a claim; conflicting complete results are inconclusive. After ${state.data.task.experiments_per_hypothesis ?? 2} experiments or when the run ends: worse evidence refutes; no effect, missing or crashed evidence alone is inconclusive.`; }
 function pill(status) { return `<span class="verdict-pill ${statusClass(status)}">${esc(status)}</span>`; }
 function changeMarkup(r) {
@@ -425,10 +426,10 @@ function experimentLink(e) {
 function renderQueue() {
   const claims=hypothesisGroups();
   $('queue-count').textContent=String(claims.length);
-  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${h.experiments.length} experiments · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
+  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')} · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
   $('hypothesis-rule').textContent=hypothesisRule();
   const openGroups=[...$('experiment-groups').querySelectorAll('details[open]')].map(d=>d.dataset.group), focusedExperiment=document.activeElement?.dataset?.experiment;
-  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${h.experiments.length} experiments</small></summary><ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${e.round}" aria-pressed="${e.round===state.selected}">Experiment ${e.round} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
+  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')}</small></summary><ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${e.round}" aria-pressed="${e.round===state.selected}">Experiment ${e.round} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
   for(const d of $('experiment-groups').querySelectorAll('details'))if(openGroups.includes(d.dataset.group))d.open=true;
   if(focusedExperiment!==undefined)$('experiment-groups').querySelector(`[data-experiment="${focusedExperiment}"]`)?.focus({preventScroll:true});
 }
@@ -506,7 +507,7 @@ function drawProgress() {
   const width=Math.max(svg.parentElement?.clientWidth || svg.clientWidth || 1000,points.length*72), height=Math.max(235,svg.clientHeight || 370);
   svg.style.minWidth=width+'px';svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   const task=state.data.task;
-  $('progress-subtitle').textContent=`${metricLabel()} · ${task.direction==='min'?'lower':'higher'} is better · ${ledgerRows().filter(r=>r.round>0 && r.verdict!=='testing').length} experiments`;
+  $('progress-subtitle').textContent=`${metricLabel()} · ${task.direction==='min'?'lower':'higher'} is better · ${countLabel(ledgerRows().filter(r=>r.round>0 && r.verdict!=='testing').length,'experiment')}`;
   $('noise-caption').textContent='Noise band ±'+format(task.noise);
   if(!points.length){svg.innerHTML=`<text x="${width/2}" y="${height/2}" text-anchor="middle" fill="#526476" font-size="17">${state.run ? 'Measuring the baseline…' : 'Start experiments to trace progress, one change at a time.'}</text>`;$('best-caption').textContent='Kept changes advance the running best.';return;}
   const kept=points.filter(p=>p.kept), values=kept.flatMap(p=>[p.value,p.runningBest]).filter(Number.isFinite);
@@ -685,7 +686,7 @@ function renderResults() {
     for(const id of open)for(const d of $('ledger').querySelectorAll('details'))if(d.dataset.hypothesis===id)d.open=true;
     if(focused!==undefined)$('ledger').querySelector(`[data-ledger="${focused}"]`)?.focus({preventScroll:true});
   }
-  $('learned').innerHTML=[['supported','Supported hypotheses'],['refuted','Refuted hypotheses'],['inconclusive','Inconclusive hypotheses']].map(([status,title])=>{const items=claims.filter(h=>h.status===status);return items.length ? `<h3 class="${statusClass(status)}">${title}</h3><ul>${items.map(h=>`<li>${esc(h.label || h.id)} · ${esc(h.statement)} · ${h.experiments.length} experiments</li>`).join('')}</ul>` : '';}).join('') || '<p class="muted">No conclusions yet. Open hypotheses stay untested or testing until the evidence meets the rule.</p>';
+  $('learned').innerHTML=[['supported','Supported hypotheses'],['refuted','Refuted hypotheses'],['inconclusive','Inconclusive hypotheses']].map(([status,title])=>{const items=claims.filter(h=>h.status===status);return items.length ? `<h3 class="${statusClass(status)}">${title}</h3><ul>${items.map(h=>`<li>${esc(h.label || h.id)} · ${esc(h.statement)} · ${countLabel(h.experiments.length,'experiment')}</li>`).join('')}</ul>` : '';}).join('') || '<p class="muted">No conclusions yet. Open hypotheses stay untested or testing until the evidence meets the rule.</p>';
   const r=getRound(state.selected);
   renderTitle('detail-title','expand-detail',state.run ? `Experiment ${r.round} · ${changeLabel(r)}` : 'Select an experiment');
   const detailHTML=state.run ? `<p>${esc(r.hypothesis || 'The unchanged starting code.')}</p>${r.why?'<p><strong>Why:</strong> '+esc(r.why)+'</p>':''}${r.prediction?'<p><strong>Prediction:</strong> '+esc(r.prediction)+'</p>':''}<p><span class="verdict-pill ${statusClass(r.verdict)}">${esc(r.verdict)}</span>${Number.isFinite(r.value)?' <strong>'+format(r.value)+'</strong>':''}</p>${groupedErrors(r).map(e=>errorMarkup(e.error,e.scope)).join('')}` : '<p>Each row opens its hypothesis, evidence, code, and diff against the kept parent.</p>';

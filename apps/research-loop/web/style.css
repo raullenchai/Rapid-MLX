@@ -1644,7 +1644,7 @@ summary:hover { color:var(--blue); }
 .current-round:has(.artifact-browser:not([hidden])) { overflow:hidden; }
 .current-round:has(.artifact-browser:not([hidden])) .curve-figure { display:none; }
 .current-round .artifact-browser { min-height:0; max-height:100%; margin-top:0; }
-.artifact-tabs { position:sticky; top:0; z-index:2; background:var(--surface); display:flex; gap:4px; border-bottom:1px solid var(--rule); margin-bottom:16px; }
+.artifact-tabs { position:relative; z-index:2; background:var(--surface); display:flex; gap:4px; border-bottom:1px solid var(--rule); margin-bottom:16px; }
 .artifact-tabs button { border:0; border-radius:0; background:transparent; color:var(--muted); padding:10px 12px; }
 .artifact-tabs [aria-selected="true"] { color:var(--ink); box-shadow:inset 0 -3px var(--ink); background:var(--canvas); }
 .artifact-entry { margin-bottom:24px; min-width:0; }
