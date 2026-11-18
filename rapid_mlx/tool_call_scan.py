@@ -1,18 +1,39 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Scanning for marker-delimited tool-call wire formats.
+"""Literal-safe scanning for marker-delimited tool-call wire formats.
 
-Parameter values end at their first closing marker (#5830). Extra closing
-markers outside a value are framing, so a duplicate must never be appended
-to file content. This deliberately replaces the last-closer convention from
-#1518: raw values containing their own closing marker are ambiguous and
-truncate there, regardless of quoting.
+XML-ish tool-call formats — Nemotron's ``<function=…><parameter=…>``,
+Qwen 3.6's ``<tool_call>`` body, MiniCPM's ``<param name=…>`` — carry no
+escaping layer. A value is whatever sits between two markers, which makes
+the obvious implementation wrong in the same way every time::
 
-Call envelopes retain sibling-bounded, last-closer segmentation. This module
-lives outside the API and parser packages to avoid their import cycle.
+    re.findall(r"<parameter=(\\w+)>(.*?)</parameter>", text, re.DOTALL)
+
+The non-greedy ``(.*?)`` stops at the FIRST ``</parameter>``. When that
+marker also occurs *inside* a value — an agent writing documentation about
+tool calling, a diff of a parser, a shell heredoc — the match ends early,
+the remaining JSON is truncated, and the call is dropped with no error and
+no log line. That is jundot/omlx#2507; the silence is omlx#2420.
+
+The resolution these formats actually use is positional: an element ends at
+the LAST closing marker before the next sibling opens. This module is that
+rule, written once.
+
+It lives at package top level with a lazy diagnostic-recorder import.
+``rapid_mlx/api/tool_calling.py`` and the parsers under
+``rapid_mlx/tool_parsers/`` both need it, and those two packages already
+import each other (``api/__init__`` pulls in ``tool_calling``;
+``tool_parsers/__init__`` eagerly loads ``qwen3coder`` which imports back
+into ``api``). Anything shared between them has to sit outside both, or
+the cycle closes.
+
+Before this existed the rule was reimplemented per format, which is how
+the same defect could be fixed in ``tool_calling.py`` and still be live in
+``nemotron_tool_parser.py``.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -228,6 +249,34 @@ def split_marked_calls(
     return calls
 
 
+_TRAILING_PARAMETER_CLOSERS = re.compile(r"(?:</parameter>\s*)+$")
+
+
+def _strip_duplicate_parameter_closers(value: str) -> str:
+    """Discard duplicate parameter closers repeated after a plain value.
+
+    A model can repeat the closer it just wrote (#5830). Strip the trailing
+    run only when the rest of the value has no parameter markup at all; a
+    value that contains marker text in any form is left exactly as selected,
+    because a literal closer there cannot be told apart from framing.
+    Whitespace before the first stripped closer is payload and is kept.
+    """
+    match = _TRAILING_PARAMETER_CLOSERS.search(value)
+    if match is None:
+        return value
+    head = value[: match.start()]
+    if "<parameter" in head or "</parameter" in head:
+        # Marker text inside a complete JSON string is quoted payload, so the
+        # closers after it are framing; raw marker text stays ambiguous.
+        try:
+            quoted = isinstance(json.loads(head.strip()), str)
+        except ValueError:
+            quoted = False
+        if not quoted:
+            return value
+    return head
+
+
 def split_marked_parameters(
     block: str,
     opener: str,
@@ -240,10 +289,8 @@ def split_marked_parameters(
 
     ``opener`` must capture the parameter name in group 1. A value keeps
     every byte it was sent except the one wrapping newline per side that the
-    wire format adds -- see ``trim_wrapping_newlines``. The FIRST closing
-    marker ends the value: duplicate closers must not become payload (#5830).
-    Literal closers need an escaped wire format instead. Parameter *names*
-    are still stripped: those are identifiers, not payload.
+    wire format adds -- see ``trim_wrapping_newlines``. Parameter *names* are
+    still stripped: those are identifiers, not payload.
     """
     openers = list(re.finditer(opener, block))
     out: list[tuple[str, str]] = []
@@ -261,13 +308,15 @@ def split_marked_parameters(
                     # value (#1541).  Refuse the call rather than execute a
                     # silently rewritten argument.
                     return None
-        cut = block.find(closer, openers[i].end())
+        segmented = segment_by_next_opener(block, openers, i, closer, valid_names)
         sibling = _next_sibling(block, openers, i, closer, valid_names)
-        if cut != -1:
+        if segmented is not None:
             out.append(
                 (
                     openers[i].group(1).strip(),
-                    trim_wrapping_newlines(block[openers[i].end() : cut]),
+                    trim_wrapping_newlines(
+                        _strip_duplicate_parameter_closers(segmented[0])
+                    ),
                 )
             )
         # Jump to the sibling, not i+1: the openers in between are literal

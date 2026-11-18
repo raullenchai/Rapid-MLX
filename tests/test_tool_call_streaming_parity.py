@@ -558,6 +558,50 @@ def test_duplicate_parameter_closers_streaming_parity(parser_name, tail, sibling
         assert _stream_xml_deltas(parser_name, text, chunks, request) == expected
 
 
+@pytest.mark.parametrize("parser_name", ["hermes", "qwen3_coder_xml"])
+@pytest.mark.parametrize(
+    "value,expected_value",
+    [
+        (
+            "\n<parameter=example>literal</parameter>\n",
+            "<parameter=example>literal</parameter>",
+        ),
+        ("x\n</parameter>\n</parameter>", "x"),
+        # Raw marker text is ambiguous: the value stays exactly as selected.
+        (
+            "\n<parameter=example>literal</parameter>\n</parameter>\n",
+            "<parameter=example>literal</parameter>\n</parameter>",
+        ),
+    ],
+    ids=["balanced-literal", "duplicate-closers", "literal-and-duplicate"],
+)
+@pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
+def test_balanced_literal_parameter_markup_at_every_byte_split(
+    parser_name, value, expected_value, sibling
+):
+    text = (
+        "<tool_call><function=edit>"
+        f"<parameter=new_string>{value}</parameter>{sibling}"
+        "</function></tool_call>"
+    )
+    arguments = {"new_string": expected_value}
+    if sibling:
+        arguments["path"] = "nonce.txt"
+    expected = [("edit", arguments)]
+    request = _xml_request(("edit",))
+    parser = ToolParserManager.get_tool_parser(parser_name)(None)
+    result = parser.extract_tool_calls(text, request=request)
+    assert [
+        (call["name"], json.loads(call["arguments"])) for call in result.tool_calls
+    ] == expected
+    assert _normalize(_extract_stream(parser_name, text)) == expected
+    # ASCII text makes every character split a byte boundary too.
+    for chunks in _every_split(text):
+        assert _stream_xml_deltas(parser_name, text, chunks, request) == expected, (
+            chunks
+        )
+
+
 @pytest.mark.parametrize("parser_name", ["qwen3_coder_xml", "hermes"])
 @pytest.mark.parametrize("names", [("read", "read", "read"), ("write", "read", "read")])
 @pytest.mark.parametrize("quoted", [True, False])
@@ -605,3 +649,77 @@ def test_three_parallel_calls_keep_arguments_at_every_byte_split(
             _stream_xml_deltas(parser_name, text, chunks, request, raw_arguments=True)
             == expected
         ), chunks
+
+
+@pytest.mark.parametrize("quoted", [True, False])
+@pytest.mark.parametrize("tail", ["</parameter>", "\n</parameter>\n</parameter>"])
+def test_literal_marker_and_duplicate_closers_together_at_every_split(quoted, tail):
+    """Literal data and duplicate framing must coexist without truncation."""
+    value = 'before </parameter> after "quoted" \\ end'
+    wire_value = json.dumps(value) if quoted else value
+    text = (
+        "<tool_call><function=edit><parameter=new_string>"
+        + wire_value
+        + "</parameter>"
+        + tail
+        + '<parameter=path>"ok.txt"</parameter></function></tool_call>'
+    )
+    request = _xml_request(("edit",))
+    if quoted:
+        expected = [("edit", {"new_string": value, "path": "ok.txt"})]
+    else:
+        # Raw marker text is ambiguous; streaming must match the complete parse.
+        expected = _normalize(_extract_nonstream("qwen3_coder_xml", text))
+    for chunks in _every_split(text):
+        assert _stream_xml_deltas("qwen3_coder_xml", text, chunks, request) == expected
+
+
+def test_later_quoted_marker_payload_is_lossless_at_every_byte_split():
+    from unittest.mock import patch
+
+    from tests.qwen3coder_stream_harness import non_stream, stream
+
+    value = "before </parameter><parameter=description>literal</parameter> after"
+    text = (
+        '<tool_call><function=edit><parameter=path>"a.txt"</parameter>'
+        "<parameter=new_string>"
+        + json.dumps(value)
+        + "</parameter></function></tool_call>"
+    )
+    request = _xml_request(("edit",))
+    expected = [("edit", {"path": "a.txt", "new_string": value})]
+    calls, _ = non_stream(text, request)
+    assert [(name, json.loads(args)) for name, args in calls] == expected
+    assert text.isascii()
+    for chunks in _every_split(text):
+        with patch("tests.qwen3coder_stream_harness.deltas", return_value=chunks):
+            calls, _ = stream(text, request, 0)
+        assert [(name, json.loads(args)) for name, args in calls] == expected, chunks
+
+
+@pytest.mark.parametrize(
+    "value,expected_value",
+    [
+        # Quoted marker fragment followed by a duplicate closer.
+        ('"<parameter="</parameter>', "<parameter="),
+        # Whitespace inside the literal opener is still marker text.
+        (
+            "<parameter =example>literal</parameter>\n",
+            "<parameter =example>literal</parameter>",
+        ),
+        # Whitespace before a duplicate closer is payload.
+        ("\nhello  \n</parameter>\n", "hello  "),
+    ],
+    ids=["quoted-opener-fragment", "spaced-literal-opener", "trailing-spaces"],
+)
+def test_duplicate_closer_edge_cases_match_at_every_split(value, expected_value):
+    text = (
+        "<tool_call><function=edit><parameter=new_string>"
+        + value
+        + "</parameter></function></tool_call>"
+    )
+    request = _xml_request(("edit",))
+    expected = [("edit", {"new_string": expected_value})]
+    assert _normalize(_extract_nonstream("qwen3_coder_xml", text)) == expected
+    for chunks in _every_split(text):
+        assert _stream_xml_deltas("qwen3_coder_xml", text, chunks, request) == expected

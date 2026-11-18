@@ -1740,8 +1740,35 @@ class Qwen3CoderToolParser(ToolParser):
         return -1
 
     def _find_parameter_close(self, text: str, value_start: int) -> int:
-        """Use the first parameter closer, matching complete extraction."""
-        return text.find(self.parameter_end_token, value_start)
+        """Find the structural parameter close, skipping JSON-string payload.
+
+        Constrained XML strings are JSON encoded (#1542), so delimiter-looking
+        text inside the quotes is data. Legacy raw model output keeps the old
+        first-close behavior.
+        """
+        i = value_start
+        # The XML template permits formatting whitespace between the parameter
+        # opener and its JSON-string value.  Treat that whitespace as wire, not
+        # as part of a legacy raw string.  In particular, token streaming can
+        # expose the whitespace one delta before the opening quote; failing to
+        # skip it makes the incremental path escape both JSON wrapper quotes
+        # into the user value (``/tmp/x`` becomes ``\"/tmp/x\"``).
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or text[i] != '"':
+            return text.find(self.parameter_end_token, i)
+        i += 1
+        escaped = False
+        while i < len(text):
+            char = text[i]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                return text.find(self.parameter_end_token, i + 1)
+            i += 1
+        return -1
 
     def _top_level_function_close_count(
         self, text: str, top_level_starts: list[int]
@@ -2016,8 +2043,8 @@ class Qwen3CoderToolParser(ToolParser):
             # An escaping-free raw XML string cannot distinguish a literal
             # complete close sequence from structure at an ordinary chunk
             # boundary. Do not make an irreversible streaming decision;
-            # StreamingPostProcessor.finalize() runs the non-streaming
-            # parser over the complete output (#1515).
+            # StreamingPostProcessor.finalize() runs the last-closer-aware
+            # non-streaming parser over the complete output (#1515).
             self.accumulated_text = current_text
             return None
 
@@ -2472,7 +2499,7 @@ class Qwen3CoderToolParser(ToolParser):
                 ):
                     # Raw XML has no escaping rule, so its first apparent close
                     # may be payload. Freeze only the un-emitted suffix and let
-                    # EOS parsing resolve the complete call.
+                    # EOS parsing select the final structural closer.
                     self._legacy_raw_stream = True
                     self._legacy_raw_param_count = self.param_count
                     if json_fragments:
