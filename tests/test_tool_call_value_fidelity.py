@@ -6,6 +6,10 @@ The invariant, stated once and enforced everywhere:
     A string argument that a model emits must reach the caller
     byte-identical. Not trimmed, not re-escaped, not truncated.
 
+Raw parameter markup is the explicit exception: its first closing marker
+ends the value (#5830). Literal closers require an escaped representation;
+the XML cases below assert that boundary rather than last-closer fidelity.
+
 Why this file exists rather than another per-parser test. The tool-call
 suite is organised one-file-per-parser, which is the right shape for
 format quirks but the wrong shape for value handling: the code that
@@ -477,7 +481,10 @@ def test_argument_value_survives_round_trip(parser_name, wire_format, case, valu
 
     text = RENDERERS[wire_format](_NAME, _KEY, value)
     got = _recovered_value(parser_name, text)
-    assert got == value, (
+    # Raw parameter markup ends at the first closer (#5830), including
+    # marker-shaped text intended as payload. Use JSON for literal closers.
+    expected = value.split("</parameter>", 1)[0] if wire_format == "xml_body" else value
+    assert got == expected, (
         f"{parser_name}/{wire_format} [{case}]: argument value was altered "
         f"in transit.\n  sent: {value!r}\n  got:  {got!r}"
     )
@@ -610,7 +617,7 @@ def test_parser_itself_does_not_invent_parameters(parser_name, case, value):
         f"{parser_name} [{case}] invented {sorted(set(args) - {_KEY})} — only "
         f"{_KEY!r} was declared. args={args!r}"
     )
-    assert args[_KEY] == value, (
+    assert args[_KEY] == value.split("</parameter>", 1)[0], (
         f"{parser_name} [{case}] truncated.\n  sent: {value!r}\n  got:  {args[_KEY]!r}"
     )
 
@@ -637,7 +644,7 @@ def test_ambiguous_marker_ordering_does_not_invent_parameters(case, value):
         f"[{case}] invented arguments {sorted(set(args) - {_KEY})} that the "
         f"model never emitted — only {_KEY!r} was declared. args={args!r}"
     )
-    assert args[_KEY] == value, (
+    assert args[_KEY] == value.split("</parameter>", 1)[0], (
         f"[{case}] value truncated.\n  sent: {value!r}\n  got:  {args[_KEY]!r}"
     )
 
@@ -776,6 +783,76 @@ def test_scan_rejects_parameter_with_no_closing_marker():
     assert split_marked_parameters(
         "<parameter=a>ok</parameter><parameter=b>runaway", _P_OPEN, _P_CLOSE
     ) == [("a", "ok")]
+
+
+@pytest.mark.parametrize(
+    "extra", ["", "</parameter>", "\n</parameter>\n</parameter>\n"]
+)
+@pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
+def test_scan_ends_raw_parameter_at_first_closer(extra, sibling):
+    """Duplicate closers cannot enter a value, even at EOF (#5830)."""
+    from rapid_mlx.tool_call_scan import split_marked_parameters
+
+    block = "<parameter=new_string>\nhi-second\n</parameter>" + extra + sibling
+    expected = [("new_string", "hi-second")]
+    if sibling:
+        expected.append(("path", "nonce.txt"))
+    assert split_marked_parameters(block, _P_OPEN, _P_CLOSE) == expected
+
+
+@pytest.mark.parametrize(
+    "parser_name", ["hermes", "nemotron", "qwen3_coder_xml", "raon_1", "api"]
+)
+@pytest.mark.parametrize(
+    "content,expected",
+    [('"before </parameter> after"', '"before '), ('"unbalanced', '"unbalanced')],
+)
+def test_first_parameter_closer_ignores_quoting_for_every_scanner_caller(
+    parser_name, content, expected
+):
+    from rapid_mlx.api.tool_calling import parse_tool_calls
+    from rapid_mlx.tool_call_scan import split_marked_parameters
+
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "path": {"type": "string"},
+                        },
+                    },
+                },
+            }
+        ]
+    }
+    text = (
+        "<tool_call><function=write><parameter=content>"
+        + content
+        + '</parameter><parameter=path>"ok.txt"</parameter></function></tool_call>'
+    )
+    assert split_marked_parameters(text, _P_OPEN, _P_CLOSE) == [
+        ("content", expected),
+        ("path", '"ok.txt"'),
+    ]
+    if parser_name == "api":
+        _, calls = parse_tool_calls(text, request)
+        assert calls and len(calls) == 1
+        arguments = calls[0].function.arguments
+    else:
+        parser = ToolParserManager.get_tool_parser(parser_name)(None)
+        result = parser.extract_tool_calls(text, request=request)
+        assert result.tools_called and len(result.tool_calls) == 1
+        arguments = result.tool_calls[0]["arguments"]
+    # Existing schema conversion differs; the raw boundary above is shared.
+    if parser_name == "qwen3_coder_xml":
+        expected = expected.removeprefix('"')
+    path = '"ok.txt"' if parser_name == "raon_1" else "ok.txt"
+    assert json.loads(arguments) == {"content": expected, "path": path}
 
 
 def test_scan_requires_outer_marker_when_one_is_requested():

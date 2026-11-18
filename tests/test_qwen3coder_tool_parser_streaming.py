@@ -182,8 +182,8 @@ def test_close_tag_never_leaks_into_emitted_fragment():
     )
 
 
-def test_json_encoded_string_preserves_embedded_xml_closers():
-    """The constrained #1542 wire must keep every XML marker as string data."""
+def test_json_encoded_string_uses_first_parameter_closer():
+    """Quoted values terminate at the same first closer as raw values."""
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool("write", {"content": {"type": "string"}})
     value = 'before </parameter> </function> </tool_call> after "quoted"'
@@ -200,7 +200,7 @@ def test_json_encoded_string_preserves_embedded_xml_closers():
     ]
 
     fragments = _argument_fragments(_feed(parser, chunks, request))
-    assert json.loads("".join(fragments)) == {"content": value}
+    assert json.loads("".join(fragments)) == {"content": "before "}
 
 
 def test_json_surrogate_pair_split_between_chunks_streams_exactly():
@@ -246,7 +246,10 @@ def test_legacy_raw_closers_are_deferred_to_full_text_parser(value: str):
 
     final = parser.finalize_legacy_raw_stream(full_text, request=request)
     fragments.extend(_argument_fragments([final]))
-    assert json.loads("".join(fragments)) == {"content": value}
+    # Raw values now end at their first closer (#5830).
+    assert json.loads("".join(fragments)) == {
+        "content": value.split("</parameter>", 1)[0]
+    }
 
 
 @pytest.mark.parametrize(
@@ -257,7 +260,7 @@ def test_legacy_raw_closers_are_deferred_to_full_text_parser(value: str):
         "before </tool_call> after",
     ],
 )
-def test_complete_legacy_raw_call_in_one_chunk_preserves_closer(value):
+def test_complete_legacy_raw_call_in_one_chunk_uses_first_parameter_closer(value):
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool("write", {"content": {"type": "string"}})
     wire = (
@@ -267,7 +270,7 @@ def test_complete_legacy_raw_call_in_one_chunk_preserves_closer(value):
 
     delta = parser.extract_tool_calls_streaming("", wire, wire, request=request)
     assert json.loads(delta["tool_calls"][0]["function"]["arguments"]) == {
-        "content": value
+        "content": value.split("</parameter>", 1)[0]
     }
 
 
@@ -555,9 +558,92 @@ def test_wrapper_quotes_dropped_without_eating_real_quotes(
     ]
 
     streamed = json.loads("".join(_argument_fragments(_feed(parser, chunks, request))))
-    assert streamed == {"content": value}
+    expected = '"' if value == '"</parameter> inside"' else value
+    assert streamed == {"content": expected}
 
     parser.reset()
     non_streaming = parser.extract_tool_calls("".join(chunks), request=request)
     assert non_streaming.tools_called
-    assert json.loads(non_streaming.tool_calls[0]["arguments"]) == {"content": value}
+    assert json.loads(non_streaming.tool_calls[0]["arguments"]) == {"content": expected}
+
+
+@pytest.mark.parametrize(
+    ("bodies", "expected"),
+    [
+        (
+            ['<parameter=filePath>"before </parameter> after"</parameter>'],
+            [{"filePath": "before "}],
+        ),
+        (
+            [
+                '<parameter=content>"unbalanced</parameter><parameter=path>"ok.txt"</parameter>'
+            ],
+            [{"content": "unbalanced", "path": "ok.txt"}],
+        ),
+        (
+            [
+                '<parameter=content>"hello"</parameter><parameter=path>"ok.txt"</parameter>'
+            ],
+            [{"content": "hello", "path": "ok.txt"}],
+        ),
+        (
+            [
+                f'<parameter=content>"{value}"</parameter><parameter=path>"{value}.txt"</parameter>'
+                for value in ("first", "second", "third")
+            ],
+            [
+                {"content": value, "path": f"{value}.txt"}
+                for value in ("first", "second", "third")
+            ],
+        ),
+    ],
+    ids=[
+        "quoted-closer",
+        "unbalanced-quote",
+        "multiple-parameters",
+        "repeated-parallel",
+    ],
+)
+def test_first_parameter_closer_parity_at_every_byte_split(bodies, expected):
+    request = _request_with_tool(
+        "write",
+        {name: {"type": "string"} for name in ("filePath", "content", "path")},
+    )
+    wire = "".join(
+        f"<tool_call><function=write>{body}</function></tool_call>" for body in bodies
+    )
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    result = parser.extract_tool_calls(wire, request=request)
+    assert result.tools_called
+    assert [
+        (call["name"], json.loads(call["arguments"])) for call in result.tool_calls
+    ] == [("write", args) for args in expected]
+
+    # ASCII fixtures make each character boundary a byte boundary. Include
+    # one chunk and byte-at-a-time delivery as well as every two-chunk split.
+    assert wire.isascii()
+    chunkings = [[wire], list(wire)] + [
+        [wire[:cut], wire[cut:]] for cut in range(1, len(wire))
+    ]
+    for chunks in chunkings:
+        calls = {}
+        for delta in _feed(parser, chunks, request):
+            for call in delta.get("tool_calls") or []:
+                index = call["index"]
+                merged = calls.setdefault(index, {"name": "", "arguments": ""})
+                function = call.get("function") or {}
+                merged["name"] += function.get("name", "")
+                merged["arguments"] += function.get("arguments", "")
+        if not calls:
+            # Match endpoint EOS recovery when a coarse delta emits held
+            # opener text as content before reaching the complete call.
+            final = parser.extract_tool_calls(wire, request=request)
+            calls = {
+                index: {"name": call["name"], "arguments": call["arguments"]}
+                for index, call in enumerate(final.tool_calls)
+            }
+        assert sorted(calls) == list(range(len(expected))), chunks
+        assert [
+            (calls[index]["name"], json.loads(calls[index]["arguments"]))
+            for index in sorted(calls)
+        ] == [("write", args) for args in expected], chunks

@@ -105,7 +105,10 @@ def test_complete_literal_markers_preserve_values_and_call_boundaries(value):
     assert result.content == "Before.After."
     assert [
         (item["name"], json.loads(item["arguments"])) for item in result.tool_calls
-    ] == [("run", {"text": value}), ("run", {"count": 42})]
+    ] == [
+        ("run", {"text": value.split("</parameter>", 1)[0]}),
+        ("run", {"count": 42}),
+    ]
 
 
 @pytest.mark.parametrize("step", [1, 2, 7, 31, 10000])

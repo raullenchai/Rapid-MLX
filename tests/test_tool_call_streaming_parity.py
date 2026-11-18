@@ -413,3 +413,195 @@ def test_tool_parser_parity_coverage():
         f"canonical wire-format example is available yet. See PR #426 / #425 "
         f"for the bug class this gates."
     )
+
+
+def _stream_xml_deltas(parser_name, text, chunks, request, *, raw_arguments=False):
+    parser = ToolParserManager.get_tool_parser(parser_name)(None)
+    accumulated = ""
+    deltas = []
+    for chunk in chunks:
+        previous = accumulated
+        accumulated += chunk
+        delta = parser.extract_tool_calls_streaming(
+            previous, accumulated, chunk, request=request
+        )
+        if delta:
+            for tc in delta.get("tool_calls", []):
+                name = tc.get("function", {}).get("name")
+                if name:
+                    assert f"<function={name}>" in accumulated
+            deltas.append(delta)
+    finalize = getattr(parser, "finalize_legacy_raw_stream", None)
+    if finalize:
+        delta = finalize(text, request=request)
+        if delta:
+            deltas.append(delta)
+    if not any(delta.get("tool_calls") for delta in deltas):
+        # Match the endpoint's EOS recovery when a single coarse delta
+        # returned a prose prefix before reaching its complete call.
+        result = parser.extract_tool_calls(text, request=request)
+        return [
+            (
+                tc["name"],
+                tc["arguments"] if raw_arguments else json.loads(tc["arguments"]),
+            )
+            for tc in result.tool_calls
+        ]
+    calls = {}
+    name_emissions = []
+    for delta in deltas:
+        for tc in delta.get("tool_calls", []):
+            index = tc["index"]
+            function = tc.get("function", {})
+            call = calls.setdefault(index, {"name": "", "arguments": ""})
+            if function.get("name"):
+                name_emissions.append(index)
+            for field in ("name", "arguments"):
+                call[field] += function.get(field, "")
+    assert name_emissions == list(range(len(calls)))
+    return [
+        (
+            calls[i]["name"],
+            calls[i]["arguments"]
+            if raw_arguments
+            else json.loads(calls[i]["arguments"]),
+        )
+        for i in range(len(calls))
+    ]
+
+
+def _every_split(text):
+    return [[text], list(text)] + [[text[:i], text[i:]] for i in range(1, len(text))]
+
+
+def _xml_request(names):
+    return {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            key: {"type": "string"}
+                            for key in ("filePath", "new_string", "path")
+                        },
+                    },
+                },
+            }
+            for name in names
+        ]
+    }
+
+
+@pytest.mark.parametrize("parser_name", ["qwen3_coder_xml", "hermes"])
+@pytest.mark.parametrize("quoted", [True, False])
+@pytest.mark.parametrize("wrapped", [True, False])
+@pytest.mark.parametrize(
+    "last_name", ["read", "read|", "read_async", 'read"', "view </parameter"]
+)
+def test_parallel_names_are_complete_wire_names_at_every_split(
+    parser_name, last_name, quoted, wrapped
+):
+    """Repeated names never share deltas, even with malformed model headers."""
+    from rapid_mlx.api.tool_logits import create_tool_logits_processor
+
+    request = _xml_request(("write", "read", "view"))
+    # These parsers have no decoding processor, including for subsequent calls.
+    tokenizer = MagicMock()
+    processor = create_tool_logits_processor(
+        parser_name, tokenizer, tools=request["tools"]
+    )
+    assert processor is None
+    tokenizer.encode.assert_not_called()
+    names = ["write", "read", last_name]
+    text = ""
+    for index, name in enumerate(names):
+        value = f"file{index}.txt"
+        if quoted:
+            value = json.dumps(value)
+        body = f"<function={name}><parameter=filePath>{value}</parameter></function>"
+        text += f"<tool_call>{body}</tool_call>" if wrapped else body
+    expected = [
+        (name, {"filePath": f"file{index}.txt"}) for index, name in enumerate(names)
+    ]
+    parser_cls = ToolParserManager.get_tool_parser(parser_name)
+    result = parser_cls(None).extract_tool_calls(text, request=request)
+    assert [
+        (tc["name"], json.loads(tc["arguments"])) for tc in result.tool_calls
+    ] == expected
+    for chunks in _every_split(text):
+        assert _stream_xml_deltas(parser_name, text, chunks, request) == expected
+
+
+@pytest.mark.parametrize("parser_name", ["hermes", "qwen3_coder_xml"])
+@pytest.mark.parametrize("tail", ["", "\n</parameter>", "\n</parameter>\n</parameter>"])
+@pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
+def test_duplicate_parameter_closers_streaming_parity(parser_name, tail, sibling):
+    """A duplicate closer is markup, never file content (#5830)."""
+    text = (
+        "<tool_call><function=edit>"
+        "<parameter=new_string>\nhi-second\n</parameter>"
+        + tail
+        + sibling
+        + "</function></tool_call>"
+    )
+    args = {"new_string": "hi-second"}
+    if sibling:
+        args["path"] = "nonce.txt"
+    expected = [("edit", args)]
+    assert _normalize(_extract_nonstream(parser_name, text)) == expected
+    assert _normalize(_extract_stream(parser_name, text)) == expected
+    request = _xml_request(("edit",))
+    for chunks in _every_split(text):
+        assert _stream_xml_deltas(parser_name, text, chunks, request) == expected
+
+
+@pytest.mark.parametrize("parser_name", ["qwen3_coder_xml", "hermes"])
+@pytest.mark.parametrize("names", [("read", "read", "read"), ("write", "read", "read")])
+@pytest.mark.parametrize("quoted", [True, False])
+@pytest.mark.parametrize("wrapped", [True, False])
+@pytest.mark.parametrize("prefix", ["", "Working.\n"])
+def test_three_parallel_calls_keep_arguments_at_every_byte_split(
+    parser_name, names, quoted, wrapped, prefix
+):
+    request = _xml_request(set(names))
+    text = ""
+    for index, name in enumerate(names):
+        value = f"file{index}.txt"
+        if quoted:
+            value = json.dumps(value)
+        body = f"<function={name}><parameter=filePath>{value}</parameter></function>"
+        text += f"<tool_call>{body}</tool_call>" if wrapped else body
+    text = prefix + text
+    parser_cls = ToolParserManager.get_tool_parser(parser_name)
+    result = parser_cls(None).extract_tool_calls(text, request=request)
+    expected = [(call["name"], call["arguments"]) for call in result.tool_calls]
+    assert [(name, json.loads(args)) for name, args in expected] == [
+        (name, {"filePath": f"file{index}.txt"}) for index, name in enumerate(names)
+    ]
+    # ASCII wire text makes every character split a byte boundary as well.
+    header_end = text.index(">", text.index("<function=")) + 1
+    splits = _every_split(text) + [
+        [text[:prefix_end], text[prefix_end:i], text[i:]]
+        for prefix_end in (1, text.index(">") + 1, header_end)
+        for i in range(prefix_end + 1, len(text))
+    ]
+    if wrapped:
+        second_header = text.index("<function=", header_end) + 3
+        wrapper_split = len(prefix) + len("<tool_")
+        splits += [
+            [
+                text[:wrapper_split],
+                text[wrapper_split:second_header],
+                text[second_header:i],
+                text[i:],
+            ]
+            for i in range(second_header + 1, len(text))
+        ]
+    for chunks in splits:
+        assert (
+            _stream_xml_deltas(parser_name, text, chunks, request, raw_arguments=True)
+            == expected
+        ), chunks

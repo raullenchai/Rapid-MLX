@@ -466,7 +466,9 @@ def test_buffered_payload_closers_and_post_call_prose_are_distinct(closer, json_
     result = NemotronToolParser().extract_tool_calls(
         prefix + " " + tail, request=_DECLARED_WEATHER
     )
-    assert json.loads(_only_call(result)["arguments"]) == {"city": value}
+    # Raw parameter values end at their first closer (#5830); JSON is escaped.
+    expected = value if json_body else value.split("</parameter>", 1)[0]
+    assert json.loads(_only_call(result)["arguments"]) == {"city": expected}
     assert result.content == tail
 
 
@@ -790,7 +792,8 @@ _AMBIGUOUS_WRAPPED = (
 @pytest.mark.parametrize("split", range(len(_AMBIGUOUS_WRAPPED) + 1))
 def test_wrapped_continuation_never_leaks_more_than_main(split):
     buffered = NemotronToolParser().extract_tool_calls(_AMBIGUOUS_WRAPPED)
-    expected = {"a": _AMBIGUOUS_VALUE}
+    # The first parameter closer wins even when later envelope markers exist.
+    expected = {"a": _AMBIGUOUS_VALUE.split("</parameter>", 1)[0]}
     assert json.loads(_only_call(buffered)["arguments"]) == expected
     assert not buffered.content
     calls, content = _capture_stream(
