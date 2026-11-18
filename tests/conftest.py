@@ -1530,6 +1530,38 @@ def preserve_mlx_generation_streams():
                 module.generation_stream = previous.get(name, default)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_mlx_generation_streams_per_module():
+    """Restore MLX stream globals after every test module, not only opted-in ones.
+
+    Any suite that starts an MLX worker thread can leave ``generation_stream``
+    bound to that thread's stream, and a later module on the same xdist
+    worker then fails with "There is no Stream(gpu, N) in current thread".
+    As the outermost module fixture this tears down after the module's own
+    executors have joined. It is a no-op when MLX was never imported.
+    """
+    names = ("mlx_lm.generate", "mlx_vlm.generate")
+    previous = {
+        name: sys.modules[name].generation_stream
+        for name in names
+        if name in sys.modules
+    }
+    mx = sys.modules.get("mlx.core")
+    default = mx.default_stream(mx.default_device()) if mx is not None else None
+    yield
+    mx = sys.modules.get("mlx.core")
+    if mx is None:
+        return
+    if default is None:
+        default = mx.default_stream(mx.default_device())
+    else:
+        mx.set_default_stream(default)
+    for name in names:
+        module = sys.modules.get(name)
+        if module is not None:
+            module.generation_stream = previous.get(name, default)
+
+
 @pytest.fixture(scope="session")
 def server_url(request):
     """Get server URL from command line."""
