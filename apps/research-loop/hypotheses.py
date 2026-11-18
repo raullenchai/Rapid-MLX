@@ -37,15 +37,63 @@ def limit(task):
     return value
 
 
-def status(experiments, task):
-    """Only terminal experiment verdicts count toward the conclusion threshold."""
+RULE_VERSION = "hypotheses/2"
+
+
+def evidence(experiments, task, ended=False):
+    """Only complete seed sets can supply comparative evidence; retain conflict."""
     verdicts = [experiment_verdict(e.get("verdict")) for e in experiments]
-    if "improved" in verdicts:
-        return "supported"
-    finished = [v for v in verdicts if v in ("worse", "no effect", "crashed")]
-    if len(finished) >= limit(task):
-        return "inconclusive" if all(v == "crashed" for v in finished) else "refuted"
-    return "testing" if experiments else "untested"
+    complete = [
+        v
+        for e, v in zip(experiments, verdicts, strict=True)
+        if not e.get("missing_seeds") and not e.get("crashed_seeds")
+    ]
+    improved, worse = "improved" in complete, "worse" in complete
+    conflict = improved and worse
+    terminal = [
+        v
+        for v in verdicts
+        if v in ("improved", "worse", "no effect", "crashed", "incomplete")
+    ]
+    closed = ended or (
+        bool(experiments) and all(e.get("run_ended", False) for e in experiments)
+    )
+    if conflict:
+        conclusion = "inconclusive"
+    elif improved:
+        conclusion = "supported"
+    elif len(terminal) >= limit(task) or closed:
+        conclusion = (
+            "refuted" if worse else "inconclusive" if experiments else "untested"
+        )
+    else:
+        conclusion = "testing" if experiments else "untested"
+    return dict(
+        status=conclusion,
+        decision_rule_version=RULE_VERSION,
+        conflicting_evidence=conflict,
+        missing_evidence=any(
+            e.get("missing_seeds") or e.get("crashed_seeds") or v == "incomplete"
+            for e, v in zip(experiments, verdicts, strict=True)
+        ),
+        run_ended=closed,
+        reason="conflicting complete experiments"
+        if conflict
+        else "run ended: "
+        + "; ".join(
+            dict.fromkeys(e.get("run_ended_reason", "finished") for e in experiments)
+        )
+        if closed
+        else "evidence threshold"
+        if len(terminal) >= limit(task)
+        else "complete improvement"
+        if improved
+        else "awaiting evidence",
+    )
+
+
+def status(experiments, task, ended=False):
+    return evidence(experiments, task, ended)["status"]
 
 
 def add(project, data, source="you"):
@@ -119,12 +167,13 @@ def legacy_id(statement):
     return f"legacy-{value:016x}"
 
 
-def collect(project, task, extra_runs=()):
+def collect(project, task, extra_runs=(), through=None):
     """Join project claims to all runs. Never write or repair a run artifact."""
     hypotheses = {
         h["id"]: dict(h, experiments=[])
         for h in read_rows(Path(project) / "hypotheses.jsonl")
     }
+    reports = {}
     paths = set(Path(project).glob("runs/*/events.jsonl")) | {
         Path(p) for p in extra_runs
     }
@@ -132,7 +181,44 @@ def collect(project, task, extra_runs=()):
         if path.parent.is_symlink() or path.parent.parent.is_symlink():
             raise ValueError("Symlinks are not allowed.")
         rounds = {}
-        for event in read_rows(path):
+        events = read_rows(path)
+        if through and path.parent.name in through:
+            events = [
+                e
+                for index, e in enumerate(events, 1)
+                if e.get("seq", index) <= through[path.parent.name]
+            ]
+        ending = next(
+            (
+                e
+                for e in reversed(events)
+                if e.get("event") in ("research_ended", "done")
+            ),
+            None,
+        )
+        frozen, results = {}, {}
+        for event in events:
+            if event.get("event") == "artifact":
+                artifact = event.get("artifact", {})
+                if not isinstance(artifact, dict) or not isinstance(
+                    artifact.get("owner"), dict
+                ):
+                    continue
+                if (
+                    artifact.get("kind") == "report"
+                    and artifact.get("role") == "conclusion"
+                    and artifact.get("owner", {}).get("scope") == "hypothesis"
+                ):
+                    reports.setdefault(artifact["owner"]["hypothesis_id"], []).append(
+                        artifact
+                    )
+            if event.get("event") == "experiment_record":
+                frozen[event["record"]["experiment"]] = event["record"]
+            elif event.get("event") == "result_record":
+                results[(event["record"]["experiment"], event["record"]["attempt"])] = (
+                    event["record"]
+                )
+        for event in events:
             number = event.get("round", 0)
             if not number or event.get("event") not in ("idea", "result"):
                 continue
@@ -140,7 +226,27 @@ def collect(project, task, extra_runs=()):
                 number, {"round": number, "run": path.parent.name, "verdict": "testing"}
             )
             row.update(event)
+        for number, record in frozen.items():
+            if not number:
+                continue
+            row = rounds.setdefault(
+                number, {"round": number, "run": path.parent.name, "verdict": "testing"}
+            )
+            row.update(
+                record,
+                verdict="incomplete" if ending else "testing",
+                value=None,
+                missing_seeds=record["seeds"],
+                crashed_seeds=[],
+            )
+            result = results.get((number, record["attempt"]))
+            if result:
+                row.update(result, value=result["aggregate"])
         for row in rounds.values():
+            row.update(
+                run_ended=ending is not None,
+                run_ended_reason=ending.get("reason", "finished") if ending else "",
+            )
             statement = row.get("hypothesis") or f"Experiment {row['round']}"
             hid = row.get("hypothesis_id") or next(
                 (h["id"] for h in hypotheses.values() if h["statement"] == statement),
@@ -178,7 +284,12 @@ def collect(project, task, extra_runs=()):
                 experiments=[],
             )
     for h in hypotheses.values():
-        h["status"] = status(h["experiments"], task)
+        h.update(evidence(h["experiments"], task))
+        h["reports"] = sorted(
+            reports.get(h["id"], []), key=lambda a: a.get("created", 0)
+        )
+    for number, h in enumerate(hypotheses.values(), 1):
+        h["label"] = f"H{number}"
     return list(hypotheses.values())
 
 

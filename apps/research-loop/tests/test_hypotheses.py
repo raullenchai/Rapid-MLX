@@ -25,7 +25,7 @@ ROOT = Path(__file__).parents[1]
         (["supported"], "supported"),
         (["worse", "no effect"], "refuted"),
         (["refuted", "crashed"], "refuted"),
-        (["no effect", "no effect"], "refuted"),
+        (["no effect", "no effect"], "inconclusive"),
         (["crashed", "crashed"], "inconclusive"),
         (["crashed", "testing"], "testing"),
         (["crashed", "improved"], "supported"),
@@ -181,15 +181,53 @@ def run_loop(tmp_path, monkeypatch, proposal, rounds=2, configure=None):
         nonlocal edits
         prompt = json.loads(request.data)["messages"][-1]["content"]
         prompts.append(prompt)
-        if "Reply only with edit blocks" in prompt:
+        import re
+
+        body = json.loads(request.data)
+        kind = body["response_format"]["json_schema"]["name"]
+        if kind == "edit":
             edits += 1
-            content = f"<<<<<<< SEARCH\nVALUE = 10\n=======\nVALUE = {10.1 if edits == 1 else 8}\n>>>>>>> REPLACE"
+            content = dict(
+                base_sha256=re.search(r"base_sha256: ([a-f0-9]+)", prompt)[1],
+                edits=[
+                    dict(
+                        search_lines=["VALUE = 10"],
+                        replace_lines=[f"VALUE = {10.1 if edits == 1 else 8}"],
+                    )
+                ],
+            )
+        elif kind == "conclusion":
+            hid = re.search(r"conclusion for (h\d+)", prompt)[1]
+            content = dict(hypothesis_id=hid, summary_md="Evidence recorded.")
+        elif kind == "run_report":
+            content = dict(
+                summary_md="Run complete.", next_steps_md="Repeat with more seeds."
+            )
         else:
-            content = (
-                "```json\n" + json.dumps(proposal(project, prompt, edits)) + "\n```"
+            old = proposal(project, prompt, edits)
+            content = dict(
+                hypothesis_id=old["hypothesis_id"],
+                new_hypothesis=dict(
+                    statement=old.get("hypothesis", ""),
+                    why=old["why"],
+                    prediction=old["prediction"],
+                )
+                if old["hypothesis_id"] is None
+                else None,
+                change=old["change"],
+                prediction=old["prediction"],
             )
         return io.BytesIO(
-            json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": json.dumps(content)},
+                        }
+                    ]
+                }
+            ).encode()
         )
 
     monkeypatch.setattr("urllib.request.urlopen", reply)
@@ -217,6 +255,10 @@ def test_one_hypothesis_many_experiments_and_live_researcher_priority(
 
     def proposal(project, prompt, edits):
         hid = "h1"
+        schema = json.loads(prompt.split("Reply with JSON matching this schema: ")[-1])
+        assert schema["properties"]["hypothesis_id"]["enum"] == [
+            "h1" if edits == 0 else "h2"
+        ]
         if edits == 0:
             # Add while the loop is already loaded, exactly as a web mutation does.
             hypotheses.add(
@@ -246,7 +288,7 @@ def test_one_hypothesis_many_experiments_and_live_researcher_priority(
         if e.get("round", 0) > 0 and e["event"] != "hypothesis_error"
     )
     claims = hypotheses.collect(project, {})
-    assert [h["status"] for h in claims] == ["testing", "supported"]
+    assert [h["status"] for h in claims] == ["inconclusive", "supported"]
 
 
 def test_same_claim_second_experiment_can_support_it(tmp_path, monkeypatch):
@@ -254,6 +296,11 @@ def test_same_claim_second_experiment_can_support_it(tmp_path, monkeypatch):
         hypotheses.add(project, {"statement": "Regularization improves score"})
 
     def proposal(project, prompt, edits):
+        schema = json.loads(prompt.split("Reply with JSON matching this schema: ")[-1])
+        assert schema["properties"]["hypothesis_id"]["enum"] == (
+            ["h1"] if edits == 0 else ["h1", None]
+        )
+        assert f"h1 ({edits}/2 experiments)" in prompt
         return dict(
             hypothesis_id="h1",
             why="Less overfitting",
@@ -298,6 +345,9 @@ def test_loop_rejects_invalid_proposals_without_running(tmp_path, monkeypatch, i
         )
 
     def proposal(project, prompt, edits):
+        schema = json.loads(prompt.split("Reply with JSON matching this schema: ")[-1])
+        assert schema["properties"]["hypothesis_id"]["enum"] == [None]
+        assert "Concluded hypotheses (do not test): h1 (supported)" in prompt
         data = dict(
             hypothesis_id=None,
             hypothesis="A distinct claim",
@@ -312,7 +362,7 @@ def test_loop_rejects_invalid_proposals_without_running(tmp_path, monkeypatch, i
         elif invalid == "unknown":
             data["hypothesis_id"] = "h99"
         elif invalid == "long":
-            data["hypothesis"] = "word " * 16
+            data["hypothesis"] = "word " * 41
         else:
             data["hypothesis"] = "Existing claim"
         return data
@@ -322,7 +372,7 @@ def test_loop_rejects_invalid_proposals_without_running(tmp_path, monkeypatch, i
     )
     assert any(e["event"] == "hypothesis_error" for e in events)
     assert not any(e.get("round", 0) > 0 and e["event"] == "run_start" for e in events)
-    assert sum("Hypotheses with experiments" in p for p in prompts) == 2
+    assert sum("Open hypotheses:" in p for p in prompts) == 2
 
 
 def test_model_creates_claim_and_reuses_it_for_second_experiment(tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 """Find the lowest-energy arrangement of 13 argon-like atoms (Lennard-Jones cluster) with a fixed evaluation budget."""
+
 import json
 import os
 
@@ -45,3 +46,54 @@ x = optimize(rng)
 _evals -= 1  # the final check below is free
 final, _ = energy_and_grad(np.asarray(x, dtype=float))
 print("RESULT " + json.dumps({"energy": round(final, 4), "evals": _evals}), flush=True)
+
+
+# Optional protocol-1 outputs; ordinary command-line use still prints RESULT.
+if artifact_dir := os.environ.get("ARTIFACT_DIR"):
+    import csv
+    from pathlib import Path
+
+    destination = Path(artifact_dir)
+    positions = np.asarray(x, dtype=float).reshape(ATOMS, 3).tolist()
+    with (destination / "coordinates.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["x", "y", "z"])
+        writer.writerows(positions)
+    # Orthographic projection, stdlib only. Preserve aspect ratio and label units.
+    xs, ys = [p[0] for p in positions], [p[1] for p in positions]
+    span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-9)
+    scale = 300 / span
+    cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
+    circles = "".join(
+        f'<circle cx="{180 + (a - cx) * scale:.3f}" cy="{180 - (b - cy) * scale:.3f}" r="9" fill="#285e89"/>'
+        for a, b, _ in positions
+    )
+    (destination / "cluster.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 390"><rect width="360" height="390" fill="white"/>'
+        + circles
+        + '<text x="180" y="380" text-anchor="middle" font-size="13" fill="#172b3b">Atom positions · x/y projection (sigma)</text></svg>'
+    )
+    (destination / "summary.md").write_text(
+        f"Final cluster: {ATOMS} atoms.\nFinal energy: {final:.4f} (reduced units).\nEnergy evaluations: {_evals} of {EVAL_BUDGET}.\n"
+    )
+    declarations = [
+        dict(
+            kind="data",
+            path="coordinates.csv",
+            title="Final atom coordinates",
+            role="coordinates",
+            columns={
+                axis: dict(type="number", unit="sigma") for axis in ("x", "y", "z")
+            },
+        ),
+        dict(
+            kind="image",
+            path="cluster.svg",
+            title="Cluster projection",
+            role="structure",
+        ),
+        dict(kind="report", path="summary.md", title="Cluster summary", role="summary"),
+    ]
+    (destination / "manifest.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in declarations)
+    )

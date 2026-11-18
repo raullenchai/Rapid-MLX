@@ -46,7 +46,9 @@ tool has no authentication. Use local endpoints to keep discussions on this Mac.
 4. **Results** (`#/p/<slug>/results`): expand a hypothesis in the ledger to see its experiments.
    Select an experiment to inspect its claim, why, prediction, curve, final code,
    and diff against its kept parent. Download the best code, event ledger, and log. “What we learned” groups
-   supported, refuted, and inconclusive hypotheses from numerical evidence; it generates no claims or model-written conclusions.
+   supported, refuted, and inconclusive hypotheses from numerical evidence.
+   Model-written conclusions and the run report are attached as reports; they
+   never determine status.
 
 One run may be active per project. The goal is fixed for that run; save changes
 before starting. The model picker chooses the discussion model and the model for
@@ -66,34 +68,36 @@ generalise sooner.” An experiment is a concrete change testing it:
 `WEIGHT_DECAY 0.01 -> 1.0`, evaluated on all seeds under the fixed budget against
 the current best.
 
-Experiment verdicts are **improved**, **worse**, **no effect**, or **crashed**.
-Only an improvement beyond the noise threshold updates the best code. Hypothesis
-status is derived, never supplied by the model:
+Experiment verdicts are **improved**, **worse**, **no effect**, **crashed** or
+**incomplete**. Only a complete improvement beyond noise updates the best code.
+Status comes from the deterministic `hypotheses/2` reducer in hypotheses.py:
 
 - **untested**: no experiments;
-- **testing**: experiments exist, but the conclusion rule has not been met;
-- **supported**: any experiment improved beyond noise (concluded immediately);
-- **refuted**: `experiments_per_hypothesis` completed experiments with no improvement,
-  including any mixture of worse, no effect, and crashes with a measured result;
-- **inconclusive**: the limit was reached and every experiment crashed.
+- **testing**: awaiting enough evidence;
+- **supported**: complete improvement with no conflicting complete worse result;
+- **refuted**: worse evidence without improvement, once the experiment limit or
+  end of the associated runs closes the claim;
+- **inconclusive**: conflicting results, or only no-effect/crashed/incomplete
+  evidence when the limit or end of the run closes the claim.
 
-The task setting `experiments_per_hypothesis` defaults to **2** (a positive integer).
-Failed edits count as crashed attempts. Repairs and seeds belong to the same
-experiment and do not consume additional hypothesis slots. A stopped experiment
-without a final result stays testing; it reserves its slot and supplies no conclusion.
+`experiments_per_hypothesis` defaults to **2**. Failed edits count as crashes;
+repairs and seeds do not consume extra slots. Missing seeds cannot support or
+refute a claim. Finished/stopped runs conclude open claims from available evidence
+and retain the reason. Internal IDs stay opaque; the UI labels claims H1, H2….
 
-Before each experiment the loop rereads project hypotheses and their experiments
-across runs. Researcher hypotheses (`you` or `discussion`) with no experiments go
-first. Otherwise the model chooses an open hypothesis with capacity or states a
-new claim with its first experiment. Concluded claims and duplicate changes are
-rejected, with one retry. New model claims have a 15-word statement, 30-word why,
-and 12-word prediction limit. The proposal protocol is:
+Before each experiment the loop rereads project hypotheses across runs. Untested
+researcher claims go first. Otherwise the model selects an open claim with capacity
+or proposes a new claim. Concluded claims and duplicate changes are rejected with
+one diagnostic retry. A new statement has at most 15 words. Typed plans use:
 
 ```json
-{"hypothesis_id": "h3", "why": "Less overfitting", "prediction": "Earlier generalisation", "change": "WEIGHT_DECAY 0.01 -> 1.0"}
+{"hypothesis_id":"h3","new_hypothesis":null,"prediction":"Earlier generalisation","change":"WEIGHT_DECAY 0.01 -> 1.0"}
 ```
 
-Use `"hypothesis_id": null` plus `"hypothesis": "<claim>"` only for a new claim.
+For a new claim, use hypothesis_id=null and new_hypothesis containing statement,
+why and prediction. All model messages, including edits and reports, use strict
+JSON-schema decoding with validation and an older-engine fallback; see
+[PROTOCOL.md](PROTOCOL.md) for the complete contract.
 
 ## Files and reproducibility
 
@@ -107,15 +111,16 @@ projects/<slug>/                     # gitignored local research data
   hypotheses.jsonl                  # append-only claims: id, statement, why, prediction, source, created
   runs/<run-id>/
     run.json                        # model, rounds, task snapshot, project
-    events.jsonl  loop.log           # experiment events include hypothesis_id
+    events.jsonl  loop.log           # sequenced records and artifact registrations
+    artifacts/                      # immutable files, all revisions
     round0_<editable>            # exact baseline code
     roundN_<editable>            # exact experiment code, including repairs
-    roundN_seedS_curve.json         # when written by the experiment
+    # Per-seed curves and logs are registered as data/chart/log artifacts.
     best_<editable>  history.json
 ```
 
 An improved experiment updates the best; worse and no-effect changes are discarded.
-The verdict algorithm is unchanged. Numbers are means across the configured
+Complete results are means across the configured
 seeds; the noise threshold determines the verdict and is not a confidence
 interval. The best download falls back to the kept numbered code if necessary
 (including round 0 when nothing improved). Missing legacy code is reported as
@@ -150,7 +155,7 @@ hand-edit a live log.
 Compatibility is read-only for runs: old `idea` events without `hypothesis_id`
 derive a claim from their `hypothesis` text, deduplicated by identical text across
 runs. Internal `legacy-<digest>` IDs prevent collisions with persisted `hN` IDs;
-the UI abbreviates these as `hL1`, `hL2`, etc. Legacy histories may contain more
+the UI presents all claims as H1, H2, etc. Legacy histories may contain more
 than the new per-hypothesis limit; every recorded experiment stays visible. Old `supported/refuted` experiment
 verdicts render as `improved/worse`. Old event files, curves, code, diffs, and logs
 are never rewritten, including an old loop still writing events in memory.
@@ -170,8 +175,8 @@ http://127.0.0.1:4900/#/p/grokking/experiments?run=20261118-113651-acde31&replay
 The Replay button opens this mode for a selected completed run. Change `speed`
 in the URL for a different rate. Replay uses original event timestamps divided
 by speed, with curve gaps capped at 150 ms. A badge remains visible and mutation
-controls are disabled. SSE IDs are byte offsets; reconnection uses
-`Last-Event-ID` and ignores incomplete JSONL writes until they are complete.
+controls are disabled. SSE IDs are monotonic per-run sequence numbers (complete-line ordinals for legacy
+journals); reconnection uses `Last-Event-ID` or `?after=<seq>` and ignores incomplete JSONL writes until they are complete.
 After a server restart, orphaned loops are not adopted for controls; their event
 files remain readable/tailable. A tracked process that exits without `done`
 produces a closed event; inspect `loop.log` for the failure.
@@ -249,10 +254,10 @@ project API.
 ## Check
 
 ```sh
-PYTHONPYCACHEPREFIX=/private/tmp/rapid-mlx-grokdemo-v4-pycache \
+PYTHONPYCACHEPREFIX=/private/tmp/rapid-mlx-grokdemo-v5-pycache \
   python3 -m pytest apps/research-loop/tests -q
-ruff check apps/research-loop/{loop.py,server.py,hypotheses.py,tests}
-ruff format --check apps/research-loop/{loop.py,server.py,hypotheses.py,tests}
+ruff check apps/research-loop/{protocol.py,loop.py,server.py,hypotheses.py,tests,templates/lj-cluster/cluster.py,templates/no-three-ap/search.py}
+ruff format --check apps/research-loop/{protocol.py,loop.py,server.py,hypotheses.py,tests,templates/lj-cluster/cluster.py,templates/no-three-ap/search.py}
 node --check apps/research-loop/web/app.js
 node apps/research-loop/tests/test_web.mjs
 ```
@@ -261,3 +266,21 @@ Tests use ephemeral stub-model ports and pure Python; they do not require Metal
 or touch existing model servers. Node checks cover state and authored markup,
 including both real local streams when present. They do not validate browser
 layout. Review at 1920×1080 and 1440×900 in a real browser before recording.
+
+## Protocol 1
+
+[PROTOCOL.md](PROTOCOL.md) defines typed model messages, frozen experiment/result
+records, and immutable artifacts. New runs use a sequenced `events.jsonl` journal
+and strict JSON-schema decoding with validated older-engine fallback. Existing
+runs use a read-only adapter; their files are never migrated.
+
+Experiment artifacts appear under Chart · Data · Code · Log · Notes. Reports
+support Markdown and KaTeX; data previews show at most 500 sortable rows. Charts
+can be compared by role. Download all exports artifacts, envelopes, records,
+the journal and protocol spec in one reproducibility bundle. The derived ledger
+is available at `runs/<run>/ledger.csv` under the project API.
+
+Scripts keep their curve JSON lines and final `RESULT {...}`. To add outputs,
+write files into `$ARTIFACT_DIR`, then declare each in `manifest.jsonl` with kind,
+path, title and optional role/refs/columns. The chemistry template demonstrates
+coordinates, an SVG projection and a summary without project-specific UI code.

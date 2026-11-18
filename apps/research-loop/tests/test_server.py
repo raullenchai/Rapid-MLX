@@ -493,11 +493,32 @@ def upstream():
                     if "VALUE = 10" in prompt
                     else ("VALUE = 8", "VALUE = 8.5")
                 )
-                content = f"<<<<<<< SEARCH\n{old}\n=======\n{new}\n>>>>>>> REPLACE"
+                import re
+
+                kind = body["response_format"]["json_schema"]["name"]
+                if kind == "edit":
+                    content = dict(
+                        base_sha256=re.search(r"base_sha256: ([a-f0-9]+)", prompt)[1],
+                        edits=[dict(search_lines=[old], replace_lines=[new])],
+                    )
+                elif kind == "conclusion":
+                    content = dict(
+                        hypothesis_id=re.search(r"conclusion for (h\d+)", prompt)[1],
+                        summary_md="Evidence recorded.",
+                    )
+                else:
+                    content = dict(summary_md="Run complete.", next_steps_md="Repeat.")
                 self.end_headers()
                 self.wfile.write(
                     json.dumps(
-                        {"choices": [{"message": {"content": content}}]}
+                        {
+                            "choices": [
+                                {
+                                    "finish_reason": "stop",
+                                    "message": {"content": json.dumps(content)},
+                                }
+                            ]
+                        }
                     ).encode()
                 )
 
@@ -628,7 +649,13 @@ def test_loop_consumes_project_queue_first_and_keeps_min_verdicts(tmp_path, upst
     ]
     assert len(server.hypotheses.read_rows(project / "hypotheses.jsonl")) == 2
     assert "VALUE = 8\n" in (run / "best_sort.py").read_text()
-    assert len(received) == 2  # Edits only; no generated proposals.
+    assert [r["response_format"]["json_schema"]["name"] for r in received] == [
+        "edit",
+        "edit",
+        "conclusion",
+        "conclusion",
+        "run_report",
+    ]
 
 
 def test_baseline_download_when_no_change_was_kept(app):
@@ -904,3 +931,114 @@ def test_new_experiment_verdicts_keep_best_summaries_and_download(app):
         app.artifact(app.project_path(slug), run, "best_sort.py").name
         == "round1_sort.py"
     )
+
+
+def test_protocol_list_then_subscribe_cursor_and_bundle(app):
+    import zipfile
+    from io import BytesIO
+
+    import protocol
+
+    slug = create(app)
+    run = make_run(app, slug)
+    (run / "events.jsonl").write_text("")
+    journal = protocol.Journal(run)
+    journal.append("baseline", metric="runtime_ms", result=dict(runtime_ms=10))
+    owner = dict(scope="run", run="example")
+    store = protocol.Artifacts(run)
+    artifact = store.register(
+        b"x,y\n1,2\n",
+        id="data",
+        kind="data",
+        role="coordinates",
+        title="Coordinates",
+        path="coords.csv",
+        owner=owner,
+    )
+    base = f"/api/projects/{slug}/runs/example"
+    listed = request(app, base + "/artifacts")["json"]
+    assert listed["watermark"] == 2 and listed["artifacts"][0] == artifact
+    journal.append("done", best=10)
+    resumed = request(app, base + "/events?after=2")
+    assert b"id: 3\n" in resumed["body"] and b"id: 2\n" not in resumed["body"]
+    header = request(app, base + "/events?after=0", headers={"Last-Event-ID": "2"})
+    assert header["body"] == resumed["body"]
+    rows = request(app, base + "/artifacts/data?rows=999")["json"]
+    assert rows["rows"] == [dict(x="1", y="2")] and rows["watermark"] == 3
+    downloaded = request(app, base + "/bundle.zip")
+    assert downloaded["status"] == 200
+    archive = zipfile.ZipFile(BytesIO(downloaded["body"]))
+    assert archive.read("artifacts/data-r1.csv") == b"x,y\n1,2\n"
+    assert request(app, base + "/records")["json"]["watermark"] == 3
+
+
+def test_protocol_svg_csp_and_unknown_kind_download(app):
+    import protocol
+
+    slug = create(app)
+    run = make_run(app, slug)
+    (run / "events.jsonl").write_text("")
+    store = protocol.Artifacts(run)
+    artifact = store.register(
+        b'<svg xmlns="http://www.w3.org/2000/svg"/>',
+        id="picture",
+        kind="image",
+        title="Projection",
+        path="plot.svg",
+        owner=dict(scope="run", run="example"),
+    )
+    base = f"/api/projects/{slug}/runs/example"
+    served = request(app, base + "/artifacts/picture")
+    assert served["headers"]["Content-Type"] == "image/svg+xml"
+    assert "sandbox" in served["headers"]["Content-Security-Policy"]
+    assert served["headers"]["X-Content-Type-Options"] == "nosniff"
+    unknown = dict(artifact, id="future", kind="molecule")
+    store.journal.append("artifact", artifact=unknown)
+    invalid = dict(artifact, id="invalid", protocol=999)
+    store.journal.append("artifact", artifact=invalid)
+    response = request(app, base + "/artifacts")["json"]
+    for row in response["artifacts"][1:]:
+        assert row["kind"] == "file" and row["warning"]
+        download = request(app, base + "/artifacts/" + row["id"])
+        assert download["headers"]["Content-Type"] == "application/octet-stream"
+        assert "attachment" in download["headers"]["Content-Disposition"]
+
+
+def test_invalid_envelope_does_not_mask_other_artifacts_or_break_bundle(app):
+    import zipfile
+    from io import BytesIO
+
+    import protocol
+
+    slug = create(app)
+    run = make_run(app, slug)
+    (run / "events.jsonl").write_text("")
+    store = protocol.Artifacts(run)
+    store.register(
+        b"plain log",
+        id="valid",
+        kind="log",
+        title="Log",
+        path="log.txt",
+        owner=dict(scope="run", run="example"),
+    )
+    store.journal.append("artifact", artifact=None)
+    store.journal.append("artifact", artifact={"id": "bad", "owner": "bad owner"})
+    base = f"/api/projects/{slug}/runs/example"
+    assert request(app, base + "/artifacts/valid")["body"] == b"plain log"
+    assert len(request(app, base + "/artifacts?kind=log")["json"]["artifacts"]) == 1
+    archive = zipfile.ZipFile(BytesIO(request(app, base + "/bundle.zip")["body"]))
+    assert archive.read("artifacts/valid-r1.txt") == b"plain log"
+    assert (
+        len([name for name in archive.namelist() if name.startswith("warnings/")]) == 2
+    )
+
+
+def test_legacy_run_with_string_task_uses_project_task():
+    import server
+
+    assert server.run_task({"task": "grokking"}) is None
+    assert server.run_task({"task": {"editable": "train.py"}}) == {
+        "editable": "train.py"
+    }
+    assert server.run_task(None) is None

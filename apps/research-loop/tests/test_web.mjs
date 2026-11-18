@@ -16,11 +16,13 @@ const task={title:'A reusable study',editable:'experiment.py',metric:'score',met
 let detail={project:{slug:'study',title:'A reusable study',model:'q35'},program:'# Goal',task,runs:[],discussion:[],ideas:[],models:['q35','q27'],default_model:'q35',rounds:10};
 let testRun={id:'r1',model:'q35',active:false,paused:false};
 let testEvents=[],testFiles=[],testProjects=[];
+const protocolResponses=new Map();
 const context=vm.createContext({document,console,URLSearchParams,URL,TextDecoder,TextEncoder,setTimeout,clearTimeout,
   location:{hash:'#/',search:''},window:{addEventListener(){}},
   fetch:async(path,options)=>{
     requests.push({path,options});
     const value=path==='/api/templates' ? {templates:[{slug:'generic',...task}]} : path==='/api/projects' ? {projects:testProjects} : path.endsWith('/program') ? JSON.parse(options.body) : path.endsWith('/diff/1') ? {parent:0,diff:'--- old\n+++ new\n-VALUE = 1\n+VALUE = 2\n'} : path.includes('/files/') ? null : /\/runs\/[^/]+$/.test(path) ? {run:testRun,events:testEvents,files:testFiles} : structuredClone(detail);
+    if(protocolResponses.has(path)){const payload=protocolResponses.get(path);return {ok:true,json:async()=>payload,text:async()=>typeof payload==='string'?payload:JSON.stringify(payload)};}
     return {ok:true,json:async()=>value,text:async()=>'<script>not HTML</script>\nVALUE = 2'};
   },
   EventSource:class{constructor(path){this.path=path;streams.push(this);}close(){this.closed=true;}addEventListener(name,fn){this[name]=fn;}}
@@ -439,7 +441,7 @@ assert.ok(requests.some(r=>r.path==='/api/projects/default-study/runs/a-new'));
 detail.runs[0].active=true;testRun={id:'z-old',model:'q35',active:true};
 context.location.hash='#/p/default-study/discuss';await run('route()');
 assert.equal(run('state.run.id'),'z-old');
-assert.match(streams.at(-1).path,/\/runs\/z-old\/events$/);
+assert.match(streams.at(-1).path,/\/runs\/z-old\/events\?after=0$/);
 testRun={id:'a-new',model:'q35',active:false};
 context.location.hash='#/p/default-study/experiments?run=a-new';await run('route()');
 assert.equal(run('state.run.id'),'a-new');
@@ -497,13 +499,13 @@ event({event:'result',round:1,hypothesis_id:'h1',value:100,best_before:100,verdi
 run('renderRun()');
 assert.equal(run('hypothesisGroups()[0].status'),'testing');
 assert.equal(run('hypothesisGroups()[1].status'),'untested');
-assert.match(get('queue').innerHTML,/h1.*testing/s);
+assert.match(get('queue').innerHTML,/H1.*testing/s);
 assert.match(get('queue').innerHTML,/1 experiments/);
 assert.match(get('ledger').innerHTML,/data-hypothesis="h1"/);
 assert.match(get('ledger').innerHTML,/code-change/);
 assert.match(get('ledger').innerHTML,/title="WEIGHT_DECAY 0.01 → 1.0"/);
 assert.match(get('experiment-groups').innerHTML,/data-experiment="1"/);
-assert.match(get('hypothesis-rule').textContent,/after 2 experiments/);
+assert.match(get('hypothesis-rule').textContent,/After 2 experiments/);
 const h1Color=run('hypothesisColor(hypothesisGroups()[0])');
 event({event:'idea',round:2,hypothesis_id:'h1',hypothesis:'Stronger decay improves generalisation',change:'WEIGHT_DECAY 0.01 -> 2.0'});
 event({event:'result',round:2,hypothesis_id:'h1',value:80,best_before:100,verdict:'improved'});
@@ -511,7 +513,7 @@ run('renderRun()');
 assert.equal(run('hypothesisGroups().length'),2);
 assert.equal(run('hypothesisGroups()[0].status'),'supported');
 assert.equal(run('hypothesisGroups()[0].experiments.length'),2);
-assert.match(get('progress').innerHTML,/h1 · Stronger decay improves generalisation · experiment 2 of 2/);
+assert.match(get('progress').innerHTML,/H1 · Stronger decay improves generalisation · experiment 2 of 2/);
 assert.equal((get('progress').innerHTML.match(new RegExp(`fill="${h1Color}"`,'g')) || []).length>=2,true);
 assert.match(get('learned').innerHTML,/Supported hypotheses/);
 assert.doesNotMatch(get('learned').innerHTML,/Supported changes/);
@@ -519,7 +521,7 @@ assert.doesNotMatch(get('verdict').textContent,/supported|refuted/);
 context.groupEvent={target:{closest:()=>({dataset:{experiment:'1'}})}};
 get('experiment-groups').onclick(context.groupEvent);
 assert.equal(run('state.selected'),1);assert.equal(run('state.follow'),false);
-for(const [verdicts,status] of [[['worse','no effect'],'refuted'],[['crashed','crashed'],'inconclusive'],[['crashed','no effect'],'refuted'],[['crashed'],'testing'],[[],'untested']]) {
+for(const [verdicts,status] of [[['worse','no effect'],'refuted'],[['crashed','crashed'],'inconclusive'],[['crashed','no effect'],'inconclusive'],[['crashed'],'testing'],[[],'untested']]) {
   context.statusInput=verdicts.map(verdict=>({verdict}));
   assert.equal(run('hypothesisStatus(statusInput)'),status);
 }
@@ -590,3 +592,94 @@ assert.equal(run('legacyHypothesisId("Stronger decay α 💡")'),'legacy-04a44bf
 testProjects=[{slug:'counted',title:'Counted study',template:'sort-speed',description:'Goal',status:'Finished',progress:[10,8],task:minTask,best:8,hypotheses:2,experiments:4,updated:Date.now()/1000}];
 await run('loadHome()');assert.match(get('project-list').innerHTML,/2 hypotheses · 4 experiments/);
 clearTimeout(run('noticeTimer'));
+
+// Protocol renderers are project independent and all unsafe content is escaped.
+setup();
+run('state.protocol=1;state.artifacts=[];state.watermark=0');
+const envelope=(id,kind,role='attachment',mime='text/plain')=>({protocol:1,id,revision:1,kind,role,title:'Artifact '+id,path:'artifacts/'+id+'.txt',mime,bytes:10,sha256:'a'.repeat(64),producer:'harness',owner:{scope:'experiment',run:'r1',experiment:1},refs:[],provenance:{},created:1});
+const artifacts=[envelope('source','code'),envelope('notes','report'),envelope('table','data','curve','text/csv'),envelope('plot','chart','curve','application/json'),envelope('image','image','structure','image/svg+xml'),envelope('logs','log'),envelope('attachment','file'),envelope('future','molecule')];
+artifacts[3].refs=['table'];context.protocolArtifacts=artifacts;run('state.artifacts=protocolArtifacts');
+for(const a of artifacts) {
+  context.inputArtifact=a;
+  const url=run('artifactURL(inputArtifact)');
+  protocolResponses.set(url,a.kind==='report'?'**Report** <script>alert(1)</script> $x^2$':a.kind==='chart'?JSON.stringify({$schema:'rl-chart/1',mark:'line',data:{artifact:'table'},encoding:{x:{field:'x',title:'Time'},y:{field:'y',title:'Score'}}}):a.kind==='data'?'x,y\n1,2\n2,3\n':'<script>raw text</script>\nx = 2');
+  if(a.kind==='data')protocolResponses.set(url+'&rows=500',{rows:[{x:1,y:2},{x:2,y:3}],columns:{x:{type:'number',unit:'s'}},total:1000});
+  const html=await run('artifactMarkup(inputArtifact)');
+  assert.match(html,/Download/);
+  if(a.kind==='code' || a.kind==='log' || a.kind==='report'){assert.doesNotMatch(html,/<script>/);assert.match(html,/&lt;script&gt;/);}
+  if(a.kind==='image'){assert.match(html,/<img/);assert.doesNotMatch(html,/<svg/);}
+  if(a.kind==='chart')assert.match(html,/data-mark="line"/);
+  if(a.kind==='data'){assert.match(html,/2 of 1000 rows/);assert.match(html,/x \(s\)/);assert.match(html,/data-sort/);}
+  if(a.kind==='log'){assert.match(html,/data-log-search/);assert.match(html,/Last 200 lines/);assert.doesNotMatch(html,/markdown-body/);}
+  if(a.kind==='molecule'){assert.match(html,/Unrecognized artifact/);assert.doesNotMatch(html,/<svg|<img|<pre/);}
+}
+assert.equal(run('safeArtifact({kind:"report",title:"bad"}).kind'),'file');
+assert.match(run('markdown("[safe](https://example.org) [local](/docs) [bad](javascript:alert) <img>")'),/href="https:\/\/example.org"/);
+assert.doesNotMatch(run('markdown("[bad](javascript:alert) [bad](//evil.test) [bad](data:text/html,bad)")'),/href=/);
+context.chart={...JSON.parse(protocolResponses.get(run('artifactURL(protocolArtifacts[3])'))),mark:'bar',band:{low:'lo',high:'hi'},reference:{value:2,label:'<unsafe>'}};
+context.chartRows=[{x:1,y:2,lo:1,hi:3},{x:2,y:3,lo:2,hi:4}];
+assert.match(run('chartMarkup(chart,chartRows)'),/data-mark="bar"/);
+assert.match(run('chartMarkup(chart,chartRows)'),/data-band="true"/);
+assert.match(run('chartMarkup(chart,chartRows)'),/&lt;unsafe&gt;/);
+context.chart.mark='point';context.chart.encoding.x.scale={type:'log'};
+assert.match(run('chartMarkup(chart,chartRows)'),/data-mark="point"/);
+context.chart.data={url:'https://evil.test'};
+assert.throws(()=>run('chartMarkup(chart,chartRows)'),/Unsupported chart/);
+context.csvInput='x,y\n"one,two","quoted ""value"""\n';
+assert.deepEqual(JSON.parse(run("JSON.stringify(parseCSV(csvInput))")),[{x:"one,two",y:'quoted "value"'}]);
+event({seq:1,event:'curve',round:1,seed:0,step:1,score:2});
+event({seq:1,event:'curve',round:1,seed:0,step:1,score:2});
+assert.equal(run('getRound(1).curves.length'),1);
+console.log('Protocol checks passed: every renderer, safe file fallback, CSV quoting/units/preview, declarative marks/bands/log scales/reference, Markdown URLs, sequenced event deduplication.');
+clearTimeout(run('noticeTimer'));
+
+run('state.artifacts.push(null,{kind:"report",owner:"bad owner"})');
+assert.equal(run('latestArtifacts().at(-1).owner.scope'),'run');
+assert.equal(run('latestArtifacts().at(-1).kind'),'file');
+
+// Recording polish: shared Results DOM leads with the outcome, then evidence.
+const resultsDOM=index.slice(index.indexOf('<section id="results"'));
+const outcomeOrder=['id="result-best"','<h2>Hypotheses</h2>','id="ledger"','id="result-detail"','id="run-report"','id="run-artifacts"'];
+for(let i=1;i<outcomeOrder.length;i++)assert.ok(resultsDOM.indexOf(outcomeOrder[i-1])<resultsDOM.indexOf(outcomeOrder[i]),outcomeOrder[i]);
+assert.match(index,/id="run-actions"/);
+assert.match(index,/id="run-control-note"/);
+setup();run('controls()');
+assert.equal(get('run-state').textContent,'Run finished');
+for(const id of ['run-actions','run-model','run-control-note'])assert.equal(get(id).hidden,true,id);
+run('state.run.active=true;state.run.paused=false;controls()');
+assert.equal(get('run-actions').hidden,false);
+assert.equal(get('pause').disabled,false);assert.equal(get('resume').disabled,true);assert.equal(get('stop').disabled,false);
+run('state.run.paused=true;controls()');
+assert.equal(get('pause').disabled,true);assert.equal(get('resume').disabled,false);
+
+// Saved completion and replay never announce a fresh completion.
+for(const protocol of [undefined,1]) {
+  setup();context.testProtocol=protocol;run('state.protocol=testProtocol;notice("")');
+  event({event:'done'});assert.equal(get('notice').textContent,'');
+  run('state.run.active=true;state.replay=true;apply({event:"done"})');
+  assert.equal(get('notice').textContent,'');
+  run('state.replay=false;state.run.active=true');
+  const originalTimeout=context.setTimeout;let dismiss;
+  context.setTimeout=(callback,delay)=>{if(delay===6000)dismiss=callback;return originalTimeout(callback,delay);};
+  run('apply({event:"done"},false)');
+  assert.equal(get('notice').textContent,'');
+  run('state.run.active=true;apply({event:"done"})');
+  assert.match(get('notice').textContent,/Run complete/);assert.equal(typeof dismiss,'function');
+  clearTimeout(run('noticeTimer'));dismiss();assert.equal(get('notice').textContent,'');
+  context.setTimeout=originalTimeout;
+}
+clearTimeout(run('noticeTimer'));
+console.log('Recording polish checks passed: Results order, active controls, session-only completion and six-second dismissal.');
+
+// Only the harness run log is disclosed; experiment output stays expanded.
+context.recordingLog={...artifacts.find(a=>a.kind==='log'),producer:'harness',owner:{scope:'run',run:'r1'}};
+protocolResponses.set(run('artifactURL(recordingLog)'),'first line\nsecond line\n');
+run('artifactCache.clear()');
+const collapsedLog=await run('artifactMarkup(recordingLog)');
+assert.match(collapsedLog,/<details class="loop-log"><summary>Loop log · 2 lines<\/summary>/);
+assert.doesNotMatch(collapsedLog,/<details[^>]* open/);
+assert.match(collapsedLog,/class="log-controls"/);
+run('recordingLog.owner={scope:"experiment",run:"r1",experiment:1};artifactCache.clear()');
+assert.doesNotMatch(await run('artifactMarkup(recordingLog)'),/<details/);
+assert.match(css,/\.log-tail\s*\{[^}]*flex-direction:row;/);
+assert.match(css,/\.hypothesis-rail\s*\{[^}]*max-height:360px;[^}]*overflow:auto;/);

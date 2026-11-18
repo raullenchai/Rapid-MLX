@@ -1,3 +1,36 @@
-{"title": "Large sets with no three-term progression", "domain": "Mathematics", "editable": "search.py", "metric": "size", "metric_label": "Set size", "unit": "", "direction": "max", "noise": 0.5, "seeds": [0, 1],
- "fixed": ["^N = 243$", "^BUDGET_S = 6.0$", "^assert is_valid\\(result\\)", "^def is_valid\\(s\\):$", "^def report\\(candidate\\):$"],
- "curve": {"x": "t", "x_label": "Seconds of search", "series": [{"key": "size", "label": "Best size"}]}}
+{
+ "title": "Large sets with no three-term progression",
+ "domain": "Mathematics",
+ "editable": "search.py",
+ "metric": "size",
+ "metric_label": "Set size",
+ "unit": "",
+ "direction": "max",
+ "noise": 0.5,
+ "seeds": [
+  0,
+  1
+ ],
+ "fixed": [
+  "^N = 243$",
+  "^BUDGET_S = 6.0$",
+  "^assert is_valid\\(result\\)",
+  "^def is_valid\\(s\\):$",
+  "^def report\\(candidate\\):$",
+  "^START = time.monotonic\\(\\)$",
+  "^                \\{\"elapsed_s\": round\\(time.monotonic\\(\\) - START, 3\\), \"size\": _best\\}$",
+  "^signal.setitimer\\(signal.ITIMER_REAL, BUDGET_S\\)$",
+  "^    result = _best_candidate$"
+ ],
+ "curve": {
+  "x": "elapsed_s",
+  "x_label": "Elapsed search time (s)",
+  "series": [
+   {
+    "key": "size",
+    "label": "Best size"
+   }
+  ]
+ },
+ "timeout_s": 60
+}

@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 import hypotheses
+import protocol
 
 ROOT = Path(__file__).resolve().parent
 INBOX_LOCK = threading.RLock()
@@ -42,17 +43,27 @@ def records(path, offset=0):
     return rows, offset
 
 
-def event_stream(path, speed=0, after=0, alive=lambda: True, sleep=time.sleep):
-    """SSE with byte-offset IDs, heartbeats, and original-timing replay."""
+def event_stream(
+    path,
+    speed=0,
+    after=0,
+    alive=lambda: True,
+    sleep=time.sleep,
+    project=None,
+    task=None,
+):
+    """SSE cursor is the journal sequence (ordinal for read-only legacy runs)."""
     previous = None
-    offset = after
+    cursor = after
     heartbeat = time.monotonic()
     while True:
-        rows, offset = records(path, offset)
-        for event_id, event in rows:
+        snapshot = protocol.events(path.parent)
+        rows = [e for e in snapshot if e["seq"] > cursor]
+        if not rows and snapshot and snapshot[-1].get("event") == "done":
+            return
+        for event in rows:
             if speed and previous is not None:
                 delay = max(0, (event.get("ts", previous) - previous) / speed)
-                # Keep long gaps connected and compress dense training curves.
                 if event.get("event") == "curve":
                     delay = min(delay, 0.15)
                 while delay > 0:
@@ -61,11 +72,26 @@ def event_stream(path, speed=0, after=0, alive=lambda: True, sleep=time.sleep):
                     delay -= interval
                     yield b": replay\n\n"
             previous = event.get("ts", previous)
-            yield f"id: {event_id}\ndata: {json.dumps(event)}\n\n".encode()
+            cursor = event["seq"]
+            if project is not None and event.get("event") in (
+                "baseline",
+                "idea",
+                "result_record",
+                "result",
+                "research_ended",
+                "done",
+            ):
+                event = dict(
+                    event,
+                    hypotheses=hypotheses.collect(
+                        project, task, through={path.parent.name: cursor}
+                    ),
+                )
+            yield f"id: {cursor}\ndata: {json.dumps(event)}\n\n".encode()
             if event.get("event") == "done":
                 return
         if not alive():
-            if records(path, offset)[0]:
+            if any(e["seq"] > cursor for e in protocol.events(path.parent)):
                 continue
             yield b"event: closed\ndata: {}\n\n"
             return
@@ -168,6 +194,12 @@ def vendor_asset(path):
     if not mime or file.is_symlink() or not file.is_file():
         return None
     return file, mime
+
+
+def run_task(info):
+    """A run's frozen task config; legacy runs stored only the task name."""
+    task = info.get("task") if isinstance(info, dict) else None
+    return task if isinstance(task, dict) else None
 
 
 class App(ThreadingHTTPServer):
@@ -428,7 +460,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        if mime.startswith("image/"):
+            self.send_header(
+                "Content-Security-Policy",
+                "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            )
         if download:
+            download = re.sub(r"[^A-Za-z0-9_.-]", "_", str(download))
             self.send_header(
                 "Content-Disposition", f'attachment; filename="{download}"'
             )
@@ -479,11 +517,110 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json(self.server.detail(project))
                 if len(parts) >= 5 and parts[3] == "runs":
                     run = self.server.run_path(project, parts[4])
+                    view = None
+                    if len(parts) == 5 or (
+                        len(parts) >= 6
+                        and parts[5]
+                        in ("artifacts", "records", "ledger.csv", "bundle.zip")
+                    ):
+                        view = protocol.snapshot(
+                            run,
+                            run_task(self.server.info(run))
+                            or self.server.task(project),
+                        )
+                    if len(parts) == 6 and parts[5] == "artifacts":
+                        artifacts = view["artifacts"]
+                        for key in ("experiment", "hypothesis_id", "kind", "role"):
+                            if key in query:
+                                artifacts = [
+                                    a
+                                    for a in artifacts
+                                    if str(
+                                        a.get(
+                                            key,
+                                            a["owner"].get(key)
+                                            if isinstance(a.get("owner"), dict)
+                                            else None,
+                                        )
+                                    )
+                                    == query[key][0]
+                                ]
+                        return self.json(
+                            dict(
+                                protocol=1,
+                                watermark=view["watermark"],
+                                artifacts=artifacts,
+                            )
+                        )
+                    if len(parts) == 6 and parts[5] == "records":
+                        return self.json(
+                            dict(
+                                protocol=1,
+                                watermark=view["watermark"],
+                                records=view["records"],
+                            )
+                        )
+                    if len(parts) == 6 and parts[5] == "ledger.csv":
+                        return self.bytes(
+                            protocol.ledger_csv(view["records"]),
+                            "text/csv",
+                            download="ledger.csv",
+                        )
+                    if len(parts) == 6 and parts[5] == "bundle.zip":
+                        return self.bytes(
+                            protocol.bundle(run, view),
+                            "application/zip",
+                            download="research-bundle.zip",
+                        )
+                    if len(parts) == 7 and parts[5] == "artifacts":
+                        artifact = next(
+                            (
+                                a
+                                for a in reversed(view["artifacts"])
+                                if a.get("id") == parts[6]
+                                and (
+                                    "revision" not in query
+                                    or str(a.get("revision")) == query["revision"][0]
+                                )
+                            ),
+                            None,
+                        )
+                        if artifact is None:
+                            raise ValueError("Artifact not found")
+                        content = protocol.artifact_content(run, artifact)
+                        if query.get("rows"):
+                            rows = protocol.data_rows(content, artifact["mime"])
+                            maximum = min(500, max(0, int(query["rows"][0])))
+                            return self.json(
+                                dict(
+                                    rows=rows[:maximum],
+                                    total=len(rows),
+                                    columns=artifact.get("columns", {}),
+                                    watermark=view["watermark"],
+                                )
+                            )
+                        download = (
+                            query.get("download") == ["1"]
+                            or artifact["kind"] not in protocol.KINDS
+                            or artifact["kind"] == "file"
+                        )
+                        return self.bytes(
+                            content,
+                            artifact["mime"]
+                            if not download
+                            else "application/octet-stream",
+                            download=Path(artifact["path"]).name if download else None,
+                        )
                     if len(parts) == 5:
                         return self.json(
                             {
                                 "run": self.server.info(run),
-                                "events": jsonl(run, "events.jsonl"),
+                                "events": view["events"],
+                                "watermark": view["watermark"],
+                                "artifacts": view["artifacts"],
+                                "records": view["records"],
+                                "protocol": 1,
+                                "legacy": view["legacy"],
                                 "files": [
                                     p.name
                                     for p in sorted(run.iterdir())
@@ -517,7 +654,13 @@ class Handler(BaseHTTPRequestHandler):
                         )
                         if not math.isfinite(speed) or speed < 0 or speed > 1000:
                             raise ValueError("Invalid replay speed.")
-                        after = max(0, int(self.headers.get("Last-Event-ID", "0")))
+                        after = max(
+                            0,
+                            int(
+                                self.headers.get("Last-Event-ID")
+                                or query.get("after", ["0"])[0]
+                            ),
+                        )
                         path = safe_path(run, "events.jsonl", exists=False)
                         self.stream_headers()
                         for frame in event_stream(
@@ -528,6 +671,8 @@ class Handler(BaseHTTPRequestHandler):
                                 self.server.active(run)
                                 or (not speed and str(run) not in self.server.processes)
                             ),
+                            project=project,
+                            task=self.server.task(project),
                         ):
                             self.wfile.write(frame)
                             self.wfile.flush()

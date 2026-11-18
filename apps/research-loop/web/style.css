@@ -1606,7 +1606,7 @@ summary:hover { color:var(--blue); }
 #hypothesis-form label { font-size:14px; font-weight:600; margin-bottom:8px; }
 #hypothesis-form textarea { width:100%; margin-bottom:10px; }
 .experiment-rail { grid-template-rows:auto minmax(100px,.8fr) minmax(180px,1fr); }
-.hypothesis-rail { padding:16px 18px; border-bottom:1px solid var(--rule); }
+.hypothesis-rail { min-height:0; max-height:360px; overflow:auto; overscroll-behavior:contain; padding:16px 18px; border-bottom:1px solid var(--rule); }
 .hypothesis-rail h2 { font-size:16px; margin-bottom:12px; }
 .hypothesis-group { padding:12px 0; border-bottom:1px solid var(--rule); }
 .hypothesis-group summary { font-size:13px; cursor:pointer; }
@@ -1635,3 +1635,40 @@ summary:hover { color:var(--blue); }
 .legend .kept-key:before,.legend .refuted-key:before,.legend .discard-key:before { background:transparent; border-width:2px; }
 .legend .kept-key:before { border-color:var(--supported); }
 .legend .refuted-key:before { border-color:var(--refuted); }
+
+/* Protocol artifacts share the existing type, controls and surface palette. */
+.hypothesis-row details { margin:0; border:0; }
+.hypothesis-row summary { padding:0; }
+.legend .kept-key:before { border:2px solid var(--supported); background:var(--supported); }
+.artifact-browser { min-width:0; margin-top:16px; }
+.current-round:has(.artifact-browser:not([hidden])) { overflow:hidden; }
+.current-round:has(.artifact-browser:not([hidden])) .curve-figure { display:none; }
+.current-round .artifact-browser { min-height:0; max-height:100%; margin-top:0; }
+.artifact-tabs { position:sticky; top:0; z-index:2; background:var(--surface); display:flex; gap:4px; border-bottom:1px solid var(--rule); margin-bottom:16px; }
+.artifact-tabs button { border:0; border-radius:0; background:transparent; color:var(--muted); padding:10px 12px; }
+.artifact-tabs [aria-selected="true"] { color:var(--ink); box-shadow:inset 0 -3px var(--ink); background:var(--canvas); }
+.artifact-entry { margin-bottom:24px; min-width:0; }
+.artifact-entry h3 { font-size:15px; margin:0; overflow-wrap:anywhere; }
+.artifact-entry .section-heading { margin-bottom:12px; }
+.artifact-entry pre { max-height:320px; background:var(--canvas); padding:12px; margin:8px 0; }
+.artifact-entry>a { display:inline-block; margin-top:8px; font-size:13px; }
+.artifact-entry small { display:block; }
+.artifact-table { font-variant-numeric:tabular-nums; }
+.artifact-table th button { color:var(--ink); background:transparent; border:0; padding:0; text-align:left; }
+.artifact-table td { white-space:nowrap; }
+.artifact-table .table-scroll { max-height:360px; }
+.artifact-image { display:block; width:100%; max-height:360px; object-fit:contain; }
+.artifact-chart { width:100%; height:auto !important; margin:8px 0 !important; }
+.log-controls { display:flex; align-items:flex-end; flex-wrap:wrap; gap:12px; }
+.log-search { flex:1; min-width:180px; }
+.log-tail { display:flex; flex-direction:row; align-items:center; gap:8px; padding-bottom:10px; font-size:13px; white-space:nowrap; }
+.loop-log summary { cursor:pointer; font-weight:600; margin-bottom:12px; }
+.log-tail input { width:auto; }
+.compare-picker { margin-top:16px; }
+.compare-pair { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; margin-top:20px; }
+.compare-pair h3 { font-size:14px; }
+.run-report { padding:20px 0; border-top:1px solid var(--rule); margin:0 0 24px; max-width:75ch; }
+.hypothesis-conclusion { padding:12px 0; font-weight:400; }
+@media (max-width:700px) { .compare-pair { grid-template-columns:1fr; } .artifact-tabs { overflow-x:auto; } }
+.experiment-attachments { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:8px; max-height:120px; overflow:auto; }
+.experiment-attachments a { font-size:12px; }

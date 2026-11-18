@@ -125,9 +125,10 @@ Each hypothesis expands into experiments with change, value, Δ, experiment verd
 and selection linking to code/diff. Cross-run experiments link to their own run.
 The learned section groups supported, refuted, and inconclusive hypotheses
 deterministically. Open claims remain untested/testing. The same quiet conclusion
-rule appears above the ledger. Any beyond-noise improvement supports a claim;
-after N completed attempts (task default 2), no improvement refutes it unless
-every attempt crashed, which is inconclusive. Failed edits count as crashes.
+rule appears above the ledger. The versioned Python reducer supplies statuses. Complete improvements support
+a claim; conflicting complete results are inconclusive. At the experiment limit
+or run end, worse evidence refutes, while only no-effect, crashed or incomplete
+evidence is inconclusive. Failed edits count as crashes.
 Legacy experiments dedupe by identical hypothesis text without altering artifacts. Missing artifacts
 have explicit empty/error states. Code and diff start collapsed and scroll inside
 their disclosures. Ledger headers stick within the scrolling table, verdicts
@@ -178,3 +179,28 @@ launch in this environment and the Chromium wrapper targets a missing executable
 rendered viewport fit, layout shift, font metrics, keyboard appearance, mobile,
 and screen-reader behavior remain unverified. No application server or live run
 was changed for verification.
+
+
+## Protocol 1 artifact views
+
+The selected experiment keeps the current copy/measurement split. Its measurement
+column hosts Chart · Data · Code · Log · Notes tabs, only when present, using the
+existing palette and controls. Tabs remain visible while their content scrolls;
+arrow keys, Home and End navigate them. Live journal measurements remain visible
+until immutable seed charts are finalized. Results includes the same browser,
+run reports above the ledger, run-level attachments, and conclusion reports and
+artifact links within expanded hypotheses. Public claim labels are H1, H2….
+Hypothesis details have no top border/margin inside table cells. The Improved
+legend marker has an explicit solid border and fill.
+
+CSV/flat JSONL previews contain up to 500 sortable rows and show units/types.
+Logs offer search and a last-200-lines toggle, with escaped monospace text.
+Reports use the existing Markdown/KaTeX renderer; images use img. Chart roles
+provide two-experiment comparison using declarative SVG marks, log scales, bands
+and reference lines. Unknown or invalid envelopes become warned downloads.
+Download all exports every revision, envelopes, records, journal and protocol.
+
+Protocol interaction checks run in Node and a temporary DOM fixture. Chrome still
+aborts at startup in this sandbox; the added artifact layouts have not received
+browser screenshot or viewport verification. Existing screenshots, layout tokens,
+responsive grid rules and craft guidance remain the visual reference.

@@ -2,12 +2,12 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const colors = {improved:'#176345',worse:'#a33432',supported:'#176345',refuted:'#a33432',crashed:'#a33432','no effect':'#795919',baseline:'#526476',testing:'#285e89'};
-const state = {slug:null, stage:'discuss', data:null, run:null, rounds:new Map(), selected:0, best:0, follow:true, replay:false, speed:8, source:null, files:[], projects:[], templates:[], domain:'', chatBusy:false, chatDraft:null, generation:0, loadingRun:null};
+const state = {slug:null, stage:'discuss', data:null, run:null, rounds:new Map(), selected:0, best:0, follow:true, replay:false, speed:8, source:null, files:[], artifacts:[], watermark:0, projects:[], templates:[], domain:'', chatBusy:false, chatDraft:null, generation:0, loadingRun:null};
 let noticeTimer, paintPending = false, artifactKey = '', artifactGeneration = 0;
 const artifactText = {code:null,diff:null};
-function notice(message='') {
+function notice(message='', duration=8000) {
   $('notice').textContent = message; clearTimeout(noticeTimer);
-  if (message) noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 8000);
+  if (message) noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, duration);
 }
 async function api(path, data, method='POST') {
   const response = await fetch(path, data === undefined ? {} : {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
@@ -62,6 +62,9 @@ function getRound(number) {
 }
 function ledgerRows() { return [...state.rounds.values()].filter(r => r.round===0 ? Number.isFinite(r.value) : Boolean(r.hypothesis || r.verdict !== 'testing')).sort((a,b)=>a.round-b.round); }
 function apply(event, paint=true) {
+  if(event.seq && event.seq<=state.watermark)return;
+  if(event.seq)state.watermark=event.seq;
+  if(Array.isArray(event.hypotheses))state.data.hypotheses=event.hypotheses;
   const r = getRound(event.round ?? 0);
   if(event.error) {
     r.errorSeeds ??= {};
@@ -70,6 +73,10 @@ function apply(event, paint=true) {
     for(const seed of event.seed===undefined?active:[String(event.seed)])if(!seeds.includes(seed))seeds.push(seed);
   }
   switch(event.event) {
+    case 'artifact': if(!state.artifacts.some(a=>a?.id===event.artifact?.id && a?.revision===event.artifact?.revision))state.artifacts.push(event.artifact); break;
+    case 'experiment_record': r.record=event.record; break;
+    case 'result_record': r.resultRecord=event.record; break;
+    case 'research_ended': state.run.evidenceEnded=true;if(paint && !state.replay)refreshFiles(); break;
     case 'baseline': if(paint && !state.replay)refreshFiles(); Object.assign(r,{change:'Original settings',hypothesis:'Baseline',value:event.result?.[event.metric || state.data.task.metric],verdict:'baseline',result:event.result}); break;
     case 'idea':
       Object.assign(r,{parent:state.best},event); if(state.follow) state.selected=r.round;
@@ -80,16 +87,19 @@ function apply(event, paint=true) {
       break;
     case 'code': case 'fix': r.diffs.push({kind:event.event,diff:event.diff || ''}); r.verdict='testing'; break;
     case 'run_start': r.seeds[event.seed]='running'; if(state.follow) state.selected=r.round; break;
-    case 'curve': r.curves.push(event); break;
-    case 'run_end': r.seeds[event.seed]='complete'; r.seedResults ??= []; r.seedResults.push({seed:event.seed,...event.result}); break;
+    case 'curve': r.curves.push(event.point ? {...event,...event.point} : event);if(paint && state.legacy && !state.replay && Date.now()-(state.legacyRefresh || 0)>1000){state.legacyRefresh=Date.now();refreshFiles();} break;
+    case 'run_end': if(paint && !state.replay)refreshFiles(); r.seeds[event.seed]='complete'; r.seedResults ??= []; r.seedResults.push({seed:event.seed,...event.result}); break;
     case 'run_error': r.errors.push(event.error || 'Experiment failed'); markCrashed(r,event.seed); break;
     case 'edit_rejected': r.errors.push('Edit rejected: '+event.reason); break;
     case 'hypothesis_error': case 'idea_error': r.errors.push(event.error); notice(`Experiment ${event.round}: ${event.error}`); break;
     case 'result': Object.assign(r,event,{verdict:experimentVerdict(event.verdict)}); if(event.reason && !r.errors.includes(event.reason))r.errors.push(event.reason); if(event.error && r.errors.at(-1)!==event.error)r.errors.push(event.error); if(event.verdict==='crashed')markCrashed(r,event.seed); r.value ??= event.result?.[state.data.task.metric]; if(experimentVerdict(event.verdict)==='improved') state.best=r.round; if(paint && !state.replay)refreshFiles(); break;
     case 'goal_reached': notice('Goal reached. The measured result is recorded.'); break;
-    case 'done':
-      state.run.active=false; state.run.finished=true; state.data.runs.forEach(run=>{if(run.id===state.run.id)run.active=false;}); state.source?.close(); notice(event.reason || 'Run complete. Explore the ledger and artifacts in Results.');
+    case 'done': {
+      const completedLive=paint && state.run.active && !state.replay;
+      state.run.active=false; state.run.finished=true; state.data.runs.forEach(run=>{if(run.id===state.run.id)run.active=false;}); state.source?.close();
+      if(completedLive)notice(event.reason || 'Run complete. Explore the ledger and artifacts in Results.',6000);
       if(paint) refreshFiles(); break;
+    }
   }
   if(paint && ['baseline','result'].includes(event.event))r.arrived=Date.now();
   if(paint) scheduleRender();
@@ -145,7 +155,7 @@ function stageURL(stage, overrides={}) {
 function markdown(text) {
   // Escape first. No HTML, links, images, or executable attributes are accepted.
   const lines=esc(text).split('\n'); let html='', para=[], list=null, code=null;
-  const inline=s=>s.replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  const inline=s=>s.replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\[([^\]]+)\]\(([^\s)]+)\)/g,(all,label,url)=> /^(?:https?:\/\/|\/(?![\/\\]))/i.test(url) && !/[\\\x00-\x20]/.test(url) ? `<a href="${url}" rel="noopener noreferrer">${label}</a>` : label);
   const flush=()=>{if(para.length){html+='<p>'+inline(para.join(' '))+'</p>';para=[];} if(list){html+=`</${list}>`;list=null;}};
   for(const line of lines) {
     if(line.startsWith('```')) {flush(); if(code!==null){html+='<pre><code>'+code.join('\n')+'</code></pre>';code=null;}else code=[]; continue;}
@@ -282,7 +292,7 @@ async function route() {
   if(target.home){state.source?.close();state.source=null;state.slug=null;state.loadingRun=null;$('chat-panel').hidden=true;$('home').hidden=false;$('project').hidden=true;$('title').textContent='Projects';$('project-domain').hidden=true;document.title='Projects · Research Loop';try{await loadHome();}catch(e){notice(e.message);$('project-list').textContent='Projects could not load. Reload the page to retry.';}return;}
   $('home').hidden=true;$('project').hidden=false;
   const changed=target.slug!==oldSlug;
-  if(changed){state.programDirty=false;state.programEditing=false;state.chatDraft=null;state.source?.close();state.source=null;state.run=null;state.data=null;state.rounds=new Map();state.files=[];state.loadingRun=null;artifactKey='';artifactGeneration++;$('program').value='';$('title').textContent='Loading project…';}
+  if(changed){state.programDirty=false;state.programEditing=false;state.chatDraft=null;state.source?.close();state.source=null;state.run=null;state.data=null;state.rounds=new Map();state.files=[];state.artifacts=[];state.watermark=0;state.protocol=null;state.loadingRun=null;artifactKey='';artifactGeneration++;$('program').value='';$('title').textContent='Loading project…';}
   state.slug=target.slug;state.stage=target.stage;
   try {
     if(changed || !state.data) {
@@ -334,19 +344,21 @@ function renderRunPicker() {
   if(state.run)$('runs').value=state.run.id;
 }
 async function loadRun(id,generation,selected=null) {
-  state.source?.close();state.source=null;state.rounds=new Map();state.selected=selected??0;state.follow=selected===null;state.best=0;state.files=[];artifactKey='';artifactGeneration++;
+  state.source?.close();state.source=null;state.rounds=new Map();state.selected=selected??0;state.follow=selected===null;state.best=0;state.files=[];state.artifacts=[];state.watermark=0;artifactKey='';artifactGeneration++;
   if(!id){state.run=null;return;}
   state.loadingRun=id;
   const detail=await api(projectAPI(`/runs/${encodeURIComponent(id)}`));
   if(generation!==state.generation)return;
-  state.loadingRun=null;state.run=detail.run;state.files=detail.files;renderRunPicker();
+  state.loadingRun=null;state.run=detail.run;state.files=detail.files;state.artifacts=state.replay?[]:(detail.artifacts || []);state.protocol=detail.protocol;state.legacy=detail.legacy;$('run-report').hidden=true;$('run-report').innerHTML='';for(const host of [$('experiment-artifacts'),$('result-artifacts'),$('run-artifacts')])host.dataset.key='';renderRunPicker();
+  if(!state.replay && (detail.protocol===1 || !state.run.active))for(const event of detail.events)apply(event,false);
+  state.watermark=state.replay?0:(detail.watermark || state.watermark);
   if(state.run.active || state.replay) {
-    const suffix=state.replay ? `?replay=1&speed=${state.speed}` : '';
+    const suffix=state.replay ? `?replay=1&speed=${state.speed}` : `?after=${state.watermark}`;
     const source=new EventSource(projectAPI(`/runs/${encodeURIComponent(id)}/events${suffix}`));state.source=source;
     source.onmessage=message=>{if(state.source!==source)return;apply(JSON.parse(message.data));};
     source.addEventListener('closed',()=>{if(state.source!==source)return;source.close();state.run.active=false;state.data.runs.forEach(run=>{if(run.id===state.run.id)run.active=false;});renderRun();notice('Run closed. Inspect loop.log if it ended before a verdict.');});
     source.onerror=()=>{if(state.source===source && state.run.active)notice('Event connection interrupted. Reconnecting…');};
-  } else {for(const event of detail.events)apply(event,false);}
+  }
 }
 async function refreshFiles() {
   if(!state.run)return;
@@ -355,6 +367,7 @@ async function refreshFiles() {
     const data=await api(projectAPI(`/runs/${encodeURIComponent(id)}`));
     if(slug!==state.slug || id!==state.run?.id)return;
     state.files=data.files;
+    state.artifacts=[...new Map([...(state.artifacts || []),...(data.artifacts || [])].map((a,i)=>[(a?.id || 'invalid-'+i)+':'+a?.revision,a])).values()];
     const run=state.data.runs.find(r=>r.id===id);if(run)Object.assign(run,data.run,{active:state.run.finished ? false : data.run.active});
     const project=await api(projectAPI());
     if(slug!==state.slug || id!==state.run?.id)return;
@@ -364,9 +377,10 @@ async function refreshFiles() {
 }
 function hypothesisStatus(experiments, task=state.data.task) {
   const verdicts=experiments.map(e=>experimentVerdict(e.verdict));
+  if(verdicts.includes('improved') && verdicts.includes('worse'))return 'inconclusive';
   if(verdicts.includes('improved'))return 'supported';
   const finished=verdicts.filter(v=>['worse','no effect','crashed'].includes(v));
-  if(finished.length>=(task.experiments_per_hypothesis ?? 2))return finished.every(v=>v==='crashed')?'inconclusive':'refuted';
+  if(finished.length>=(task.experiments_per_hypothesis ?? 2))return finished.includes('worse')?'refuted':'inconclusive';
   return experiments.length?'testing':'untested';
 }
 function legacyHypothesisId(statement) {
@@ -385,8 +399,7 @@ function hypothesisGroups() {
   }
   // Older servers still expose a project queue, including the loop already in memory.
   for(const [i,entry] of (state.data?.ideas || []).entries())if(![...groups.values()].some(h=>h.statement===entry.hypothesis))groups.set('pending-'+i,{id:'pending-'+i,statement:entry.hypothesis,source:'you',experiments:[]});
-  let legacy=0;
-  return [...groups.values()].map(h=>({...h,label:h.id.startsWith('legacy-')?'hL'+(++legacy):h.id,status:hypothesisStatus(h.experiments)}));
+  return [...groups.values()].map((h,i)=>({...h,label:h.label || 'H'+(i+1),status:state.protocol===1 && h.status ? h.status : hypothesisStatus(h.experiments)}));
 }
 function hypothesisFor(r) { return hypothesisGroups().find(h=>h.experiments.some(e=>e.round===r.round && e.run===state.run?.id)); }
 function hypothesisColor(h) {
@@ -400,7 +413,7 @@ function hypothesisCaption(r) {
   const limit=state.data.task.experiments_per_hypothesis ?? 2, total=h.id.startsWith('legacy-')?Math.max(limit,h.experiments.length):limit;
   return `${h.label || h.id} · ${h.statement} · experiment ${index} of ${total}`;
 }
-function hypothesisRule() { return `Supported after any improvement beyond noise; after ${state.data.task.experiments_per_hypothesis ?? 2} experiments without improvement: refuted, or inconclusive if all crashed.`; }
+function hypothesisRule() { return `Complete improvements support a claim; conflicting complete results are inconclusive. After ${state.data.task.experiments_per_hypothesis ?? 2} experiments or when the run ends: worse evidence refutes; no effect, missing or crashed evidence alone is inconclusive.`; }
 function pill(status) { return `<span class="verdict-pill ${statusClass(status)}">${esc(status)}</span>`; }
 function changeMarkup(r) {
   const label=changeLabel(r), code=/\b(?:for|return|def|import)\b|\b[A-Z][A-Z_]+\b|(?:np|scipy)\.|[=(){}]|\w+_\w+/.test(label);
@@ -440,6 +453,7 @@ function controls() {
   $('pause').disabled=state.replay || !active || state.run?.paused;
   $('resume').disabled=state.replay || !active || !state.run?.paused;
   $('stop').disabled=state.replay || !active;
+  for(const id of ['run-actions','run-model','run-control-note'])$(id).hidden=!active || state.replay;
   $('send').disabled=state.replay || state.chatBusy || !state.data;
   $('queue-message').disabled=state.replay || !state.data;
   $('add-hypothesis').disabled=state.replay || !state.data;
@@ -637,6 +651,11 @@ function renderCurrent() {
   $('round-error-details').hidden=!error;$('round-traceback').textContent=error;
   $('curve-label').textContent=state.data.task.curve ? `${state.data.task.curve.x_label || 'Steps'} · selected experiment` : 'Selected experiment · per-seed measurements';
   drawCurve($('curve'),r);
+  renderArtifactPanels().catch(e=>notice(e.message));
+}
+function experimentArtifactLinks(r) {
+  const items=r.run===state.run?.id ? latestArtifacts().filter(a=>a.owner?.experiment===r.round) : [];
+  return items.length ? `<div class="experiment-attachments">${items.map(a=>`<a href="${artifactURL(a,true)}">${esc(a.title || a.kind)}</a>`).join('')}</div>` : r.run!==state.run?.id ? `<a href="${esc(stageURL('results',{run:r.run,round:r.round}))}">Inspect artifacts</a>` : '';
 }
 function renderResults() {
   const rows=ledgerRows(), best=state.rounds.get(state.best), task=state.data.task;
@@ -644,7 +663,7 @@ function renderResults() {
   $('result-location').textContent=state.run ? `projects/${state.slug}/runs/${state.run.id}/` : `projects/${state.slug}/ · start a run to collect reproducible artifacts`;
   const bestFile='best_'+task.editable;
   const available=state.files.includes(bestFile) || state.files.includes(`round${state.best}_${task.editable}`);
-  $('downloads').innerHTML=state.run ? (available ? `<a class="download" href="${fileURL(bestFile,true)}">Download best ${esc(task.editable)}</a>` : '')+['events.jsonl','loop.log'].filter(f=>state.files.includes(f)).map(f=>`<a href="${fileURL(f,true)}">${f}</a>`).join('') : '';
+  $('downloads').innerHTML=state.run ? `<a class="download" href="${projectAPI(`/runs/${encodeURIComponent(state.run.id)}/bundle.zip`)}">Download all</a><a href="${projectAPI(`/runs/${encodeURIComponent(state.run.id)}/ledger.csv`)}">Ledger CSV</a>`+(available ? `<a class="download" href="${fileURL(bestFile,true)}">Download best ${esc(task.editable)}</a>` : '')+['events.jsonl','loop.log'].filter(f=>state.files.includes(f)).map(f=>`<a href="${fileURL(f,true)}">${f}</a>`).join('') : '';
   $('metric-heading').textContent='Best '+metricLabel().toLowerCase()+(task.unit?' ('+task.unit+')':'');
   const reference=task.reference, reached=Number.isFinite(best?.value) && Number.isFinite(reference?.value) && Math.abs(best.value-reference.value)<=(task.noise || 0);
   const reachedRound=reached ? rows.find(r=>(r.round===0 || r.verdict==='improved') && Number.isFinite(r.value) && Math.abs(r.value-reference.value)<=(task.noise || 0)) : null;
@@ -653,13 +672,14 @@ function renderResults() {
   $('ledger-note').textContent=hypothesisRule()+' Evidence spans project runs. Best result includes all measured experiments; Δ compares each experiment with its kept parent.';
   const focused=document.activeElement?.dataset?.ledger;
   const claims=hypothesisGroups();
-  const experimentRows=experiments=>experiments.map(r=>`<tr class="${state.selected===r.round && r.run===state.run?.id?'selected-row ':''}${r.round===state.best && r.run===state.run?.id?'best-row':''}"><td>${r.run===state.run?.id?`<button type="button" data-ledger="${r.round}" aria-pressed="${state.selected===r.round}" title="${esc(changeLabel(r))}">${changeMarkup(r)}</button>`:experimentLink(r)}<small class="muted">Experiment ${r.round} · ${esc(r.run)}</small></td><td>${format(r.value ?? r.result?.[task.metric])}</td><td class="${deltaClass(r.value-r.best_before,task)}">${Number.isFinite(r.value) && Number.isFinite(r.best_before)?format(r.value-r.best_before,task,true):'—'}</td><td>${pill(experimentVerdict(r.verdict) || 'testing')}</td></tr>`).join('');
+  const experimentRows=experiments=>experiments.map(r=>`<tr class="${state.selected===r.round && r.run===state.run?.id?'selected-row ':''}${r.round===state.best && r.run===state.run?.id?'best-row':''}"><td>${r.run===state.run?.id?`<button type="button" data-ledger="${r.round}" aria-pressed="${state.selected===r.round}" title="${esc(changeLabel(r))}">${changeMarkup(r)}</button>`:experimentLink(r)}<small class="muted">Experiment ${r.round} · ${esc(r.run)}</small>${experimentArtifactLinks(r)}</td><td>${format(r.value ?? r.result?.[task.metric])}</td><td class="${deltaClass(r.value-r.best_before,task)}">${Number.isFinite(r.value) && Number.isFinite(r.best_before)?format(r.value-r.best_before,task,true):'—'}</td><td>${pill(experimentVerdict(r.verdict) || 'testing')}</td></tr>`).join('');
   const html=claims.map(h=>{
     const values=h.experiments.map(e=>e.value ?? e.result?.[task.metric]).filter(Number.isFinite);
     const bestValue=values.length?(task.direction==='min'?Math.min(...values):Math.max(...values)):null;
-    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div></details></td><td>${pill(h.status)}</td><td>${format(bestValue)}</td><td>${h.experiments.length}</td></tr>`;
+    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.label || h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div><div class="hypothesis-conclusion" data-hypothesis-report="${esc(h.id)}" hidden></div></details></td><td>${pill(h.status)}</td><td>${format(bestValue)}</td><td>${h.experiments.length}</td></tr>`;
   }).join('') || '<tr><td colspan="4" class="empty">No results yet. Add a hypothesis in Discuss, then start experiments.</td></tr>';
   if($('ledger').innerHTML!==html){
+    $('result-artifacts').dataset.key='';
     const open=[...$('ledger').querySelectorAll('details[open]')].map(d=>d.dataset.hypothesis);
     $('ledger').innerHTML=html;
     for(const id of open)for(const d of $('ledger').querySelectorAll('details'))if(d.dataset.hypothesis===id)d.open=true;
@@ -676,6 +696,7 @@ function renderResults() {
   $('diff-disclosure').hidden=!state.run || r.round===0;
   $('code-disclosure').hidden=!state.run;
   if(state.stage==='results' && state.run)loadArtifacts(r);
+  renderArtifactPanels().catch(e=>notice(e.message));
 }
 async function loadArtifacts(r) {
   const key=`${state.slug}/${state.run.id}/${r.round}/${state.files.length}`;
@@ -750,6 +771,220 @@ function selectProgress(event){const target=event.target.closest('[data-round]')
 $('progress').onclick=selectProgress;
 $('progress').onkeydown=event=>{if(event.key==='Enter' || event.key===' '){event.preventDefault();selectProgress(event);}};
 $('ledger').onclick=event=>{const target=event.target.closest('[data-ledger]');if(!target)return;state.selected=Number(target.dataset.ledger);state.follow=false;location.hash=stageURL('results',{round:state.selected});renderRun();$('detail-title').focus({preventScroll:true});};
+// Protocol-1 artifacts: all project output is rendered by kind and placement owner.
+const artifactCache=new Map();
+let artifactPanelGeneration=0;
+const artifactTabs=new Map();
+function artifactURL(a, download=false, run=a?.owner?.run || state.run?.id) {
+  return projectAPI(`/runs/${encodeURIComponent(run)}/artifacts/${encodeURIComponent(a.id || '')}`)+`?revision=${encodeURIComponent(a.revision || 1)}`+(download?'&download=1':'');
+}
+function safeArtifact(a) {
+  const kinds=['code','report','data','chart','image','log','file'],o=a?.owner;
+  const integer=v=>Number.isInteger(v) && v>=0;
+  const ownerValid=o && typeof o==='object' && typeof o.run==='string' && ['run','hypothesis','experiment','seed'].includes(o.scope) && Object.keys(o).every(k=>['scope','run','hypothesis_id','experiment','seed','attempt'].includes(k)) && (o.scope==='run'?Object.keys(o).length===2:o.scope==='hypothesis'?typeof o.hypothesis_id==='string' && !('experiment' in o) && !('seed' in o):integer(o.experiment) && (o.scope==='seed'?integer(o.seed):!('seed' in o)));
+  const valid=a && a.protocol===1 && typeof a.id==='string' && /^[A-Za-z0-9_-]{1,120}$/.test(a.id) && Number.isInteger(a.revision) && a.revision>0 && typeof a.sha256==='string' && /^[a-f0-9]{64}$/.test(a.sha256) && Number.isFinite(a.bytes) && a.bytes>=0 && typeof a.path==='string' && !a.path.split('/').includes('..') && !a.path.startsWith('/') && typeof a.title==='string' && typeof a.mime==='string' && ['harness','script','model'].includes(a.producer) && ownerValid && Array.isArray(a.refs);
+  return {...(a || {}),owner:ownerValid?o:{scope:'run',run:state.run?.id || ''},kind:valid && kinds.includes(a.kind)?a.kind:'file',warning:Boolean(a?.warning) || !valid || !kinds.includes(a?.kind)};
+}
+
+function latestArtifacts() {
+  return [...new Map((state.artifacts || []).map((a,i)=>[a?.id || "invalid-"+i,a])).values()].map(safeArtifact);
+}
+async function artifactFetch(a, suffix='', run=a?.owner?.run || state.run?.id) {
+  const url=artifactURL(a,false,run)+suffix, key=url+'/'+a.sha256;
+  if(!artifactCache.has(key)) {
+    const pending=fetch(url).then(async response=>{if(!response.ok)throw new Error('Artifact unavailable. Download the bundle to inspect its records.');return suffix.includes('rows=')?response.json():response.text();});
+    artifactCache.set(key,pending);
+    pending.catch(()=>artifactCache.delete(key));
+    if(artifactCache.size>100)artifactCache.delete(artifactCache.keys().next().value);
+  }
+  return artifactCache.get(key);
+}
+function artifactLink(a) {
+  return `<a href="${artifactURL(a,true)}">Download ${esc(a.title || 'file')}</a>${a.warning?'<small class="muted">Unrecognized artifact; download available.</small>':''}`;
+}
+function tableMarkup(rows, columns={}, total=rows.length) {
+  const fields=[...new Set(rows.flatMap(r=>Object.keys(r)))];
+  return `<p class="muted">${Math.min(rows.length,500)} of ${total} rows</p><div class="table-scroll"><table class="artifact-table"><thead><tr>${fields.map(f=>`<th><button type="button" data-sort="${esc(f)}">${esc(f)}${columns[f]?.unit?' ('+esc(columns[f].unit)+')':''}</button>${columns[f]?.type?`<small class="muted">${esc(columns[f].type)}</small>`:''}</th>`).join('')}</tr></thead><tbody>${rows.slice(0,500).map(r=>`<tr>${fields.map(f=>`<td>${esc(r[f] ?? '—')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function chartMarkup(spec, rows) {
+  // Reject everything outside rl-chart/1 before constructing SVG. All text is escaped.
+  const validChannel=(v,color=false)=>v && typeof v==='object' && typeof v.field==='string' && Object.keys(v).every(k=>(color?['field']:['field','title','scale']).includes(k)) && (!v.scale || Object.keys(v.scale).length===1 && ['linear','log'].includes(v.scale.type));
+  if(!spec || spec.$schema!=='rl-chart/1' || !['line','point','bar'].includes(spec.mark) || !spec.data || Object.keys(spec.data).join(',')!=='artifact' || typeof spec.data.artifact!=='string' || Object.keys(spec).some(k=>!['$schema','mark','data','encoding','layer','band','reference'].includes(k)))throw new Error('Unsupported chart specification. Download its source to inspect it.');
+  const layers=spec.layer?.length ? spec.layer.map(l=>({...spec,...l})) : [spec];
+  if(spec.layer && (!Array.isArray(spec.layer) || spec.layer.length>12 || spec.layer.some(l=>!l || Object.keys(l).some(k=>!['mark','encoding'].includes(k)))))throw new Error('Invalid chart layers');
+  for(const layer of [spec,...layers]) {
+    if(!['line','point','bar'].includes(layer.mark) || !layer.encoding?.x || !layer.encoding?.y || Object.entries(layer.encoding).some(([k,v])=>!['x','y','color'].includes(k) || !validChannel(v,k==='color')))throw new Error('Invalid chart encodings');
+  }
+  if(spec.band && (Object.keys(spec.band).sort().join(',')!=='high,low' || typeof spec.band.low!=='string' || typeof spec.band.high!=='string'))throw new Error('Invalid chart band');
+  if(spec.reference && (Object.keys(spec.reference).sort().join(',')!=='label,value' || !Number.isFinite(spec.reference.value) || typeof spec.reference.label!=='string'))throw new Error('Invalid chart reference');
+  const palette=['#285e89','#176345','#705187','#87601f','#984c46','#376b70'];
+  const xlog=spec.encoding.x.scale?.type==='log', ylog=spec.encoding.y.scale?.type==='log';
+  const numeric=v=>v!==null && v!=='' && Number.isFinite(Number(v));
+  const tx=v=>xlog?Math.log10(v):v, ty=v=>ylog?Math.log10(v):v;
+  const points=layers.flatMap(layer=>rows.filter(r=>numeric(r[layer.encoding.x.field]) && numeric(r[layer.encoding.y.field])).map(r=>[Number(r[layer.encoding.x.field]),Number(r[layer.encoding.y.field])])).filter(([a,b])=>(!xlog || a>0) && (!ylog || b>0));
+  if(!points.length)return '<p class="muted">No measured points for this chart.</p>';
+  const xs=points.map(p=>tx(p[0])),ys=points.map(p=>ty(p[1]));
+  if(spec.band)for(const r of rows)for(const f of [spec.band.low,spec.band.high])if(numeric(r[f]) && (!ylog || Number(r[f])>0))ys.push(ty(Number(r[f])));
+  if(spec.reference && (!ylog || spec.reference.value>0))ys.push(ty(spec.reference.value));
+  let xmin=xs.reduce((a,b)=>Math.min(a,b),Infinity),xmax=xs.reduce((a,b)=>Math.max(a,b),-Infinity),ymin=ys.reduce((a,b)=>Math.min(a,b),Infinity),ymax=ys.reduce((a,b)=>Math.max(a,b),-Infinity);
+  if(layers.some(l=>l.mark==='bar') && !ylog)ymin=Math.min(0,ymin);
+  if(xmin===xmax){xmin-=.5;xmax+=.5;}if(ymin===ymax){ymin-=.5;ymax+=.5;}
+  const x=v=>60+(tx(v)-xmin)/(xmax-xmin)*500,y=v=>230-(ty(v)-ymin)/(ymax-ymin)*180;
+  let html='<svg class="artifact-chart" viewBox="0 0 600 280" role="img" aria-label="'+esc(spec.encoding.y.title || spec.encoding.y.field)+'"><title>'+esc(spec.encoding.y.title || spec.encoding.y.field)+'</title>';
+  for(let i=0;i<=4;i++) {
+    const a=xmin+(xmax-xmin)*i/4,b=ymin+(ymax-ymin)*i/4;
+    html+=`<line x1="60" x2="560" y1="${230-i*45}" y2="${230-i*45}" stroke="#e1e7ec"/><text x="50" y="${234-i*45}" text-anchor="end" font-size="11" fill="#526476">${esc(Number((ylog?10**b:b).toPrecision(4)))}</text><text x="${60+i*125}" y="250" text-anchor="middle" font-size="11" fill="#526476">${esc(Number((xlog?10**a:a).toPrecision(4)))}</text>`;
+  }
+  let series=0;
+  for(const layer of layers) {
+    const {encoding,mark}=layer,groups=new Map();
+    for(const r of rows) {
+      const a=Number(r[encoding.x.field]),b=Number(r[encoding.y.field]);
+      if(!numeric(r[encoding.x.field]) || !numeric(r[encoding.y.field]) || xlog && a<=0 || ylog && b<=0)continue;
+      const key=encoding.color?String(r[encoding.color.field]):encoding.y.title || encoding.y.field;
+      if(!groups.has(key))groups.set(key,[]);groups.get(key).push([a,b,r]);
+    }
+    for(const [label,values] of groups) {
+      values.sort((a,b)=>a[0]-b[0]);const color=palette[series++%palette.length];
+      html+=`<g><title>${esc(label)}</title>`;
+      if(spec.band) {
+        const valid=values.filter(([, ,r])=>numeric(r[spec.band.low]) && numeric(r[spec.band.high]) && (!ylog || Number(r[spec.band.low])>0 && Number(r[spec.band.high])>0));
+        html+=`<polygon data-band="true" points="${[...valid.map(([a,,r])=>`${x(a)},${y(Number(r[spec.band.low]))}`),...valid.toReversed().map(([a,,r])=>`${x(a)},${y(Number(r[spec.band.high]))}`)].join(' ')}" fill="${color}" opacity=".12"/>`;
+      }
+      if(mark==='line' && values.length>1)html+=`<polyline data-mark="line" points="${values.map(([a,b])=>`${x(a)},${y(b)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="2"/>`;
+      else for(const [a,b] of values)html+=mark==='bar'?`<rect data-mark="bar" x="${x(a)-4}" y="${Math.min(y(b),y(ylog?10**ymin:0))}" width="8" height="${Math.max(1,Math.abs(y(b)-y(ylog?10**ymin:0)))}" fill="${color}"><title>${esc(label)}: ${b}</title></rect>`:`<circle data-mark="point" cx="${x(a)}" cy="${y(b)}" r="3" fill="${color}"><title>${esc(label)}: ${b}</title></circle>`;
+      html+='</g>';
+    }
+  }
+  if(spec.reference && (!ylog || spec.reference.value>0))html+=`<line x1="60" x2="560" y1="${y(spec.reference.value)}" y2="${y(spec.reference.value)}" stroke="#795919" stroke-dasharray="5 4"/><text x="560" y="${y(spec.reference.value)-5}" text-anchor="end" fill="#795919" font-size="11">${esc(spec.reference.label)}</text>`;
+  return html+`<text x="560" y="275" text-anchor="end" fill="#526476" font-size="12">${esc(spec.encoding.x.title || spec.encoding.x.field)}</text><text x="60" y="20" fill="#526476" font-size="12">${esc(spec.encoding.y.title || spec.encoding.y.field)}${spec.encoding.color?' · Colour: '+esc(spec.encoding.color.field):''}</text></svg>`;
+}
+async function artifactMarkup(input) {
+  const a=safeArtifact(input), download=artifactLink(a);
+  if(a.kind==='file')return download;
+  if(a.kind==='image') {
+    if(!['image/png','image/jpeg','image/svg+xml'].includes(a.mime))return artifactLink({...a,warning:true});
+    return `<img class="artifact-image" src="${artifactURL(a)}" alt="${esc(a.title)}" loading="lazy">${download}`;
+  }
+  if(a.kind==='data') {
+    const data=await artifactFetch(a,'&rows=500');
+    return tableMarkup(data.rows,data.columns,data.total)+download;
+  }
+  const text=await artifactFetch(a);
+  if(a.kind==='report')return `<div class="markdown-body">${markdown(text)}</div>${download}`;
+  if(a.kind==='code')return `<pre tabindex="0">${a.role==='diff'?diffMarkup(text).html:codeMarkup(text)}</pre><button type="button" class="secondary" data-artifact-copy="${esc(a.id)}">Copy source</button> ${download}`;
+  if(a.kind==='log') {
+    const lines=text.trimEnd().split('\n'),count=text?lines.length:0;
+    const body=`<div class="log-controls"><label class="log-search">Search log<input type="search" data-log-search placeholder="Find text…"></label><label class="log-tail"><input type="checkbox" data-log-tail checked> Last 200 lines</label></div><pre tabindex="0" data-log-body>${esc(lines.slice(-200).join('\n'))}</pre>${download}`;
+    return a.producer==='harness' && a.owner.scope==='run' ? `<details class="loop-log"><summary>Loop log · ${count} lines</summary>${body}</details>` : body;
+  }
+  if(a.kind==='chart') {
+    const spec=JSON.parse(text),data=latestArtifacts().find(d=>d.id===spec.data?.artifact && d.kind==='data');
+    if(!data || !a.refs.includes(data.id))throw new Error('Chart data reference is unavailable.');
+    const raw=await artifactFetch(data);
+    const rows=data.mime==='text/csv'?parseCSV(raw):raw.split('\n').filter(Boolean).map(line=>JSON.parse(line));
+    return chartMarkup(spec,rows)+download;
+  }
+  return download;
+}
+function parseCSV(text) {
+  const rows=[];let row=[],value='',quoted=false;
+  for(let i=0;i<text.length;i++) {
+    const c=text[i];
+    if(c==='"'){if(quoted && text[i+1]==='"'){value+='"';i++;}else quoted=!quoted;}
+    else if(c===',' && !quoted){row.push(value);value='';}
+    else if(c==='\n' && !quoted){row.push(value.replace(/\r$/,''));rows.push(row);row=[];value='';}
+    else value+=c;
+  }
+  if(row.length || value){row.push(value.replace(/\r$/,''));rows.push(row);}
+  const fields=rows.shift() || [];return rows.filter(r=>r.some(v=>v!=='')).map(r=>Object.fromEntries(fields.map((f,i)=>[f,r[i] ?? ''])));
+}
+function tabFor(a) { return ({chart:'Chart',image:'Chart',data:'Data',code:'Code',log:'Log',report:'Notes',file:'Notes'})[a.kind] || 'Notes'; }
+async function renderArtifactPanels() {
+  const all=latestArtifacts(), selected=all.filter(a=>a.owner?.experiment===state.selected && ['experiment','seed'].includes(a.owner.scope));
+  const hypothesisReports=(state.data?.hypotheses || []).flatMap(h=>(h.reports || []).slice(-1)).map(safeArtifact);
+  const current=getRound(state.selected), liveCurve=Boolean(state.data?.task.curve && current.curves.length && current.verdict==='testing');
+  const key=`${state.slug}/${state.run?.id}/${state.selected}/${liveCurve}/${[...all,...hypothesisReports].map(a=>a.id+':'+a.sha256).join(',')}`;
+  if(!all.some(a=>a.kind==='report' && a.role==='summary' && a.owner?.scope==='run')){$('run-report').hidden=true;$('run-report').innerHTML='';}
+  const hosts=[$('experiment-artifacts'),$('result-artifacts'),$('run-artifacts')];
+  if(hosts.every(h=>h.dataset.key===key)){
+    if(liveCurve)for(const host of hosts){const svg=host.querySelector('[data-live-curve]');if(svg)drawCurve(svg,current);}
+    return;
+  }
+  const generation=++artifactPanelGeneration;
+  for(const host of hosts) {
+    const runOwner=host.id==='run-artifacts',selection=runOwner?all.filter(a=>a.owner?.scope==='run' && !(a.kind==='report' && a.role==='summary')):selected,live=!runOwner && liveCurve;
+    host.dataset.key=key;host.hidden=!selection.length && !live;
+    if(host.hidden){host.innerHTML='';continue;}
+    const tabs=['Chart','Data','Code','Log','Notes'].filter(t=>selection.some(a=>tabFor(a)===t) || t==='Chart' && live);
+    let active=artifactTabs.get(host.id);if(!tabs.includes(active))active=tabs[0];
+    host.innerHTML=(runOwner?'<h2>Run artifacts</h2>':'')+`<div class="artifact-tabs" role="tablist" aria-label="${runOwner?'Run':'Experiment'} artifacts">${tabs.map(t=>`<button type="button" role="tab" id="${host.id}-${t}" data-artifact-tab="${t}" aria-selected="${t===active}" aria-controls="${host.id}-panel" tabindex="${t===active?'0':'-1'}">${t}</button>`).join('')}</div><div id="${host.id}-panel" role="tabpanel" tabindex="0" aria-labelledby="${host.id}-${active}"><p class="muted">Loading artifacts…</p></div>`;
+    const items=selection.filter(a=>tabFor(a)===active);
+    const results=await Promise.allSettled(items.map(artifactMarkup));
+    if(generation!==artifactPanelGeneration)return;
+    const html=(active==='Chart' && live?'<section class="artifact-entry"><h3>Live measurements</h3><svg data-live-curve class="artifact-chart" role="img" aria-label="Live measurements"></svg></section>':'')+items.map((a,i)=>`<section class="artifact-entry" data-artifact-id="${esc(a.id)}"><div class="section-heading"><h3>${esc(a.title)}</h3><small class="muted">${esc(a.producer)}${a.owner.seed!==undefined?' · seed '+esc(a.owner.seed):''}</small></div>${results[i].status==='fulfilled'?results[i].value:`<p class="muted">${esc(results[i].reason.message)}</p>${artifactLink(a)}`}</section>`).join('');
+    host.querySelector('[role="tabpanel"]').innerHTML=html;
+    renderMath(host);
+    const liveSVG=host.querySelector('[data-live-curve]');if(liveSVG)drawCurve(liveSVG,current);
+    if(active==='Chart' && !runOwner) {
+      const charts=items.filter(a=>a.kind==='chart'),roles=[...new Set(charts.map(a=>a.role))];
+      const candidates=all.filter(a=>a.kind==='chart' && a.owner?.experiment!==state.selected && a.owner?.experiment!==undefined && roles.includes(a.role));
+      if(candidates.length)host.querySelector('[role="tabpanel"]').insertAdjacentHTML('beforeend',`<label class="compare-picker">Compare same chart role<select data-compare><option value="">Choose experiment</option>${[...new Set(candidates.map(a=>a.owner.experiment))].map(n=>`<option value="${n}">Experiment ${n}</option>`).join('')}</select></label><div class="artifact-comparison"></div>`);
+    }
+  }
+  // Run and hypothesis reports use the same report renderer.
+  const reports=[...hypothesisReports,...all.filter(a=>a.kind==='report' && (a.owner?.scope==='hypothesis' || a.owner?.scope==='run' && a.role==='summary'))];
+  for(const report of reports) {
+    const target=report.owner.scope==='run'?$('run-report'):[...$('ledger').querySelectorAll('[data-hypothesis-report]')].find(el=>el.dataset.hypothesisReport===report.owner.hypothesis_id);
+    if(!target)continue;
+    try {const html=await artifactMarkup(report);if(generation!==artifactPanelGeneration)return;target.hidden=false;target.innerHTML=html;renderMath(target);}catch {target.textContent='Report unavailable. Try its download in the bundle.';}
+  }
+}
+async function artifactInteraction(event) {
+  const host=event.currentTarget;
+  const tab=event.target.closest('[data-artifact-tab]');
+  if(tab) {
+    artifactTabs.set(host.id,tab.dataset.artifactTab);host.dataset.key='';
+    await renderArtifactPanels();$(host.id+'-'+tab.dataset.artifactTab)?.focus();return;
+  }
+  const copy=event.target.closest('[data-artifact-copy]');
+  if(copy)try {await navigator.clipboard.writeText(await artifactFetch(latestArtifacts().find(a=>a.id===copy.dataset.artifactCopy)));notice('Source copied.');}catch {notice('Clipboard unavailable. Select the source to copy it.');}
+  const sort=event.target.closest('[data-sort]');
+  if(sort) {
+    const entry=sort.closest('[data-artifact-id]'),a=latestArtifacts().find(a=>a.id===entry.dataset.artifactId),data=await artifactFetch(a,'&rows=500'),field=sort.dataset.sort,descending=sort.dataset.direction!=='desc';
+    const rows=[...data.rows].sort((a,b)=>{const av=a[field] ?? '',bv=b[field] ?? '';return (av!=='' && bv!=='' && Number.isFinite(Number(av)) && Number.isFinite(Number(bv))?Number(av)-Number(bv):String(av).localeCompare(String(bv)))*(descending?-1:1);});
+    entry.innerHTML=tableMarkup(rows,data.columns,data.total)+artifactLink(a);
+    const button=[...entry.querySelectorAll('[data-sort]')].find(b=>b.dataset.sort===field);button.dataset.direction=descending?'desc':'asc';button.closest('th').setAttribute('aria-sort',descending?'descending':'ascending');button.focus();
+  }
+}
+async function artifactInput(event) {
+  const host=event.currentTarget,entry=event.target.closest('[data-artifact-id]');
+  if(entry && (event.target.matches('[data-log-search]') || event.target.matches('[data-log-tail]'))) {
+    const a=latestArtifacts().find(a=>a.id===entry.dataset.artifactId),text=await artifactFetch(a),term=entry.querySelector('[data-log-search]').value.toLowerCase(),tail=entry.querySelector('[data-log-tail]').checked;
+    const lines=text.split('\n').filter(line=>!term || line.toLowerCase().includes(term));
+    entry.querySelector('[data-log-body]').textContent=(tail?lines.slice(-200):lines).join('\n');
+  }
+  if(event.target.matches('[data-compare]')) {
+    const n=event.target.value,target=host.querySelector('.artifact-comparison');
+    if(n===''){target.innerHTML='';return;}
+    const all=latestArtifacts(),selected=all.filter(a=>a.owner?.experiment===state.selected && a.kind==='chart'),roles=[...new Set(selected.map(a=>a.role))];
+    target.innerHTML='<p class="muted">Loading comparison…</p>';
+    const generation=artifactPanelGeneration;
+    const pairs=roles.map(role=>[selected.find(a=>a.role===role),all.find(a=>a.kind==='chart' && a.role===role && String(a.owner?.experiment)===n)]).filter(pair=>pair.every(Boolean));
+    const html=await Promise.all(pairs.map(async ([left,right])=>`<div class="compare-pair"><section><h3>Experiment ${state.selected} · ${esc(left.role)}</h3>${await artifactMarkup(left)}</section><section><h3>Experiment ${esc(n)} · ${esc(right.role)}</h3>${await artifactMarkup(right)}</section></div>`));
+    if(generation===artifactPanelGeneration)target.innerHTML=html.join('');
+  }
+}
+for(const id of ['experiment-artifacts','result-artifacts','run-artifacts']) {
+  $(id).onclick=event=>{artifactInteraction(event).catch(e=>notice(e.message));};
+  $(id).oninput=event=>{artifactInput(event).catch(e=>notice(e.message));};
+  $(id).onchange=event=>{if(event.target.matches('[data-compare]'))artifactInput(event).catch(e=>notice(e.message));};
+  $(id).onkeydown=event=>{
+    if(!event.target.matches('[role="tab"]') || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    event.preventDefault();const tabs=[...$(id).querySelectorAll('[role="tab"]')],index=tabs.indexOf(event.target),next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[next].click();
+  };
+}
+
 window.addEventListener('hashchange',route);
 window.addEventListener('resize',scheduleRender);
 window.addEventListener('beforeunload',event=>{if(state.programDirty){event.preventDefault();event.returnValue='';}});
