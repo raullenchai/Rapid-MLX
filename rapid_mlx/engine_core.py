@@ -620,6 +620,10 @@ class EngineCore:
         construction: a submission that lands after the last quiet tick
         joins the NEXT wave — a timed coalescer cannot promise more.
         """
+        # Runs every engine-loop iteration: bail out before resolving the knob.
+        get_running = getattr(self.scheduler, "get_num_running", None)
+        if get_running is None or get_running() != 0:
+            return
         window_ms = scheduling_value(
             "admission_window_ms",
             getattr(self, "model", None),
@@ -633,9 +637,6 @@ class EngineCore:
         )
         tick_s = _env_float("RAPID_ADMISSION_WINDOW_MS", window_ms) / 1e3
         if tick_s <= 0:
-            return
-        get_running = getattr(self.scheduler, "get_num_running", None)
-        if get_running is None or get_running() != 0:
             return
         cap_s = _env_float("RAPID_ADMISSION_WINDOW_CAP_MS", 120.0) / 1e3
         deadline = time.monotonic() + cap_s
