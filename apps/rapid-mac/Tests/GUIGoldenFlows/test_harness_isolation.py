@@ -24,6 +24,11 @@ class HarnessIsolationTests(unittest.TestCase):
                 ("lfm2.5-2.6b-4bit", "delayed"),
                 ("fake-alias", "delayed"),
                 ("fake-alias", "ready"),
+                ("fake-alias", "idle"),
+                ("fake-alias", "idle-localized"),
+                ("fake-alias", "start-disabled-then-enabled"),
+                ("fake-alias", "auto-start"),
+                ("fake-alias", "start-stays-disabled"),
                 ("fake-alias", "never-ready"),
                 ("fake-alias", "alias-drift"),
                 ("lfm2.5-2.6b-4bit", "ready"),
@@ -58,8 +63,11 @@ selection="$3"
 polls=0
 selection_requested=0
 selection_attempts=0
+start_presses=0
+fixture_started=0
 initial_alias="$selected_alias"
-if [[ "$selected_alias" == fake-alias ]]; then
+# Idle fixtures emit no launch event until Start is pressed or auto-start wins.
+if [[ "$selected_alias" == fake-alias && "$selection" != idle* && "$selection" != start-* && "$selection" != auto-start ]]; then
     printf '{"event":"server_started","alias":"fake-alias"}\n' > "$OUT/fake-events.jsonl"
 fi
 follow_memory_confirmation_edge() {
@@ -92,13 +100,25 @@ see_main() {
        && { [[ "$selection" != delayed ]] || [[ "$polls" -ge 4 ]]; }; then
         selected_alias=fake-alias
     fi
-    local picker_enabled=false readiness=''
+    local picker_enabled=false readiness='' start_enabled=true start_label=Start
     if [[ "$polls" -ge 2 && "$selection" != disabled-picker ]]; then
         picker_enabled=true
     fi
     # The old selection may expose a disabled action. The selected cached
     # fixture can already be ready and expose no readiness action at all.
-    if [[ "$selection" == never-ready ]] \
+    if [[ "$selection" == auto-start && "$polls" -ge 4 && "$fixture_started" == 0 ]]; then
+        fixture_started=1
+        printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
+    fi
+    if [[ "$fixture_started" == 0 ]] \
+       && { [[ "$selection" == idle* || "$selection" == start-* || "$selection" == auto-start ]]; }; then
+        if [[ "$selection" == start-stays-disabled || "$selection" == auto-start ]] \
+           || { [[ "$selection" == start-disabled-then-enabled && "$polls" -lt 4 ]]; }; then
+            start_enabled=false
+        fi
+        [[ "$selection" != idle-localized ]] || start_label=启动
+        readiness=",{\"identifier\":\"Readiness.Action\",\"description\":\"$start_label\",\"enabled\":$start_enabled}"
+    elif [[ "$selection" == never-ready ]] \
        || { [[ "$selection" == delayed ]] && [[ "$polls" -lt 6 ]]; }; then
         readiness=',{"identifier":"Composer.LoadStatus"}'
     elif [[ "$selected_alias" == fake-alias || "$selection" == alias-drift ]]; then
@@ -117,8 +137,27 @@ see_main() {
     fi
 }
 element_field() { jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"; }
+press() {
+    [[ "$2" == Readiness.Action ]] || die "unexpected press: $2"
+    jq -e '.data.ui_elements[] | select(.identifier == "Readiness.Action"
+        and (.description == "Start" or .description == "启动") and .enabled == true)' \
+        "$1" >/dev/null || die "Start pressed before enabled"
+    [[ "$fixture_started" == 0 ]] || die "fixture started twice"
+    start_presses=$((start_presses + 1))
+    fixture_started=1
+    printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
+    printf '{}\n' > "$3"
+}
 start_model() { die "cached fixture must not be started twice"; }
 send_prompt() {
+    local expected_presses=0
+    if [[ "$selection" == idle* || "$selection" == start-disabled-then-enabled ]]; then
+        expected_presses=1
+    fi
+    [[ "$start_presses" == "$expected_presses" ]] || die "unexpected Start press count: $start_presses"
+    if [[ "$selection" == start-disabled-then-enabled || "$selection" == auto-start ]]; then
+        [[ "$polls" -ge 4 ]] || die "startup polling skipped"
+    fi
     if [[ "$initial_alias" == fake-alias ]]; then
         [[ "$selection_attempts" == 0 ]] || die "fixture model unnecessarily reselected"
     else
@@ -138,6 +177,8 @@ send_prompt() {
                             [
                                 "/bin/bash",
                                 "-eu",
+                                "-o",
+                                "pipefail",
                                 "-c",
                                 shell,
                                 "test",
@@ -156,9 +197,15 @@ send_prompt() {
                         "missing-picker",
                         "never-ready",
                         "alias-drift",
+                        "start-stays-disabled",
                     ):
                         self.assertNotEqual(result.returncode, 0)
                         self.assertNotIn("started", result.stdout)
+                        if selection == "start-stays-disabled":
+                            self.assertEqual(
+                                result.stderr,
+                                "chat fixture model did not become ready\n",
+                            )
                         self.assertIn(
                             "ModelPickerBar.ModelMenu"
                             if selection in ("disabled-picker", "missing-picker")

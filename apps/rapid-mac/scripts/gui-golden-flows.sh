@@ -1994,6 +1994,27 @@ start_fixture_chat_model() {
             # accepts its existing launch event in this persona's log; no new
             # launch is required. Starting and ready both hide Readiness.Action,
             # so independently wait for the composer before sending a prompt.
+            # Selecting a cached model does not always start it: an idle
+            # fixture still shows Start. Press it once enabled, as a user
+            # would. If the action disappears, startup is already under way.
+            local start_check="$OUT/fixture-model-selected.json"
+            for _ in {1..80}; do
+                jq -e '.data.ui_elements[]?
+                       | select(.identifier == "Readiness.Action"
+                                and (.description == "Start" or .description == "启动"))' \
+                    "$start_check" >/dev/null || break
+                if jq -e '.data.ui_elements[]?
+                          | select(.identifier == "Readiness.Action"
+                                   and (.description == "Start" or .description == "启动")
+                                   and .enabled == true)' \
+                    "$start_check" >/dev/null; then
+                    press "$start_check" Readiness.Action "$OUT/fixture-model-start.json"
+                    break
+                fi
+                sleep 0.25
+                start_check="$OUT/fixture-model-start-ready.json"
+                see_main "$start_check"
+            done
             wait_fake_event_after_start \
                 ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
                 "chat fixture model did not become ready" \
