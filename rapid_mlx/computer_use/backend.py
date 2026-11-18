@@ -3432,9 +3432,9 @@ def _fill_datetime_segment(
         ax_driver._get(live, "AXDescription")
         or _element(snapshot, element_index).get("label", "")
     )
-    minimum = ax_driver._get(live, "AXMinValue")
-    maximum = ax_driver._get(live, "AXMaxValue")
-    defaults = {
+    raw_minimum = ax_driver._get(live, "AXMinValue")
+    raw_maximum = ax_driver._get(live, "AXMaxValue")
+    defaults: dict[str, tuple[int, int]] = {
         "year": (1, 9999),
         "month": (1, 12),
         "day": (1, 31),
@@ -3451,9 +3451,13 @@ def _fill_datetime_segment(
             )
         keys = letters[0].lower()
     else:
-        fallback_min, fallback_max = defaults.get(kind, (0, 99))
-        minimum = minimum if minimum is not None else fallback_min
-        maximum = maximum if maximum is not None else fallback_max
+        fallback_min, fallback_max = defaults.get(kind or "", (0, 99))
+        minimum = (
+            int(raw_minimum) if isinstance(raw_minimum, (int, float)) else fallback_min
+        )
+        maximum = (
+            int(raw_maximum) if isinstance(raw_maximum, (int, float)) else fallback_max
+        )
         width = 4 if kind == "year" or (kind is None and maximum > 99) else 2
         if not re.fullmatch(rf"[0-9]{{1,{width}}}", value):
             raise ComputerUseError(
@@ -3501,7 +3505,10 @@ def _fill_datetime_segment(
         return ax_driver._datetime_segment_matches(actual, value)
 
     background = _keyboard_background(snapshot)
-    with _keyed_target(snapshot) if background else nullcontext({}) as state:
+    target_context: AbstractContextManager[dict] = (
+        _keyed_target(snapshot) if background else nullcontext({})
+    )
+    with target_context as state:
         if not background:
             _borrow_foreground(snapshot)
             _validate_snapshot_window(snapshot)
