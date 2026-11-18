@@ -44,8 +44,10 @@ def test_mllm_text_boundary_shapes_without_metal(
         monkeypatch.delenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", raising=False)
     else:
         monkeypatch.setenv("RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS", str(threshold))
-    monkeypatch.setattr(module.mx, "eval", lambda *_: None)
-    monkeypatch.setattr(module.mx, "clear_cache", lambda: None)
+    # Patch the namespace directly: setattr/delattr on a MagicMock can leave
+    # deleted-child markers that break later parameter cases.
+    monkeypatch.setitem(vars(module.mx), "eval", lambda *_: None)
+    monkeypatch.setitem(vars(module.mx), "clear_cache", lambda: None)
     calls, stores = [], []
 
     class Model:
@@ -94,8 +96,8 @@ def test_scheduling_resolution_carries_loaded_model_facts(monkeypatch, mode, bat
     from rapid_mlx import lattice
     from rapid_mlx.lattice import scheduling
 
-    monkeypatch.setattr(
-        mx,
+    monkeypatch.setitem(
+        vars(mx),
         "device_info",
         lambda: {"device_name": "Apple M5 Max", "memory_size": 36 * 2**30},
     )
@@ -135,8 +137,8 @@ def test_measured_admission_cell_preserves_burst_hold(
     from rapid_mlx.lattice import defaults
     from tests.test_admission_wave import _make_engine, _run
 
-    monkeypatch.setattr(
-        mx,
+    monkeypatch.setitem(
+        vars(mx),
         "device_info",
         lambda: {"device_name": "Apple M5 Max", "memory_size": 36 * 2**30},
     )
@@ -169,8 +171,8 @@ def qualified_short_request_model(monkeypatch):
     from rapid_mlx import lattice
     from rapid_mlx.lattice import defaults
 
-    monkeypatch.setattr(
-        mx,
+    monkeypatch.setitem(
+        vars(mx),
         "device_info",
         lambda: {"device_name": "Apple M5 Max", "memory_size": 36 * 2**30},
     )
@@ -303,12 +305,12 @@ def test_mllm_boundary_uses_prompt_cohort(
     gen._store_exact_text_prefix = lambda req, cache, prefix_len: stores.append(
         prefix_len
     )
-    monkeypatch.setattr(module.mx, "eval", lambda *_: None)
-    monkeypatch.setattr(module.mx, "clear_cache", lambda: None)
-    monkeypatch.setattr(module.mx, "stream", lambda _: nullcontext())
+    monkeypatch.setitem(vars(module.mx), "eval", lambda *_: None)
+    monkeypatch.setitem(vars(module.mx), "clear_cache", lambda: None)
+    monkeypatch.setitem(vars(module.mx), "stream", lambda _: nullcontext())
     monkeypatch.setattr(module, "_prefill_cap_violation", lambda *_: None)
-    monkeypatch.setattr(
-        cache_module,
+    monkeypatch.setitem(
+        vars(cache_module),
         "make_prompt_cache",
         lambda _: [SimpleNamespace(state=[], is_trimmable=lambda: False)],
     )

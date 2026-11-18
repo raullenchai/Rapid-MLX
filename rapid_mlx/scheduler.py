@@ -10956,10 +10956,12 @@ class Scheduler:
             # insert. Counting only running rows would qualify the first row
             # of a burst for a singleton-only cell. Later admission deferrals
             # may conservatively retain an extra snapshot.
-            boundary_batch = min(
-                self._max_running_sequences(),
-                len(self.running) + 1 + len(self.waiting),
-            )
+            boundary_batch = 1
+            if self.config.non_trimmable_exact_prefix_reuse:
+                boundary_batch = min(
+                    self._max_running_sequences(),
+                    len(self.running) + 1 + len(self.waiting),
+                )
             snapshot_boundary = self._resolve_snapshot_boundary(
                 request, batch=boundary_batch
             )
