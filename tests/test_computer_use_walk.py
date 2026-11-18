@@ -68,6 +68,57 @@ def _walk(root, **kw):
     return out
 
 
+@pytest.mark.parametrize(
+    "description,raw,expected",
+    [
+        ("0", 0, ""),
+        ("", 0, ""),
+        ("--", 0, "--"),
+        ("00", 0, "00"),
+        ("PM", 2, "PM"),
+        ("02", 2, "02"),
+        (None, 0, "(unknown; possibly empty)"),
+    ],
+)
+def test_datetime_segment_visible_text(tree, description, raw, expected):
+    nodes, _ = tree
+    nodes.update(
+        {
+            "page": {"AXRole": "AXWebArea", "AXChildren": ["time", "ordinary"]},
+            "time": {"AXRole": "AXTimeField", "AXChildren": ["group"]},
+            "group": {"AXRole": "AXGroup", "AXChildren": ["segment"]},
+            "segment": {
+                "AXRole": "AXIncrementor",
+                "AXTitle": "Minutes",
+                "AXValue": raw,
+                "AXValueDescription": description,
+            },
+            "ordinary": {
+                "AXRole": "AXIncrementor",
+                "AXTitle": "Quantity",
+                "AXValue": 0,
+                "AXValueDescription": "zero",
+            },
+            "native": {
+                "AXRole": "AXIncrementor",
+                "AXTitle": "Native",
+                "AXValue": 0,
+                "AXValueDescription": "zero",
+            },
+        }
+    )
+    for node in nodes.values():
+        node.setdefault("AXSubrole", "")
+        if node["AXRole"] == "AXIncrementor":
+            node["actions"] = ["AXIncrement", "AXDecrement"]
+    rows = {row["text"]: row for row in _walk("page")}
+    assert rows["Minutes"]["value"] == expected
+    assert rows["Minutes"]["datetime_segment"] is True
+    assert rows["Quantity"]["value"] == "0"
+    assert rows["Quantity"]["datetime_segment"] is False
+    assert _walk("native")[0]["value"] == "0"
+
+
 def test_a_long_value_is_cut_and_carries_its_whole_length(tree):
     nodes, _ = tree
     long = "x" * (ax_driver.MAX_VALUE_CHARS + 30)

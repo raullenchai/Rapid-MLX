@@ -871,6 +871,7 @@ def get_app_state(
                 "label": target["text"],
                 "value": target.get("value"),
                 "value_chars": target.get("value_chars"),
+                "datetime_segment": target.get("datetime_segment", False),
                 "actions": target.get("actions", []),
                 "x": round(rect[0]),
                 "y": round(rect[1]),
@@ -3402,6 +3403,159 @@ def _click(
     )
 
 
+_WEB_DATETIME_ROLES = ax_driver.WEB_DATETIME_ROLES
+
+
+def _is_web_datetime_segment(entry: dict, live: object | None) -> bool:
+    if not entry.get("web") or entry.get("role") != "AXIncrementor":
+        return False
+    # Chromium inserts AXGroups between the spin button and its date/time
+    # field, so the serialized immediate parent role alone is insufficient.
+    parent = live
+    for _ in range(8):
+        if parent is None:
+            break
+        parent = ax_driver._get(parent, "AXParent")
+        role = ax_driver._get(parent, "AXRole") if parent is not None else None
+        if role in _WEB_DATETIME_ROLES:
+            return True
+        if role in {"AXWebArea", "AXWindow"}:
+            break
+    return False
+
+
+def _fill_datetime_segment(
+    snapshot: dict, live: object, element_index: int, value: str
+) -> dict:
+    """Use the segment's keyboard editor, never AXValue or text selection."""
+    label = str(
+        ax_driver._get(live, "AXDescription")
+        or _element(snapshot, element_index).get("label", "")
+    )
+    minimum = ax_driver._get(live, "AXMinValue")
+    maximum = ax_driver._get(live, "AXMaxValue")
+    defaults = {
+        "year": (1, 9999),
+        "month": (1, 12),
+        "day": (1, 31),
+        "hour": (0, 23),
+        "minute": (0, 59),
+        "second": (0, 59),
+    }
+    kind = next((name for name in defaults if name in label.lower()), None)
+    letters = value.strip().upper()
+    if "am/pm" in label.lower():
+        if letters not in {"A", "AM", "P", "PM"}:
+            raise ComputerUseError(
+                "invalid_argument", "AM/PM segment requires A/AM/P/PM"
+            )
+        keys = letters[0].lower()
+    else:
+        fallback_min, fallback_max = defaults.get(kind, (0, 99))
+        minimum = minimum if minimum is not None else fallback_min
+        maximum = maximum if maximum is not None else fallback_max
+        width = 4 if kind == "year" or (kind is None and maximum > 99) else 2
+        if not re.fullmatch(rf"[0-9]{{1,{width}}}", value):
+            raise ComputerUseError(
+                "invalid_argument", f"{label} segment requires 1 to {width} digits"
+            )
+        if not minimum <= int(value) <= maximum:
+            raise ComputerUseError(
+                "invalid_argument",
+                f"{label} segment value must be between {minimum} and {maximum}",
+            )
+        keys = value
+
+    def read(element=live) -> str | None:
+        return ax_driver._datetime_segment_text(
+            {
+                attr: ax_driver._get(element, attr)
+                for attr in ("AXValueDescription", "AXValue")
+            }
+        )
+
+    # The field may wrap each segment in groups; include all its incrementors.
+    field = live
+    for _ in range(8):
+        field = ax_driver._get(field, "AXParent")
+        if field is None or ax_driver._get(field, "AXRole") in _WEB_DATETIME_ROLES:
+            break
+        if ax_driver._get(field, "AXRole") in {"AXWebArea", "AXWindow"}:
+            field = None
+            break
+    siblings = []
+
+    def collect(parent, depth=0):
+        if parent is None or depth >= 8:
+            return
+        for child in ax_driver._as_list(ax_driver._get(parent, "AXChildren")):
+            role = ax_driver._get(child, "AXRole")
+            if role == "AXIncrementor" and child != live:
+                siblings.append(child)
+            elif role not in _WEB_DATETIME_ROLES:
+                collect(child, depth + 1)
+
+    collect(field)
+
+    def matches(actual: str | None) -> bool:
+        return ax_driver._datetime_segment_matches(actual, value)
+
+    background = _keyboard_background(snapshot)
+    with _keyed_target(snapshot) if background else nullcontext({}) as state:
+        if not background:
+            _borrow_foreground(snapshot)
+            _validate_snapshot_window(snapshot)
+        if _focus_without_commit(snapshot, live) is None:
+            raise ComputerUseError(
+                "synthetic_input_blocked", "date/time segment could not be focused"
+            )
+        _validate_focused_window(
+            snapshot, require_active_app=not background, require_exact_window_id=True
+        )
+        before = read()
+        siblings_before = [(sibling, read(sibling)) for sibling in siblings]
+        # Delete resets the numeric edit buffer, replacing a partially entered
+        # value. No Cmd+A or AXSelectedTextRange: segments are not text fields.
+        codes = [KEY_ALIASES["delete"], *(ax_driver._keycode_for(ch) for ch in keys)]
+        for code in codes:
+            if background:
+                if not _synthesize(
+                    background_input.press_key, _target_ids(snapshot)[0], code
+                ):
+                    raise ComputerUseError(
+                        "action_failed", "date/time keystroke could not be synthesized"
+                    )
+            else:
+                ax_driver._press_key(code)
+        deadline = time.monotonic() + AX_WRITE_READBACK_S
+        while True:
+            time.sleep(0.05)
+            actual = read()
+            if matches(actual) or time.monotonic() > deadline:
+                break
+        changed_siblings = [
+            str(ax_driver._get(sibling, "AXDescription") or f"segment {i + 1}")
+            for i, (sibling, previous) in enumerate(siblings_before)
+            if read(sibling) != previous
+        ]
+    return {
+        "mode": "SkyLight-segment-fill" if background else "CGEvent-segment-fill",
+        "element_index": element_index,
+        "before": before,
+        "actual": actual,
+        "requested": value,
+        "verified": (
+            False
+            if changed_siblings
+            else matches(actual)
+            if actual is not None
+            else None
+        ),
+        "changed_siblings": changed_siblings,
+        **_focus_fields(state),
+    }
+
+
 def set_value(
     app: str,
     element_index: int,
@@ -3424,12 +3578,42 @@ def set_value(
         activate=OBSERVE_BY_ROUTE,
     )
     entry = _element(snapshot, element_index)
+    if entry.get("web") and entry.get("role") in _WEB_DATETIME_ROLES:
+        raise ComputerUseError(
+            "invalid_argument",
+            "fill date/time per segment: target each hours, minutes, AM/PM, month, day or year control",
+        )
     is_transient = entry.get(
         "source_window_id", snapshot.get("window_id")
     ) != snapshot.get("window_id")
     # An AX write names the element, not a point: a field scrolled out of
     # view is written where it is. The typing fallback checks its own point.
     live = _live_element(snapshot, element_index, validate_point=False)
+    if _is_web_datetime_segment(entry, live):
+        if is_transient:
+            raise ComputerUseError(
+                "synthetic_input_blocked",
+                "transient companion cannot receive date/time keystrokes",
+            )
+        result = _fill_datetime_segment(snapshot, live, element_index, value)
+        verified = result.pop("verified")
+        changed_siblings = result.pop("changed_siblings")
+        return _finish_action(
+            app,
+            snapshot,
+            result,
+            verified=verified,
+            verification=(
+                f"date/time sibling segment changed: {', '.join(changed_siblings)}"
+                if changed_siblings
+                else "date/time segment readback matched requested value"
+                if verified is True
+                else "date/time segment readback did not match requested value"
+                if verified is False
+                else "date/time segment readback unavailable"
+            ),
+            include_post_state=include_post_state,
+        )
     if live is not None:
         is_finder_item = (
             is_finder_snapshot(snapshot)
