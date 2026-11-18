@@ -130,6 +130,65 @@ def _apply_argmax_rescue(mask: mx.array, argmax_idx: mx.array) -> mx.array:
     return mx.where(any_kept, mask, argmax_keep)
 
 
+def _make_seeded_logits_filter(
+    *, temperature: float, top_p: float = 0.0, min_p: float = 0.0, top_k: int = 0
+) -> Callable[[mx.array], mx.array]:
+    """Share seeded serving's FP32 masks, tie order, rescue and temperature."""
+    temp_inv = 1.0 / float(temperature)
+    use_top_p = 0.0 < top_p < 1.0
+    use_top_k = top_k > 0
+    use_min_p = min_p > 0.0
+    top_p_threshold = 1.0 - float(top_p)
+    min_p_val = float(min_p)
+    top_k_val = int(top_k)
+
+    def filter_logits(logprobs: mx.array) -> mx.array:
+        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
+        vocab = work.shape[-1]
+
+        mask = mx.ones(work.shape, dtype=mx.bool_)
+
+        if use_top_p:
+            probs = mx.exp(work)
+            sorted_indices = mx.argsort(probs, axis=-1)
+            sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+            cumulative = mx.cumsum(sorted_probs, axis=-1)
+            sorted_mask = cumulative > top_p_threshold
+            top_one = mx.arange(vocab) == (vocab - 1)
+            sorted_mask = sorted_mask | top_one
+            vocab_mask = mx.zeros(work.shape, dtype=mx.bool_)
+            vocab_mask = mx.put_along_axis(
+                vocab_mask, sorted_indices, sorted_mask, axis=-1
+            )
+            mask = mask & vocab_mask
+
+        if use_top_k:
+            effective_top_k = min(top_k_val, vocab)
+            sorted_desc = mx.argsort(-work, axis=-1)
+            top_k_positions = sorted_desc[..., :effective_top_k]
+            vocab_mask_k = mx.zeros(work.shape, dtype=mx.bool_)
+            ones = mx.ones(top_k_positions.shape, dtype=mx.bool_)
+            vocab_mask_k = mx.put_along_axis(
+                vocab_mask_k, top_k_positions, ones, axis=-1
+            )
+            mask = mask & vocab_mask_k
+
+        if use_min_p:
+            probs_for_min = mx.exp(work)
+            max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
+            min_p_mask = probs_for_min >= (min_p_val * max_prob)
+            mask = mask & min_p_mask
+
+        argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
+        mask = _apply_argmax_rescue(mask, argmax_idx)
+
+        masked = mx.where(mask, work * temp_inv, -mx.inf)
+
+        return masked
+
+    return filter_logits
+
+
 def make_seeded_sampler(
     *,
     seed: int,
@@ -186,13 +245,9 @@ def make_seeded_sampler(
             f"seeded sampler requires temperature >= 0 (got {temperature})"
         )
 
-    temp_inv = 1.0 / float(temperature)
-    use_top_p = 0.0 < top_p < 1.0
-    use_top_k = top_k > 0
-    use_min_p = min_p > 0.0
-    top_p_threshold = 1.0 - float(top_p)
-    min_p_val = float(min_p)
-    top_k_val = int(top_k)
+    filter_logits = _make_seeded_logits_filter(
+        temperature=temperature, top_p=top_p, min_p=min_p, top_k=top_k
+    )
 
     # Per-request key state lives in a one-element list so the closure
     # can rebind it (Python doesn't expose ``nonlocal`` on assignment
@@ -246,131 +301,7 @@ def make_seeded_sampler(
     state_lock = threading.Lock()
 
     def sampler(logprobs: mx.array) -> mx.array:
-        # Promote bfloat16/float16 to float32 — same rationale as the
-        # fused fast path: half precision rounds the top-p cutoff away
-        # on production logits and ``mx.cumsum`` over bfloat16 is
-        # unsupported in MLX 0.21.
-        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
-        vocab = work.shape[-1]
-
-        # Build the kept-token mask in VOCAB order so we can sample
-        # in vocab space and return the token id directly. This is
-        # different from the fused fast path (which samples in sorted
-        # space to fuse the scatter); the seeded path optimises for
-        # clarity + math parity with mlx-lm, not for tok/s — seeded
-        # requests are an eval / snapshot use case where 1-3 ms / token
-        # is acceptable.
-        mask = mx.ones(work.shape, dtype=mx.bool_)
-
-        if use_top_p:
-            # Top-p: sort probs ascending, find cumulative-from-low
-            # cutoff, OR-back the top-1 (argmax) to guarantee at least
-            # one sampleable token (mirrors mlx-lm's invariant and
-            # the fast path's ``top_one_mask`` belt). Re-scatter the
-            # sorted mask back into vocab order.
-            #
-            # Boundary semantics: ``cumulative > 1 - top_p`` is a
-            # STRICT comparison and matches both
-            # ``mlx_lm.sample_utils.apply_top_p`` (which uses
-            # ``cumulative_probs > 1 - top_p`` — see mlx-lm
-            # 0.31.3 sample_utils.py:222) and the fused fast path in
-            # ``_sampler_fast_path.py``. Codex round-5 raised a BLOCKING
-            # claim that this should be ``>=`` so a token whose
-            # cumulative prob is exactly the cutoff is kept; that would
-            # actually DIVERGE from mlx-lm's contract (and from the
-            # HuggingFace reference apply_top_p the upstream points to).
-            # The boundary token is recovered via the OR-with-argmax
-            # rescue at the bottom of this function on the rare cases
-            # where the strict cut alone would drop the head of the
-            # nucleus — matching mlx-lm's documented "at least one
-            # token kept" invariant. Bit-level parity with the stock
-            # sampler is the priority for the seeded path because the
-            # reproducibility contract advertises within-engine
-            # determinism.
-            probs = mx.exp(work)
-            sorted_indices = mx.argsort(probs, axis=-1)
-            sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
-            cumulative = mx.cumsum(sorted_probs, axis=-1)
-            sorted_mask = cumulative > top_p_threshold
-            # Guarantee top-1 (last position under ascending sort)
-            top_one = mx.arange(vocab) == (vocab - 1)
-            sorted_mask = sorted_mask | top_one
-            # Scatter back to vocab order
-            vocab_mask = mx.zeros(work.shape, dtype=mx.bool_)
-            vocab_mask = mx.put_along_axis(
-                vocab_mask, sorted_indices, sorted_mask, axis=-1
-            )
-            mask = mask & vocab_mask
-
-        if use_top_k:
-            # Top-k: keep the ``top_k`` largest logits. Use argsort
-            # descending then mark positions <= top_k. Mirrors the
-            # fast path's intersection semantics — kept-set size is
-            # exactly ``min(top_k, vocab)``.
-            #
-            # Codex round-2 BLOCKING #1 fix: clamp ``top_k_val`` to
-            # the vocab dimension. ``sorted_desc[..., :top_k_val]``
-            # with ``top_k_val > vocab`` silently returns the whole
-            # tensor (NumPy/MLX over-slice semantics), but the
-            # subsequent ``put_along_axis`` would then write
-            # ``vocab + something`` positions into a shape that only
-            # has ``vocab`` slots — undefined behaviour in MLX. The
-            # clamp normalises the contract so ``top_k=10**9`` on a
-            # 32k-vocab model collapses to "all tokens eligible"
-            # rather than crashing the sampler.
-            effective_top_k = min(top_k_val, vocab)
-            sorted_desc = mx.argsort(-work, axis=-1)
-            top_k_positions = sorted_desc[..., :effective_top_k]
-            vocab_mask_k = mx.zeros(work.shape, dtype=mx.bool_)
-            ones = mx.ones(top_k_positions.shape, dtype=mx.bool_)
-            vocab_mask_k = mx.put_along_axis(
-                vocab_mask_k, top_k_positions, ones, axis=-1
-            )
-            mask = mask & vocab_mask_k
-
-        if use_min_p:
-            # Min-p: keep tokens whose prob >= min_p * max_prob.
-            # Mirrors mlx-lm's ``apply_min_p`` formula.
-            probs_for_min = mx.exp(work)
-            max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
-            min_p_mask = probs_for_min >= (min_p_val * max_prob)
-            mask = mask & min_p_mask
-
-        # Codex round-2 BLOCKING #2 + round-7 BLOCKING fix: guarantee
-        # at least one sampleable token WITHOUT changing the intersection
-        # semantics for non-empty rows.
-        #
-        # The original round-2 fix unconditionally OR'd argmax into the
-        # combined mask, which fixed the empty-row crash but silently
-        # broke ``top_k`` when combined with a tight ``top_p`` / ``min_p``
-        # that excluded argmax from the top-k set — the rescue would
-        # re-introduce a token the caller's intersection contract had
-        # already filtered out. Codex r7 caught this: ``top_k`` no
-        # longer means "sample only from the top K" when layered with
-        # a stricter cutoff.
-        #
-        # The conditional form below preserves the round-2 contract
-        # (no all-``-inf`` rows ever reach ``mx.random.categorical``)
-        # while only invoking the argmax rescue when the row would
-        # otherwise be empty. Non-empty rows keep their exact mask,
-        # so ``top_k`` / ``top_p`` / ``min_p`` intersection semantics
-        # match the documented behaviour and the fused fast path.
-        #
-        # Empty-row case (combined cutoffs filtered every token): fall
-        # back to argmax so the sampler returns a sensible token
-        # rather than uint32 garbage from a degenerate ``-inf``
-        # distribution. This matches mlx-lm's "at least one token
-        # kept" invariant on the individual ``apply_top_p`` /
-        # ``apply_top_k`` / ``apply_min_p`` masks — each preserves a
-        # token by construction, so empty rows can only arise from
-        # the combined intersection, which is exactly the case the
-        # rescue targets.
-        argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
-        mask = _apply_argmax_rescue(mask, argmax_idx)
-
-        # Apply mask + temperature scaling. Use ``-inf`` for masked
-        # positions so categorical never picks them.
-        masked = mx.where(mask, work * temp_inv, -mx.inf)
+        masked = filter_logits(logprobs)
 
         # Pull a fresh subkey for this step. Held under the per-closure
         # lock so the read-split-write is atomic — two concurrent

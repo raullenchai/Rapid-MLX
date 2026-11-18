@@ -45,7 +45,9 @@ from typing import Any
 
 import mlx.core as mx
 
-from ..._env import is_falsey
+from ..._env import env_truthy, is_falsey
+from ..._sampler_fast_path import _fused_top_p_logits, is_fused_top_p_eligible
+from ..._seeded_sampler import _make_seeded_logits_filter
 
 # Force the ArraysCache rollback_state patch on first import — the
 # generator references ``cache.rollback_state`` directly inside
@@ -482,7 +484,6 @@ def mtp_generate_step(
 
     from mlx_lm.generate import maybe_quantize_kv_cache
     from mlx_lm.models import cache as _cache_module
-    from mlx_lm.sample_utils import categorical_sampling
 
     # The global mlx-lm generation stream can be rebound by a different
     # resident engine's worker. Bind the stream where this generator actually
@@ -779,6 +780,21 @@ def mtp_generate_step(
     # own realized throughput. See ``CopyDraftGate``.
     _copy_draft_gate = CopyDraftGate()
 
+    _seeded_filter = (
+        _make_seeded_logits_filter(
+            temperature=temp, top_p=top_p, min_p=min_p, top_k=top_k
+        )
+        if lane_rng is not None and not _is_greedy
+        else None
+    )
+    _use_fused_sampler = (
+        lane_rng is None
+        and not env_truthy("RAPID_MLX_DISABLE_FUSED_SAMPLER")
+        and xtc_probability == 0.0
+        and is_fused_top_p_eligible(
+            temperature=temp, top_p=top_p, min_p=min_p, top_k=top_k
+        )
+    )
     _filter_chain, _xtc_cell = (
         _make_sampler_chain(
             top_p,
@@ -789,7 +805,7 @@ def mtp_generate_step(
             xtc_threshold,
             xtc_special_tokens,
         )
-        if not _is_greedy
+        if not _is_greedy and not _use_fused_sampler and _seeded_filter is None
         else ([], None)
     )
 
@@ -843,30 +859,36 @@ def mtp_generate_step(
                     logits = processor(tokens, logits)
             logits = logits.squeeze(0)
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-        if _filter_chain:
-            if _xtc_cell is not None:
-                _xtc_cell[0] = xtc_draw  # None = fresh draw; mx.array = shared
-            masked = logprobs
-            for f in _filter_chain:
-                masked = f(masked)
-            scaled = masked / temp
-            lp_accept = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
-            token = (
-                categorical_sampling(masked, temp)
-                if lane_rng is None
-                else _categorical(masked / temp)
-            )
-        elif _is_greedy:
+        if _is_greedy:
             token = mx.argmax(logprobs, axis=-1)
             lp_accept = logprobs
         else:
-            scaled = logprobs / temp
+            if _seeded_filter is not None:
+                scaled = _seeded_filter(logprobs)
+            elif _use_fused_sampler:
+                sorted_scaled, indices = _fused_top_p_logits(
+                    logprobs, 1.0 / float(temp), 1.0 - float(top_p), int(top_k)
+                )
+                # Acceptance and residuals need vocabulary order. Serving can
+                # sample directly in sorted space and avoid this scatter.
+                scaled = mx.put_along_axis(
+                    mx.full_like(sorted_scaled, -float("inf")),
+                    indices,
+                    sorted_scaled,
+                    axis=-1,
+                )
+            else:
+                if _xtc_cell is not None:
+                    _xtc_cell[0] = xtc_draw
+                masked = logprobs
+                for f in _filter_chain:
+                    masked = f(masked)
+                # Match the serving categorical sampler's reciprocal multiply,
+                # including its working dtype, before FP32 normalization.
+                scaled = masked * (1 / temp)
+            token = _categorical(scaled)
+            scaled = scaled.astype(mx.float32)
             lp_accept = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
-            token = (
-                categorical_sampling(logprobs, temp)
-                if lane_rng is None
-                else _categorical(logprobs / temp)
-            )
         return token, logprobs, lp_accept
 
     def _clear_rollback():

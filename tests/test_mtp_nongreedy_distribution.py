@@ -37,9 +37,9 @@ SAME generator over the SAME mocked model. ``max_k=0`` with
 ``disable_auto_k=True`` parks the depth controller at zero every round,
 which walks ``generator.py``'s "Round K=0 ... Plain backbone forward
 emits ONE committed token" branch — i.e. plain autoregressive sampling
-through the identical filter chain. Using the generator itself as the
-reference (rather than a hand-rolled softmax) means the test cannot
-pass by re-implementing top-p truncation the same wrong way twice.
+through the identical filter chain. This isolates rejection
+sampling from filtering. The serving-parity tests below separately compare
+the actual serving sampler to detect errors shared by both generator depths.
 
 Test statistic
 --------------
@@ -65,6 +65,7 @@ import math
 import pytest
 
 mx = pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
 
 
 @pytest.fixture(autouse=True)
@@ -364,3 +365,179 @@ def test_baseline_stream_is_iid():
     marginal = _marginal(baseline, vocab)
     product = [marginal[i] * marginal[j] for i in range(vocab) for j in range(vocab)]
     assert _tv(_lag1_joint(baseline, vocab), product) < _TV_JOINT_MAX
+
+
+@pytest.mark.parametrize("dtype_name", ["float32", "bfloat16"])
+@pytest.mark.parametrize("temp", [0.3, 1.0, 1.7])
+@pytest.mark.parametrize("top_k", [0, 3])
+def test_mtp_filtered_probabilities_match_serving(monkeypatch, dtype_name, temp, top_k):
+    """Compare the actual categorical inputs, including token IDs at ties."""
+    from tests.test_mtp_sampling_parity import sampling_harness
+
+    env, captured, categorical = sampling_harness(mx, temp=temp, top_k=top_k)
+    logits = mx.array([[-3, -2, 0, 0, 0, 2]], dtype=getattr(mx, dtype_name))
+    _, logprobs, acceptance = env["_process_and_sample"](None, logits)
+    mtp_scaled = captured.pop()
+    monkeypatch.setattr(mx.random, "categorical", categorical)
+    env["make_fused_top_p_temp_sampler"](temp, 0.95, top_k)(logprobs)
+    sorted_scaled = captured.pop()
+    indices = mx.argsort(mx.exp(logprobs.astype(mx.float32)), axis=-1)
+    serving_scaled = mx.put_along_axis(
+        mx.full_like(sorted_scaled, -float("inf")), indices, sorted_scaled, axis=-1
+    )
+    assert mx.array_equal(mx.isfinite(mtp_scaled), mx.isfinite(serving_scaled))
+    assert mx.allclose(mx.exp(acceptance), mx.softmax(serving_scaled), atol=1e-7)
+    assert acceptance.dtype == mx.float32
+    # Stable ascending ties put higher token IDs in the retained top-k tail.
+    if top_k == 3:
+        assert not mx.isfinite(mtp_scaled[0, 2]).item()
+        assert mx.isfinite(mtp_scaled[0, 3]).item()
+        assert mx.isfinite(mtp_scaled[0, 4]).item()
+
+
+@pytest.mark.parametrize("dtype_name", ["float32", "bfloat16"])
+def test_nucleus_threshold_uses_fp32_mass(monkeypatch, dtype_name):
+    """A cutoff between rounded and FP32 tail mass must follow serving.
+
+    On the old MTP path, BF16 exp rounds the smallest probability before
+    comparing cumulative mass, retaining a different nucleus (or cumsum
+    rejects BF16 entirely on runtimes without that operation).
+    """
+    from tests.test_mtp_sampling_parity import sampling_harness
+
+    logits = mx.array([-3, -1, 0, 1], dtype=getattr(mx, dtype_name))
+    logprobs = logits - mx.logsumexp(logits, keepdims=True)
+    mass = mx.exp(logprobs.astype(mx.float32))[0].item()
+    rounded = mx.exp(logprobs.astype(mx.bfloat16))[0].item()
+    assert mass != rounded
+    threshold = (mass + rounded) / 2
+    top_p = 1 - threshold
+    env, captured, categorical = sampling_harness(mx, temp=1.0, top_p=top_p)
+    _, _, acceptance = env["_process_and_sample"](None, logits)
+    mtp_scaled = captured.pop()
+    monkeypatch.setattr(mx.random, "categorical", categorical)
+    env["make_fused_top_p_temp_sampler"](1.0, top_p)(logprobs)
+    sorted_scaled = captured.pop()
+    assert mx.array_equal(mx.isfinite(mtp_scaled), mx.isfinite(sorted_scaled))
+    assert mx.allclose(mx.exp(acceptance), mx.softmax(sorted_scaled), atol=1e-7)
+    assert mx.isfinite(mtp_scaled[0]).item() == (mass > threshold)
+
+
+@pytest.mark.parametrize("draft", [[0.55, 0.25, 0.15, 0.05], [0.02, 0.03, 0.15, 0.80]])
+def test_k2_matches_actual_serving_distribution(monkeypatch, draft):
+    """High acceptance and rejection-heavy runs use the serving distribution."""
+    from rapid_mlx._sampler_fast_path import make_fused_top_p_temp_sampler
+
+    target = [0.55, 0.25, 0.15, 0.05]
+    logits = mx.log(mx.array(target)).astype(mx.bfloat16)
+    logprobs = logits - mx.logsumexp(logits, keepdims=True)
+    captured = []
+
+    def categorical(scaled):
+        captured.append(mx.softmax(scaled))
+        return mx.argmax(scaled, axis=-1)
+
+    # Measure the actual serving sampler's weights without Monte Carlo noise.
+    with monkeypatch.context() as patch:
+        patch.setattr(mx.random, "categorical", categorical)
+        make_fused_top_p_temp_sampler(0.7, 0.95, 3)(logprobs)
+    indices = mx.argsort(mx.exp(logprobs.astype(mx.float32)))
+    expected = mx.put_along_axis(
+        mx.zeros_like(logprobs.astype(mx.float32)), indices, captured[0], axis=-1
+    )
+    model = _FixedDistributionModel(target, draft)
+    model._target_logits = logits
+    model._draft_logits = model._draft_logits.astype(mx.bfloat16)
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    mx.random.seed(731)
+    stream = [
+        token
+        for token, _, _ in mtp_generate_step(
+            mx.array([0], mx.uint32),
+            model,
+            max_tokens=12_000,
+            temp=0.7,
+            top_p=0.95,
+            top_k=3,
+            disable_auto_k=True,
+            max_k=2,
+        )
+    ]
+    probabilities = expected.astype(mx.float32).tolist()
+    joint = [a * b for a in probabilities for b in probabilities]
+    assert _tv(_marginal(stream, 4), probabilities) < 0.025
+    assert _tv(_lag1_joint(stream, 4), joint) < 0.04
+    assert set(stream) <= {i for i, p in enumerate(probabilities) if p > 0}
+
+
+@pytest.mark.parametrize("dtype_name", ["float32", "bfloat16"])
+@pytest.mark.parametrize(
+    "top_p,min_p,top_k", [(0, 0, 0), (1, 0, 2), (0.95, 0.1, 3), (0.95, 0, 3)]
+)
+def test_fallback_distribution_matches_serving(
+    monkeypatch, dtype_name, top_p, min_p, top_k
+):
+    """Fallback settings, including a disabled fast path, keep serving masks."""
+    from mlx_lm import sample_utils
+
+    from rapid_mlx.spec_decode.mtp.generator import _make_sampler_chain
+    from tests.test_mtp_sampling_parity import sampling_harness
+
+    chain, _ = _make_sampler_chain(top_p=top_p, min_p=min_p, top_k=top_k)
+    env, captured, _ = sampling_harness(mx, temp=0.7, fused=False, chain=chain)
+    logits = mx.array([-3, 0, 0, 0, 2], dtype=getattr(mx, dtype_name))
+    _, logprobs, acceptance = env["_process_and_sample"](None, logits)
+    mtp_scaled = captured.pop()
+
+    def categorical(masked, temp):
+        captured.append(masked * (1 / temp))
+        return mx.argmax(masked, axis=-1)
+
+    monkeypatch.setattr(sample_utils, "categorical_sampling", categorical)
+    sample_utils.make_sampler(temp=0.7, top_p=top_p, min_p=min_p, top_k=top_k)(logprobs)
+    serving_scaled = captured.pop()
+    assert mx.array_equal(mtp_scaled, serving_scaled)
+    assert mx.allclose(
+        mx.exp(acceptance), mx.softmax(serving_scaled.astype(mx.float32)), atol=1e-7
+    )
+    assert acceptance.dtype == mx.float32
+
+
+@pytest.mark.parametrize("dtype_name", ["float16", "bfloat16", "float32"])
+@pytest.mark.parametrize(
+    "top_p,min_p,top_k", [(0.95, 0, 3), (0, 0.1, 3), (1e-9, 1, 100)]
+)
+def test_seeded_mtp_filtered_probabilities_match_serving(
+    monkeypatch, dtype_name, top_p, min_p, top_k
+):
+    from rapid_mlx._seeded_sampler import make_seeded_sampler
+    from tests.test_mtp_sampling_parity import sampling_harness
+
+    env, captured, _ = sampling_harness(
+        mx, temp=0.7, top_p=top_p, min_p=min_p, top_k=top_k, seeded=True
+    )
+    logits = mx.array([-3, -2, 0, 0, 0, 2], dtype=getattr(mx, dtype_name))
+    _, logprobs, acceptance = env["_process_and_sample"](None, logits)
+    mtp_scaled = captured.pop()
+
+    def capture(logits, *, key):
+        captured.append(logits)
+        return mx.argmax(logits, axis=-1)
+
+    monkeypatch.setattr(mx.random, "categorical", capture)
+    make_seeded_sampler(
+        seed=42, temperature=0.7, top_p=top_p, min_p=min_p, top_k=top_k
+    )(logprobs)
+    serving_scaled = captured.pop()
+    assert mx.array_equal(mtp_scaled, serving_scaled)
+    assert mx.allclose(mx.exp(acceptance), mx.softmax(serving_scaled), atol=1e-7)
+    if (top_p, min_p, top_k) == (0.95, 0, 3):
+        assert mx.isfinite(mtp_scaled).tolist() == [
+            False,
+            False,
+            True,
+            True,
+            False,
+            True,
+        ]
