@@ -8,7 +8,7 @@ usage: python loop.py <task_dir> <run_dir> --base-url http://127.0.0.1:8000/v1 -
 Human input: append {"hypothesis": "...", "change": "..."} lines to <run_dir>/inbox.jsonl (change optional);
 create <run_dir>/PAUSE to pause between steps, <run_dir>/STOP to stop after the current step.
 """
-import argparse, difflib, json, os, re, statistics, subprocess, sys, time, urllib.request
+import argparse, atexit, difflib, json, os, re, statistics, subprocess, sys, time, urllib.request
 
 ap = argparse.ArgumentParser()
 ap.add_argument("task"); ap.add_argument("run_dir")
@@ -23,7 +23,27 @@ SIGN = 1 if task_cfg["direction"] == "max" else -1
 out = os.path.abspath(args.run_dir)
 os.makedirs(out, exist_ok=True)
 best_src = open(f"{args.task}/{EDITABLE}").read()
+# Atomically take the project queue once; ideas arriving during a run use its inbox.
+queued_path = f"{args.task}/ideas.jsonl"
+if os.path.isfile(queued_path):
+    os.replace(queued_path, f"{out}/queued_ideas.jsonl")
+    with open(f"{out}/inbox.jsonl", "a") as inbox:
+        for line in open(f"{out}/queued_ideas.jsonl"):
+            if line.strip():
+                idea = json.loads(line)
+                idea["source"] = "you"
+                inbox.write(json.dumps(idea) + "\n")
 history, inbox_seen = [], 0
+def retain_untried_ideas():
+    """Carry unconsumed human ideas into the next run, including after a stop."""
+    path = f"{out}/inbox.jsonl"
+    if os.path.isfile(path):
+        remaining = [line for line in open(path).read().splitlines() if line.strip()][inbox_seen:]
+        if remaining:
+            with open(queued_path, "a") as queue:
+                queue.write("\n".join(remaining) + "\n")
+
+atexit.register(retain_untried_ideas)
 SYSTEM = "You are a careful ML research assistant running small experiments on a laptop. Be concrete and brief."
 
 def log(event, **kw):
@@ -125,7 +145,7 @@ def next_idea(rnd):
         if len(lines) > inbox_seen:
             idea = json.loads(lines[inbox_seen]); inbox_seen += 1
             idea.setdefault("change", ""); idea.setdefault("why", "Proposed by the researcher."); idea.setdefault("prediction", "")
-            idea["source"] = "human"
+            idea["source"] = "you"
             return idea, 0, {}
     prompt = (f"{program}\n\nCurrent best {EDITABLE}:\n```python\n{best_src}\n```\n\nBest {METRIC} so far: {best}\n\nExperiments so far:\n{history_text()}\n\n"
               "Propose the single most promising next hypothesis. Learn from the results above: do not repeat a refuted idea. "

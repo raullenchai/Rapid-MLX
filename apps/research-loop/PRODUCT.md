@@ -1,13 +1,29 @@
 # Research Loop — product context
 
-**What it is.** A local web tool for the two research steps where a researcher's own ideas and data are at stake: discussing ideas (step 3) and running experiments (step 4). It runs an autoresearch loop on a Mac: a local model (Rapid-MLX, Qwen3.6-35B-A3B) proposes or takes a hypothesis, edits one file, runs a fixed-budget experiment over several seeds, and the numbers decide supported / refuted / no effect. The researcher can discuss, add their own ideas, pause and stop. It never writes papers.
+A reusable local autoresearch workbench, organized by project. A researcher
+opens Projects, chooses a template and goal, discusses approaches with a local
+model, queues human ideas, then starts a fixed-budget experiment loop. Results,
+code, logs, and discussion stay together on the filesystem.
 
-**Who uses it.** Researchers (PhD students, small labs, independent scientists) who want to use AI on unpublished work without sending it to a cloud provider.
+The project has three stages: Discuss → Experiments → Results. The smaller
+five-step research strip places it within a wider research process; question,
+literature, and writing remain in the researcher's tools. Research Loop does not
+write papers. It supports multiple named local model endpoints.
 
-**Where it is seen first.** A 2-minute grant video for the Mozilla Foundation (non-technical reviewers), recorded at 1920×1080, partly replayed at 8× speed. The first viewport must explain itself in five seconds: what step of research this is, that it runs on this Mac, what the current hypothesis is, and whether the evidence supports it.
+This is an Operate surface for researchers with unpublished work. Preserve the
+scientific figure sheet: Public Sans, cool mineral surfaces, broad white plotting
+space, and semantic verdict colours. The main experiment chart plots metric
+against experiment number with discarded points, labelled kept changes, and a
+running-best step line. The current round's curve and the discussion support it.
+Results expose every recorded attempt and its reproducible artifacts.
 
-**Mode.** Operate (a working tool), held to video legibility: large type for the key facts, one obvious focal point (the experiment's evidence), calm everything else.
+All measurements and learned summaries come from events, with task metadata
+supplying the metric name, unit, direction, noise threshold, and goal. No invented
+results, generated scientific conclusions, or unsupported confidence claims.
+Grokking and pure-Python sort-speed exercise higher- and lower-is-better projects;
+web code must not assume a particular research domain.
 
-**Truth constraints.** Every number shown comes from events.jsonl. No invented metrics, no "AI wrote your paper", no claims beyond "runs on this Mac". Steps 1, 2, 5 are shown as "use any tool", not as features.
-
-**Tone.** Precise, quiet, trustworthy, a scientist's instrument rather than a startup dashboard.
+Primary use is 1920×1080, including a short grant demonstration video; 1440×900
+must also work. Experiments occupies one desktop viewport with internal scrolling.
+Keyboard focus, meaningful empty states, safe markdown rendering, failure recovery,
+and model/queue visibility are part of the working product.

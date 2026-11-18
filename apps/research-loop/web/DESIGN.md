@@ -1,96 +1,105 @@
 # Research Loop visual system
 
-This Operate surface uses a scientific figure sheet: open white plotting space,
-a quiet blue-grey discussion column, and one evidence-led reading path. The
-parameter change, accuracy curve, and verdict lead; controls and ancestry support them.
+This Operate surface keeps the scientific figure sheet: Public Sans, blue-grey
+working surfaces, dark blue ink, and white plotting space. Projects, Discuss,
+Experiments, and Results share the same quiet controls and type hierarchy.
 
-## Colour
+| Role | Value |
+| --- | --- |
+| Canvas | `#eef2f5` |
+| Surface | `#ffffff` |
+| Discussion | `#e7edf2` |
+| Ink | `#172b3b` |
+| Muted | `#526476` |
+| Selection | `#d8e5f0` |
+| Supported / running best | `#176345` |
+| Refuted / crashed | `#a33432` |
+| No effect | `#795919` |
+| Testing / focus | `#285e89` |
+| Rule | `#ccd6de` |
 
-| Role | Value | Use |
-| --- | --- | --- |
-| Canvas | `#eef2f5` | Page and map |
-| Surface | `#ffffff` | Experiments |
-| Discussion | `#e7edf2` | Ideas and composer |
-| Ink | `#172b3b` | Primary text and actions |
-| Muted | `#526476` | Secondary text and baseline |
-| Selection | `#d8e5f0` | Selected hypothesis |
-| Supported | `#176345` | Supported verdict, curve, map node |
-| Refuted | `#a33432` | Refuted/crashed verdict, curve, map node |
-| No effect | `#795919` | No-effect verdict, curve, map node |
-| Testing | `#285e89` | Measuring/testing, focus, selected map ring |
-| Rule | `#ccd6de` | Structural separators |
+Grey progress dots (`#b3bdc5`) mean no effect, light red (`#d9a19f`) means
+refuted, and red crosses mean crashed. Unmeasured crashes sit at the bottom
+edge with an explicit tooltip; their position is not a metric. Kept dots and the
+step line are green. Selection adds a blue ring. Words, values, and accessible names accompany
+colour. The selected round's curve follows its verdict colour; train measurements
+use slate, and the parent comparison is dashed. SVG contains only real data.
 
-State colours repeat between hypothesis outcomes, the selected test curve and
-its legend, the verdict, and map nodes. State words accompany colour. The train
-curve is slate (`#66798b`); the previous-best test curve is dashed (`#697684`).
-Map node numbers identify rounds; a dark outer ring marks the best result and
-a blue inner ring marks the selected result.
+Public Sans is self-hosted from `fonts/PublicSans.ttf`, SIL OFL 1.1; see
+[font provenance](fonts/README.md). All numerals are tabular. Code uses local
+monospace. Main titles are 22px, plot title 23px, section titles 19px, change title
+21px (19px at 1440), verdict 26px (23px at 1440), body 15px, and supporting
+content 12–14px. Controls have 4–5px corners and 3px blue focus outlines.
 
-Text colours pass 4.5:1 against white, canvas, discussion, selection, and the diff
-background. The lowest tested pairing is muted text on selection (4.76:1).
+## Structure
 
-## Typography
+Projects is a flat list with title, template, experiment count, best metric with
+a direction arrow, and relative/short last activity. The native title link spans
+the row. New project opens an inline form, with a template selector and
+research-goal field. No promotional surface or fabricated sample results.
 
-Public Sans upright variable, weight 100–900, SIL OFL 1.1. See
-[font source and delivery](fonts/README.md). All UI uses tabular numerals.
-Code diffs use local monospace fonts; change titles and all metrics retain tabular numerals.
+The project shell has a 64px app bar, 52px research strip, and 64px stage/run bar.
+The five research steps stay small; Discuss, Experiments, and Results are the main
+navigation. URLs retain run selection and replay state, while explicit ledger
+selection adds the round number.
 
-| Role | Desktop size | Weight |
-| --- | --- | --- |
-| Numeric verdict | 40px | 650 |
-| Change title | 26px | 600 |
-| Hypothesis | 17px | 400 |
-| Task title | 22px (20px at 1440) | 650 |
-| Idea row | 15px (14px at 1440) | 600 |
-| Section heading | 18px | 650 |
-| Body and composer | 15–16px | 400 |
-| Supporting content | 12–14px | 400–600 |
+Discuss has three columns: a rendered markdown-lite goal with Edit/Preview and
+Save, persistent discussion, and queued ideas plus a rounds field and Start
+experiments. Goal editing is disabled during a run
+to keep its instructions fixed. The single discussion component moves into the
+experiment rail, preserving its draft and model selector between stages. Stage
+navigation refreshes saved messages and scrolls after mounting the visible panel.
+Default run selection prefers an active run, then the newest run with results by
+creation time. Explicit run selections remain in the URL.
 
-The change title is a single line with ellipsis and full text on hover. The
-hypothesis is clamped to two lines, with full text on hover and click to expand.
-One compact 52px row per round shows its number, change, and verdict/value pill.
-Clicking selects the evidence and toggles the full hypothesis, reason, and author.
+Experiments reserves a 330px discussion/control rail (295px at 1440) and gives
+the remaining width to evidence. The main area divides 1.8:1 between the hero
+progress figure and current round, with a 14px gap. Progress gets labelled kept
+points, verdict-specific discarded markers, optional goal line, direction, and a
+faint noise band around the running best (not a confidence interval). Percent
+axes use 0/25/50/75/100% within [0, 1]; other units use 1–2–5 tick steps around
+the observed range. Labels truncate to 28 characters with full SVG titles, move
+above/below points, and turn inward at the right edge to stay inside the SVG. It
+plots recorded values at their natural numeric orientation: a minimum improves
+downward. The step line advances only on supported verdicts. Dense runs scroll
+horizontally within the figure; every point has a full tooltip and keyboard
+inspection target. The lower area has current change, hypothesis, seeds, verdict,
+a Results link, and a smaller curve. Templates without live curves show per-seed
+final metrics instead of invented training traces. Seed statuses are small inline
+chips. Current change titles clamp to two lines, Results titles to three, with
+hover text and explicit expansion; ledger changes clamp to two lines.
 
-## Structure and interaction
+Results shows best-code download and log links, a selectable ledger, and a detail
+column for the full hypothesis, why, prediction, curve, parent diff, and code.
+The learned section groups event verdicts deterministically. Missing artifacts
+have explicit empty/error states. Code and diff start collapsed and scroll inside
+their disclosures. The filesystem destination stays visible above the ledger.
 
-At both 1920×1080 and 1440×900, the desktop shell uses a 120px header and step
-strip, followed by a fixed grid filling the remaining viewport. The task title
-and run controls share one row. Main has 8px top / 12px bottom padding, an 8px
-row gap, a flexible workspace, and a reserved 170px full-width ancestry strip
-including run controls. The workspace is 30:70 ideas/evidence. Every flexible
-track uses a zero minimum; long content cannot set the document height.
+## Desktop budgets (authored, not browser measurements)
 
-The ideas list and Discussion tab scroll independently inside the column. Chat
-history occupies its own tab rather than displacing rounds. The composer is a
-60px bottom region at rest and expands on focus to expose text and actions.
-Collapsed rows budget for 11 visible at 1080px height and 8 at 900px height;
-expanding a row or composer reduces that count and the list scrolls internally.
+At 1920×1080, the project shell has 880px of stage height after its app bar,
+strip, stage bar, and bottom padding. At 1440×900 it has 704px. The plot figure is
+about 557px / 444px high; the current round about 309px / 246px. The progress SVG
+has a zero-minimum grid track; long runs scroll internally. The rail uses a
+zero-minimum discussion track with an internally scrolling conversation. Goal,
+queue, Results, and current-round copy have their own scroll regions. Document
+scrolling is unnecessary on desktop Experiments.
 
-The evidence header shows the change, brief hypothesis, and seed statuses. The
-chart uses the flexible middle track, with a large verdict underneath. The
-figure is budgeted at 588px / 408px (including legend and verdict) and its SVG
-at 500px / 320px for the two requested sizes. Axis labels redraw at actual
-plot dimensions. The 170px map and supporting information constrain the plot
-at the shorter viewport; its visibility takes precedence over a literal 55vh
-plot height.
+Below 1100px, the layout stacks and document scrolling resumes. At narrow widths
+the research strip drops auxiliary labels, Discuss stacks, the round curve moves
+below its copy, and the ledger scrolls horizontally.
 
-The diff starts collapsed as a file/count summary. Its full scrollable content,
-full hypothesis, and error details expand over the plot without resizing it.
-Switching rounds closes evidence disclosures; streaming updates preserve their
-state. Map nodes and parent edges remain in the strip; longer runs scroll
-horizontally. Below 1100px the workspace stacks and document scrolling resumes.
-
-Controls have 5px corners, restrained state transitions, and visible 3px blue
-focus outlines. History entries are flat selectable rows, with no nested card
-shells. Round buttons and map nodes support Enter and Space; tabs support arrow keys, Home, and End. Follow
-latest restores event following after inspection. Reduced motion disables
-transitions. Empty, measuring, testing, finished, replay, error, and fix states
-use the same component vocabulary.
+Focus is preserved when live progress and ledger markup rebuild. Stages are
+native navigation links; point inspection supports Enter and Space. Selection,
+caret, native scrollbar colours, placeholder contrast, loading, empty, error,
+paused, finished, and replay states follow the shared palette. Point arrival has
+a short state animation; reduced-motion disables it.
 
 ## Verification boundary
 
-Automated state checks cover both supplied real event streams, long content,
-progressive disclosure, tab navigation, and diff summaries. Round 2 uses sizing
-reasoning at 1920×1080 and 1440×900 as requested; no screenshots were captured.
-Font rendering, focus appearance, actual fit, and video legibility await the
-user’s rendered review. Source-level sizing is not screenshot evidence.
+Node tests validate state, routing, both metric directions, markdown escaping,
+ledger selection, artifacts, replay controls, and both local real streams when
+available. CSS sizing budgets have been reviewed at source level. Chrome and
+Metal were unavailable for this task; actual desktop fit, zoom, touch/mobile,
+font rendering, focus appearance, screen-reader behavior, and live model streaming
+still need the user's browser and live review. No rendered approval is claimed.

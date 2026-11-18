@@ -8,15 +8,7 @@
 
 The interface uses this single family for headings, prose, controls, and tabular figures. Code diffs use the browser's local monospace fallback.
 
-The existing server only exposes three named web assets and must stay running during this redesign. `style.css` therefore embeds the exact font bytes in its `@font-face` data URL. It is served from this Mac with the stylesheet, without a CDN or a new server route; the original font is retained here for licence/source review. To refresh the embedded bytes after an intentional font replacement:
-
-```python
-from pathlib import Path
-import base64
-import re
-root = Path('apps/research-loop/web')
-font = base64.b64encode((root / 'fonts/PublicSans.ttf').read_bytes()).decode()
-css = root / 'style.css'
-css.write_text(re.sub(r'data:font/ttf;base64,[A-Za-z0-9+/=]+',
-                      'data:font/ttf;base64,' + font, css.read_text()))
-```
+The project server serves the original font at `/fonts/PublicSans.ttf` with MIME
+`font/ttf`. `style.css` references that local URL directly, without embedding a
+second copy or making a CDN request. Keep this font, its licence, and its source
+notes together if intentionally replacing it.

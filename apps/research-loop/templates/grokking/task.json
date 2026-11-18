@@ -16,5 +16,21 @@
     "^P = 97$",
     "^TRAIN_FRAC = 0.4$",
     "^MAX_STEPS = int\\(os.environ.get\\(\"MAX_STEPS\", 8000\\)\\)"
-  ]
+  ],
+  "metric_label": "Test accuracy",
+  "unit": "%",
+  "curve": {
+    "x": "step",
+    "x_label": "Training steps",
+    "series": [
+      {
+        "key": "train_acc",
+        "label": "Train"
+      },
+      {
+        "key": "test_acc",
+        "label": "Test"
+      }
+    ]
+  }
 }

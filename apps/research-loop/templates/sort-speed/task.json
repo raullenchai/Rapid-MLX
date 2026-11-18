@@ -1,0 +1,21 @@
+{
+  "title": "Reduce sorting runtime",
+  "editable": "sort.py",
+  "metric": "runtime_ms",
+  "metric_label": "Runtime",
+  "unit": "ms",
+  "direction": "min",
+  "noise": 0.01,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "fixed": [
+    "^SIZE = 2000$",
+    "^REPEATS = 20$",
+    "^values = tuple\\(rng\\.randrange\\(100000\\) for _ in range\\(SIZE\\)\\)$",
+    "^    result = sort_values\\(list\\(values\\)\\)$",
+    "^assert list\\(result\\) == sorted\\(values\\)$"
+  ]
+}
