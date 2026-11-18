@@ -238,6 +238,12 @@ def _production_methods(filename, class_name, names, namespace):
     import ast
     from pathlib import Path
 
+    from rapid_mlx.memory_cache import _cache_has_non_trimmable
+
+    # Extracted methods still need their production globals as dependencies
+    # evolve. This helper is tensor-free and does not require an MLX shim.
+    namespace["_cache_has_non_trimmable"] = _cache_has_non_trimmable
+
     source = Path(__file__).resolve().parents[1] / "rapid_mlx" / filename
     cls = next(
         n

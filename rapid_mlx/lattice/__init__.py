@@ -120,6 +120,27 @@ def _knob(
 
 
 KNOBS = {
+    "prefix_boundary_min_tokens": _knob(
+        "prefix_boundary_min_tokens",
+        lambda c: c.mode in {"plain", "mtp"},
+        "RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS",
+        default=0,
+        validator=int_range(0),
+        candidates=(0, 128, 256, 512),
+    ),
+    "admission_window_ms": _knob(
+        "admission_window_ms",
+        # MTP serves one sequence at a time, so wave alignment has no benefit.
+        # Plain batching needs coalescing: batch 1 at hold start may be a burst,
+        # whose alignment/throughput cost a single-request bench cannot measure.
+        lambda c: c.mode == "mtp",
+        "RAPID_ADMISSION_WINDOW_MS",
+        default=8.0,
+        validator=lambda value: (
+            type(value) in (int, float) and 0 <= value <= sys.float_info.max
+        ),
+        candidates=(0, 8),
+    ),
     "metal_cache_floor_bytes": _knob(
         "metal_cache_floor_bytes",
         lambda c: True,
@@ -363,6 +384,13 @@ def resolve(
             depth = None
         if knob.valid(depth):
             return Decision(depth, "env")
+    elif type(knob.default) is float:
+        try:
+            number = float(cast(str, override))
+        except (ValueError, TypeError):
+            number = None
+        if knob.valid(number):
+            return Decision(number, "env")
     elif is_falsey(override):
         return Decision(False, "env")
     elif is_truthy(override):

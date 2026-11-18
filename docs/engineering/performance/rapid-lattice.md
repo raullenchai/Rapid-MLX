@@ -128,3 +128,45 @@ and output budget; a cancelled consumer may have received fewer tokens.
 Existing timing diagnostics retain `prompt_lookup_proposals`,
 `prompt_lookup_drafted_tokens`, `prompt_lookup_accepted_tokens`, and now
 `prompt_lookup_verify_width_<rows>`. No token contents are logged.
+
+### Short-request scheduling
+
+| Knob | Default | Candidates | Environment override | Builtin policy |
+| --- | --- | --- | --- | --- |
+| `prefix_boundary_min_tokens` | `0` | `0`, `128`, `256`, `512` | `RAPID_MLX_PREFIX_BOUNDARY_MIN_TOKENS` | `256` for singleton MTP on M5 Max 36 GB, Qwen3.8-27B (hidden 5120) affine4/group64, MLX 0.32.4, macOS 27.0.1 ([evidence](2026-11-17-m5-short-request-ttft.md)) |
+| `admission_window_ms` | `8.0` | `0`, `8` | `RAPID_ADMISSION_WINDOW_MS` | `0` for the same measured batch-1 MTP cell ([evidence](2026-11-17-m5-short-request-ttft.md)) |
+
+The measured cell uses family, geometry and installed quantization because
+the schema has no checkpoint-name key. Live text args omit intermediate size,
+so it is not a key. Other hardware/software/model facts and batch sizes retain
+the defaults above. The prefix threshold accepts nonnegative
+integers; the admission window accepts finite nonnegative numbers. Resolve
+against the loaded model, device and active plain/MTP lane at the consumer.
+
+When the uncached prompt length is **strictly below** the prefix threshold,
+non-trimmable text requests skip their message-boundary split and snapshot.
+This applies to the text/MTP scheduler and the MLLM generator's text-only lane
+through shared policy code. Trimmable models, media requests, prefix-cache
+fetches, shared-prefix snapshots, normal chunk limits, and completion-cache
+stores retain their existing behavior. Zero preserves the existing splits.
+The final-token forward remains separate where the normal path requires it.
+
+Skipping the boundary can cost the next turn fewer than `min_tokens` extra
+prefill tokens (at most `min_tokens - 1` for integer token counts), relative to
+reusing that boundary with the same retained earlier prefix. Eviction or a
+changed earlier prefix can independently require more work. With the measured
+threshold 256, that policy tradeoff is at most 255 tokens.
+
+Lattice admission-window tuning is scoped to `mode == "mtp"`: non-continuous
+batching MTP serves one sequence at a time, so wave alignment has no benefit.
+Plain continuous batching retains coalescing because the waiting count at hold
+start can be 1 even for a burst. Disabling the hold can reduce alignment and
+batched throughput, a downside a single-request community benchmark cannot measure.
+The builtin batch-1 MTP cell remains eligible.
+
+The admission window resolves with the waiting count before each fresh-wave
+hold; `0` disables the hold, and the default retains the 8 ms tick and existing cap. The legacy
+environment variable retains its parsing and wins over the Lattice selection,
+including benchmark JSON; invalid/nonfinite values fall back to the selected
+window. Negative legacy values still disable the hold. Benchmark JSON wins
+over the prefix-threshold environment override under normal Lattice precedence.
