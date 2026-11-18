@@ -46,6 +46,11 @@ from ..reasoning.raon_1_parser import (
     RaonMarkupTokens,
     _TextTokenizer,
 )
+from ..tool_call_scan import (
+    declared_tool_names,
+    split_marked_calls,
+    split_marked_parameters,
+)
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -742,7 +747,17 @@ class RaonToolParser(ToolParser):
             if not name and raw.strip():
                 name, arguments = self._json_call(raw)
             elif raw.strip():
-                arguments = _parameters_json(raw, False)
+                parameters = split_marked_parameters(
+                    raw,
+                    _NAMED_PARAMETER.pattern,
+                    PARAMETER_CLOSE,
+                    valid_names=set(self._properties(name)) or None,
+                )
+                arguments = (
+                    json.dumps(dict(parameters), ensure_ascii=False)
+                    if parameters
+                    else _parameters_json(raw, False)
+                )
             else:
                 arguments = "{}"
             if name:
@@ -786,9 +801,27 @@ class RaonToolParser(ToolParser):
     ) -> _ExtractedToolCalls:
         self._use_request(request)
         self._reset(_CONTENT)
-        events = (
-            self._events(self._stream.feed(model_output, [])) + self._finish_events()
+        # Bound complete function bodies before tokenizing markup. Literal
+        # function/parameter markers inside values belong to the argument,
+        # using the same sibling boundaries as the other XML parsers.
+        spans = split_marked_calls(
+            model_output,
+            r"<function=([^>]+)>",
+            FUNCTION_CLOSE,
+            valid_names=declared_tool_names(request),
         )
+        events = []
+        cursor = 0
+        for _, body, start, end in spans:
+            header_end = model_output.index(">", start) + 1
+            events += self._events(
+                self._stream.feed(model_output[cursor:header_end], [])
+            )
+            events.append(("args", body, self._index))
+            events += self._events(self._stream.feed(FUNCTION_CLOSE, []))
+            cursor = end
+        events += self._events(self._stream.feed(model_output[cursor:], []))
+        events += self._finish_events()
         self._delta(events, finished=True)
         calls = self._calls_found()
         # The complete-output API has no later delta/finish callback. Read

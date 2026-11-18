@@ -148,6 +148,7 @@ COVERED: list[tuple[str, str]] = [
     ("qwen3_xml", "json_body"),
     ("qwen3_coder", "json_body"),
     ("qwen3_coder_xml", "xml_body"),
+    ("raon_1", "xml_body"),
     ("nemotron", "xml_body"),
     ("nemotron3", "xml_body"),
     ("nous", "json_body"),

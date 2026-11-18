@@ -1004,6 +1004,7 @@ CANONICAL_WIRES = {
     "pythonic": "[lookup(text='hello')]",
     "qwen3_coder_xml": _xml_wire("lookup", "hello"),
     "qwen3": _json_wire("lookup", "hello"),
+    "raon_1": _xml_wire("lookup", "hello"),
     "seed_oss": (
         "<seed:tool_call><function=lookup><parameter=text>hello</parameter>"
         "</function></seed:tool_call>"

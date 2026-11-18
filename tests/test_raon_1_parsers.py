@@ -90,6 +90,24 @@ def test_registered():
     assert RaonToolParser.supports_native_format()
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "text with a literal </parameter> inside",
+        "text with a literal </function> inside",
+        "text with a literal <parameter=fake> inside",
+        "has <parameter=q> and </parameter> both",
+    ],
+)
+def test_complete_literal_markers_preserve_values_and_call_boundaries(value):
+    text = "Before." + call({"text": value}) + call({"count": "42"}) + "After."
+    result = RaonToolParser().extract_tool_calls(text, REQUEST)
+    assert result.content == "Before.After."
+    assert [
+        (item["name"], json.loads(item["arguments"])) for item in result.tool_calls
+    ] == [("run", {"text": value}), ("run", {"count": 42})]
+
+
 @pytest.mark.parametrize("step", [1, 2, 7, 31, 10000])
 def test_multiple_calls_typed_multiline_and_streaming(step):
     text = "Working.\n" + call() + "\n" + call({"text": "끝", "count": "0"}) + "\nDone."
