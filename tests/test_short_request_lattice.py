@@ -33,7 +33,7 @@ from rapid_mlx.lattice import defaults
 def test_scheduling_knob_contract(
     monkeypatch, tmp_path, name, default, candidates, valid, invalid
 ):
-    ctx = lattice.runtime_context({})
+    ctx = lattice.runtime_context({}, mode="mtp")
     monkeypatch.setattr(lattice, "overlay_profile", lambda: defaults.Profile())
     monkeypatch.setattr(lattice, "local_calibration", lambda _: {})
     knob = lattice.KNOBS[name]
@@ -82,7 +82,7 @@ def test_scheduling_knob_contract(
     "name,value", [("prefix_boundary_min_tokens", 256), ("admission_window_ms", 0.5)]
 )
 def test_scheduling_env_and_overlay(monkeypatch, name, value):
-    ctx = lattice.runtime_context({})
+    ctx = lattice.runtime_context({}, mode="mtp")
     profile = defaults.Profile("test.1", ({"id": "test", "knobs": {name: value}},))
     monkeypatch.setattr(lattice, "overlay_profile", lambda: profile)
     knob = lattice.KNOBS[name]
@@ -117,6 +117,24 @@ def measured_context():
         macos="27.0.1",
         mode="mtp",
     )
+
+
+def test_plain_admission_window_is_out_of_scope():
+    from dataclasses import replace
+
+    from rapid_mlx.community_bench.comparison import candidate_values
+
+    # The first request in a burst looks like batch 1 before coalescing.
+    ctx = replace(measured_context(), mode="plain")
+    assert not lattice.KNOBS["admission_window_ms"].scope(ctx)
+    assert lattice.resolve(
+        "admission_window_ms",
+        ctx,
+        environ={"RAPID_MLX_BENCHMARK_KNOBS": '{"admission_window_ms": 0}'},
+    ) == lattice.Decision(8.0, "capability", "outside knob scope")
+    candidates = list(candidate_values(lattice.dump(ctx)))
+    assert candidates
+    assert all("admission_window_ms" not in values for values in candidates)
 
 
 @pytest.fixture

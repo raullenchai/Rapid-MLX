@@ -157,10 +157,16 @@ reusing that boundary with the same retained earlier prefix. Eviction or a
 changed earlier prefix can independently require more work. With the measured
 threshold 256, that policy tradeoff is at most 255 tokens.
 
-The admission window resolves with the waiting wave size before each fresh-wave
+Lattice admission-window tuning is scoped to `mode == "mtp"`: non-continuous
+batching MTP serves one sequence at a time, so wave alignment has no benefit.
+Plain continuous batching retains coalescing because the waiting count at hold
+start can be 1 even for a burst. Disabling the hold can reduce alignment and
+batched throughput, a downside a single-request community benchmark cannot measure.
+The builtin batch-1 MTP cell remains eligible.
+
+The admission window resolves with the waiting count before each fresh-wave
 hold; `0` disables the hold, and the default retains the 8 ms tick and existing cap. The legacy
 environment variable retains its parsing and wins over the Lattice selection,
 including benchmark JSON; invalid/nonfinite values fall back to the selected
 window. Negative legacy values still disable the hold. Benchmark JSON wins
 over the prefix-threshold environment override under normal Lattice precedence.
-Disabling the admission hold can reduce burst alignment and batched throughput.

@@ -130,7 +130,10 @@ KNOBS = {
     ),
     "admission_window_ms": _knob(
         "admission_window_ms",
-        lambda c: True,
+        # MTP serves one sequence at a time, so wave alignment has no benefit.
+        # Plain batching needs coalescing: batch 1 at hold start may be a burst,
+        # whose alignment/throughput cost a single-request bench cannot measure.
+        lambda c: c.mode == "mtp",
         "RAPID_ADMISSION_WINDOW_MS",
         default=8.0,
         validator=lambda value: (

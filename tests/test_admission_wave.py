@@ -308,9 +308,13 @@ def test_hard_cap_bounds_never_quiet_stream(monkeypatch):
     assert len(calls) == 5
 
 
-@pytest.mark.parametrize("window,expected", [(0, []), (8, [0.008])])
-def test_lattice_admission_window(sleep_spy, monkeypatch, window, expected):
+@pytest.mark.parametrize(
+    "mode,window,expected",
+    [("mtp", 0, []), ("mtp", 8, [0.008]), ("plain", 0, [0.008])],
+)
+def test_lattice_admission_window(sleep_spy, monkeypatch, mode, window, expected):
     import json
+    from types import SimpleNamespace
 
     calls, _, holder = sleep_spy
     monkeypatch.delenv("RAPID_ADMISSION_WINDOW_MS", raising=False)
@@ -318,6 +322,7 @@ def test_lattice_admission_window(sleep_spy, monkeypatch, window, expected):
         "RAPID_MLX_BENCHMARK_KNOBS", json.dumps({"admission_window_ms": window})
     )
     eng = _make_engine()
+    eng.scheduler.config = SimpleNamespace(spec_decode=mode)
     holder["eng"] = eng
     _run(eng._await_admission_wave())
     assert calls == pytest.approx(expected)
@@ -326,13 +331,19 @@ def test_lattice_admission_window(sleep_spy, monkeypatch, window, expected):
 @pytest.mark.parametrize(
     "override,expected", [("25", [0.025]), ("-1", []), ("bad", [])]
 )
+@pytest.mark.parametrize("mode", ["mtp", "plain"])
 def test_admission_legacy_env_wins_over_lattice(
-    sleep_spy, monkeypatch, override, expected
+    sleep_spy, monkeypatch, override, expected, mode
 ):
+    from types import SimpleNamespace
+
     calls, _, holder = sleep_spy
     monkeypatch.setenv("RAPID_MLX_BENCHMARK_KNOBS", '{"admission_window_ms": 0}')
     monkeypatch.setenv("RAPID_ADMISSION_WINDOW_MS", override)
     eng = _make_engine()
+    eng.scheduler.config = SimpleNamespace(spec_decode=mode)
     holder["eng"] = eng
     _run(eng._await_admission_wave())
-    assert calls == pytest.approx(expected)
+    assert calls == pytest.approx(
+        [0.008] if mode == "plain" and override == "bad" else expected
+    )
