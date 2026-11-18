@@ -1,0 +1,104 @@
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:#181818;font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,textarea,select{font:inherit}
+button{border:1px solid #191919;background:#191919;color:white;padding:9px 19px;border-radius:24px;cursor:pointer;white-space:nowrap}
+button:hover{opacity:.75}
+button:disabled{opacity:.35;cursor:default}
+.secondary{background:white;color:#292929;border-color:#d9d9d9}
+header{border-bottom:1px solid #e5e5e5;padding:20px 3% 0}
+.brand{font-size:19px;font-weight:650;letter-spacing:-.5px;display:flex;gap:15px;align-items:center}
+#replay{font-size:13px;font-weight:500;letter-spacing:0;border:1px solid #ddd;padding:3px 10px;border-radius:20px}
+.cycle{display:flex;align-items:stretch;justify-content:center;gap:5%;margin:12px 0 0}
+.cycle>div{text-align:center;font-size:18px;font-weight:600;padding:10px 12px 16px}
+.cycle small{display:block;font-size:14px;font-weight:400;margin-top:3px}
+.cycle .muted{color:#999}
+.cycle .active{border-bottom:3px solid #191919}
+.cycle b{font-size:25px;margin:0 32px}
+main{padding:22px 3% 0}
+.toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:15px}
+h1{font-size:26px;letter-spacing:-.7px;margin:0}
+p{margin:5px 0;color:#777}
+.run-tools{display:flex;align-items:end;gap:12px}
+.run-tools label{font-size:13px;color:#777;display:flex;flex-direction:column;gap:3px}
+select{max-width:245px;background:white;border:1px solid #ddd;border-radius:8px;padding:8px;font-size:14px}
+.workspace{display:grid;grid-template-columns:40% 60%;border:1px solid #ddd;border-radius:14px;overflow:hidden;height:574px}
+.section-head{display:flex;justify-content:space-between;align-items:center;padding:17px 22px;border-bottom:1px solid #e9e9e9;gap:10px}
+.section-head>span{font-size:14px;color:#777}
+h2{margin:0;font-size:18px;font-weight:600}
+h2>span{margin-left:10px}
+.ideas{display:flex;flex-direction:column;border-right:1px solid #ddd;min-height:0}
+.idea-scroll{overflow-y:auto;flex:1;padding:18px 22px}
+.welcome{font-weight:550;padding:15px 0}
+.welcome p{font-size:16px;font-weight:400;max-width:490px}
+.chat{margin:0 0 14px;white-space:pre-wrap}
+.chat.user{margin-left:35px;background:#f5f5f5;border-radius:14px;padding:12px}
+.chat.assistant{padding:8px 0}
+.chat button{display:block;margin-top:10px;padding:5px 13px;font-size:14px}
+.card{border:1px solid #ddd;border-radius:12px;padding:15px 17px;margin:0 0 12px;cursor:pointer}
+.card.selected{border-color:#777}
+.card header{padding:0;border:0;display:flex;justify-content:space-between;font-size:13px;color:#777}
+.card h3{font-size:17px;margin:9px 0 6px}
+.card p{font-size:15px;color:#666}
+.card .change{color:#333;font-family:ui-monospace,monospace;font-size:14px}
+.card .outcome{font-size:15px;margin-top:10px;font-weight:600}
+.supported{color:#187b4d}
+.refuted,.crashed{color:#b44141}
+.no-effect,.not-run{color:#777}
+.badge{font-size:13px;padding:4px 9px;background:#f4f4f4;border-radius:15px;white-space:nowrap}
+#composer{padding:13px 20px 17px;border-top:1px solid #e5e5e5}
+#composer label{font-size:13px;color:#777}
+textarea{display:block;resize:vertical;min-height:55px;max-height:150px;width:100%;border:0;padding:7px 0;outline:none}
+textarea:focus{box-shadow:0 1px #888}
+#composer>div{display:flex;gap:8px;align-items:center}
+#queue-status{margin-right:auto;font-size:13px;color:#777}
+#composer button{padding:7px 14px;font-size:14px}
+.experiment-body{padding:16px 24px;overflow-y:auto;max-height:515px}
+.experiment-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+h3{margin:0;font-size:19px}
+.seeds{display:flex;gap:10px;min-height:34px;margin:10px 0}
+.seed{font-size:14px;border:1px solid #e1e1e1;padding:4px 10px;border-radius:7px}
+.chart-head{display:flex;justify-content:space-between;font-size:14px}
+.chart-head strong{font-weight:500}
+.key{display:inline-block;width:18px;height:3px;vertical-align:middle;margin:0 5px 0 16px;background:#188257}
+.key.train{background:#aaa}
+.key.previous{background:#bad7c6}
+#chart{display:block;width:100%;height:225px;margin-top:4px}
+#verdict{font-size:25px;letter-spacing:-.6px;font-weight:600;padding:6px 0 14px}
+summary{font-size:14px;color:#666;cursor:pointer}
+#diff-label{margin-left:10px;color:#999}
+pre{font:13px/1.45 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:#fafafa;border:1px solid #eee;border-radius:7px;max-height:155px;overflow:auto;padding:12px;margin:8px 0}
+.add{color:#187b4d}
+.del{color:#b44141}
+.error{font-size:14px;color:#b44141;margin-top:8px}
+.map{margin-top:16px;border:1px solid #ddd;border-radius:13px;overflow:hidden}
+.map .section-head{padding:12px 22px}
+.map h2 span{font-size:14px;font-weight:400;color:#777}
+#map-scroll{overflow-x:auto}
+#map{display:block;min-width:100%}
+#map g{cursor:pointer}
+#map text{font-family:inherit}
+footer{display:flex;justify-content:space-between;align-items:center;padding:15px 3%;font-size:14px;color:#777}
+footer>div{display:flex;gap:10px;align-items:center}
+footer button{font-size:14px;padding:6px 16px}
+#run-state{margin-right:10px}
+#notice:empty{display:none}
+#notice{background:#f5f5f5;padding:8px 15px;border-radius:8px;margin-bottom:12px;font-size:14px}
+:focus-visible{outline:2px solid #188257;outline-offset:3px}
+@media(min-width:1600px){.workspace{height:545px}
+.experiment-body{max-height:485px}
+#chart{height:215px}
+main{padding-top:24px}
+}
+@media(max-width:1000px){.cycle{gap:0}
+.cycle b{margin:0 10px}
+.cycle>div{font-size:15px}
+.toolbar{align-items:start;flex-direction:column}
+.workspace{grid-template-columns:1fr;height:auto}
+.ideas{height:500px;border-right:0;border-bottom:1px solid #ddd}
+.experiments{min-height:520px}
+.section-head>span{font-size:12px}
+.cycle small{font-size:12px}
+footer{gap:15px;flex-wrap:wrap}
+.run-tools{flex-wrap:wrap}
+}
+

@@ -1,0 +1,20 @@
+{
+  "title": "Make a small network grok modular addition",
+  "editable": "train.py",
+  "metric": "test_acc",
+  "direction": "max",
+  "goal": 0.99,
+  "noise": 0.02,
+  "seeds": [
+    0,
+    1
+  ],
+  "env": {
+    "MAX_STEPS": "8000"
+  },
+  "fixed": [
+    "^P = 97$",
+    "^TRAIN_FRAC = 0.4$",
+    "^MAX_STEPS = int\\(os.environ.get\\(\"MAX_STEPS\", 8000\\)\\)"
+  ]
+}
