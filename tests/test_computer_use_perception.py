@@ -598,6 +598,66 @@ def test_fill_is_confirmed_by_the_observed_value_even_if_the_route_refused(
     assert out["receipt"]["effect"] == "refused"
 
 
+@pytest.mark.parametrize("verified,actual", [(True, "2"), (False, "0"), (None, None)])
+def test_datetime_fill_receipt_retains_readback(session, screen, verified, actual):
+    screen.show([E("time", "AXIncrementor", "AM/PM", value="0")])
+    obs = session.observe("Chrome", "cg:1")
+
+    def set_value(app, index, text, **kw):
+        screen.show([E("time", "AXIncrementor", "AM/PM", value=actual)])
+        return {
+            "mode": "SkyLight-segment-fill",
+            "effect": "confirmed" if verified else "suspected_noop",
+            "verified": verified,
+            "before": "0",
+            "actual": actual,
+            "requested": text,
+        }
+
+    screen.handlers["set_value"] = set_value
+    receipt = session.act("fill", _ref(obs, "AM/PM"), text="PM")["receipt"]
+    assert receipt["verified"] is verified
+    assert receipt["before"] == "0"
+    assert receipt["actual"] == actual
+    assert receipt["requested"] == "PM"
+    assert (receipt["effect"] == "confirmed") is (verified is True)
+
+
+@pytest.mark.parametrize(
+    "actual,requested,matches",
+    [
+        ("", "00", False),
+        ("--", "00", False),
+        ("00", "00", True),
+        ("02", "2", True),
+        ("PM", "PM", True),
+        ("AM", "A", True),
+    ],
+)
+def test_datetime_visible_value_settles(session, screen, actual, requested, matches):
+    def segment(value):
+        return {
+            **E("time", "AXIncrementor", "Segment", value=value),
+            "datetime_segment": True,
+        }
+
+    screen.show([segment("")])
+    obs = session.observe("Chrome", "cg:1")
+    assert "= '' (empty)" in obs.rows[0].render()
+
+    def set_value(app, index, text, **kw):
+        screen.show([segment(actual)])
+        return {"effect": "confirmed" if matches else "suspected_noop"}
+
+    screen.handlers["set_value"] = set_value
+    samples = screen.serial
+    out = session.act("fill", _ref(obs, "Segment"), text=requested)
+    assert out["receipt"]["settled"] is matches
+    assert perception._holds(out["observation"].rows[0], requested) is matches
+    if matches:
+        assert screen.serial - samples == 2
+
+
 def test_refused_action_is_reported_not_unresolved(session, screen):
     screen.show([E("a", "AXButton", "Go")])
     obs = session.observe("Chrome", "cg:1")

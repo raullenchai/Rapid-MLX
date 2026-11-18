@@ -13,7 +13,13 @@ import types
 
 import pytest
 
-from rapid_mlx.computer_use import ax_driver, backend, background_input, errors
+from rapid_mlx.computer_use import (
+    ax_driver,
+    backend,
+    background_input,
+    errors,
+    perception,
+)
 
 
 def _snapshot(*, elements=None, window_id="cg:101"):
@@ -912,6 +918,642 @@ def test_drag_without_a_captured_window_fails(monkeypatch, dragging):
 
 
 # --- backend: background fill and popup typeahead ----------------------------------
+
+
+@pytest.mark.parametrize("parent_role", [None, "AXWebArea", "AXWindow"])
+def test_web_incrementor_without_datetime_ancestor_is_not_a_segment(attrs, parent_role):
+    attrs["live"] = {"AXRole": "AXIncrementor", "AXParent": "parent"}
+    attrs["parent"] = {"AXRole": parent_role}
+    # A date field beyond the document/window boundary must not classify an
+    # ordinary spin button as a date/time editor.
+    if parent_role is not None:
+        attrs["parent"]["AXParent"] = "time"
+        attrs["time"] = {"AXRole": "AXTimeField"}
+    entry = {"web": True, "role": "AXIncrementor"}
+    assert backend._is_web_datetime_segment(entry, "live") is False
+
+
+@pytest.mark.parametrize("boundary_role", ["AXWebArea", "AXWindow"])
+def test_datetime_fill_refuses_when_field_ancestor_disappears(
+    monkeypatch, keyboard, attrs, boundary_role
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": "Minutes"}])
+    # The date/time ancestor disappeared after classification. Controls under
+    # the document/window are not sibling segments of this editor, so the
+    # fill must refuse before sending any key.
+    attrs.update(
+        live={"AXParent": "boundary", "AXValueDescription": "15"},
+        boundary={"AXRole": boundary_role, "AXChildren": ["unrelated"]},
+        unrelated={"AXRole": "AXIncrementor", "AXValueDescription": "1"},
+    )
+    monkeypatch.setattr(backend, "_focus_without_commit", lambda *a: "AXFocused")
+    with pytest.raises(errors.ComputerUseError, match="ancestry changed") as exc:
+        backend._fill_datetime_segment(snapshot, "live", 0, "02")
+    assert exc.value.code == "target_drift"
+    assert [call for call in keyboard if call[0] == "press_key"] == []
+    assert attrs["unrelated"]["AXValueDescription"] == "1"
+
+
+def test_transient_datetime_segment_blocks_keystrokes(monkeypatch, keyboard, attrs):
+    snapshot = _snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXIncrementor",
+                "web": True,
+                "source_window_id": "cg:102",
+            }
+        ]
+    )
+    attrs.update(
+        live={"AXParent": "time"},
+        time={"AXRole": "AXTimeField"},
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(
+        backend,
+        "_fill_datetime_segment",
+        lambda *a: pytest.fail("transient companion received date/time input"),
+    )
+    with pytest.raises(
+        errors.ComputerUseError, match="transient companion cannot receive date/time"
+    ) as exc:
+        backend.set_value("App", 0, "02", expected_snapshot=snapshot)
+    assert exc.value.code == "synthetic_input_blocked"
+    assert keyboard == []
+
+
+@pytest.fixture
+def segment_focus(monkeypatch, keyboard, attrs):
+    monkeypatch.setattr(backend, "_focused_ax_element", lambda app: "live")
+    monkeypatch.setattr(backend, "_focus_without_commit", lambda *a: "AXFocused")
+
+
+@pytest.mark.parametrize(
+    ("label", "before", "requested", "after", "keys", "verified"),
+    [
+        ("Hours", 0, "02", 2, "02", True),
+        ("Minutes", 15, "00", 0, "00", True),
+        ("Minutes", 0, "00", 0, "00", False),
+        ("Year", 2025, "2026", 2026, "2026", True),
+        ("AM/PM", 0, "PM", 2, "p", True),
+        ("AM/PM", 2, "A", 1, "a", True),
+        ("Hours", 0, "2", 0, "2", False),
+        ("AM/PM", 0, "PM", 0, "p", False),
+        ("Hours", 0, "2", None, "2", None),
+    ],
+)
+@pytest.mark.parametrize("foreground", [False, True])
+@pytest.mark.parametrize("neighbor_changed", [False, True])
+def test_fill_web_datetime_segment(
+    monkeypatch,
+    keyboard,
+    attrs,
+    label,
+    before,
+    requested,
+    after,
+    keys,
+    verified,
+    foreground,
+    neighbor_changed,
+    segment_focus,
+):
+    snapshot = _snapshot(
+        elements=[{"index": 0, "role": "AXIncrementor", "web": True, "label": label}]
+    )
+    attrs.update(
+        live={
+            "AXRole": "AXIncrementor",
+            "AXParent": "group",
+            "AXDescription": label,
+            "AXValue": before,
+        },
+        group={"AXRole": "AXGroup", "AXParent": "time", "AXChildren": ["live"]},
+        time={"AXRole": "AXTimeField", "AXChildren": ["group", "seconds"]},
+        seconds={
+            "AXRole": "AXIncrementor",
+            "AXDescription": "Seconds",
+            "AXValueDescription": "45",
+        },
+    )
+
+    def visible(raw, *, filled=True):
+        if raw is None:
+            return None
+        if raw == 0 and not filled:
+            return "0"  # Chromium's fallback for a missing aria-valuetext.
+        if label == "AM/PM":
+            return {0: "0", 1: "AM", 2: "PM"}[raw]
+        return f"{raw:02}"
+
+    attrs["live"]["AXValueDescription"] = visible(before, filled=before != 0)
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXValueAttribute="AXValue",
+        AXUIElementSetAttributeValue=lambda *a: pytest.fail(
+            "direct segment AXValue write"
+        ),
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(
+        backend,
+        "_focus_without_commit",
+        lambda *a: keyboard.append(("focus",)) or "AXFocused",
+    )
+    monkeypatch.setattr(
+        backend, "_synthetic_fill", lambda *a: pytest.fail("text-field fallback")
+    )
+
+    def press(pid, keycode):
+        keyboard.append(("press_key", (pid, keycode)))
+        attrs["live"]["AXValue"] = after
+        attrs["live"]["AXValueDescription"] = visible(after, filled=verified is True)
+        if neighbor_changed:
+            attrs["seconds"]["AXValueDescription"] = "00"
+        return True
+
+    monkeypatch.setattr(background_input, "press_key", press)
+    if foreground:
+        monkeypatch.setenv(background_input.DELIVERY_ENV, "foreground")
+        monkeypatch.setattr(backend, "_borrow_foreground", lambda *a: None)
+        monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a: None)
+        monkeypatch.setattr(ax_driver, "_press_key", lambda code: press(4, code))
+    out = backend.set_value("App", 0, requested, expected_snapshot=snapshot)
+    assert out["verified"] is (False if neighbor_changed else verified)
+    if neighbor_changed:
+        assert "Seconds" in out["verification"]
+        assert "changed" in out["verification"]
+    assert out["before"] == ("" if before == 0 else visible(before))
+    assert out["actual"] == (
+        None if after is None else "" if after == 0 and not verified else visible(after)
+    )
+    assert out["requested"] == requested
+    assert out["effect"] == (
+        "confirmed"
+        if verified and not neighbor_changed
+        else "suspected_noop"
+        if verified is False or neighbor_changed
+        else "unverifiable"
+    )
+    assert [
+        args for kind, *rest in keyboard if kind == "press_key" for args in rest
+    ] == [
+        (4, backend.KEY_ALIASES["delete"]),
+        *((4, ax_driver._keycode_for(ch)) for ch in keys),
+    ]
+    assert not any(call[0] in {"type_text", "reactivate"} for call in keyboard)
+    assert keyboard.index(("focus",)) < next(
+        i for i, call in enumerate(keyboard) if call[0] == "press_key"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "minimum", "maximum", "value"),
+    [
+        ("Minutes", 0, 59, "0000"),
+        ("Year", 1, 9999, "02026"),
+        ("Minutes", 0, 59, "60"),
+        ("Hours", 1, 12, "00"),
+        ("Month", 1, 12, "13"),
+        ("Day", 1, 28, "29"),
+        ("Year", 2020, 2030, "2019"),
+        ("Minutes", 0, 59, "PM"),
+        ("AM/PM", 1, 2, "02"),
+        ("AM/PM", 1, 2, "noon"),
+        ("Minutes", None, None, "60"),
+        ("Month", None, None, "00"),
+        ("Hours", 0, 23, "24"),
+        ("Hours", 1, 12, "13"),
+        ("Year", 1, 9999, "0000"),
+        ("Minutes", 0, 59, ""),
+        ("Minutes", 0, 59, "-1"),
+        ("Minutes", 0, 59, "2.0"),
+        ("Minutes", 0, 59, " 02"),
+        ("Minutes", 0, 59, "02\n"),
+        ("Minutes", 0, 59, "０２"),
+    ],
+)
+def test_datetime_segment_rejects_invalid_without_keys(
+    monkeypatch, keyboard, attrs, label, minimum, maximum, value
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": label}])
+    attrs["live"] = {
+        "AXDescription": label,
+        "AXMinValue": minimum,
+        "AXMaxValue": maximum,
+    }
+    monkeypatch.setattr(
+        backend,
+        "_focus_without_commit",
+        lambda *a: pytest.fail("invalid input focused"),
+    )
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._fill_datetime_segment(snapshot, "live", 0, value)
+    assert exc.value.code == "invalid_argument"
+    assert keyboard == []
+
+
+@pytest.mark.parametrize("focuses", [False, True])
+def test_datetime_segment_failure_restores_user_focus(
+    monkeypatch, keyboard, attrs, focuses, segment_focus
+):
+    snapshot = _snapshot(
+        elements=[{"index": 0, "role": "AXIncrementor", "label": "Hours"}]
+    )
+    attrs.update(
+        live={"AXValue": 0, "AXParent": "date"}, date={"AXRole": "AXDateField"}
+    )
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 102)
+    monkeypatch.setattr(
+        backend, "_focus_without_commit", lambda *a: "AXFocused" if focuses else None
+    )
+    monkeypatch.setattr(background_input, "press_key", lambda *a: False)
+    with pytest.raises(errors.ComputerUseError) as exc:
+        backend._fill_datetime_segment(snapshot, "live", 0, "2")
+    assert exc.value.code == ("action_failed" if focuses else "synthetic_input_blocked")
+    assert keyboard[-1] == ("restore", ((999, 555), 4, 101))
+
+
+@pytest.mark.parametrize("role", ["AXDateField", "AXTimeField", "AXDateTimeArea"])
+def test_fill_web_datetime_group_requires_segments(monkeypatch, role):
+    snapshot = _snapshot(elements=[{"index": 0, "role": role, "web": True}])
+    monkeypatch.setattr(
+        backend, "_live_element", lambda *a, **k: pytest.fail("group input")
+    )
+    with pytest.raises(errors.ComputerUseError, match="per segment"):
+        backend.set_value("App", 0, "14:00", expected_snapshot=snapshot)
+
+
+@pytest.mark.parametrize(
+    "live,parent",
+    [
+        (None, None),
+        ("live", None),
+        ("live", "page"),
+        ("live", "window"),
+        ("live", "cycle"),
+    ],
+)
+def test_non_datetime_incrementor_ancestry(attrs, live, parent):
+    attrs.update(
+        live={"AXParent": parent},
+        page={"AXRole": "AXWebArea", "AXParent": "date"},
+        window={"AXRole": "AXWindow", "AXParent": "date"},
+        cycle={"AXRole": "AXGroup", "AXParent": "cycle"},
+        date={"AXRole": "AXDateField"},
+    )
+    assert not backend._is_web_datetime_segment(
+        {"web": True, "role": "AXIncrementor"}, live
+    )
+    assert not backend._is_web_datetime_segment(
+        {"web": True, "role": "AXSlider"}, "live"
+    )
+    assert not backend._is_web_datetime_segment(
+        {"web": False, "role": "AXIncrementor"}, "live"
+    )
+
+
+def test_datetime_transient_refuses_keyboard(monkeypatch, keyboard, attrs):
+    snapshot = _snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXIncrementor",
+                "web": True,
+                "source_window_id": "cg:102",
+            }
+        ]
+    )
+    attrs.update(live={"AXParent": "date"}, date={"AXRole": "AXDateField"})
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    with pytest.raises(errors.ComputerUseError, match="transient companion"):
+        backend.set_value("App", 0, "02", expected_snapshot=snapshot)
+    assert keyboard == []
+
+
+@pytest.mark.parametrize("parent", [None, "page", "window", "cycle"])
+@pytest.mark.parametrize("live", [None, "live"])
+@pytest.mark.parametrize("value", ["02", "60", "PM"])
+def test_observed_datetime_segment_refuses_lost_ancestry(
+    monkeypatch, attrs, keyboard, parent, live, value
+):
+    snapshot = _snapshot(
+        elements=[
+            {
+                "index": 0,
+                "role": "AXIncrementor",
+                "web": True,
+                "label": "Minutes",
+                "datetime_segment": True,
+            }
+        ]
+    )
+    attrs.update(
+        live={"AXParent": parent, "AXValueDescription": "--"},
+        page={"AXRole": "AXWebArea"},
+        window={"AXRole": "AXWindow"},
+        cycle={"AXRole": "AXGroup", "AXParent": "cycle"},
+    )
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: live)
+    _install_module(
+        monkeypatch,
+        "ApplicationServices",
+        kAXValueAttribute="AXValue",
+        AXUIElementSetAttributeValue=lambda *a: pytest.fail("direct AXValue write"),
+    )
+    monkeypatch.setattr(
+        backend, "_synthetic_fill", lambda *a: pytest.fail("text-field fallback")
+    )
+    with pytest.raises(errors.ComputerUseError, match="field ancestry changed") as exc:
+        backend.set_value("App", 0, value, expected_snapshot=snapshot)
+    assert exc.value.code == "target_drift"
+    assert keyboard == []
+
+
+@pytest.mark.parametrize("foreground", [False, True])
+@pytest.mark.parametrize(
+    "outcome",
+    ["verified", "sibling_changed", "focus_lost", "key_failed", "readback_missing"],
+)
+def test_datetime_segment_receipt_requires_completed_verification(
+    monkeypatch, attrs, keyboard, segment_focus, foreground, outcome
+):
+    attrs.update(
+        live={
+            "AXRole": "AXIncrementor",
+            "AXParent": "time",
+            "AXDescription": "Minutes",
+            "AXValueDescription": "15",
+        },
+        seconds={
+            "AXRole": "AXIncrementor",
+            "AXParent": "time",
+            "AXDescription": "Seconds",
+            "AXValueDescription": "45",
+        },
+        time={"AXRole": "AXTimeField", "AXChildren": ["live", "seconds"]},
+    )
+
+    def snapshot(*a, **kw):
+        return _snapshot(
+            elements=[
+                {
+                    "index": i,
+                    "role": "AXIncrementor",
+                    "label": attrs[live]["AXDescription"],
+                    "value": attrs[live]["AXValueDescription"],
+                    "web": True,
+                    "datetime_segment": True,
+                    "center": [10, 10 + i * 30],
+                    "width": 100,
+                    "height": 20,
+                }
+                for i, live in enumerate(("live", "seconds"))
+            ]
+        )
+
+    def press(*a):
+        keyboard.append(("press_key", a))
+        attrs["live"]["AXValueDescription"] = "00"
+        if outcome in {"sibling_changed", "focus_lost", "key_failed"}:
+            attrs["seconds"]["AXValueDescription"] = "00"
+        if outcome == "key_failed":
+            raise errors.ComputerUseError("action_failed", "keystroke interrupted")
+        return True
+
+    if outcome == "readback_missing":
+        get = ax_driver._get
+        monkeypatch.setattr(
+            ax_driver,
+            "_get",
+            lambda element, attr: (
+                None
+                if element == "live" and attr == "AXValueDescription" and keyboard
+                else get(element, attr)
+            ),
+        )
+    if outcome == "focus_lost":
+        monkeypatch.setattr(
+            backend,
+            "_focused_ax_element",
+            lambda app: (
+                "seconds"
+                if sum(call[0] == "press_key" for call in keyboard) >= 2
+                else "live"
+            ),
+        )
+    monkeypatch.setattr(backend, "get_app_state", snapshot)
+    monkeypatch.setattr(backend, "live_elements", lambda snap: ["live", "seconds"])
+    monkeypatch.setattr(backend, "_live_element", lambda *a, **k: "live")
+    monkeypatch.setattr(background_input, "press_key", press)
+    monkeypatch.setattr(perception, "_frontmost_bundle", lambda: "app")
+    monkeypatch.setattr(perception, "_require_display_awake", lambda: None)
+    if foreground:
+        monkeypatch.setenv(background_input.DELIVERY_ENV, "foreground")
+        monkeypatch.setattr(backend, "_borrow_foreground", lambda *a: None)
+        monkeypatch.setattr(backend, "_validate_snapshot_window", lambda *a: None)
+        monkeypatch.setattr(ax_driver, "_press_key", press)
+    session = perception.PerceptionSession()
+    monkeypatch.setattr(session, "keep_awake", lambda: None)
+    observed = session.observe("App", "cg:101")
+    receipt = session.act("fill", observed.rows[0].ref, text="00")["receipt"]
+    assert attrs["live"]["AXValueDescription"] == "00"
+    assert (receipt["effect"] == "confirmed") is (outcome == "verified")
+    if outcome in {"focus_lost", "key_failed"}:
+        assert receipt["effect"] == "refused"
+        assert receipt["error"]["code"] == (
+            "target_drift" if outcome == "focus_lost" else "action_failed"
+        )
+        assert "verified" not in receipt
+    else:
+        assert receipt["actual"] == (None if outcome == "readback_missing" else "00")
+        assert receipt["requested"] == "00"
+        assert receipt["verified"] is (
+            None if outcome == "readback_missing" else outcome == "verified"
+        )
+        assert "error" not in receipt
+        if outcome == "sibling_changed":
+            assert (
+                receipt["verification"] == "date/time sibling segment changed: Seconds"
+            )
+    assert attrs["seconds"]["AXValueDescription"] == (
+        "45" if outcome in {"verified", "readback_missing"} else "00"
+    )
+    assert sum(call[0] == "press_key" for call in keyboard) == (
+        2 if outcome == "focus_lost" else 1 if outcome == "key_failed" else 3
+    )
+
+
+@pytest.mark.parametrize("parent", [None, "page", "window", "cycle"])
+def test_datetime_field_disappears_before_fill(attrs, keyboard, segment_focus, parent):
+    snapshot = _snapshot(elements=[{"index": 0, "label": "Minutes"}])
+    attrs.update(
+        live={"AXParent": parent, "AXValueDescription": "--"},
+        page={"AXRole": "AXWebArea"},
+        window={"AXRole": "AXWindow"},
+        cycle={"AXRole": "AXGroup", "AXParent": "cycle"},
+    )
+    with pytest.raises(errors.ComputerUseError, match="field ancestry changed"):
+        backend._fill_datetime_segment(snapshot, "live", 0, "02")
+    assert keyboard == []
+
+
+@pytest.mark.parametrize("lost_after", [0, 1, 2])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_datetime_stops_on_segment_focus_loss(
+    monkeypatch, attrs, keyboard, segment_focus, lost_after, fallback
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": "Minutes"}])
+    attrs.update(
+        live={"AXValueDescription": "02", "AXFocused": True, "AXParent": "date"},
+        date={"AXRole": "AXDateField"},
+    )
+    sent = []
+
+    def focused(app):
+        return None if fallback else "live" if len(sent) < lost_after else "sibling"
+
+    def press(pid, code):
+        sent.append(code)
+        attrs["live"]["AXFocused"] = len(sent) < lost_after
+        return True
+
+    attrs["live"]["AXFocused"] = lost_after > 0
+    monkeypatch.setattr(backend, "_key_window_id", lambda pid: 102)
+    monkeypatch.setattr(backend, "_focused_ax_element", focused)
+    monkeypatch.setattr(background_input, "press_key", press)
+    with pytest.raises(errors.ComputerUseError, match="segment lost focus"):
+        backend._fill_datetime_segment(snapshot, "live", 0, "02")
+    assert len(sent) == lost_after
+    assert keyboard[-1][0] == "restore"
+
+
+@pytest.mark.parametrize(
+    "label,requested,visible,key",
+    [
+        ("AM / PM", "p.m.", "P.M.", "p"),
+        ("a.m./p.m.", " a. m. ", "a.m.", "a"),
+    ],
+)
+def test_datetime_meridiem_punctuation(
+    monkeypatch, attrs, keyboard, segment_focus, label, requested, visible, key
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": label}])
+    attrs.update(
+        live={"AXDescription": label, "AXValueDescription": "--", "AXParent": "date"},
+        date={"AXRole": "AXDateField"},
+    )
+    sent = []
+
+    def press(pid, code):
+        sent.append(code)
+        attrs["live"]["AXValueDescription"] = visible
+        return True
+
+    monkeypatch.setattr(background_input, "press_key", press)
+    result = backend._fill_datetime_segment(snapshot, "live", 0, requested)
+    assert result["verified"] is True
+    assert sent == [backend.KEY_ALIASES["delete"], ax_driver._keycode_for(key)]
+
+
+@pytest.mark.parametrize(
+    "label,minimum,maximum,value",
+    [
+        ("Hours", 1, 12, "12"),
+        ("Hours", 1, 12, "01"),
+        ("Hours", 0, 23, "23"),
+        ("Hours", 0, 23, "00"),
+        ("Minutes", 0, 59, "2"),
+        ("Minutes", 0, 59, "00"),
+        ("Year", 1, 9999, "0001"),
+        ("Year", 1, 9999, "9999"),
+        ("Année", 1, 9999, "2026"),
+    ],
+)
+def test_datetime_replaces_partial_input(
+    monkeypatch, attrs, keyboard, segment_focus, label, minimum, maximum, value
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": label}])
+    attrs.update(
+        live={
+            "AXParent": "date",
+            "AXDescription": label,
+            "AXMinValue": minimum,
+            "AXMaxValue": maximum,
+            "AXValueDescription": "1",
+        },
+        date={"AXRole": "AXDateField"},
+    )
+    buffer = "1"
+    digits = {ax_driver._keycode_for(ch): ch for ch in "0123456789"}
+
+    def press(pid, code):
+        nonlocal buffer
+        buffer = "" if code == backend.KEY_ALIASES["delete"] else buffer + digits[code]
+        attrs["live"]["AXValueDescription"] = buffer.zfill(2) if buffer else "--"
+        return True
+
+    monkeypatch.setattr(background_input, "press_key", press)
+    result = backend._fill_datetime_segment(snapshot, "live", 0, value)
+    assert buffer == value
+    assert result["verified"] is True
+
+
+@pytest.mark.parametrize(
+    "description,raw,verified",
+    [(None, 0, False), (None, 2, True), ("--", 2, False), (None, None, None)],
+)
+def test_datetime_readback_without_visible_digits(
+    monkeypatch, attrs, keyboard, segment_focus, description, raw, verified
+):
+    snapshot = _snapshot(elements=[{"index": 0, "label": "Minutes"}])
+    attrs.update(
+        live={"AXParent": "date", "AXValueDescription": description, "AXValue": raw},
+        date={"AXRole": "AXDateField"},
+    )
+    result = backend._fill_datetime_segment(snapshot, "live", 0, "2")
+    assert result["verified"] is verified
+
+
+@pytest.mark.parametrize("label,value", [("AM / PM", "1"), ("a.m./p.m.", "2")])
+def test_datetime_meridiem_never_accepts_digits(attrs, keyboard, label, value):
+    attrs["live"] = {"AXDescription": label}
+    with pytest.raises(errors.ComputerUseError, match="AM/PM segment"):
+        backend._fill_datetime_segment(
+            _snapshot(elements=[{"index": 0}]), "live", 0, value
+        )
+    assert keyboard == []
+
+
+@pytest.mark.parametrize("maximum", [1, 2])
+def test_datetime_unknown_period_locale_refuses_digits(attrs, keyboard, maximum):
+    attrs["live"] = {
+        "AXDescription": "午前/午後",
+        "AXMinValue": 0,
+        "AXMaxValue": maximum,
+    }
+    with pytest.raises(errors.ComputerUseError, match="unrecognized date/time period"):
+        backend._fill_datetime_segment(
+            _snapshot(elements=[{"index": 0}]), "live", 0, "1"
+        )
+    assert keyboard == []
+
+
+def test_datetime_sibling_collection_is_bounded(attrs, keyboard, segment_focus):
+    attrs.update(
+        live={"AXParent": "date", "AXValueDescription": "02"},
+        date={"AXRole": "AXDateField", "AXChildren": ["live", "cycle", "nested"]},
+        cycle={"AXRole": "AXGroup", "AXChildren": ["cycle"]},
+        nested={"AXRole": "AXDateField", "AXChildren": ["other"]},
+        other={"AXRole": "AXIncrementor", "AXValueDescription": "--"},
+    )
+    result = backend._fill_datetime_segment(
+        _snapshot(elements=[{"index": 0, "label": "Minutes"}]), "live", 0, "2"
+    )
+    assert result["verified"] is True
+    assert result["changed_siblings"] == []
 
 
 @pytest.fixture

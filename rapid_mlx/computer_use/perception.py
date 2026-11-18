@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import backend, privacy
+from . import ax_driver, backend, privacy
 from .errors import ComputerUseError
 
 MAX_CHANGE_LINES = 20
@@ -107,6 +107,7 @@ class Row:
     secure: bool = False  # a password field: named, its contents never read
     value_chars: int | None = None  # the whole value's length, when it is cut
     actions: tuple[str, ...] = ()  # what the action op can do to it
+    datetime_segment: bool = False
 
     def is_browser_noise(self) -> bool:
         return self.role == "AXPopUpButton" and bool(
@@ -153,6 +154,8 @@ class Row:
             text += f' "{self.label[:cap]}"'
         if self.value is not None:
             text += f" = {self.value[:MAX_LABEL_CHARS]!r}"
+            if self.datetime_segment and self.value == "":
+                text += " (empty)"
             if self.value_chars is not None:
                 # Cut short: say so, and how to get the rest.
                 text += f" (first {len(self.value)} of {self.value_chars} chars; read)"
@@ -800,6 +803,7 @@ class PerceptionSession:
                         else None
                     ),
                     secure=secure,
+                    datetime_segment=bool(element.get("datetime_segment")),
                     actions=tuple(
                         name
                         for name in element.get("actions") or ()
@@ -1001,6 +1005,16 @@ class PerceptionSession:
             expected is not None
             and target_after is not None
             and _holds(target_after, expected)
+            # Segment verification also checks siblings; a matching target
+            # alone cannot replace a completed field-wide readback.
+            and not (
+                (
+                    (op == "fill" and row is not None and row.datetime_segment)
+                    or result.get("mode")
+                    in {"SkyLight-segment-fill", "CGEvent-segment-fill"}
+                )
+                and result.get("verified") is not True
+            )
         )
         if observed_match and error is not None and row is not None:
             # A route can refuse after its first attempt landed: the value
@@ -1055,6 +1069,9 @@ class PerceptionSession:
             receipt["warnings"] = result["warnings"]
         for key in ("menu", "focus_restored", "mode", "route"):
             if key in result:
+                receipt[key] = result[key]
+        if result.get("mode") in {"SkyLight-segment-fill", "CGEvent-segment-fill"}:
+            for key in ("verified", "before", "actual", "requested"):
                 receipt[key] = result[key]
         if new_windows:
             receipt["new_windows"] = new_windows
@@ -1615,6 +1632,8 @@ def _shows(baseline: Observation, snapshot: dict, want: tuple[str, str]) -> bool
             target = element
             break
     value = target.get("value") if target else None
+    if target and target.get("datetime_segment"):
+        return ax_driver._datetime_segment_matches(value, want[1])
     return isinstance(value, str) and value.strip() == want[1].strip()
 
 
@@ -1688,6 +1707,8 @@ def _holds(row: Row, expected: str) -> bool:
     observation matches on what is shown and on the whole value's length."""
     if row.value is None:
         return False
+    if row.datetime_segment:
+        return ax_driver._datetime_segment_matches(row.value, expected)
     want = expected.strip()
     if row.value_chars is None:
         return row.value.strip() == want
