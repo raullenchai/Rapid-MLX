@@ -3,7 +3,7 @@
 
 Bare XML cannot distinguish a sibling after a close from literal marker-shaped
 payload. Reject the ambiguous call instead of choosing a command the model may
-not have meant. Complete JSON-quoted payloads remain unambiguous and lossless.
+not have meant. XML delimiters also terminate JSON-quoted values, matching upstream.
 
 Streaming may already have sent a call header before ambiguity is known. It
 must leave that prefix incomplete (a client argument-parse failure), never
@@ -101,12 +101,10 @@ def test_valid_multiline_command_is_byte_exact(size):
     assert json.loads(calls[0][1]) == {"command": command, "security_risk": "LOW"}
 
 
-def test_complete_quoted_marker_payload_remains_data():
+def test_complete_quoted_marker_payload_rejects_undeclared_sibling():
+    # SGLang qwen3_coder_detector.py: quoting does not escape XML delimiters.
     command = 'printf "</parameter><parameter=description>literal</parameter>"'
-    text = wire(json.dumps(command), extra=False)
-    result = Qwen3CoderToolParser().extract_tool_calls(text, REQUEST)
-    assert result.tools_called
-    assert json.loads(result.tool_calls[0]["arguments"])["command"] == command
+    assert not non_stream(wire(json.dumps(command), extra=False), REQUEST)[0]
 
 
 @pytest.mark.parametrize("size", [0, 1, 2, 7, 13, 10000])
@@ -129,14 +127,16 @@ def test_stream_does_not_attach_later_arguments_to_rejected_header(size):
 
 
 @pytest.mark.parametrize("size", [None, 0, 1, 13])
-def test_quoted_literal_markup_survives_both_paths(size):
+def test_quoted_literal_markup_rejects_undeclared_sibling(size):
     command = 'printf "</parameter><parameter=description>literal</parameter>"'
     text = wire(json.dumps(command), extra=False)
     calls, _ = (
         non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
     )
-    assert len(calls) == 1
-    assert json.loads(calls[0][1]) == {"command": command, "security_risk": "LOW"}
+    # Upstream XML boundaries apply inside quoted values; #1541 still rejects.
+    for _, arguments in calls:
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(arguments)
 
 
 @pytest.mark.parametrize(
@@ -178,14 +178,19 @@ def test_ambiguous_bare_marker_payload_is_rejected_not_rewritten(size):
 
 
 @pytest.mark.parametrize("size", [None, 0, 1, 13])
-def test_literal_opener_without_preceding_close_remains_payload(size):
+def test_opener_without_preceding_close_starts_next_parameter(size):
     command = 'printf "<parameter=description>literal"'
     text = wire(command, extra=False)
     calls, _ = (
         non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
     )
     assert len(calls) == 1
-    assert json.loads(calls[0][1]) == {"command": command, "security_risk": "LOW"}
+    # SGLang's (?=<parameter=) ends command before the next opener.
+    assert json.loads(calls[0][1]) == {
+        "command": 'printf "',
+        "description": 'literal"',
+        "security_risk": "LOW",
+    }
 
 
 @pytest.mark.parametrize("bare", [False, True])

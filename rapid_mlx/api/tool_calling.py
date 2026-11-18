@@ -516,20 +516,11 @@ def parse_tool_calls(
     # Pattern for Nemotron-style:
     # Format 1: <tool_call><function=name><parameter=key>val</parameter></function></tool_call>
     # Format 2: <toolcall>func_name\n<parameter=key>value</parameter>...</toolcall>
-    # Declared TOOL names gate which openers count as calls. A value that
-    # contains ``</function> … <function=other>`` otherwise splits into a
-    # second executable call, so marker text inside an argument could
-    # fabricate an invocation the caller never authorised. Names are
-    # checked, not positions, because position alone cannot tell a real
-    # sibling from markup in a value.
-    #
-    # No tools declared => None => the position-only rules, which is the
-    # pre-existing behaviour and cannot fabricate anything executable
-    # (nothing would be authorised to run either way).
+    # XML calls follow the upstream first-function-close rule.
     declared_tools = _declared_tool_names(request)
     nemotron_matches = split_marked_calls(
         text,
-        r"<tool_call>\s*<function=(\w+)>",
+        r"<tool_call>\s*<function=([^>]+)>",
         "</function>",
         "</tool_call>",
         valid_names=declared_tools,
@@ -539,11 +530,7 @@ def parse_tool_calls(
 
     for name, params_block, _, _ in nemotron_matches:
         arguments = {}
-        # Declared parameter names disambiguate a value that contains a
-        # literal ``<parameter=…>`` — see ``tool_call_scan._next_sibling``
-        # for why dropping this filter reintroduces the corruption this
-        # scanner exists to remove. Repeated names are NOT filtered: two
-        # real elements with one name are last-value-wins here.
+        # Schema names are used only by the undeclared sibling guard.
         declared = set(_get_tool_param_config(name, request)) or None
         parsed_params = split_marked_parameters(
             params_block,

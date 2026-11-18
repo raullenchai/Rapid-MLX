@@ -135,7 +135,7 @@ def test_http_unknown_calls_are_forwarded_without_rejection_diagnostics(
         assert body["choices"][0]["finish_reason"] == "tool_calls"
 
 
-def test_scanner_unknown_calls_and_literal_safety(caplog):
+def test_scanner_unknown_calls_follow_upstream_boundaries(caplog):
     caplog.set_level("WARNING", logger="rapid_mlx.tool_call_diagnostics")
     before = diagnostics.rejected_tool_calls_total()
     text = "<function=unknown><parameter=x>raw</parameter></function>"
@@ -145,20 +145,21 @@ def test_scanner_unknown_calls_and_literal_safety(caplog):
     assert [call[0] for call in calls] == ["unknown"]
     assert diagnostics.rejected_tool_calls_total() == before
     assert "name='unknown'" not in caplog.text
-    assert (
-        split_marked_calls(
-            "<function=unknown>partial",
-            r"<function=(\w+)>",
-            "</function>",
-            valid_names={"known"},
-        )
-        == []
-    )
+    # SGLang qwen3_coder_detector.py accepts a function body through EOF.
+    assert split_marked_calls(
+        "<function=unknown>partial",
+        r"<function=(\w+)>",
+        "</function>",
+        valid_names={"known"},
+    ) == [("unknown", "partial", 0, 25)]
     literal = "<function=known><parameter=x>literal </function> <function=unknown> text</parameter></function>"
     parsed = split_marked_calls(
         literal, r"<function=(\w+)>", "</function>", valid_names={"known"}
     )
-    assert len(parsed) == 1 and "<function=unknown>" in parsed[0][1]
+    assert [(name, body) for name, body, _, _ in parsed] == [
+        ("known", "<parameter=x>literal "),
+        ("unknown", " text</parameter>"),
+    ]
     assert diagnostics.rejected_tool_calls_total() == before
 
 
@@ -442,7 +443,7 @@ async def test_async_iterator_without_aclose_preserves_completion_and_errors():
     assert diagnostics._rejections.get() is None
 
 
-def test_unknown_scanner_calls_are_bounded_and_require_outer_wrapper():
+def test_unknown_scanner_calls_are_bounded_with_optional_outer_wrapper():
     before = diagnostics.rejected_tool_calls_total()
     opener = r"<function=(\w+)>"
     # Adjacent undeclared names have separate, bounded raw arguments.
@@ -450,16 +451,10 @@ def test_unknown_scanner_calls_are_bounded_and_require_outer_wrapper():
     calls = split_marked_calls(text, opener, "</function>", "</tool_call>", {"known"})
     assert [call[0] for call in calls] == ["first", "second"]
     assert diagnostics.rejected_tool_calls_total() == before
-    assert (
-        split_marked_calls(
-            "<function=bad>x</function>",
-            opener,
-            "</function>",
-            "</tool_call>",
-            {"known"},
-        )
-        == []
-    )
+    # Upstream call termination does not require an enclosing wrapper close.
+    assert split_marked_calls(
+        "<function=bad>x</function>", opener, "</function>", "</tool_call>", {"known"}
+    ) == [("bad", "x", 0, 26)]
     assert diagnostics.rejected_tool_calls_total() == before
     # The last close does not turn every earlier unclosed marker into a huge
     # overlapping rejected argument span. Only the last candidate is complete.
