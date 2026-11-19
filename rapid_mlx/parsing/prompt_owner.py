@@ -15,6 +15,7 @@ from dataclasses import replace
 from ..engine.base import GenerationOutput
 from ..prompt_parse_context import PromptParseContext
 from .output_demux import (
+    Channel,
     ChannelGrammar,
     ContentDelta,
     Control,
@@ -142,7 +143,7 @@ def _field(request, name):
 
 
 def selected_envelope_tools(
-    cfg, request, reasoning_max_tokens=None
+    cfg, request, reasoning_max_tokens=None, *, recover_xml: bool = False
 ) -> EnvelopeTools | None:
     """Select the owner's envelope grammar for one request, or keep legacy."""
     from ..service.helpers import tool_choice_is_none
@@ -151,7 +152,10 @@ def selected_envelope_tools(
     parser = getattr(cfg, "tool_call_parser", None)
     if (
         getattr(cfg, "reasoning_parser_name", None) not in QWEN_REASONING
-        or parser not in JSON_ENVELOPE_TOOLS | GLM_ENVELOPE_TOOLS
+        or (
+            parser not in JSON_ENVELOPE_TOOLS | GLM_ENVELOPE_TOOLS
+            and not (recover_xml and parser == "qwen3_coder_xml")
+        )
         or not getattr(cfg, "enable_auto_tool_choice", False)
         or request is None
         or not declared_names(request)
@@ -248,6 +252,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
         self.value_tail = ""
         self.origin = self.channel
         self.calls: dict[int, dict] = {}
+        self.interrupted_envelope = False
 
     def _literal(self, lexeme: Lexeme, channel: str | None = None) -> Event:
         cls = (
@@ -272,6 +277,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
             ):
                 # The reasoning block the envelope interrupted ends first; the
                 # unfinished envelope stays verbatim in that reasoning.
+                self.interrupted_envelope = True
                 return self._flush() + self.consume(lexeme)
             self.envelope.append(lexeme)
             if terminal == "tool_end" and not self._in_argument():
@@ -425,11 +431,13 @@ class PromptOutputOwner:
         *,
         tools: EnvelopeTools | None = None,
         reasoning_only: bool = False,
+        default_channel: Channel = "reasoning",
     ):
         self.model = (model or "").lower()
         self.tools = tools
         # Tool-free selection: owned only when the prompt state is known.
         self.reasoning_only = reasoning_only and tools is None
+        self.default_channel = default_channel
         self.parser: OutputDemultiplexer | None = None
         self.prompt_context: PromptParseContext | None = None
         self.content: list[str] = []
@@ -528,7 +536,7 @@ class PromptOutputOwner:
             # thinking, so an unknown current-turn channel starts in reasoning.
             config = ParseContext(
                 prompt=context,
-                default_channel="reasoning",
+                default_channel=self.default_channel,
                 terminals=(
                     Terminal("reasoning_start", "<think>"),
                     Terminal("reasoning_end", "</think>"),
@@ -610,12 +618,40 @@ def split_buffered(
     )
     owner._initialize(output)
     if not owner.active:
-        return output, False
-    owner.observe(
-        replace(output, new_text=output.raw_text or output.text, finished=True)
-    )
+        # An XML EOF match must not cross a closed reasoning boundary. Use
+        # the existing envelope grammar to recover that interrupted phase,
+        # while retaining legacy normalization for all other output shapes.
+        if cfg is None or "</think>" not in (output.raw_text or output.text):
+            return output, False
+        tools = selected_envelope_tools(cfg, request, recover_xml=True)
+        if tools is None:
+            return output, False
+        owner = PromptOutputOwner(model, tools=tools, default_channel="content")
+        owner.observe(
+            replace(output, new_text=output.raw_text or output.text, finished=True)
+        )
+        grammar = owner.parser.grammar if owner.parser is not None else None
+        if (
+            not isinstance(grammar, EnvelopeToolGrammar)
+            or not grammar.interrupted_envelope
+        ):
+            return output, False
+    else:
+        owner.observe(
+            replace(output, new_text=output.raw_text or output.text, finished=True)
+        )
     content = "".join(owner.content)
     reasoning = "".join(owner.reasoning)
+    grammar = owner.parser.grammar if owner.parser is not None else None
+    if (
+        isinstance(grammar, EnvelopeToolGrammar)
+        and grammar.interrupted_envelope
+        and output.finish_reason == "length"
+        and owner.tools is not None
+    ):
+        content = owner.tools.parser.strip_trailing_tool_envelope(
+            content, owner.tools.request
+        )
     if owner.tools is not None or owner.reasoning_only:
         # The selected families keep the existing buffered reasoning-parser
         # normalization: complete fields are trimmed, so separator whitespace

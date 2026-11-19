@@ -33,7 +33,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple, cast
 
 from ..api.tool_calling import _decode_json_like, _schema_type
-from ..tool_call_scan import split_marked_parameters, trim_wrapping_newlines
+from ..tool_call_scan import split_marked_parameters
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -564,12 +564,8 @@ def _convert_param_value(
     ``_schema_type`` returns ``None``). v0.14.1 resolved all of them to
     ``None`` because the value arrived pre-stripped.
 
-    The string case is the deliberate exception, twice over. Its padding is
-    payload under this wire's contract, and it is also the only set of values
-    that reaches ``_close_string_increment``, where this function can be
-    applied a second time to an already-decoded value (a pre-existing defect
-    left untouched here). Trimming there would turn the string ``" null "``
-    into ``None`` in the streamed arguments but not the non-streamed ones.
+    String padding remains payload under this wire's contract; conversion
+    runs only after the upstream value boundary is known.
     """
     keyword = param_value.strip()
     if param_value.lower() == "null":
@@ -593,10 +589,8 @@ def _convert_param_value(
         if isinstance(decoded, str):
             return decoded
         if param_value.lstrip().startswith('"'):
-            # The incremental path already decoded the complete prefix of a
-            # quoted string. If the model later appends malformed trailing
-            # text, recover that prefix the same way at EOS so emitted bytes
-            # need no correction (which a stream cannot make).
+            # Preserve existing malformed JSON-string conversion after the
+            # XML boundary: decode the complete prefix and retain its suffix.
             wire = param_value.lstrip()
             prefix, end = cast(
                 tuple[str, int],
@@ -783,7 +777,6 @@ class Qwen3CoderToolParser(ToolParser):
         self._current_tool_id = None
         self.current_function_name = None
         self.param_count = 0
-        self.in_param = False
         self.in_function = False
         self.accumulated_text = ""
         self.json_started = False
@@ -794,11 +787,6 @@ class Qwen3CoderToolParser(ToolParser):
         self._pending_tool_wrapped = False
         self._pending_partial_opener = False
         self.prev_tool_call_arr = []
-        self.in_param_emitted_chars = 0
-        self.in_param_opened = False
-        self.in_param_name: str | None = None
-        self._legacy_raw_stream = False
-        self._legacy_raw_param_count = 0
         self._ambiguous_parameter_rejected = False
         # Undeclared-tool blocks (#4038). ``_undeclared_offset`` is how much
         # of the stream earlier dropped blocks consumed; the state machine
@@ -826,29 +814,6 @@ class Qwen3CoderToolParser(ToolParser):
         super().reset()
         self._stream_text = ""
         self._undeclared_logged = 0
-
-    def _emit_string_increment(self, param_name: str, value_text: str) -> str:
-        """Return a JSON fragment for the safe (already-final) portion of an
-        in-flight string param value, or "" if nothing new can be flushed.
-
-        We withhold the last ``len("</parameter>")`` chars of unread tail so
-        a partial close tag (e.g. ``</par`` straddling a chunk boundary)
-        cannot leak into an emitted JSON fragment.
-        """
-        keep_back = len(self.parameter_end_token)
-        safe_end = len(value_text) - keep_back
-        if safe_end <= self.in_param_emitted_chars:
-            return ""
-        safe = value_text[self.in_param_emitted_chars : safe_end]
-        if not safe:
-            return ""
-        inner = json.dumps(safe, ensure_ascii=False)[1:-1]
-        self.in_param_emitted_chars = safe_end
-        if not self.in_param_opened:
-            self.in_param_opened = True
-            prefix = "" if self.param_count == 0 else ", "
-            return f'{prefix}{json.dumps(param_name, ensure_ascii=False)}: "{inner}'
-        return inner
 
     @staticmethod
     def _decoded_json_string_prefix(
@@ -913,58 +878,14 @@ class Qwen3CoderToolParser(ToolParser):
         except json.JSONDecodeError:
             return ("", 1) if with_end else ""
 
-    def _emit_decoded_string_increment(
-        self, param_name: str, decoded_value: str
-    ) -> str:
-        """Emit newly decoded characters from an in-flight JSON string."""
-        if len(decoded_value) <= self.in_param_emitted_chars:
-            return ""
-        safe = decoded_value[self.in_param_emitted_chars :]
-        inner = json.dumps(safe, ensure_ascii=False)[1:-1]
-        self.in_param_emitted_chars = len(decoded_value)
-        if not self.in_param_opened:
-            self.in_param_opened = True
-            prefix = "" if self.param_count == 0 else ", "
-            return f'{prefix}{json.dumps(param_name, ensure_ascii=False)}: "{inner}'
-        return inner
-
-    def _close_string_increment(
-        self,
-        param_name: str,
-        full_value: str,
-        param_config: dict,
-        *,
-        already_converted: bool = False,
-    ) -> str:
-        """Emit the closing fragment for an in-flight string param now that
-        ``</parameter>`` has arrived. Handles both the long-string case
-        (opener already emitted; emit tail + closing quote) and the short-
-        string case (opener never emitted; emit the whole ``"name": "value"``).
-        """
-        if not self.in_param_opened:
-            converted = (
-                full_value
-                if already_converted
-                else _convert_param_value(
-                    full_value,
-                    param_name,
-                    param_config,
-                    self.current_function_name or "",
-                )
-            )
-            serialized = json.dumps(converted, ensure_ascii=False)
-            prefix = "" if self.param_count == 0 else ", "
-            return f"{prefix}{json.dumps(param_name, ensure_ascii=False)}: {serialized}"
-        tail = full_value[self.in_param_emitted_chars :]
-        inner = json.dumps(tail, ensure_ascii=False)[1:-1]
-        return f'{inner}"'
-
     def finalize_legacy_raw_stream(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> dict | None:
-        """Return un-emitted JSON after ambiguous raw or incomplete quoted XML."""
-        pending_quote = self.in_function and not self.json_closed
-        if not self._legacy_raw_stream and not pending_quote:
+        """Apply the upstream EOF boundary to a pending streamed XML call.
+
+        The method name is retained for the postprocessor's existing hook.
+        """
+        if not self.in_function or self.json_closed:
             return None
         result = self.extract_tool_calls(model_output, request=request)
         if self._ambiguous_parameter_rejected:
@@ -978,30 +899,16 @@ class Qwen3CoderToolParser(ToolParser):
             return None
         current = result.tool_calls[self.current_tool_index]
         arguments = json.loads(current["arguments"], object_pairs_hook=_ObjectPairs)
-        if pending_quote and self.in_param:
-            if self.param_count >= len(arguments):
-                return None
-            name, value = arguments[self.param_count]
-            suffix = self._close_string_increment(
-                name, _restore_json_value(value), {}, already_converted=True
-            )
-            remaining = arguments[self.param_count + 1 :]
-            prefix = ", " if remaining else ""
-        else:
-            emitted = (
-                self._legacy_raw_param_count
-                if self._legacy_raw_stream
-                else self.param_count
-            )
-            remaining = arguments[emitted:]
-            prefix = ", " if emitted and remaining else ""
-            suffix = ""
+        if getattr(self, "in_param", False) and self.param_count >= len(arguments):
+            return None
+        remaining = arguments[self.param_count :]
+        prefix = ", " if self.param_count and remaining else ""
+        suffix = ""
         suffix += prefix + ", ".join(
             f"{json.dumps(name, ensure_ascii=False)}: {json.dumps(_restore_json_value(value), ensure_ascii=False)}"
             for name, value in remaining
         )
         suffix += "}"
-        self._legacy_raw_stream = False
         self.json_closed = True
         self.in_function = False
         tool_calls = [
@@ -1040,71 +947,21 @@ class Qwen3CoderToolParser(ToolParser):
         parameters = function_call_str[end_index + 1 :]
         param_dict = {}
         param_pairs = []
-        parsed = (
-            split_marked_parameters(
-                parameters,
-                r"<parameter=([^>]+)>",
-                self.parameter_end_token,
-                valid_names=set(param_config) or None,
-            )
-            or []
+        parsed = split_marked_parameters(
+            parameters,
+            r"<parameter=([^>]+)>",
+            self.parameter_end_token,
+            valid_names=set(param_config) or None,
+            reject_undeclared_siblings=True,
         )
-        for p_name, p_value in parsed:
-            if (
-                param_config
-                and self.parameter_prefix in p_value
-                and self.parameter_end_token in p_value
-                and not (
-                    p_value.lstrip().startswith('"')
-                    and _is_complete_json_string(p_value)
-                )
-                and split_marked_parameters(
-                    f"<parameter={p_name}>{p_value}</parameter>",
-                    r"<parameter=([^>]+)>",
-                    self.parameter_end_token,
-                    valid_names=set(param_config),
-                    reject_undeclared_siblings=True,
-                )
-                is None
-            ):
-                # The safe scan preserves literal markers, but an undeclared
-                # sibling after a close is indistinguishable from bare payload.
-                # Quoted JSON strings are unambiguous and must remain intact.
-                # Reject before missing-close recovery can resurrect the call.
-                self._ambiguous_parameter_rejected = True
-                logger.warning(
-                    "qwen3_coder_xml: rejecting an ambiguous undeclared "
-                    "parameter; no rewritten arguments will be executed"
-                )
-                return None
-            converted = _convert_param_value(
-                p_value, p_name, param_config, function_name
+        if parsed is None:
+            self._ambiguous_parameter_rejected = True
+            logger.warning(
+                "qwen3_coder_xml: rejecting an ambiguous undeclared parameter; "
+                "no rewritten arguments will be executed"
             )
-            param_dict[p_name] = converted
-            param_pairs.append((p_name, converted))
-        # Preserve the upstream recovery behavior for malformed free-form
-        # output that omitted one close tag: the positional scanner correctly
-        # protects complete JSON-string payloads, while this fallback recovers
-        # later declared parameters that would otherwise be swallowed by the
-        # unterminated predecessor. Never overwrite a value the safe scan found.
-        for match_text in self.tool_call_parameter_regex.findall(parameters):
-            try:
-                idx = match_text.index(">")
-            except ValueError:
-                continue
-            p_name = match_text[:idx]
-            if p_name in param_dict or p_name not in param_config:
-                continue
-            # A complete quoted value may itself contain a marker. The
-            # positional scan has already accounted for it; the recovery
-            # regex must only fill genuinely unclosed parameters.
-            marker = f"<parameter={p_name}>"
-            if any(
-                marker in value and _is_complete_json_string(value)
-                for _, value in parsed
-            ):
-                continue
-            p_value = trim_wrapping_newlines(str(match_text[idx + 1 :]))
+            return None
+        for p_name, p_value in parsed:
             converted = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
@@ -1139,31 +996,17 @@ class Qwen3CoderToolParser(ToolParser):
             body_start = start + len(self.tool_call_prefix)
             if close == -1:
                 body = model_output[body_start:]
-                complete_params = (
-                    self.parameter_prefix in body
-                    and body.rstrip().endswith(self.parameter_end_token)
-                )
-                wrapper_start = model_output.rfind(self.tool_call_start_token, 0, start)
-                wrapper_close = model_output.rfind(self.tool_call_end_token, 0, start)
-                wrapped_zero_arg = (
-                    wrapper_start > wrapper_close
-                    and body.find(">") >= 0
-                    and not body[body.find(">") + 1 :].strip()
-                )
                 next_wrapper = model_output.find(self.tool_call_start_token, body_start)
                 recovery_end = next_wrapper if next_wrapper >= 0 else len(model_output)
-                trailing_wrapper = model_output.rfind(
+                trailing_wrapper = model_output.find(
                     self.tool_call_end_token, body_start, recovery_end
                 )
                 if trailing_wrapper >= 0:
-                    # EOS recovery for a malformed call missing inner closes.
-                    # Use the final wrapper closer so literal closer text in a
-                    # raw value remains payload (#1515).
+                    # The upstream outer tool-call regex bounds an unclosed
+                    # function at the first wrapper close before EOF recovery.
                     body = model_output[body_start:trailing_wrapper]
                     function_end = trailing_wrapper
                 else:
-                    if not (complete_params or wrapped_zero_arg):
-                        continue
                     function_end = len(model_output)
             else:
                 body = model_output[body_start:close]
@@ -1707,79 +1550,25 @@ class Qwen3CoderToolParser(ToolParser):
         return -1
 
     def _top_level_function_close(self, text: str, start: int) -> int:
-        """Return the position of the top-level ``</function>`` that closes
-        the tool opened at ``start`` — i.e. the first ``</function>`` after
-        ``start`` that is NOT inside a ``<parameter=…>…</parameter>`` value.
-
-        Returns ``-1`` when the tool hasn't closed yet in the buffer. A
-        ``</function>`` embedded in a user's ``code`` parameter (XML
-        code samples are the canonical example) MUST NOT be treated as
-        the tool boundary; otherwise streaming truncates mid-argument
-        (codex review on #978).
-        """
-        prefix_len = len(self.tool_call_prefix)
-        param_open_len = len(self.parameter_prefix)
-        param_close_len = len(self.parameter_end_token)
-        j = start + prefix_len
-        n = len(text)
-        while j < n:
-            next_param = text.find(self.parameter_prefix, j)
-            next_close = text.find(self.function_end_token, j)
-            if next_close == -1:
-                return -1
-            if next_param != -1 and next_param < next_close:
-                header_end = text.find(">", next_param + param_open_len)
-                if header_end == -1:
-                    return -1
-                pclose = self._find_parameter_close(text, header_end + 1)
-                if pclose == -1:
-                    return -1
-                j = pclose + param_close_len
-                continue
-            return next_close
-        return -1
+        """First function close, matching the upstream call regex."""
+        return text.find(self.function_end_token, start + len(self.tool_call_prefix))
 
     def _find_parameter_close(self, text: str, value_start: int) -> int:
-        """Find the structural parameter close, skipping JSON-string payload.
-
-        Constrained XML strings are JSON encoded (#1542), so delimiter-looking
-        text inside the quotes is data. Legacy raw model output keeps the old
-        first-close behavior.
-        """
-        i = value_start
-        # The XML template permits formatting whitespace between the parameter
-        # opener and its JSON-string value.  Treat that whitespace as wire, not
-        # as part of a legacy raw string.  In particular, token streaming can
-        # expose the whitespace one delta before the opening quote; failing to
-        # skip it makes the incremental path escape both JSON wrapper quotes
-        # into the user value (``/tmp/x`` becomes ``\"/tmp/x\"``).
-        while i < len(text) and text[i].isspace():
-            i += 1
-        if i >= len(text) or text[i] != '"':
-            return text.find(self.parameter_end_token, i)
-        i += 1
-        escaped = False
-        while i < len(text):
-            char = text[i]
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                return text.find(self.parameter_end_token, i + 1)
-            i += 1
-        return -1
+        """Earliest parameter close, next opener, or function close."""
+        ends = [
+            text.find(marker, value_start)
+            for marker in (
+                self.parameter_end_token,
+                self.parameter_prefix,
+                self.function_end_token,
+            )
+        ]
+        return min((end for end in ends if end >= 0), default=-1)
 
     def _top_level_function_close_count(
         self, text: str, top_level_starts: list[int]
     ) -> int:
-        """Count ``</function>`` tokens that structurally close a top-level
-        ``<function=…>`` opener from ``top_level_starts``.
-
-        Uses ``_top_level_function_close`` per start so a ``</function>``
-        inside a ``<parameter=…>…</parameter>`` value (e.g. a user's
-        ``code`` argument containing XML) never counts as a tool close.
-        """
+        """Count first function closes for the admitted call openers."""
         return sum(
             1
             for start in top_level_starts
@@ -1787,29 +1576,14 @@ class Qwen3CoderToolParser(ToolParser):
         )
 
     def _function_start_positions(self, text: str) -> list[int]:
-        """Positions of TOP-LEVEL ``<function=`` openers in ``text``.
+        """Locate admitted calls while preserving Markdown envelope framing.
 
-        Skips ``<function=`` substrings that appear inside a
-        ``<parameter=…>…</parameter>`` value — those are user data (e.g.
-        a ``code`` parameter containing XML), not structural tool-call
-        boundaries. Function tags don't nest in Qwen3-Coder XML, so a
-        top-level scan alternates between (a) looking for the next
-        function opener while skipping parameter-value spans and (b)
-        recording found openers. Both the tool-index slicing AND the
-        "any more tools?" counter rely on this — using a naive
-        ``str.count(...)`` for either would let a bogus in-value
-        ``<function=…>`` corrupt streaming state (codex review on #978).
-
-        Incomplete parameter tails (opener without matching
-        ``</parameter>``) terminate the scan: everything after an
-        unclosed value is potentially user data, so we conservatively
-        refuse to promote further ``<function=`` occurrences until the
-        value closes.
+        Each function consumes through its first close or EOF, so nested-looking
+        function openers inside that body are consumed by the same call.
         """
         positions: list[int] = []
         i = 0
         n = len(text)
-        prefix_len = len(self.tool_call_prefix)
         param_open_len = len(self.parameter_prefix)
         param_close_len = len(self.parameter_end_token)
         code = _MarkdownCodeTracker()
@@ -1846,8 +1620,8 @@ class Qwen3CoderToolParser(ToolParser):
                 next_func = text.find(self.tool_call_prefix, i)
                 next_param = text.find(self.parameter_prefix, i)
                 continue
-            i = next_func + prefix_len
-            next_func = text.find(self.tool_call_prefix, i)
+            # The upstream EOF alternative consumes the entire remainder.
+            return positions
         return positions
 
     @staticmethod
@@ -2036,29 +1810,43 @@ class Qwen3CoderToolParser(ToolParser):
         request: dict[str, Any] | None,
         declared: set[str],
     ) -> _StepResult:
+        # Keep #1541 on the incremental path too. A header/partial JSON may
+        # already be visible, but a rejected call must never become executable
+        # or acquire the arguments of a later accepted call.
+        if self._ambiguous_parameter_rejected:
+            return None
+        if ">" in delta_text:
+            tools = request.get("tools") if isinstance(request, dict) else None
+            for body, _, _, _ in self._function_call_candidates(current_text):
+                name, separator, parameters = body.partition(">")
+                if not separator:
+                    continue
+                config = _get_arguments_config(name, tools)
+                if (
+                    split_marked_parameters(
+                        parameters,
+                        r"<parameter=([^>]+)>",
+                        self.parameter_end_token,
+                        valid_names=set(config) or None,
+                        reject_undeclared_siblings=True,
+                    )
+                    is None
+                ):
+                    self._ambiguous_parameter_rejected = True
+                    logger.warning(
+                        "qwen3_coder_xml: rejecting an ambiguous undeclared parameter; "
+                        "no rewritten arguments will be executed"
+                    )
+                    return None
+
         if self._undeclared_start is not None:
             return self._continue_undeclared_block(current_text)
-
-        if self._legacy_raw_stream:
-            # An escaping-free raw XML string cannot distinguish a literal
-            # complete close sequence from structure at an ordinary chunk
-            # boundary. Do not make an irreversible streaming decision;
-            # StreamingPostProcessor.finalize() runs the last-closer-aware
-            # non-streaming parser over the complete output (#1515).
-            self.accumulated_text = current_text
-            return None
 
         delta_token_ids = delta_token_ids or []
         self.accumulated_text = current_text
 
-        # Check if we need to advance to next tool. The tool boundary is
-        # ``</function>`` — that is the invariant close, whether or not
-        # a wrapping ``</tool_call>`` follows. Both the close-count and
-        # the "any more tools?" check must ignore ``<function=`` /
-        # ``</function>`` substrings inside parameter values — a
-        # ``code`` parameter carrying XML code would otherwise trip the
-        # advance loop into targeting a bogus next block (codex review
-        # on #978).
+        # A completed function advances exactly once to the next admitted
+        # opener, matching the upstream non-overlapping call regex.
         if self.json_closed and not self.in_function:
             top_level_starts = self._function_start_positions(current_text)
             tool_count = len(top_level_starts)
@@ -2233,29 +2021,6 @@ class Qwen3CoderToolParser(ToolParser):
                         )
                         self._reject_candidate()
                         return {"content": rejected}
-                    first_param = tool_text.find(self.parameter_prefix, func_end)
-                    if first_param >= 0 and func_close_idx == -1:
-                        name_end = tool_text.find(">", first_param)
-                        if name_end >= 0:
-                            param_name = tool_text[
-                                first_param + len(self.parameter_prefix) : name_end
-                            ]
-                            visible = tool_text[name_end + 1 :].lstrip()
-                            request_tools = (
-                                self._streaming_request.get("tools")
-                                if isinstance(self._streaming_request, dict)
-                                else None
-                            )
-                            config = _get_arguments_config(
-                                self.current_function_name, request_tools
-                            )
-                            if (
-                                visible
-                                and not visible.startswith('"')
-                                and (_is_string_param(param_name, config) or not config)
-                            ):
-                                self._legacy_raw_stream = True
-                                self._legacy_raw_param_count = 0
                     self._current_tool_id = _generate_tool_id()
                     self.header_sent = True
                     self.in_function = True
@@ -2353,25 +2118,13 @@ class Qwen3CoderToolParser(ToolParser):
                     ]
                 }
 
-            # Find all parameter start positions
-            param_starts = []
-            si = 0
-            while True:
-                si = tool_text.find(self.parameter_prefix, si)
-                if si == -1:
-                    break
-                param_starts.append(si)
-                header_end = tool_text.find(">", si + len(self.parameter_prefix))
-                if header_end == -1:
-                    break
-                close = self._find_parameter_close(tool_text, header_end + 1)
-                if close >= 0:
-                    si = close + len(self.parameter_end_token)
-                else:
-                    value = tool_text[header_end + 1 :]
-                    if value.lstrip().startswith('"'):
-                        break
-                    si = header_end + 1
+            # Use the same upstream matches as buffered parsing, including
+            # malformed headers that must be skipped before looking for '>'.
+            param_starts = [
+                match.start()
+                for match in self.tool_call_parameter_regex.finditer(tool_text)
+                if ">" in match.group(1)
+            ]
 
             tools = None
             if self._streaming_request:
@@ -2386,84 +2139,8 @@ class Qwen3CoderToolParser(ToolParser):
 
             json_fragments = []
 
-            # In-flight string param from a prior call: drain whatever's
-            # now available (close it if </parameter> has arrived, else
-            # emit another safe slice). Runs BEFORE the complete-param
-            # loop so same-chunk trailing params after the close get
-            # picked up in the same call.
-            if (
-                self.in_param
-                and self.in_param_name is not None
-                and self.param_count < len(param_starts)
-            ):
-                param_idx = param_starts[self.param_count]
-                param_start = param_idx + len(self.parameter_prefix)
-                remaining = tool_text[param_start:]
-                if ">" in remaining:
-                    name_end = remaining.find(">")
-                    value_start = param_start + name_end + 1
-                    value_text = tool_text[value_start:]
-                    if value_text.startswith("\n"):
-                        value_text = value_text[1:]
-
-                    end_idx = self._find_parameter_close(value_text, 0)
-                    json_string_pending = value_text.lstrip().startswith('"')
-                    if end_idx == -1 and not json_string_pending:
-                        # Defensive fallback: model emitted next-param-prefix,
-                        # </function>, or </tool_call> without a </parameter>.
-                        # Use any of those as the close to avoid hanging
-                        # forever in incremental mode (mirrors the existing
-                        # complete-param fallback path below).
-                        nxt = value_text.find(self.parameter_prefix)
-                        fe = value_text.find(self.function_end_token)
-                        te = value_text.find(self.tool_call_end_token)
-                        candidates = [c for c in (nxt, fe, te) if c != -1]
-                        if candidates:
-                            end_idx = min(candidates)
-                    if end_idx != -1:
-                        pv = value_text[:end_idx]
-                        if pv.endswith("\n"):
-                            pv = pv[:-1]
-                        self.accumulated_params[self.in_param_name] = pv
-                        close_value = (
-                            _convert_param_value(
-                                pv,
-                                self.in_param_name,
-                                param_config,
-                                self.current_function_name or "",
-                            )
-                            if json_string_pending
-                            else pv
-                        )
-                        frag = self._close_string_increment(
-                            self.in_param_name,
-                            close_value,
-                            param_config,
-                            already_converted=json_string_pending,
-                        )
-                        if frag:
-                            json_fragments.append(frag)
-                        self.param_count += 1
-                        self.in_param = False
-                        self.in_param_name = None
-                        self.in_param_emitted_chars = 0
-                        self.in_param_opened = False
-                    else:
-                        frag = (
-                            self._emit_decoded_string_increment(
-                                self.in_param_name,
-                                cast(str, self._decoded_json_string_prefix(value_text)),
-                            )
-                            if json_string_pending
-                            else self._emit_string_increment(
-                                self.in_param_name, value_text
-                            )
-                        )
-                        if frag:
-                            json_fragments.append(frag)
-
             # Process complete parameters
-            while not self.in_param and self.param_count < len(param_starts):
+            while self.param_count < len(param_starts):
                 param_idx = param_starts[self.param_count]
                 param_start = param_idx + len(self.parameter_prefix)
                 remaining = tool_text[param_start:]
@@ -2480,68 +2157,11 @@ class Qwen3CoderToolParser(ToolParser):
 
                 if not value_text.strip():
                     break
-                is_string = _is_string_param(current_param_name, param_config)
-                if not value_text.lstrip().startswith('"') and (
-                    is_string or not param_config
-                ):
-                    # Raw XML has no escaping rule, so its first apparent close
-                    # may be payload. Freeze only the un-emitted suffix and let
-                    # EOS parsing select the final structural closer.
-                    self._legacy_raw_stream = True
-                    self._legacy_raw_param_count = self.param_count
-                    if json_fragments:
-                        return {
-                            "tool_calls": [
-                                {
-                                    "index": self.current_tool_index,
-                                    "function": {"arguments": "".join(json_fragments)},
-                                }
-                            ]
-                        }
-                    return None
-
                 param_end_idx = self._find_parameter_close(value_text, 0)
-                json_string_pending = value_text.lstrip().startswith('"')
-                if param_end_idx == -1 and not json_string_pending:
-                    # Try next parameter or function end as delimiter
-                    next_param = value_text.find(self.parameter_prefix)
-                    func_end = value_text.find(self.function_end_token)
-                    if next_param != -1 and (func_end == -1 or next_param < func_end):
-                        param_end_idx = next_param
-                    elif func_end != -1:
-                        param_end_idx = func_end
-                    else:
-                        tool_end_in_val = value_text.find(self.tool_call_end_token)
-                        if tool_end_in_val != -1:
-                            param_end_idx = tool_end_in_val
-                        else:
-                            # Param not yet closed. For string params, emit
-                            # incrementally; for non-string types we can't
-                            # emit partial JSON (half an int isn't valid),
-                            # so fall through to the existing break path.
-                            if _is_string_param(current_param_name, param_config):
-                                frag = self._emit_string_increment(
-                                    current_param_name, value_text
-                                )
-                                if frag:
-                                    json_fragments.append(frag)
-                                self.in_param = True
-                                self.in_param_name = current_param_name
-                            break
-
-                if param_end_idx == -1 and json_string_pending:
-                    if _is_string_param(current_param_name, param_config):
-                        frag = self._emit_decoded_string_increment(
-                            current_param_name,
-                            cast(str, self._decoded_json_string_prefix(value_text)),
-                        )
-                        if frag:
-                            json_fragments.append(frag)
-                        self.in_param = True
-                        self.in_param_name = current_param_name
-                    break
-
                 if param_end_idx == -1:
+                    # Upstream waits for the value boundary before conversion.
+                    # A partial string may still become null or contain a
+                    # delimiter; emitting it early cannot be retracted.
                     break
 
                 pv = value_text[:param_end_idx]
@@ -2570,9 +2190,7 @@ class Qwen3CoderToolParser(ToolParser):
             # </function> emits a self-contained, JSON-valid arguments
             # document instead of leaving the close stranded for a later
             # call (which may never come if the stream ended).
-            close_pending = (
-                not self.in_param and not self.json_closed and func_close_idx != -1
-            )
+            close_pending = not self.json_closed and func_close_idx != -1
             if close_pending:
                 self.json_closed = True
                 tools = None

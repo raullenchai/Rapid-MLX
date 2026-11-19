@@ -91,21 +91,26 @@ def test_registered():
 
 
 @pytest.mark.parametrize(
-    "value",
+    "value,arguments",
     [
-        "text with a literal </parameter> inside",
-        "text with a literal </function> inside",
-        "text with a literal <parameter=fake> inside",
-        "has <parameter=q> and </parameter> both",
+        ("text with a literal </parameter> inside", {"text": "text with a literal "}),
+        ("text with a literal </function> inside", {"text": "text with a literal "}),
+        (
+            "text with a literal <parameter=fake> inside",
+            {"text": "text with a literal ", "fake": " inside"},
+        ),
+        ("has <parameter=q> and </parameter> both", {"text": "has ", "q": " and "}),
     ],
 )
-def test_complete_literal_markers_preserve_values_and_call_boundaries(value):
+def test_complete_markers_follow_upstream_boundaries(value, arguments):
+    # SGLang python/sglang/srt/function_call/qwen3_coder_detector.py:
+    # first close / next parameter opener terminates an unescaped XML value.
     text = "Before." + call({"text": value}) + call({"count": "42"}) + "After."
     result = RaonToolParser().extract_tool_calls(text, REQUEST)
     assert result.content == "Before.After."
     assert [
         (item["name"], json.loads(item["arguments"])) for item in result.tool_calls
-    ] == [("run", {"text": value}), ("run", {"count": 42})]
+    ] == [("run", arguments), ("run", {"count": 42})]
 
 
 @pytest.mark.parametrize("step", [1, 2, 7, 31, 10000])

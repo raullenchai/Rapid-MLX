@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Incremental-delta streaming for ``Qwen3CoderToolParser``.
+"""Streaming parity under upstream XML value and function boundaries.
 
-Closes the bug surfaced in #479 (kenizhou): the parser used to buffer the
-entire string-typed parameter value until ``</parameter>`` arrived, then
-dump it as a single ``function.arguments`` delta. CopilotKit / LangChain
-inspectors that render argument values live stalled for multiple seconds
-on long summaries / key-points.
-
-The three tests below pin the new behavior:
-
-* ``test_long_string_param_emits_multiple_deltas`` — granularity guard.
-* ``test_close_tag_never_leaks_into_emitted_fragment`` — the
-  ``len("</parameter>")`` tail-buffer guarantees no half-tag escapes
-  into a JSON fragment.
-* ``test_streaming_json_matches_non_streaming`` — concatenating all
-  streamed argument fragments and parsing the result yields the same
-  Python object as ``extract_tool_calls`` returns for the full text.
+SGLang qwen3_coder_detector.py waits for the earliest parameter close, next
+parameter opener, or function close before converting/emitting a value.
+Quoted values cannot escape XML markers. Long values, split markers, JSON
+quotes/escapes, and type aliases must agree with buffered parsing.
+Reference: https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/function_call/qwen3_coder_detector.py
 """
 
 from __future__ import annotations
@@ -81,13 +71,8 @@ def _argument_fragments(deltas: list[dict]) -> list[str]:
     return out
 
 
-def test_long_string_param_emits_multiple_deltas():
-    """For a long string param, at least 2 ``function.arguments`` deltas with
-    non-empty content must arrive BEFORE the ``</parameter>`` close.
-
-    Without #479's incremental emit the parser only produced a single
-    delta containing the whole value once the close tag arrived.
-    """
+def test_long_string_param_waits_for_upstream_boundary():
+    """SGLang qwen3_coder_detector.py buffers a value until its boundary."""
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool(
         "summarize",
@@ -99,9 +84,9 @@ def test_long_string_param_emits_multiple_deltas():
         "<function=summarize>\n",
         "<parameter=summary>\n",
     ]
-    # Split the long summary into 32-char body chunks so the in-flight
-    # branch fires several times before the close tag arrives.
-    encoded = json.dumps(_LONG_SUMMARY)
+    # Split the long summary into 32-char chunks to verify that no partial
+    # conversion is emitted before the upstream boundary arrives.
+    encoded = _LONG_SUMMARY  # Conversion waits for the upstream boundary.
     value_chunks = [encoded[i : i + 32] for i in range(0, len(encoded), 32)]
     pre_close_chunks = head + value_chunks
 
@@ -128,11 +113,14 @@ def test_long_string_param_emits_multiple_deltas():
         if f not in ("{", "")
     ]
 
-    assert len(arg_fragments) >= 2, (
-        "#479 regression: long string params should stream incrementally; "
-        f"got {len(arg_fragments)} value-bearing argument deltas before "
-        f"</parameter>. fragments={arg_fragments!r}"
+    assert arg_fragments == []
+    closing = "\n</parameter>\n</function>\n</tool_call>"
+    delta = parser.extract_tool_calls_streaming(
+        previous, previous + closing, closing, request=request
     )
+    assert json.loads("".join(_argument_fragments(deltas_before_close + [delta]))) == {
+        "summary": _LONG_SUMMARY
+    }
 
 
 def test_close_tag_never_leaks_into_emitted_fragment():
@@ -182,8 +170,8 @@ def test_close_tag_never_leaks_into_emitted_fragment():
     )
 
 
-def test_json_encoded_string_preserves_embedded_xml_closers():
-    """The constrained #1542 wire must keep every XML marker as string data."""
+def test_json_encoded_string_ends_at_first_xml_closer():
+    """SGLang qwen3_coder_detector.py: quotes do not escape XML markers."""
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool("write", {"content": {"type": "string"}})
     value = 'before </parameter> </function> </tool_call> after "quoted"'
@@ -200,7 +188,7 @@ def test_json_encoded_string_preserves_embedded_xml_closers():
     ]
 
     fragments = _argument_fragments(_feed(parser, chunks, request))
-    assert json.loads("".join(fragments)) == {"content": value}
+    assert json.loads("".join(fragments)) == {"content": "before "}
 
 
 def test_json_surrogate_pair_split_between_chunks_streams_exactly():
@@ -225,8 +213,8 @@ def test_json_surrogate_pair_split_between_chunks_streams_exactly():
         "A function block ends with </function> here.",
     ],
 )
-def test_legacy_raw_closers_are_deferred_to_full_text_parser(value: str):
-    """#1515: raw XML is ambiguous online, so EOS parsing owns it."""
+def test_raw_xml_uses_first_boundary_while_streaming(value: str):
+    """SGLang uses the earliest parameter/function close while streaming."""
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool("write_file", {"content": {"type": "string"}})
     full_text = (
@@ -241,12 +229,9 @@ def test_legacy_raw_closers_are_deferred_to_full_text_parser(value: str):
 
     deltas = _feed(parser, chunks, request)
     fragments = _argument_fragments(deltas)
-    assert fragments == ["{"]
-    assert "".join(delta.get("content", "") for delta in deltas) == ""
-
-    final = parser.finalize_legacy_raw_stream(full_text, request=request)
-    fragments.extend(_argument_fragments([final]))
-    assert json.loads("".join(fragments)) == {"content": value}
+    expected = value.split("</parameter>", 1)[0].split("</function>", 1)[0]
+    assert json.loads("".join(fragments)) == {"content": expected}
+    assert parser.finalize_legacy_raw_stream(full_text, request=request) is None
 
 
 @pytest.mark.parametrize(
@@ -257,7 +242,7 @@ def test_legacy_raw_closers_are_deferred_to_full_text_parser(value: str):
         "before </tool_call> after",
     ],
 )
-def test_complete_legacy_raw_call_in_one_chunk_preserves_closer(value):
+def test_complete_raw_call_uses_first_boundary_in_one_chunk(value):
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool("write", {"content": {"type": "string"}})
     wire = (
@@ -266,8 +251,9 @@ def test_complete_legacy_raw_call_in_one_chunk_preserves_closer(value):
     )
 
     delta = parser.extract_tool_calls_streaming("", wire, wire, request=request)
+    expected = value.split("</parameter>", 1)[0].split("</function>", 1)[0]
     assert json.loads(delta["tool_calls"][0]["function"]["arguments"]) == {
-        "content": value
+        "content": expected
     }
 
 
@@ -363,9 +349,8 @@ def test_streaming_json_matches_non_streaming():
     assert ns_result.tools_called, "non-stream extract should detect tool call"
     expected_args = json.loads(ns_result.tool_calls[0]["arguments"])
 
-    # Streaming run with small body chunks so the in-flight emit fires
-    # repeatedly and back-to-back string params exercise param-separator
-    # logic in ``_close_string_increment``.
+    # Small chunks exercise buffering; back-to-back complete values exercise
+    # parameter separators once each upstream boundary arrives.
     chunks = [
         "<tool_call>\n",
         "<function=report>\n",
@@ -397,12 +382,8 @@ def test_streaming_json_matches_non_streaming():
 
 def test_same_chunk_close_and_trailing_param_not_dropped():
     """When one chunk batches ``...tail</parameter><parameter=other>val</parameter>``
-    the parser must emit BOTH the closing tail of the in-flight string
-    AND the complete trailing param in the same call — and finalize.
-
-    Without resuming the complete-param loop after closing the in-flight
-    string, the trailing ``other`` param would be silently dropped (a
-    regression caught by adversarial review on PR #648).
+    both completed parameters must be emitted in that parser call, together
+    with the closing JSON brace.
     """
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool(
@@ -415,8 +396,7 @@ def test_same_chunk_close_and_trailing_param_not_dropped():
 
     # Multi-chunk stream where the FINAL chunk batches
     # ``<rest_of_summary></parameter><parameter=score>42</parameter></function></tool_call>``
-    # so the in-flight close and the trailing complete param land in
-    # the same parser call.
+    # so both parameter boundaries arrive in the same parser call.
     encoded_summary = json.dumps(_LONG_SUMMARY)
     head_value = encoded_summary[:120]
     tail_value = encoded_summary[120:]
@@ -447,11 +427,8 @@ def test_same_chunk_close_and_trailing_param_not_dropped():
     "param_type",
     ["string", "str", "text", "enum"],
 )
-def test_string_aliases_all_stream_incrementally(param_type):
-    """Schema ``type`` aliases that the parser treats as strings (per
-    ``_convert_param_value``) must all trigger incremental emission.
-    Prevents drift if the alias set changes.
-    """
+def test_string_aliases_wait_for_upstream_value_boundary(param_type):
+    """All string aliases use the same upstream boundary and conversion."""
     parser = Qwen3CoderToolParser(tokenizer=None)
     request = _request_with_tool("echo", {"value": {"type": param_type}})
     head = [
@@ -459,7 +436,7 @@ def test_string_aliases_all_stream_incrementally(param_type):
         "<function=echo>\n",
         "<parameter=value>\n",
     ]
-    encoded = json.dumps(_LONG_SUMMARY)
+    encoded = _LONG_SUMMARY  # Conversion waits for the upstream boundary.
     value_chunks = [encoded[i : i + 32] for i in range(0, len(encoded), 32)]
     pre_close_chunks = head + value_chunks
 
@@ -479,10 +456,14 @@ def test_string_aliases_all_stream_incrementally(param_type):
         previous = current
 
     value_frags = [f for f in _argument_fragments(deltas) if f not in ("{", "")]
-    assert len(value_frags) >= 2, (
-        f"type={param_type!r}: expected incremental emission, got "
-        f"{len(value_frags)} value-bearing fragments"
+    assert value_frags == []
+    closing = "\n</parameter>\n</function>\n</tool_call>"
+    delta = parser.extract_tool_calls_streaming(
+        previous, previous + closing, closing, request=request
     )
+    assert json.loads("".join(_argument_fragments(deltas + [delta]))) == {
+        "value": _LONG_SUMMARY
+    }
 
 
 # ``(value, ensure_ascii settings worth running)``. Escaping is what this
@@ -555,9 +536,11 @@ def test_wrapper_quotes_dropped_without_eating_real_quotes(
     ]
 
     streamed = json.loads("".join(_argument_fragments(_feed(parser, chunks, request))))
-    assert streamed == {"content": value}
+    # Upstream XML boundaries apply even inside a JSON-quoted string.
+    expected = '"' if value == '"</parameter> inside"' else value
+    assert streamed == {"content": expected}
 
     parser.reset()
     non_streaming = parser.extract_tool_calls("".join(chunks), request=request)
     assert non_streaming.tools_called
-    assert json.loads(non_streaming.tool_calls[0]["arguments"]) == {"content": value}
+    assert json.loads(non_streaming.tool_calls[0]["arguments"]) == {"content": expected}

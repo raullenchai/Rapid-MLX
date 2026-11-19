@@ -24,7 +24,7 @@ TOOLS = [
     }
 ]
 REQUEST = {"tools": TOOLS}
-MALFORMED = (
+UNCLOSED_XML = (
     "<tool_call>\n"
     "<function=browse>\n"
     "<parameter=url>\n"
@@ -36,56 +36,47 @@ MALFORMED_JSON = (
     '"https://example.com/guide"</tool_call>'
 )
 
+# Unclosed XML follows upstream EOF recovery; JSON missing braces remains
+# malformed and continues to exercise executor-feedback/prose handling below.
+# Reference: SGLang python/sglang/srt/function_call/qwen3_coder_detector.py.
+MALFORMED = MALFORMED_JSON
 
-def test_parser_surfaces_declared_malformed_call_with_unparseable_arguments():
-    result = HermesToolParser(None).extract_tool_calls(MALFORMED, request=REQUEST)
 
-    assert result.tools_called is True
+def test_parser_recovers_unclosed_xml_at_outer_boundary():
+    result = HermesToolParser(None).extract_tool_calls(UNCLOSED_XML, request=REQUEST)
+    assert result.tools_called
     assert result.content is None
-    assert len(result.tool_calls) == 1
-    call = result.tool_calls[0]
-    assert call["name"] == "browse"
-    # The orchestration layer must reject this before dispatch and return its
-    # normal parse-error tool result to the model. Do not silently repair and
-    # execute a request whose structure the model failed to close.
-    try:
-        json.loads(call["arguments"])
-    except json.JSONDecodeError:
-        pass
-    else:
-        raise AssertionError("malformed arguments unexpectedly became executable JSON")
+    assert result.tool_calls[0]["name"] == "browse"
+    assert json.loads(result.tool_calls[0]["arguments"]) == {
+        "url": "https://example.com/guide"
+    }
 
 
 def test_parser_accepts_typed_request_tool_models():
     request = SimpleNamespace(
         tools=[SimpleNamespace(function=SimpleNamespace(name="browse"))]
     )
-
-    result = HermesToolParser(None).extract_tool_calls(MALFORMED, request=request)
-
-    assert result.tools_called is True
+    result = HermesToolParser(None).extract_tool_calls(UNCLOSED_XML, request=request)
+    assert result.tools_called
     assert result.tool_calls[0]["name"] == "browse"
 
 
-def test_parser_does_not_promote_undeclared_malformed_function():
-    result = HermesToolParser(None).extract_tool_calls(
-        MALFORMED.replace("function=browse", "function=delete_everything"),
-        request=REQUEST,
+def test_parser_forwards_unknown_name_in_unclosed_xml():
+    raw = UNCLOSED_XML.replace("function=browse", "function=delete_everything")
+    result = HermesToolParser(None).extract_tool_calls(raw, request=REQUEST)
+    assert result.tools_called
+    assert result.tool_calls[0]["name"] == "delete_everything"
+    assert json.loads(result.tool_calls[0]["arguments"]) == {
+        "url": "https://example.com/guide"
+    }
+
+
+def test_stream_defers_unclosed_xml_until_eof():
+    raw = UNCLOSED_XML.replace("function=browse", "function=delete_everything")
+    result = HermesToolParser(None).extract_tool_calls_streaming(
+        "", raw, raw, request=REQUEST
     )
-    assert result.tools_called is False
-    assert result.tool_calls == []
-    assert result.content == MALFORMED.replace(
-        "function=browse", "function=delete_everything"
-    )
-
-
-def test_stream_does_not_wedge_on_undeclared_malformed_function():
-    raw = MALFORMED.replace("function=browse", "function=delete_everything")
-    parser = HermesToolParser(None)
-
-    result = parser.extract_tool_calls_streaming("", raw, raw, request=REQUEST)
-
-    assert result == {"content": raw}
+    assert result is None
 
 
 def test_parser_surfaces_declared_malformed_json_call_for_executor_feedback():

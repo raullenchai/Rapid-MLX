@@ -234,8 +234,8 @@ def test_reasoning_closer_ends_an_unfinished_envelope(split):
 
 
 VALUE = "echo </think> <think>x</think> <tool_call> <arg_value> done"
-# The XML and JSON extractors also read a call closer and a nested value
-# opener inside an argument as text; GLM's extractor ends a call at its closer.
+# JSON escaping retains these markers as argument text. XML's next parameter
+# opener ends the current value under the upstream boundary rule.
 CLOSER_VALUE = VALUE + " </tool_call> <parameter=b>"
 MARKUP_VALUES = {
     "glm47": "<think>plan <tool_call>run_shell_command<arg_key>command</arg_key>"
@@ -260,9 +260,15 @@ def test_markers_inside_argument_values_are_argument_text(tool, value, split):
     raw = MARKUP_VALUES[tool].format(value)
     reasoning, content, _ = stream(the_owner, raw, split)
     assert (reasoning, content) == ("plan ", "Answer")
+    # SGLang qwen3_coder_detector.py ends XML values at the next parameter
+    # opener; JSON envelopes retain the same bytes as escaped argument text.
+    expected = value.split("<parameter=", 1)[0] if tool == "qwen3_coder" else value
+    expected_args = {"command": expected}
+    if tool == "qwen3_coder" and "<parameter=b>" in value:
+        expected_args["b"] = ""
     assert [
         [call["name"], json.loads(call["arguments"])] for call in the_owner.calls
-    ] == [["run_shell_command", {"command": value}]]
+    ] == [["run_shell_command", expected_args]]
 
 
 @pytest.mark.parametrize("split", [1, 7, 1000])

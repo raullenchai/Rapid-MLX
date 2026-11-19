@@ -1,34 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Literal-safe scanning for marker-delimited tool-call wire formats.
+"""Scanning for marker-delimited tool calls using upstream XML boundaries.
 
-XML-ish tool-call formats — Nemotron's ``<function=…><parameter=…>``,
-Qwen 3.6's ``<tool_call>`` body, MiniCPM's ``<param name=…>`` — carry no
-escaping layer. A value is whatever sits between two markers, which makes
-the obvious implementation wrong in the same way every time::
+Parameters end at the first close, next parameter opener, function close, or
+end of input. Calls end at the first function close or end of input. See
+SGLang python/sglang/srt/function_call/qwen3_coder_detector.py and the former
+vLLM Python qwen3coder parser. XML marker text has no escaping layer.
 
-    re.findall(r"<parameter=(\\w+)>(.*?)</parameter>", text, re.DOTALL)
-
-The non-greedy ``(.*?)`` stops at the FIRST ``</parameter>``. When that
-marker also occurs *inside* a value — an agent writing documentation about
-tool calling, a diff of a parser, a shell heredoc — the match ends early,
-the remaining JSON is truncated, and the call is dropped with no error and
-no log line. That is jundot/omlx#2507; the silence is omlx#2420.
-
-The resolution these formats actually use is positional: an element ends at
-the LAST closing marker before the next sibling opens. This module is that
-rule, written once.
-
-It lives at package top level with a lazy diagnostic-recorder import.
-``rapid_mlx/api/tool_calling.py`` and the parsers under
-``rapid_mlx/tool_parsers/`` both need it, and those two packages already
-import each other (``api/__init__`` pulls in ``tool_calling``;
-``tool_parsers/__init__`` eagerly loads ``qwen3coder`` which imports back
-into ``api``). Anything shared between them has to sit outside both, or
-the cycle closes.
-
-Before this existed the rule was reimplemented per format, which is how
-the same defect could be fixed in ``tool_calling.py`` and still be live in
-``nemotron_tool_parser.py``.
+The undeclared-parameter sibling rejection (#1541) is retained separately
+from segmentation. This module lives outside api/tool_parsers to avoid their
+import cycle.
 """
 
 from __future__ import annotations
@@ -104,86 +84,23 @@ def declared_tool_names(request: dict[str, Any] | None) -> frozenset[str] | None
     return frozenset(names) or None
 
 
-def _next_sibling(
-    text: str,
-    openers: list[re.Match[str]],
-    index: int,
-    closer: str,
-    valid_names: frozenset[str] | set[str] | None = None,
-) -> int:
-    """Index of the next opener that is a real SIBLING of ``openers[index]``.
-
-    Two filters:
-
-    * a ``closer`` must appear between the two openers — an element cannot
-      begin before the previous one ends;
-    * with ``valid_names`` given, the opener's name must be one the request
-      declared.
-
-    The name check resolves what syntax alone cannot. In
-    ``<parameter=a>before </parameter> text <parameter=fake> after
-    </parameter>`` the closer really is there before the second opener, so
-    a position-only reading fabricates ``fake``. Nothing in these
-    escaping-free formats distinguishes that from two real elements; only
-    the schema does. Concretely, the case this exists for::
-
-        <parameter=code>if x: print("</parameter><parameter=evil>")</parameter>
-
-    An agent writing code or documentation ABOUT tool calling emits exactly
-    that. With the filter, ``code`` keeps its whole value. Without it the
-    value is truncated at ``print("`` and a phantom ``evil`` is handed to
-    the tool as though the model had asked for it.
-
-    Repeated names are NOT filtered. Two real ``<parameter=body>`` elements
-    are the caller's to resolve — dict assignment makes it last-value-wins,
-    which is the established behaviour — and suppressing the second opener
-    instead merges its wire markup into the first value, which corrupts
-    both.
-
-    Returns ``len(openers)`` when no sibling follows.
-    """
-    first_close = text.find(closer, openers[index].end())
-    if first_close < 0:
-        return len(openers)
-    for j in range(index + 1, len(openers)):
-        if valid_names is not None and openers[j].group(1).strip() not in valid_names:
-            continue  # not a declared name — literal text inside the value
-        if first_close + len(closer) <= openers[j].start():
-            return j
-    return len(openers)
-
-
 def segment_by_next_opener(
     text: str,
     openers: list[re.Match[str]],
     index: int,
     closer: str,
     valid_names: frozenset[str] | set[str] | None = None,
-) -> tuple[str, int] | None:
-    """``(body, end_offset)`` for ``openers[index]``, or ``None`` if unclosed.
+) -> tuple[str, int]:
+    """Return a call body through the first closer, or the remaining input.
 
-    Bounded by the next *sibling* opener, then trimmed at the LAST ``closer``
-    in that span. The two rules cover the two ways these escaping-free
-    formats can be misread:
-
-    * ending at the first ``closer`` truncates a value that legitimately
-      contains one (jundot/omlx#2507);
-    * ending at the next *textual* opener truncates a value that contains
-      one and fabricates an element.
-
-    ``None`` for an element with no ``closer`` at all: a truncated or
-    malformed emission is rejected rather than silently swallowing the rest
-    of the buffer as its value. The regexes this replaced also required the
-    closing marker to match, so accepting them would be a behaviour change,
-    not a fix.
+    The upstream function regex consumes nested-looking openers as body text.
+    Declared names do not change wire boundaries.
     """
-    sibling = _next_sibling(text, openers, index, closer, valid_names)
-    end = openers[sibling].start() if sibling < len(openers) else len(text)
-    body = text[openers[index].end() : end]
-    cut = body.rfind(closer)
-    if cut == -1:
-        return None
-    return body[:cut], openers[index].end() + cut + len(closer)
+    start = openers[index].end()
+    cut = text.find(closer, start)
+    if cut < 0:
+        return text[start:], len(text)
+    return text[start:cut], cut + len(closer)
 
 
 def split_marked_calls(
@@ -193,58 +110,44 @@ def split_marked_calls(
     outer: str | None = None,
     valid_names: frozenset[str] | set[str] | None = None,
 ) -> list[tuple[str, str, int, int]]:
-    """``(name, body, span_start, span_end)`` for each call in ``text``.
+    """Return name, body, start and end using the upstream first-close rule.
 
-    ``opener`` must capture the call name in group 1. ``outer``, when given,
-    is an enclosing marker (e.g. ``</tool_call>`` around ``</function>``)
-    that is absorbed into the span so callers can excise the whole
-    invocation from surrounding prose in one step — a second, differently
-    truncating regex pass over the same text is how tag fragments leak into
-    user-visible content.
+    An immediately following outer wrapper close is absorbed into the span.
+    Missing closes are tolerated, as in the upstream function regex.
     """
-    openers = list(re.finditer(opener, text, re.DOTALL))
-    calls: list[tuple[str, str, int, int]] = []
-    i = 0
-    while i < len(openers):
-        # NO name deduplication here. That rule belongs to parameters, where
-        # a repeat within one call is payload because each name carries one
-        # value. Calls are the opposite: invoking the same tool twice in a
-        # turn is ordinary agent behaviour — read_file /a then read_file /b —
-        # and suppressing the second opener merges both into one body and
-        # silently drops a call the model asked for.
-        # Unknown names are still calls. Keep the declared-name boundary for
-        # siblings so literal markers inside argument values stay payload.
-        boundary_names = (
-            valid_names
-            if valid_names and openers[i].group(1).strip() in valid_names
-            else None
-        )
-        segmented = segment_by_next_opener(text, openers, i, closer, boundary_names)
-        sibling = _next_sibling(text, openers, i, closer, boundary_names)
-        if segmented is not None:
-            body, span_end = segmented
-            emit = True
+    if "<function=" in opener:
+        calls = []
+        previous_end = 0
+        for match in re.finditer(
+            r"<function=(.*?)</function>|<function=(.*)$", text, re.DOTALL
+        ):
+            function = match.group(1) if match.group(1) is not None else match.group(2)
+            name, separator, body = function.partition(">")
+            if not separator:
+                continue
+            start, end = match.span()
+            if opener.startswith("<tool_call>"):
+                wrapper = re.search(r"<tool_call>\s*$", text[previous_end:start])
+                if wrapper is None:
+                    continue
+                start = previous_end + wrapper.start()
             if outer:
-                limit = (
-                    openers[sibling].start() if sibling < len(openers) else len(text)
-                )
-                tail = re.match(r"\s*" + re.escape(outer), text[span_end:limit])
+                tail = re.match(r"\s*" + re.escape(outer), text[end:])
                 if tail:
-                    span_end += tail.end()
-                else:
-                    # ``outer`` is REQUIRED when requested, not opportunistic.
-                    # The regex this replaced matched only with the enclosing
-                    # marker present, so accepting a call whose wrapper never
-                    # arrived would newly admit truncated emissions. Callers
-                    # that tolerate a missing wrapper (nemotron_tool_parser
-                    # documents that case) simply do not pass ``outer``.
-                    emit = False
-            if emit:
-                calls.append(
-                    (openers[i].group(1).strip(), body, openers[i].start(), span_end)
-                )
-        # See split_marked_parameters: skip openers swallowed by this value.
-        i = sibling if sibling > i else i + 1
+                    end += tail.end()
+            calls.append((name, body, start, end))
+            previous_end = end
+        return calls
+
+    openers = list(re.finditer(opener, text, re.DOTALL))
+    calls = []
+    consumed = 0
+    for i, match in enumerate(openers):
+        if match.start() < consumed:
+            continue
+        body, end = segment_by_next_opener(text, openers, i, closer)
+        calls.append((match.group(1).strip(), body, match.start(), end))
+        consumed = end
     return calls
 
 
@@ -256,38 +159,48 @@ def split_marked_parameters(
     *,
     reject_undeclared_siblings: bool = False,
 ) -> list[tuple[str, str]] | None:
-    """``(name, value)`` for each parameter in ``block``.
+    """Split parameters at the earliest upstream boundary, trimming one LF.
 
-    ``opener`` must capture the parameter name in group 1. A value keeps
-    every byte it was sent except the one wrapping newline per side that the
-    wire format adds -- see ``trim_wrapping_newlines``. Parameter *names* are
-    still stripped: those are identifiers, not payload.
+    Keep #1541: an undeclared sibling after a parameter close rejects the
+    entire call instead of splicing its markup into the preceding value.
+    Schema membership never changes the segmentation itself.
     """
-    openers = list(re.finditer(opener, block))
-    out: list[tuple[str, str]] = []
-    i = 0
-    while i < len(openers):
-        if reject_undeclared_siblings and valid_names is not None:
-            current_end = openers[i].end()
-            for candidate in openers[i + 1 :]:
-                if candidate.group(1).strip() in valid_names:
-                    continue
-                if closer in block[current_end : candidate.start()]:
-                    # Syntax cannot distinguish an undeclared sibling from
-                    # marker-shaped payload after a close.  Continuing would
-                    # splice the entire undeclared element into the previous
-                    # value (#1541).  Refuse the call rather than execute a
-                    # silently rewritten argument.
-                    return None
-        segmented = segment_by_next_opener(block, openers, i, closer, valid_names)
-        sibling = _next_sibling(block, openers, i, closer, valid_names)
-        if segmented is not None:
-            out.append(
-                (openers[i].group(1).strip(), trim_wrapping_newlines(segmented[0]))
+    if opener.startswith("<parameter="):
+        # Match the complete upstream expression rather than requiring a
+        # well-formed next opener: even a partial <parameter= ends the value.
+        matches = list(
+            re.finditer(
+                r"<parameter=(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
+                block,
+                re.DOTALL,
             )
-        # Jump to the sibling, not i+1: the openers in between are literal
-        # text inside the value just consumed. Advancing one at a time is
-        # what turns a value containing "<parameter=x>" into a phantom
-        # parameter named x, passed to the tool as if the model sent it.
-        i = sibling if sibling > i else i + 1
+        )
+        parsed: list[tuple[str, str]] = []
+        first_close = block.find(closer)
+        for match in matches:
+            name, separator, value = match.group(1).partition(">")
+            if not separator:
+                continue
+            name = name.strip()
+            if (
+                reject_undeclared_siblings
+                and valid_names is not None
+                and parsed
+                and name not in valid_names
+                and first_close >= 0
+                and match.start() >= first_close + len(closer)
+            ):
+                return None
+            parsed.append((name, trim_wrapping_newlines(value)))
+        return parsed
+
+    openers = list(re.finditer(opener, block, re.DOTALL))
+    out = []
+    for index, match in enumerate(openers):
+        start = match.end()
+        boundaries = [block.find(closer, start)]
+        if index + 1 < len(openers):
+            boundaries.append(openers[index + 1].start())
+        end = min([pos for pos in boundaries if pos >= 0], default=len(block))
+        out.append((match.group(1).strip(), trim_wrapping_newlines(block[start:end])))
     return out

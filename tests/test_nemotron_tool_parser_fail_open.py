@@ -1,3 +1,6 @@
+# XML boundary expectations follow SGLang qwen3_coder_detector.py:
+# https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/function_call/qwen3_coder_detector.py
+# Function closes also terminate JSON bodies carried inside XML envelopes.
 # SPDX-License-Identifier: Apache-2.0
 """Fail-open regression tests for :class:`NemotronToolParser`.
 
@@ -466,8 +469,12 @@ def test_buffered_payload_closers_and_post_call_prose_are_distinct(closer, json_
     result = NemotronToolParser().extract_tool_calls(
         prefix + " " + tail, request=_DECLARED_WEATHER
     )
-    assert json.loads(_only_call(result)["arguments"]) == {"city": value}
-    assert result.content == tail
+    arguments = _only_call(result)["arguments"]
+    if json_body:
+        assert arguments == '{"city": "literal </parameter>'
+    else:
+        assert json.loads(arguments) == {"city": "literal "}
+    assert result.content.endswith(tail)
 
 
 def test_trailing_narration_does_not_rescan_accounted_prefix(parser, monkeypatch):
@@ -691,9 +698,7 @@ def test_completed_call_does_not_clear_later_unmatched_opener(parser, opener):
         "literal </function> then </tool_call> then </function> inside",
     ],
 )
-def test_wrapped_payload_literal_closers_main_parity(mode, body_format, value):
-    # These complete payloads preserve their literal bytes on origin/main,
-    # both buffered and when the payload/function and wrapper close separately.
+def test_wrapped_payload_uses_first_function_closer(mode, body_format, value):
     body = {
         "raw": value,
         "parameters": f"<parameter=city>{value}</parameter>",
@@ -703,10 +708,9 @@ def test_wrapped_payload_literal_closers_main_parity(mode, body_format, value):
     text = function + "</tool_call>"
     parser = NemotronToolParser()
     if mode == "buffered":
-        result = parser.extract_tool_calls(text, request=_DECLARED_WEATHER)
-        call = _only_call(result)
-        arguments = call["arguments"]
-        assert not result.content
+        arguments = _only_call(
+            parser.extract_tool_calls(text, request=_DECLARED_WEATHER)
+        )["arguments"]
     else:
         chunks = [text] if mode == "streamed" else [function, "</tool_call>"]
         deltas = _stream(parser, chunks, request=_DECLARED_WEATHER)
@@ -714,12 +718,13 @@ def test_wrapped_payload_literal_closers_main_parity(mode, body_format, value):
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "get_weather"
         arguments = calls[0]["function"]["arguments"]
-        assert not "".join(delta.get("content", "") for delta in deltas if delta)
-        assert not parser.flush_held_content(text)
-    if body_format == "raw":
-        assert arguments == value
+    # The first </function> bounds the entire body, even inside JSON quotes.
+    bounded = body.split("</function>", 1)[0]
+    if body_format == "parameters":
+        expected = value.split("</function>", 1)[0]
+        assert json.loads(arguments) == {"city": expected}
     else:
-        assert json.loads(arguments) == {"city": value}
+        assert arguments == bounded.strip()
 
 
 @pytest.mark.parametrize("size", [4096, 8192])
@@ -788,28 +793,13 @@ _AMBIGUOUS_WRAPPED = (
 
 
 @pytest.mark.parametrize("split", range(len(_AMBIGUOUS_WRAPPED) + 1))
-def test_wrapped_continuation_never_leaks_more_than_main(split):
+def test_wrapped_continuation_uses_first_parameter_close_for_every_split(split):
+    # The duplicate closers after the first boundary cannot change arguments.
     buffered = NemotronToolParser().extract_tool_calls(_AMBIGUOUS_WRAPPED)
-    expected = {"a": _AMBIGUOUS_VALUE}
+    expected = {"a": "literal "}
     assert json.loads(_only_call(buffered)["arguments"]) == expected
-    assert not buffered.content
-    calls, content = _capture_stream(
-        [_AMBIGUOUS_WRAPPED[:split], _AMBIGUOUS_WRAPPED[split:]]
-    )
-    # Documented origin/main result: only splits 68..99 disagree (32/124).
-    # Those splits emit the first call too soon; its arguments cannot retract.
-    # Visible content may improve on main, but must never extend its leakage.
-    if 68 <= split <= 99:
-        assert calls in ([expected], [{"a": "literal "}])
-        baseline_content = ""
-        if 82 <= split <= 88 or 91 <= split <= 99:
-            baseline_content = _AMBIGUOUS_WRAPPED[81:split]
-        elif split in (89, 90):
-            baseline_content = " inside"
-        assert baseline_content.startswith(content)
-    else:
-        assert calls == [expected]
-        assert content == ""
+    calls, _ = _capture_stream([_AMBIGUOUS_WRAPPED[:split], _AMBIGUOUS_WRAPPED[split:]])
+    assert calls == [expected]
 
 
 @pytest.mark.parametrize("whitespace", ["", "  ", "\n\t"])
@@ -819,10 +809,9 @@ def test_wrapped_post_call_pair_in_prose_is_payload(whitespace, delivery):
     text = _COMPLETED_WRAPPER + tail
     buffered = NemotronToolParser().extract_tool_calls(text)
     assert json.loads(_only_call(buffered)["arguments"]) == {"city": "Paris"}
-    assert buffered.content == "literally"
-    # Accepted ambiguity: the LAST pair consumes even prose before that pair.
-    # Streaming cannot recover prose already sent, but withholds all held bytes
-    # through the pair. Splitting inside the pair must never leak its markup.
+    assert buffered.content == "Use </function>" + whitespace + "</tool_call> literally"
+    # A later close pair does not extend the already completed call. Existing
+    # streaming content cleanup may consume a separately delivered pair.
     deliveries = (
         [[text]]
         if delivery == "whole"
@@ -833,11 +822,11 @@ def test_wrapped_post_call_pair_in_prose_is_payload(whitespace, delivery):
     for chunks in deliveries:
         calls, content = _capture_stream(chunks)
         assert calls == [{"city": "Paris"}]
-        assert content in (" literally", " Use  literally") or (
+        assert content in (tail, " literally", " Use  literally") or (
             content.endswith(" literally")
             and " Use ".startswith(content[: -len(" literally")])
         )
-        assert "<" not in content and ">" not in content
+        assert content == tail or ("<" not in content and ">" not in content)
 
 
 @pytest.mark.parametrize(
@@ -872,8 +861,8 @@ def test_wrapped_held_tail_consumed_through_last_pair_before_next_opener(
     suffix = _COMPLETED_WRAPPER + " Explain </function> literally." if next_call else ""
     calls, content = _capture_stream([_COMPLETED_WRAPPER, tail + suffix])
     assert calls == [{"city": "Paris"}] * (2 if next_call else 1)
-    assert content == " visible" + (
-        " Explain </function> literally." if next_call else ""
+    assert content == (
+        tail + " Explain </function> literally." if next_call else " visible"
     )
 
 

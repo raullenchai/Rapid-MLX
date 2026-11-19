@@ -116,14 +116,14 @@ class StructuredReplayEngine(ReplayEngine):
         )
 
 
-def client_for(engine):
+def client_for(engine, parser_name="qwen3_coder_xml"):
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.no_thinking = True
     cfg.enable_auto_tool_choice = True
-    cfg.tool_call_parser = "qwen3_coder_xml"
+    cfg.tool_call_parser = parser_name
     app = FastAPI()
     for router in (chat_router, responses_router, anthropic_router):
         app.include_router(router)
@@ -174,7 +174,10 @@ def test_chat_stream_preserves_engine_length(choice, separate_finish, finish, co
     if complete:
         assert json.loads(arguments) == {"city": "Paris"}
     else:
-        assert arguments == "{"
+        # Upstream function/parameter regexes accept EOF, including an empty
+        # value. Token exhaustion still preserves the engine's length finish.
+        # SGLang python/sglang/srt/function_call/qwen3_coder_detector.py.
+        assert json.loads(arguments) == {"city": ""}
     assert [
         choice["finish_reason"] for choice in choices if choice.get("finish_reason")
     ] == ["length" if finish == "length" else "tool_calls"]
@@ -621,3 +624,79 @@ def test_stream_tool_markup_matches_buffered_request_capability(
     parsing_enabled = declared and tools_mode == "auto"
     expected = "answer" if chunks == "structured" else ("" if parsing_enabled else raw)
     assert streamed == buffered == expected
+
+
+@pytest.mark.parametrize("parser_name", ["hermes", "nemotron", "qwen3_coder_xml"])
+@pytest.mark.parametrize("undeclared", [False, True])
+@pytest.mark.parametrize("finish", ["stop", "length"])
+def test_streaming_xml_wrapper_close_preserves_call_boundary_and_finish_reason(
+    parser_name, undeclared, finish
+):
+    chunks = [
+        "<tool_call><function=get_weather><parameter=city>"
+        + ("x" if undeclared else "before ")
+        + "</tool_call>",
+        ("</parameter><parameter=undeclared>y" if undeclared else "\n after")
+        + "</parameter></function></tool_call>",
+    ]
+    client = client_for(ReplayEngine(chunks, finish), parser_name)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "stream": True,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        },
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    calls = [
+        call for choice in choices for call in choice["delta"].get("tool_calls", [])
+    ]
+    arguments = "".join(call["function"].get("arguments", "") for call in calls)
+    if undeclared:
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(arguments)
+    else:
+        assert json.loads(arguments) == {"city": "before </tool_call>\n after"}
+    assert [c["finish_reason"] for c in choices if c.get("finish_reason")] == [
+        "length"
+        if finish == "length"
+        else (
+            "stop" if undeclared and parser_name != "qwen3_coder_xml" else "tool_calls"
+        )
+    ]
+
+
+@pytest.mark.parametrize("parser_name", ["hermes", "nemotron", "qwen3_coder_xml"])
+@pytest.mark.parametrize("finish", ["stop", "length"])
+def test_streaming_xml_eof_recovery_preserves_finish_reason(parser_name, finish):
+    chunks = ["<tool_call><function=get_weather><parameter=city>Paris"]
+    client = client_for(ReplayEngine(chunks, finish), parser_name)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "stream": True,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+        },
+    )
+    assert response.status_code == 200, response.text
+    choices = [
+        choice for event in sse(response.text) for choice in event.get("choices", [])
+    ]
+    calls = [
+        call for choice in choices for call in choice["delta"].get("tool_calls", [])
+    ]
+    assert json.loads(
+        "".join(call["function"].get("arguments", "") for call in calls)
+    ) == {"city": "Paris"}
+    assert [c["finish_reason"] for c in choices if c.get("finish_reason")] == [
+        "length" if finish == "length" else "tool_calls"
+    ]

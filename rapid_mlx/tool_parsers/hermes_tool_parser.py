@@ -43,8 +43,8 @@ def _parse_function_body(
     formats coexist for the inner body (issue #448 BUG-2):
 
     * **Nemotron XML** — body holds ``<parameter=p>v</parameter>`` tags.
-      Iterate via ``PARAM_PATTERN`` and decode each value through
-      ``_parse_param_value``.
+      Split using the shared upstream boundary scanner and decode each
+      value through ``_parse_param_value``.
     * **Qwen3-Coder JSON** — body holds a JSON object
       ``{"key": "value", ...}`` directly. Try ``json.loads`` first;
       fall through to the XML path on failure.
@@ -64,11 +64,7 @@ def _parse_function_body(
             pass
 
     arguments: dict[str, Any] = {}
-    # Positional split rather than ``PARAM_PATTERN.findall``: the compiled
-    # pattern is non-greedy, so it ended a value at the first literal
-    # ``</parameter>`` the value happened to contain and silently dropped
-    # the rest (jundot/omlx#2507). Shared with the other implementations of
-    # this wire format — see ``rapid_mlx/tool_call_scan``.
+    # Shared upstream XML boundaries, plus the undeclared sibling guard.
     params = split_marked_parameters(
         body,
         r"<parameter=([^>]+)>",
@@ -156,18 +152,10 @@ class HermesToolParser(ToolParser):
     TOOL_CALL_LENIENT_PATTERN = re.compile(
         r'<tool_call[^{]*(\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\})', re.DOTALL
     )
-    # Nemotron XML: <tool_call><function=name><parameter=p>v</parameter></function></tool_call>
-    NEMOTRON_PATTERN = re.compile(
-        r"<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>", re.DOTALL
-    )
-    # Recovery boundary for a canonical wrapper whose inner XML was cut off.
-    # This deliberately captures ONLY a closed <tool_call> wrapper with an
-    # explicit function header. It does not repair the body into executable
-    # JSON: callers must receive a normal tool call whose arguments fail their
-    # schema/JSON boundary, then return that parse error to the model for a
-    # correction round.
-    MALFORMED_NEMOTRON_PATTERN = re.compile(
-        r"<tool_call>\s*<function=([^>]+)>(.*?)</tool_call>", re.DOTALL
+    # SGLang qwen3_coder_detector.py's function rule. Find the name only
+    # after bounding the call, so a closer's angle bracket cannot end a name.
+    FUNCTION_EQ_PATTERN = re.compile(
+        r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
     )
     MALFORMED_JSON_INTENT_PATTERN = re.compile(
         r'^\{\s*"name"\s*:\s*"([A-Za-z0-9_.:-]+)"\s*,\s*"arguments"\s*:'
@@ -181,8 +169,6 @@ class HermesToolParser(ToolParser):
     RAW_JSON_TOOL_PATTERN = re.compile(
         r'\{"name":\s*"([^"]+)",\s*"arguments":\s*(\{[^}]*\})\}', re.DOTALL
     )
-    # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
-    BARE_FUNCTION_PATTERN = re.compile(r"<function=([^>]+)>(.*?)</function>", re.DOTALL)
     # VibeThinker XML-named shape (F-042 redo): the model emits the call as
     # ``<function><name>NAME</name><arguments>JSON</arguments></function>``
     # under ``tool_choice="auto"`` despite the chat template specifying
@@ -346,36 +332,16 @@ class HermesToolParser(ToolParser):
                             else str(arguments),
                         )
             # Shape #2: <tool_call><function=NAME>...</function></tool_call>
-            m = cls.NEMOTRON_PATTERN.match(text, pos)
-            if m is not None:
-                name = m.group(1).strip()
-                args = _parse_function_body(
-                    m.group(2), declared_parameter_names(name, request)
-                )
-                if args is None:
-                    return None
-                return (m.end(), name, json.dumps(args, ensure_ascii=False))
-            # A closed outer wrapper is enough to identify the protocol
-            # boundary, but never enough to authorize execution when the
-            # inner function/parameter XML is incomplete. Surface the call
-            # only when the request actually advertised that exact name and
-            # preserve the malformed body as deliberately non-JSON arguments.
-            # The executor then follows its ordinary fail-closed path and the
-            # tool error is fed back to the model for self-correction.
-            request_tools = _field(request, "tools", []) or []
-            declared_names = {
-                _field(_field(tool, "function"), "name") for tool in request_tools
-            }
-            malformed = cls.MALFORMED_NEMOTRON_PATTERN.match(text, pos)
-            if malformed is not None and "</function>" not in malformed.group(0):
-                name = malformed.group(1).strip()
-                if name and name in declared_names:
-                    raw_body = malformed.group(2).strip()
-                    arguments = f"<malformed_function_body>{raw_body}"
-                    return (malformed.end(), name, arguments)
+            consumed = cls._consume_function_eq(text, body_start, request, wrapped=True)
+            if consumed is not None:
+                return consumed
             # Same contract for the canonical JSON-body envelope: an outer
             # close plus an advertised name and an arguments key establishes
             # intent, but invalid JSON must remain invalid for the executor.
+            declared_names = {
+                _field(_field(tool, "function"), "name")
+                for tool in (_field(request, "tools", []) or [])
+            }
             wrapper_end = text.find("</tool_call>", pos)
             if wrapper_end >= 0:
                 # A delimiter-looking substring inside an unfinished JSON
@@ -402,17 +368,7 @@ class HermesToolParser(ToolParser):
                     )
             return None
         if shape == "function_eq":
-            # Shape #3: <function=NAME>...</function>
-            m = cls.BARE_FUNCTION_PATTERN.match(text, pos)
-            if m is not None:
-                name = m.group(1).strip()
-                args = _parse_function_body(
-                    m.group(2), declared_parameter_names(name, request)
-                )
-                if args is None:
-                    return None
-                return (m.end(), name, json.dumps(args, ensure_ascii=False))
-            return None
+            return cls._consume_function_eq(text, pos, request)
         if shape == "function_open":
             # Shape #4: <function><name>NAME</name><arguments>JSON</arguments></function>
             m = cls.FUNCTION_XML_NAMED_PATTERN.match(text, pos)
@@ -431,6 +387,57 @@ class HermesToolParser(ToolParser):
                 return (m.end(), name, json.dumps(args, ensure_ascii=False))
             return None
         return None
+
+    @classmethod
+    def _consume_function_eq(
+        cls,
+        text: str,
+        pos: int,
+        request: dict[str, Any] | None,
+        *,
+        wrapped: bool = False,
+    ) -> tuple[int, str, str] | None:
+        match = cls.FUNCTION_EQ_PATTERN.match(text, pos)
+        if match is None:
+            return None
+        body = match.group(1) if match.group(1) is not None else match.group(2)
+        end = match.end()
+        if wrapped and match.group(1) is None:
+            # Upstream bounds the outer envelope before EOF recovery.
+            wrapper_close = text.find("</tool_call>", pos)
+            if wrapper_close >= 0:
+                body = text[pos + len("<function=") : wrapper_close]
+                end = wrapper_close + len("</tool_call>")
+        name, separator, parameters = body.partition(">")
+        if not separator:
+            return None
+        if wrapped:
+            outer = re.match(r"\s*</tool_call>", text[end:])
+            if outer:
+                end += outer.end()
+        arguments = _parse_function_body(
+            parameters, declared_parameter_names(name, request)
+        )
+        if arguments is None:
+            return None
+        if not arguments and parameters.strip() and "<parameter=" not in parameters:
+            try:
+                json_body = json.loads(parameters)
+            except json.JSONDecodeError:
+                json_body = None
+            if isinstance(json_body, dict):
+                return end, name, json.dumps(json_body, ensure_ascii=False)
+            # EOF recovery must not turn arbitrary prose (including a seeded
+            # forced-choice prefix) into executable empty arguments. A
+            # wrapper with a declared name still gets executor feedback.
+            declared = {
+                _field(_field(tool, "function"), "name")
+                for tool in (_field(request, "tools", []) or [])
+            }
+            if wrapped and name in declared:
+                return end, name, f"<malformed_function_body>{parameters.strip()}"
+            return None
+        return end, name, json.dumps(arguments, ensure_ascii=False)
 
     _GRAMMAR_SENTINELS = ("<tool_call>", "</tool_call>")
 
@@ -835,21 +842,19 @@ class HermesToolParser(ToolParser):
         )
 
         if has_any_opener:
-            # A raw XML parameter may contain a literal outer close tag.
-            # Wait for the function close followed by the real wrapper close
-            # before treating a wrapped XML call as complete. Malformed
-            # wrappers remain recoverable by the end-of-stream parser.
-            wrapper = current_text.rfind("<tool_call>")
+            # EOF is a valid buffered boundary, but a streaming XML body
+            # remains provisional until its function closes.
             completed, _ = self._scan_tool_call_shapes(current_text, request)
-            if wrapper >= 0 and not any(
-                start < wrapper < end for start, end, _, _ in completed
+            if any(
+                re.match(r"(?:<tool_call>\s*)?<function=", current_text[start:end])
+                and "</function>" not in current_text[start:end]
+                and not (
+                    arguments.startswith("<malformed_function_body>")
+                    and current_text.endswith("</tool_call>", 0, end)
+                )
+                for start, end, _, arguments in completed
             ):
-                body = current_text[wrapper + len("<tool_call>") :].lstrip()
-                if body.startswith("<function="):
-                    function_end = current_text.find("</function>", wrapper)
-                    parameter_end = current_text.rfind("</parameter>", wrapper)
-                    if function_end >= 0 and parameter_end > function_end:
-                        return None
+                return None
             if self._has_incomplete_structured_block(current_text, request):
                 # Inside an incomplete structured block — suppress output.
                 return None

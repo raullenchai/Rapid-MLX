@@ -268,18 +268,13 @@ def test_function_prefix_in_parameter_value_not_counted_as_tool_boundary():
     )
 
 
-def test_function_end_in_parameter_value_not_counted_as_tool_close():
-    """Unit test on ``_top_level_function_close_count``: a
-    ``</function>`` substring inside a parameter value MUST NOT count
-    as a structural tool close.
-
-    Same codex concern as above, applied to the ``</function>`` counter
-    that drives ``current_tool_index`` advancement.
-    """
+def test_first_function_end_in_parameter_value_closes_call():
+    """SGLang qwen3_coder_detector.py: the first </function> closes a call."""
     parser = Qwen3CoderToolParser(tokenizer=None)
 
     text = "<function=echo><parameter=code>foo</function>bar</parameter></function>"
     starts = parser._function_start_positions(text)
+    assert parser._top_level_function_close(text, 0) == text.index("</function>")
     close_count = parser._top_level_function_close_count(text, starts)
     assert close_count == 1, (
         f"top-level ``</function>`` scanner miscounted: expected 1, "
