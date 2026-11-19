@@ -83,12 +83,16 @@ class ModelProfile:
 
 def model_profile(config: Mapping) -> ModelProfile:
     text = config.get("text_config") or config.get("language_config") or config
+    if not isinstance(text, Mapping):
+        text = config
     quant = (
         config.get("quantization")
         or text.get("quantization")
         or config.get("quantization_config")
         or {}
     )
+    if not isinstance(quant, Mapping):
+        quant = {}
     family = text.get("model_type", "unknown")
     family = (
         family
@@ -99,12 +103,17 @@ def model_profile(config: Mapping) -> ModelProfile:
     def integer(mapping, *keys):
         return next((mapping[k] for k in keys if type(mapping.get(k)) is int), None)
 
+    # Legacy model args may expose layer_types=None alongside full_attn_idxs.
+    layers = text.get("layer_types")
+    if not isinstance(layers, (list, tuple)):
+        layers = ()
     kinds = tuple(
         sorted(
             {
                 k
-                for k in text.get("layer_types", ())
-                if k
+                for k in layers
+                if isinstance(k, str)
+                and k
                 in {
                     "full_attention",
                     "linear_attention",
@@ -124,7 +133,9 @@ def model_profile(config: Mapping) -> ModelProfile:
         integer(quant, "bits"),
         integer(quant, "group_size"),
         kinds,
-        mode if mode in {"affine", "mxfp4", "mxfp8"} else "unknown",
+        mode
+        if isinstance(mode, str) and mode in {"affine", "mxfp4", "mxfp8"}
+        else "unknown",
     )
 
 
