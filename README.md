@@ -725,6 +725,16 @@ For the complete feature set — chat, embeddings, audio, and System One on top 
 
 ---
 
+## Build on Rapid-MLX
+
+Building a launcher, model picker, or monitoring tool? See [Build on Rapid-MLX](docs/guides/build-on-rapid-mlx.md)
+for stable service commands, model loading and eviction, health, status, and metrics examples.
+After preparing a dedicated service account and its model cache, start a background server:
+
+```bash
+sudo rapid-mlx service install --service-user serveuser --model qwen3.5-4b-4bit
+```
+
 ## Command Reference
 
 ```bash
