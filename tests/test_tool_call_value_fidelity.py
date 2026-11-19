@@ -826,6 +826,13 @@ def test_duplicate_parameter_closers_preserve_raw_marker(marker):
     assert _strip_duplicate_parameter_closers(value) == value
 
 
+def test_duplicate_parameter_closers_preserve_invalid_quoted_marker():
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    value = '"a" <parameter "b"' + "</parameter></parameter>"
+    assert _strip_duplicate_parameter_closers(value) == value
+
+
 @pytest.mark.parametrize(
     "value,expected",
     [

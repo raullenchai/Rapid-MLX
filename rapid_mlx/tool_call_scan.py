@@ -272,10 +272,9 @@ def _strip_duplicate_parameter_closers(value: str) -> str:
         if not (stripped.startswith('"') and stripped.endswith('"')):
             return value
         try:
-            quoted = isinstance(json.loads(stripped), str)
+            # A valid JSON value wrapped in quotes is a JSON string.
+            json.loads(stripped)
         except (ValueError, RecursionError, MemoryError):
-            quoted = False
-        if not quoted:
             return value
     return head
 
