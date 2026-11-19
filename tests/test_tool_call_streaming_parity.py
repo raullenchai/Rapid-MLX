@@ -29,11 +29,13 @@ categorization, catch the asymmetry class structurally rather than by hope.
 from __future__ import annotations
 
 import json
+import random
 from unittest.mock import MagicMock
 
 import pytest
 
 from rapid_mlx.api.tool_calling import parse_tool_calls
+from rapid_mlx.api.utils import strip_special_tokens
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
 from rapid_mlx.tool_parsers import ToolParserManager
 
@@ -415,8 +417,38 @@ def test_tool_parser_parity_coverage():
     )
 
 
+class _StreamedCallsError(AssertionError):
+    """Complete calls were not fully emitted before EOS recovery."""
+
+
+class _ContentParityError(AssertionError):
+    """Distinguish content mismatches from tool-call assertion failures."""
+
+
+_QWEN_CONTENT_XFAIL = pytest.mark.xfail(
+    strict=True,
+    raises=_ContentParityError,
+    reason="pre-existing Qwen3-coder streaming content framing mismatch, tracked as follow-up",
+)
+
+
+def _mark_qwen_content_mismatch(request, parity, affected=True):
+    if parity == "content" and affected:
+        request.node.add_marker(_QWEN_CONTENT_XFAIL)
+
+
 def _stream_xml_deltas(
-    parser_name, text, chunks, request, *, raw_arguments=False, allow_eos_recovery=False
+    parser_name,
+    text,
+    chunks,
+    request,
+    *,
+    raw_arguments=False,
+    allow_eos_recovery=False,
+    check_content=False,
+    require_streamed_calls=True,
+    expected_content=None,
+    expected_streamed_calls=None,
 ):
     parser = ToolParserManager.get_tool_parser(parser_name)(None)
     accumulated = ""
@@ -433,30 +465,65 @@ def _stream_xml_deltas(
                 if name:
                     assert f"<function={name}>" in accumulated
             deltas.append(delta)
+    if expected_streamed_calls is not None:
+        # Check before either parser or postprocessor EOS recovery can supply
+        # missing calls (or complete a partially streamed argument payload).
+        try:
+            streamed = _merge_xml_deltas(deltas, raw_arguments=raw_arguments)
+        except (AssertionError, ValueError, KeyError) as exc:
+            raise _StreamedCallsError("incomplete calls before finalize") from exc
+        if streamed != expected_streamed_calls:
+            raise _StreamedCallsError(
+                f"calls before finalize: {streamed!r} != {expected_streamed_calls!r}"
+            )
     finalize = getattr(parser, "finalize_legacy_raw_stream", None)
     if finalize:
         delta = finalize(text, request=request)
         if delta:
             deltas.append(delta)
-    if allow_eos_recovery and (
-        parser_name == "qwen3_coder_xml"
-        and len(chunks) == 2
-        and chunks[0] in ["<tool_call>"[:i] for i in range(2, 11)]
-    ):
-        # A single call finishing a split wrapper returns its prefix as content
-        # and needs endpoint EOS recovery. Restrict this opt-in to those exact
-        # boundaries; every other chunking must emit streaming tool deltas.
-        assert not any(delta.get("tool_calls") for delta in deltas), chunks
-        pp = StreamingPostProcessor(
-            _make_cfg_for_parser(parser_name), tools_requested=True
+    pp = StreamingPostProcessor(_make_cfg_for_parser(parser_name), request=request)
+    pp.tool_parser = parser
+    pp.tool_accumulated_text = text
+    content = []
+    for delta in deltas:
+        # Mirror the endpoint's content pipeline, including mixed tool/content
+        # deltas. Keep the sanitizer alive through finalize to drain held bytes.
+        content.append(
+            pp._sanitize_content(strip_special_tokens(delta.get("content") or ""))
         )
-        pp.tool_parser = parser
-        pp.request = request
-        pp.tool_accumulated_text = text
-        for event in pp.finalize():
-            if event.type == "tool_call":
-                deltas.append({"tool_calls": event.tool_calls})
-    assert any(delta.get("tool_calls") for delta in deltas), chunks
+        if delta.get("tool_calls"):
+            pp.tool_calls_detected = True
+            pp._preserve_post_tool_content = bool(
+                delta.get("preserve_post_tool_content")
+            )
+    if require_streamed_calls and not any(delta.get("tool_calls") for delta in deltas):
+        assert allow_eos_recovery and (
+            parser_name == "qwen3_coder_xml"
+            and len(chunks) == 2
+            and chunks[0] in ["<tool_call>"[:i] for i in range(2, 11)]
+        ), chunks
+        # Restrict endpoint EOS recovery to the explicitly allowed split
+        # wrapper boundaries; every other chunking must emit streaming calls.
+    for event in pp.finalize():
+        if event.type in ("content", "finish"):
+            content.append(event.content or "")
+        if event.type == "tool_call":
+            deltas.append({"tool_calls": event.tool_calls})
+    result = ToolParserManager.get_tool_parser(parser_name)(None).extract_tool_calls(
+        text, request=request
+    )
+    if expected_content is not None:
+        assert "".join(content) == expected_content
+    if check_content and "".join(content) != (result.content or ""):
+        raise _ContentParityError(
+            f"content parity: {chunks!r}: {''.join(content)!r} != {result.content!r}"
+        )
+    if require_streamed_calls:
+        assert any(delta.get("tool_calls") for delta in deltas), chunks
+    return _merge_xml_deltas(deltas, raw_arguments=raw_arguments)
+
+
+def _merge_xml_deltas(deltas, *, raw_arguments=False):
     calls = {}
     name_emissions = []
     for delta in deltas:
@@ -511,10 +578,14 @@ def _xml_request(names):
 @pytest.mark.parametrize(
     "last_name", ["read", "read|", "read_async", 'read"', "view </parameter"]
 )
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
 def test_parallel_names_are_complete_wire_names_at_every_split(
-    parser_name, last_name, quoted, wrapped
+    parser_name, last_name, quoted, wrapped, parity, request
 ):
     """Repeated names never share deltas, even with malformed model headers."""
+    _mark_qwen_content_mismatch(
+        request, parity, parser_name == "qwen3_coder_xml" and wrapped
+    )
     from rapid_mlx.api.tool_logits import create_tool_logits_processor
 
     request = _xml_request(("write", "read", "view"))
@@ -542,14 +613,23 @@ def test_parallel_names_are_complete_wire_names_at_every_split(
         (tc["name"], json.loads(tc["arguments"])) for tc in result.tool_calls
     ] == expected
     for chunks in _every_split(text):
-        assert _stream_xml_deltas(parser_name, text, chunks, request) == expected
+        assert (
+            _stream_xml_deltas(
+                parser_name, text, chunks, request, check_content=parity == "content"
+            )
+            == expected
+        )
 
 
 @pytest.mark.parametrize("parser_name", ["hermes", "qwen3_coder_xml"])
 @pytest.mark.parametrize("tail", ["", "\n</parameter>", "\n</parameter>\n</parameter>"])
 @pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
-def test_duplicate_parameter_closers_streaming_parity(parser_name, tail, sibling):
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
+def test_duplicate_parameter_closers_streaming_parity(
+    parser_name, tail, sibling, parity, request
+):
     """A duplicate closer is markup, never file content (#5830)."""
+    _mark_qwen_content_mismatch(request, parity, parser_name == "qwen3_coder_xml")
     text = (
         "<tool_call><function=edit>"
         "<parameter=new_string>\nhi-second\n</parameter>"
@@ -567,7 +647,12 @@ def test_duplicate_parameter_closers_streaming_parity(parser_name, tail, sibling
     for chunks in _every_split(text):
         assert (
             _stream_xml_deltas(
-                parser_name, text, chunks, request, allow_eos_recovery=True
+                parser_name,
+                text,
+                chunks,
+                request,
+                allow_eos_recovery=True,
+                check_content=parity == "content",
             )
             == expected
         )
@@ -591,9 +676,11 @@ def test_duplicate_parameter_closers_streaming_parity(parser_name, tail, sibling
     ids=["balanced-literal", "duplicate-closers", "literal-and-duplicate"],
 )
 @pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
 def test_balanced_literal_parameter_markup_at_every_byte_split(
-    parser_name, value, expected_value, sibling
+    parser_name, value, expected_value, sibling, parity, request
 ):
+    _mark_qwen_content_mismatch(request, parity, parser_name == "qwen3_coder_xml")
     text = (
         "<tool_call><function=edit>"
         f"<parameter=new_string>{value}</parameter>{sibling}"
@@ -614,7 +701,12 @@ def test_balanced_literal_parameter_markup_at_every_byte_split(
     for chunks in _every_split(text):
         assert (
             _stream_xml_deltas(
-                parser_name, text, chunks, request, allow_eos_recovery=True
+                parser_name,
+                text,
+                chunks,
+                request,
+                allow_eos_recovery=True,
+                check_content=parity == "content",
             )
             == expected
         ), chunks
@@ -625,9 +717,21 @@ def test_balanced_literal_parameter_markup_at_every_byte_split(
 @pytest.mark.parametrize("quoted", [True, False])
 @pytest.mark.parametrize("wrapped", [True, False])
 @pytest.mark.parametrize("prefix", ["", "Working.\n"])
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
 def test_three_parallel_calls_keep_arguments_at_every_byte_split(
-    parser_name, names, quoted, wrapped, prefix
+    parser_name, names, quoted, wrapped, prefix, parity, request
 ):
+    _mark_qwen_content_mismatch(
+        request, parity, parser_name == "qwen3_coder_xml" and wrapped
+    )
+    if parser_name == "hermes" and prefix and parity == "content":
+        request.node.add_marker(
+            pytest.mark.xfail(
+                strict=True,
+                raises=_ContentParityError,
+                reason="pre-existing Hermes streaming prefix/whitespace mismatch, tracked as follow-up",
+            )
+        )
     request = _xml_request(set(names))
     text = ""
     for index, name in enumerate(names):
@@ -664,7 +768,14 @@ def test_three_parallel_calls_keep_arguments_at_every_byte_split(
         ]
     for chunks in splits:
         assert (
-            _stream_xml_deltas(parser_name, text, chunks, request, raw_arguments=True)
+            _stream_xml_deltas(
+                parser_name,
+                text,
+                chunks,
+                request,
+                raw_arguments=True,
+                check_content=parity == "content",
+            )
             == expected
         ), chunks
 
@@ -810,6 +921,89 @@ def test_complete_body_short_batch_keeps_last_emitted_index(monkeypatch, fresh_c
         assert not (delta or {}).get("tool_calls")
 
 
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
+def test_qwen3coder_adjacent_wrappers_keep_content_parity_at_every_boundary_split(
+    parity,
+    request,
+):
+    """Round 10: closing framing and the next opener share split deltas."""
+    _mark_qwen_content_mismatch(request, parity)
+    request = _xml_request(("read",))
+    first = '<tool_call><function=read><parameter=path>"a"</parameter></function>'
+    boundary = "</tool_call><tool_call>"
+    second = '<function=read><parameter=path>"b"</parameter></function></tool_call>'
+    text = first + boundary + second
+    expected = [("read", {"path": "a"}), ("read", {"path": "b"})]
+    result = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(text, request=request)
+    assert not result.content
+    assert [
+        (call["name"], json.loads(call["arguments"])) for call in result.tool_calls
+    ] == expected
+
+    # Exact reproduction: the middle chunk closes one wrapper and starts the
+    # next, leaving '<to' pending until the final chunk supplies 'ol_call>'.
+    splits = [[first + "</tool_ca", "ll><to", "ol_call>" + second]]
+    splits.extend(
+        [first + boundary[:left], boundary[left:right], boundary[right:] + second]
+        for left in range(len(boundary) + 1)
+        for right in range(left + 1, len(boundary) + 1)
+    )
+    for chunks in splits:
+        assert (
+            _stream_xml_deltas(
+                "qwen3_coder_xml",
+                text,
+                chunks,
+                request,
+                check_content=parity == "content",
+            )
+            == expected
+        ), chunks
+
+
+@pytest.mark.parametrize("prefix", ["", "The tag </tool_call> precedes it. "])
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
+def test_qwen3coder_stray_wrapper_closer_is_content_at_every_prose_split(
+    prefix, parity
+):
+    """Round 11: a split literal closer after an admitted call stays visible."""
+    request = _xml_request(("read",))
+    call = (
+        '<tool_call><function=read><parameter=path>"a"</parameter>'
+        "</function></tool_call>"
+    )
+    prose = "The tag </tool_call> closes it."
+    text = prefix + call + prose
+    result = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(text, request=request)
+    expected = [("read", {"path": "a"})]
+    assert result.content == prefix + prose
+    assert [
+        (tc["name"], json.loads(tc["arguments"])) for tc in result.tool_calls
+    ] == expected
+
+    # Keep the call fully closed before the literal closer arrives, including
+    # when a chunk boundary falls anywhere within that literal tag.
+    before_prose = [prefix, call] if prefix else [call]
+    chunks = [[*before_prose, prose]] + [
+        [*before_prose, prose[:split], prose[split:]] for split in range(len(prose) + 1)
+    ]
+    for parts in chunks:
+        assert (
+            _stream_xml_deltas(
+                "qwen3_coder_xml",
+                text,
+                parts,
+                request,
+                check_content=parity == "content",
+            )
+            == expected
+        ), parts
+
+
 def test_xml_stream_helper_requires_streamed_calls(monkeypatch):
     """A silent streaming parser cannot pass parity via complete extraction."""
     parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
@@ -826,3 +1020,544 @@ def test_xml_stream_helper_requires_streamed_calls(monkeypatch):
                 _xml_request(("read",)),
                 allow_eos_recovery=allow_eos_recovery,
             )
+
+
+@pytest.mark.parametrize("source", ["parser", "finalizer"])
+@pytest.mark.parametrize("leak", ["duplicated prose", "<tool_call>", "</tool_call>"])
+def test_xml_stream_helper_rejects_content_leaks(monkeypatch, source, leak):
+    """Valid tool deltas cannot hide leaked prose or XML framing."""
+    from rapid_mlx.domain.events import StreamEvent
+
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    text = '<tool_call><function=read><parameter=path>"a"</parameter></function></tool_call>'
+    if source == "parser":
+        extract = parser_cls.extract_tool_calls_streaming
+
+        def extract_with_leak(self, *args, **kwargs):
+            delta = extract(self, *args, **kwargs)
+            return {**delta, "content": (delta.get("content") or "") + leak}
+
+        monkeypatch.setattr(
+            parser_cls, "extract_tool_calls_streaming", extract_with_leak
+        )
+    else:
+        finalize = StreamingPostProcessor.finalize
+
+        def finalize_with_leak(self):
+            return finalize(self) + [StreamEvent(type="content", content=leak)]
+
+        monkeypatch.setattr(StreamingPostProcessor, "finalize", finalize_with_leak)
+    with pytest.raises(AssertionError, match="content parity"):
+        _stream_xml_deltas(
+            "qwen3_coder_xml", text, [text], _xml_request(("read",)), check_content=True
+        )
+
+
+@pytest.mark.parametrize("split", range(2, 11))
+def test_xml_stream_helper_checks_eos_recovery_content(monkeypatch, split):
+    """Explicit EOS recovery compares content as well as recovered calls."""
+    from rapid_mlx.domain.events import StreamEvent
+
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    text = '<tool_call><function=read><parameter=path>"a"</parameter></function></tool_call>'
+    monkeypatch.setattr(
+        parser_cls, "extract_tool_calls_streaming", lambda *a, **kw: None
+    )
+    assert _stream_xml_deltas(
+        "qwen3_coder_xml",
+        text,
+        [text[:split], text[split:]],
+        _xml_request(("read",)),
+        allow_eos_recovery=True,
+        check_content=True,
+    ) == [("read", {"path": "a"})]
+    finalize = StreamingPostProcessor.finalize
+
+    def finalize_with_leak(self):
+        return finalize(self) + [StreamEvent(type="content", content="<tool_call>")]
+
+    monkeypatch.setattr(StreamingPostProcessor, "finalize", finalize_with_leak)
+    with pytest.raises(AssertionError, match="content parity"):
+        _stream_xml_deltas(
+            "qwen3_coder_xml",
+            text,
+            [text[:split], text[split:]],
+            _xml_request(("read",)),
+            allow_eos_recovery=True,
+            check_content=True,
+        )
+
+
+def _randomized_qwen_case(seed):
+    """Small reproducible documents exercise arbitrary framing boundaries."""
+    rng = random.Random(seed)
+    bare = '<function=read><parameter=path>"a"</parameter></function>'
+    wrapped = "<tool_call>" + bare + "</tool_call>"
+    corpus = [
+        "Some prose. ",
+        " The tag <tool_call> opens it. ",
+        " The tag </tool_call> closes it. ",
+        wrapped,
+        bare,
+    ]
+    pieces = rng.choices(corpus, k=rng.randint(1, 5))
+    family = "closed_calls" if any(p in (wrapped, bare) for p in pieces) else "prose"
+    text = "".join(pieces)
+    # Include literal framing and incomplete suffixes independently of calls.
+    if seed % 4 == 0:
+        text += " A literal <function= in prose. "
+    if seed % 3 == 0:
+        text += rng.choice(["<", "<tool_ca", "<tool_call>", "<function="])
+    if seed % 10 == 0:
+        chunks = list(text)
+    else:
+        chunks = []
+        cursor = 0
+        while cursor < len(text):
+            end = cursor + rng.randint(1, 40)
+            chunks.append(text[cursor:end])
+            cursor = end
+    return family, text, chunks
+
+
+# No current family truncates an actual call: appended partial framing tokens
+# do not truncate the complete calls already generated in `pieces`. A future
+# intentionally unclosed-call family must be named here to permit EOS recovery.
+_QWEN_EOS_RECOVERY_FAMILIES = frozenset()
+
+
+def _assert_randomized_qwen_parity(seed, *, check_content):
+    family, text, chunks = _randomized_qwen_case(seed)
+    request = _xml_request(("read",))
+    result = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(text, request=request)
+    expected = [
+        (call["name"], json.loads(call["arguments"])) for call in result.tool_calls
+    ]
+    require_streamed_calls = (
+        family != "prose" and family not in _QWEN_EOS_RECOVERY_FAMILIES
+    )
+    assert (
+        _stream_xml_deltas(
+            "qwen3_coder_xml",
+            text,
+            chunks,
+            request,
+            require_streamed_calls=require_streamed_calls,
+            expected_streamed_calls=expected if require_streamed_calls else None,
+            check_content=check_content,
+        )
+        == expected
+    )
+
+
+# Measured with the parser unchanged at HEAD 1165bb0413d1.
+_QWEN_EOS_ONLY_SEEDS = frozenset({201})
+_QWEN_EOS_ONLY_XFAIL = pytest.mark.xfail(
+    strict=True,
+    raises=_StreamedCallsError,
+    reason="pre-existing: call only recovered at EOS",
+)
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        pytest.param(seed, marks=_QWEN_EOS_ONLY_XFAIL)
+        if seed in _QWEN_EOS_ONLY_SEEDS
+        else seed
+        for seed in range(300)
+    ],
+)
+def test_qwen3coder_randomized_tool_call_parity(seed):
+    _assert_randomized_qwen_parity(seed, check_content=False)
+
+
+def test_randomized_qwen_checker_rejects_silent_streaming(monkeypatch):
+    """Every closed-call seed fails even though finalize could recover it."""
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    monkeypatch.setattr(
+        parser_cls, "extract_tool_calls_streaming", lambda *a, **kw: None
+    )
+    checked = 0
+    for seed in range(300):
+        family, _, _ = _randomized_qwen_case(seed)
+        if family == "closed_calls":
+            with pytest.raises(_StreamedCallsError):
+                _assert_randomized_qwen_parity(seed, check_content=False)
+            checked += 1
+    assert checked > 0
+
+
+def test_randomized_qwen_checker_requires_every_streamed_call(monkeypatch):
+    """Emitting the first call cannot mask later calls recovered at EOS."""
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    extract = parser_cls.extract_tool_calls_streaming
+
+    def extract_first_call_only(self, *args, **kwargs):
+        delta = extract(self, *args, **kwargs)
+        if delta:
+            return {
+                **delta,
+                "tool_calls": [
+                    tc for tc in delta.get("tool_calls", []) if tc["index"] == 0
+                ],
+            }
+        return delta
+
+    monkeypatch.setattr(
+        parser_cls, "extract_tool_calls_streaming", extract_first_call_only
+    )
+    # Seed 5 contains multiple complete calls and passes with the original parser.
+    with pytest.raises(_StreamedCallsError):
+        _assert_randomized_qwen_parity(5, check_content=False)
+
+
+# Explicit failures measured against HEAD 1165bb0413d1; no runtime classification.
+_QWEN_CONTENT_MISMATCH_SEEDS = frozenset(
+    (
+        0,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16,
+        17,
+        19,
+        20,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        32,
+        33,
+        34,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        44,
+        45,
+        46,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        56,
+        58,
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        68,
+        71,
+        72,
+        75,
+        76,
+        77,
+        78,
+        80,
+        81,
+        82,
+        83,
+        84,
+        86,
+        87,
+        88,
+        90,
+        92,
+        93,
+        94,
+        95,
+        96,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        110,
+        111,
+        112,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        128,
+        129,
+        130,
+        131,
+        132,
+        133,
+        134,
+        135,
+        136,
+        138,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        150,
+        151,
+        152,
+        153,
+        155,
+        156,
+        157,
+        158,
+        160,
+        161,
+        162,
+        163,
+        164,
+        165,
+        166,
+        167,
+        168,
+        170,
+        171,
+        172,
+        175,
+        176,
+        177,
+        180,
+        181,
+        182,
+        184,
+        186,
+        187,
+        188,
+        189,
+        191,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        198,
+        200,
+        201,
+        202,
+        204,
+        205,
+        207,
+        208,
+        209,
+        210,
+        211,
+        212,
+        213,
+        214,
+        215,
+        216,
+        217,
+        218,
+        219,
+        220,
+        222,
+        223,
+        224,
+        225,
+        226,
+        227,
+        228,
+        229,
+        231,
+        232,
+        234,
+        235,
+        236,
+        237,
+        238,
+        240,
+        241,
+        243,
+        244,
+        245,
+        247,
+        248,
+        249,
+        250,
+        251,
+        252,
+        253,
+        254,
+        255,
+        256,
+        257,
+        258,
+        260,
+        261,
+        262,
+        263,
+        264,
+        265,
+        267,
+        268,
+        271,
+        272,
+        273,
+        276,
+        278,
+        279,
+        280,
+        281,
+        282,
+        284,
+        285,
+        286,
+        287,
+        288,
+        289,
+        290,
+        291,
+        292,
+        293,
+        294,
+        295,
+        296,
+        297,
+    )
+)
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        pytest.param(seed, marks=_QWEN_EOS_ONLY_XFAIL)
+        if seed in _QWEN_EOS_ONLY_SEEDS
+        else pytest.param(seed, marks=_QWEN_CONTENT_XFAIL)
+        if seed in _QWEN_CONTENT_MISMATCH_SEEDS
+        else seed
+        for seed in range(300)
+    ],
+)
+def test_qwen3coder_randomized_content_parity(seed):
+    _assert_randomized_qwen_parity(seed, check_content=True)
+
+
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
+def test_qwen3coder_round12_literal_split_opener(parity):
+    call = '<tool_call><function=read><parameter=path>"a"</parameter></function></tool_call>'
+    chunks = [call, " The tag <", "tool_call> opens it."]
+    assert _stream_xml_deltas(
+        "qwen3_coder_xml",
+        "".join(chunks),
+        chunks,
+        _xml_request(("read",)),
+        check_content=parity == "content",
+    ) == [("read", {"path": "a"})]
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
+def test_qwen3coder_literal_function_before_call_parity(seed, parity, request):
+    _mark_qwen_content_mismatch(request, parity)
+    _assert_literal_function_before_call_parity(seed, check_content=parity == "content")
+
+
+def _assert_literal_function_before_call_parity(seed, *, check_content):
+    rng = random.Random(seed)
+    text = (
+        " A literal <function= in prose. <tool_call><function=read>"
+        '<parameter=path>"a"</parameter></function></tool_call>'
+    )
+    chunks = []
+    cursor = 0
+    while cursor < len(text):
+        end = cursor + (1 if seed == 0 else rng.randint(1, 20))
+        chunks.append(text[cursor:end])
+        cursor = end
+    request = _xml_request(("read",))
+    result = ToolParserManager.get_tool_parser("qwen3_coder_xml")(
+        None
+    ).extract_tool_calls(text, request=request)
+    assert _stream_xml_deltas(
+        "qwen3_coder_xml",
+        text,
+        chunks,
+        request,
+        require_streamed_calls=True,
+        expected_streamed_calls=[
+            (call["name"], json.loads(call["arguments"])) for call in result.tool_calls
+        ],
+        check_content=check_content,
+    ) == [(call["name"], json.loads(call["arguments"])) for call in result.tool_calls]
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_literal_function_checker_rejects_silent_streaming(monkeypatch, seed):
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    monkeypatch.setattr(
+        parser_cls, "extract_tool_calls_streaming", lambda *a, **kw: None
+    )
+    with pytest.raises(_StreamedCallsError):
+        _assert_literal_function_before_call_parity(seed, check_content=False)
+
+
+@pytest.mark.parametrize("tail", ["<", "<tool_ca", "<tool_call>", "<function="])
+@pytest.mark.parametrize("parity", ["tool_calls", "content"])
+def test_qwen3coder_held_framing_at_eos(tail, parity, request):
+    _mark_qwen_content_mismatch(request, parity, tail != "<tool_ca")
+    call = '<tool_call><function=read><parameter=path>"a"</parameter></function></tool_call>'
+    chunks = [call, tail]
+    assert _stream_xml_deltas(
+        "qwen3_coder_xml",
+        "".join(chunks),
+        chunks,
+        _xml_request(("read",)),
+        check_content=parity == "content",
+    ) == [("read", {"path": "a"})]
+
+
+def test_qwen3coder_round13_empty_wrapper_then_bare_call_keeps_visible_answer():
+    chunks = [
+        "<tool_call></tool_call>",
+        '<function=read><parameter=path>"a"</parameter></function>',
+        "Visible answer.",
+    ]
+    assert _stream_xml_deltas(
+        "qwen3_coder_xml",
+        "".join(chunks),
+        chunks,
+        _xml_request(("read",)),
+        check_content=True,
+        expected_content="Visible answer.",
+    ) == [("read", {"path": "a"})]
