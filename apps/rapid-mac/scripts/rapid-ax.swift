@@ -244,6 +244,8 @@ func walk(_ element: AXUIElement, depth: Int) {
     if let description = string(element, kAXDescriptionAttribute as CFString), !description.isEmpty { record["description"] = description }
     if let help = string(element, kAXHelpAttribute as CFString), !help.isEmpty { record["help"] = help }
     if let value = jsonValue(attribute(element, kAXValueAttribute as CFString)) { record["value"] = value }
+    if let minimum = jsonValue(attribute(element, kAXMinValueAttribute as CFString)) { record["min_value"] = minimum }
+    if let maximum = jsonValue(attribute(element, kAXMaxValueAttribute as CFString)) { record["max_value"] = maximum }
     if let origin = point(element, kAXPositionAttribute as CFString),
        let extent = size(element, kAXSizeAttribute as CFString),
        origin.x.isFinite, origin.y.isFinite,

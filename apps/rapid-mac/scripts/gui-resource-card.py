@@ -2,6 +2,7 @@
 """Assert menu-card AX evidence, scoped to each control and its descendants."""
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -47,7 +48,20 @@ def validate(payload, state, physical_bytes):
     used = {"idle": "0.00", "one": "2.50", "two": "3.50"}[state]
     memory = f"{used} GB / {physical_bytes / 1e9:.2f} GB"
     assert memory in text(PREFIX + "Memory"), "incorrect used/physical memory"
-    assert memory in text(PREFIX + "Meter"), "incorrect meter memory"
+    # Native progress indicators expose a numeric AXValue, even when SwiftUI
+    # supplies a spoken memory label. Check the fill against its native range.
+    meter = scope(PREFIX + "Meter")[0]
+    value, minimum, maximum = (
+        meter.get(key) for key in ("value", "min_value", "max_value")
+    )
+    assert all(
+        type(v) in (int, float) and math.isfinite(v) for v in (value, minimum, maximum)
+    ), "missing numeric meter range"
+    assert minimum <= value <= maximum and maximum > minimum, "invalid meter range"
+    expected_fraction = min(1, float(used) * 1e9 / physical_bytes)
+    assert math.isclose(
+        (value - minimum) / (maximum - minimum), expected_fraction, abs_tol=1e-6
+    ), "incorrect meter memory"
     if state == "idle":
         assert "Idle" in text(PREFIX + "Activity"), "idle copy missing"
         # The empty message has no identifier; scope it between the meter and

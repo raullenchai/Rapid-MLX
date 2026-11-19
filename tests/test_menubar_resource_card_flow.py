@@ -33,7 +33,13 @@ def evidence(state):
     used = {"idle": "0.00", "two": "3.50", "one": "2.50"}[state]
     add("Activity", "Idle" if state == "idle" else "Generating · 42.5 tok/s")
     add("Memory", f"{used} GB / 8.00 GB · Total RAM")
-    add("Meter", f"{used} GB / 8.00 GB")
+    add("Meter")
+    elements[-1].update(
+        role="AXProgressIndicator",
+        value=float(used) / 8,
+        min_value=0,
+        max_value=1,
+    )
     if state == "idle":
         elements.append({"depth": 2, "value": "Unloaded"})
     else:
@@ -62,6 +68,8 @@ def test_card_accepts_each_observed_state(state):
         "incomplete",
         "missing-model",
         "wrong-memory",
+        "wrong-meter",
+        "missing-meter-range",
         "wrong-rate",
         "pinned-enabled",
         "evictable-disabled",
@@ -80,6 +88,10 @@ def test_card_rejects_false_positive_evidence(mutation):
         ]
     elif mutation == "wrong-memory":
         nodes[1]["value"] = "3.50 GB / 32.00 GB"
+    elif mutation == "wrong-meter":
+        nodes[2]["value"] = 0
+    elif mutation == "missing-meter-range":
+        del nodes[2]["max_value"]
     elif mutation == "wrong-rate":
         nodes[0]["value"] = "Generating · 0.0 tok/s"
     elif mutation in {"pinned-enabled", "evictable-disabled"}:
@@ -96,6 +108,15 @@ def test_card_rejects_false_positive_evidence(mutation):
         nodes.append({"depth": 2, "identifier": CARD.PREFIX + "Model.stale"})
     with pytest.raises(AssertionError):
         CARD.validate(tree, "two", 8_000_000_000)
+
+
+@pytest.mark.parametrize("state", ["idle", "two", "one"])
+def test_card_accepts_native_meter_with_percentage_range(state):
+    tree = evidence(state)
+    meter = tree["data"]["ui_elements"][2]
+    meter["value"] *= 100
+    meter["max_value"] = 100
+    CARD.validate(tree, state, 8_000_000_000)
 
 
 def test_one_model_state_rejects_an_evicted_row_still_visible():
