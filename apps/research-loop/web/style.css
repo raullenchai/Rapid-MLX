@@ -1697,3 +1697,16 @@ summary:hover { color:var(--blue); }
 .literature-highlight { animation:literature-highlight 2s ease-out; }
 @keyframes literature-highlight { from { box-shadow:0 0 0 3px var(--blue); } to { box-shadow:0 0 0 0 transparent; } }
 @media (prefers-reduced-motion:reduce) { .literature-highlight { animation:none; outline:2px solid var(--blue); } }
+
+/* Literature polish: inline markers sit in the text line; compact paper list. */
+.text-button.inline-citation { display:inline; padding:0 1px; margin:0; font-size:0.8em; line-height:inherit; vertical-align:baseline; min-height:0; border-radius:0; }
+#literature-list li { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; padding:8px 0; margin:0; border-top:1px solid var(--rule); font-size:13px; }
+#literature-list li:first-child { border-top:0; }
+#literature-list form { width:100%; }
+.literature-buttons { display:flex; align-items:center; gap:14px; margin-top:8px; }
+#literature-panel .literature-buttons button { margin:0; }
+.literature-folder { margin-top:10px; font-size:12px; }
+.literature-folder summary { color:var(--blue); cursor:pointer; }
+.label-edit summary { list-style:none; cursor:pointer; }
+.label-edit summary::-webkit-details-marker { display:none; }
+.label-edit[open] { width:100%; }

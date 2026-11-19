@@ -152,16 +152,17 @@ function stageURL(stage, overrides={}) {
   if(overrides.round !== undefined) params.set('round',String(overrides.round));
   return `#/p/${state.slug}/${stage}${params.size ? '?'+params : ''}`;
 }
-function markdown(text) {
+function markdown(text,opts={}) {
   // Escape first. No HTML, links, images, or executable attributes are accepted.
   const lines=esc(text).split('\n'); let html='', para=[], list=null, code=null;
   const inline=s=>s.replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\[([^\]]+)\]\(([^\s)]+)\)/g,(all,label,url)=> /^(?:https?:\/\/|\/(?![\/\\]))/i.test(url) && !/[\\\x00-\x20]/.test(url) ? `<a href="${url}" rel="noopener noreferrer">${label}</a>` : label);
-  const flush=()=>{if(para.length){html+='<p>'+inline(para.join(' '))+'</p>';para=[];} if(list){html+=`</${list}>`;list=null;}};
+  const joiner=opts.breaks?'<br>':' ';
+  const flush=()=>{if(para.length){html+='<p>'+inline(para.join(joiner))+'</p>';para=[];} if(list){html+=`</${list}>`;list=null;}};
   for(const line of lines) {
     if(line.startsWith('```')) {flush(); if(code!==null){html+='<pre><code>'+code.join('\n')+'</code></pre>';code=null;}else code=[]; continue;}
     if(code!==null){code.push(line);continue;}
     const item=line.match(/^\s*(?:([-*])|\d+\.)\s+(.*)$/);
-    if(item){if(para.length){html+='<p>'+inline(para.join(' '))+'</p>';para=[];}const type=item[1] ? 'ul' : 'ol';if(list!==type){if(list)html+=`</${list}>`;list=type;html+=`<${type}>`;}html+='<li>'+inline(item[2])+'</li>';}
+    if(item){if(para.length){html+='<p>'+inline(para.join(joiner))+'</p>';para=[];}const type=item[1] ? 'ul' : 'ol';if(list!==type){if(list)html+=`</${list}>`;list=type;html+=`<${type}>`;}html+='<li>'+inline(item[2])+'</li>';}
     else if(!line.trim()) flush();
     else {if(list){html+=`</${list}>`;list=null;}para.push(line.replace(/^#{1,6}\s+/,''));}
   }
@@ -1002,13 +1003,13 @@ function sourceLabel(s) {
 function citationMarkdown(content,sources=[]) {
   const numbers=new Set(sources.map(s=>s.number));
   let blocked=0;
-  return markdown(content).split(/(<[^>]*>)/g).map(part=>{
+  return markdown(content,{breaks:true}).split(/(<[^>]*>)/g).map(part=>{
     if(part.startsWith('<')){if(/^<(a|code|pre)\b/i.test(part))blocked++;if(/^<\/(a|code|pre)>/i.test(part))blocked--;return part;}
     return blocked ? part : part.replace(/\[(S\d+)\]/g,(marker,number)=>numbers.has(number)?`<button type="button" class="text-button inline-citation" data-citation="${number}" aria-label="Open source ${number}">${marker}</button>`:marker);
   }).join('');
 }
 function sourceMarkup(sources=[]) {
-  return sources.length ? `<div class="citation-chips">${sources.map(s=>`<details class="citation" data-source="${esc(s.number)}"><summary>[${esc(s.number)}] ${esc(sourceLabel(s))}${s.page?' · p. '+esc(s.page):''}</summary><p class="muted">${esc(sourceLabel(s))} · ${esc(s.file)} · ${s.page?'page '+esc(s.page):esc(s.section || 'text')} · ${esc(s.chunk_id)}</p><blockquote>${esc(s.snippet)}</blockquote></details>`).join('')}</div>` : '';
+  return sources.length ? `<div class="citation-chips">${sources.map(s=>`<details class="citation" data-source="${esc(s.number)}" data-chunk="${esc(s.chunk_id)}"><summary>[${esc(s.number)}] ${esc(sourceLabel(s))}${s.page?' · p. '+esc(s.page):''}</summary><p class="muted">${esc(sourceLabel(s))} · ${s.page?'page '+esc(s.page):esc(s.section || 'text')}</p><blockquote>${esc(s.snippet)}</blockquote></details>`).join('')}</div>` : '';
 }
 let literatureTimer;
 function renderLiterature() {
@@ -1018,7 +1019,7 @@ function renderLiterature() {
   $('literature-state').textContent=l.configured ? `${l.state} · ${l.files.length} papers · ${l.passages || 0} passages${l.state==='indexing'?` · ${l.progress}/${l.total} files`:''}` : 'Not configured. Start the server with --embeddings URL to use literature.';
   $('literature-controls').hidden=!l.configured;
   for(const id of ['literature-add','literature-files','literature-folder','literature-index'])$(id).disabled=state.replay || l.state==='indexing';
-  $('literature-list').innerHTML=[...l.files.map(f=>`<li>${esc(f.label || f.file)} · ${f.pages?esc(f.pages)+' pages · ':''}${f.passages} passages <form data-label-file="${esc(f.file)}"><label>Paper label<input name="label" aria-label="Paper label" value="${esc(f.label || f.file)}" maxlength="200" required${state.replay || l.state==='indexing'?' disabled':''}></label><button type="submit" class="text-button"${state.replay || l.state==='indexing'?' disabled':''}>Save label</button></form>${f.uploaded?` <button type="button" class="text-button" data-remove-literature="${esc(f.file.slice(11))}"${state.replay || l.state==='indexing'?' disabled':''}>Remove</button>`:''}</li>`),...(l.literature_dirs || []).map(p=>`<li>${esc(p)} (read-only) <button type="button" class="text-button" data-remove-folder="${esc(p)}"${state.replay || l.state==='indexing'?' disabled':''}>Detach</button></li>`)].join('');
+  $('literature-list').innerHTML=[...l.files.map(f=>`<li><strong>${esc(f.label || f.file)}</strong><span class="muted">${f.pages?esc(f.pages)+' pages · ':''}${f.passages} passages</span><details class="label-edit"><summary class="text-button">Edit label</summary><form data-label-file="${esc(f.file)}"><label>Paper label<input name="label" aria-label="Paper label" value="${esc(f.label || f.file)}" maxlength="200" required${state.replay || l.state==='indexing'?' disabled':''}></label><button type="submit" class="text-button"${state.replay || l.state==='indexing'?' disabled':''}>Save label</button></form></details>${f.uploaded?` <button type="button" class="text-button" data-remove-literature="${esc(f.file.slice(11))}"${state.replay || l.state==='indexing'?' disabled':''}>Remove</button>`:''}</li>`),...(l.literature_dirs || []).map(p=>`<li>${esc(p)} (read-only) <button type="button" class="text-button" data-remove-folder="${esc(p)}"${state.replay || l.state==='indexing'?' disabled':''}>Detach</button></li>`)].join('');
   $('literature-errors').innerHTML=Object.entries(l.errors || {}).map(([file,error])=>`<p>${esc(file)}: ${esc(error)}</p>`).join('');
   if(l.state==='indexing'){
     const slug=state.slug;
