@@ -125,6 +125,7 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Opt-in fused affine-4 MoE expert kernels for Qwen3.6 MoE; picks a
         # kernel implementation for the same model, never a model or route.
         "RAPID_MLX_GEMMA4_AFFINE4",  # Gemma 4 fused affine-4 MoE decode kill switch
+        "RAPID_MLX_LFM2MOE_AFFINE4",  # LFM2-MoE fused affine-4 expert decode kill switch
         "RAPID_MLX_QWEN35_AFFINE4",
         # Singleton expert buffer binding; same model, kernels and arithmetic.
         "RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS",
