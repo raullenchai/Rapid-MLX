@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import copy
 import importlib
+import importlib.machinery
 import importlib.util
 import ipaddress
 import logging
@@ -17,6 +18,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import BuiltinFunctionType, ModuleType, SimpleNamespace
 
 import pytest
 
@@ -1500,6 +1502,167 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "requires_mlx" in item.keywords:
                 item.add_marker(skip_no_mlx)
+
+
+def _is_native_mlx_stream_runtime(mx):
+    """Reject import stubs and patched APIs before calling any stream function."""
+    return (
+        isinstance(mx, ModuleType)
+        and isinstance(
+            getattr(getattr(mx, "__spec__", None), "loader", None),
+            importlib.machinery.ExtensionFileLoader,
+        )
+        and all(
+            isinstance(getattr(mx, name, None), type)
+            and getattr(mx, name).__module__ == "mlx.core"
+            for name in ("Stream", "ThreadLocalStream")
+        )
+        and all(
+            callable(getattr(mx, name, None))
+            and (
+                isinstance(getattr(mx, name), BuiltinFunctionType)
+                or (
+                    type(getattr(mx, name)).__module__ == "nanobind"
+                    and type(getattr(mx, name)).__name__ == "nb_func"
+                )
+            )
+            for name in (
+                "default_device",
+                "default_stream",
+                "set_default_stream",
+                "new_stream",
+                "new_thread_local_stream",
+                "synchronize",
+            )
+        )
+    )
+
+
+_NATIVE_MLX_STREAM_RUNTIME = None
+_MLX_STREAM_APIS = (
+    "Stream",
+    "ThreadLocalStream",
+    "default_device",
+    "default_stream",
+    "set_default_stream",
+    "new_stream",
+    "new_thread_local_stream",
+    "synchronize",
+)
+
+
+def _capture_native_mlx_stream_runtime(module):
+    """Retain extension APIs before importing tests can monkeypatch them."""
+    global _NATIVE_MLX_STREAM_RUNTIME
+    try:
+        if _NATIVE_MLX_STREAM_RUNTIME is None and _is_native_mlx_stream_runtime(module):
+            _NATIVE_MLX_STREAM_RUNTIME = SimpleNamespace(
+                module=module,
+                **{name: getattr(module, name) for name in _MLX_STREAM_APIS},
+            )
+    except Exception:
+        # Import stubs may raise even during attribute lookup.
+        pass
+
+
+class _MlxStreamImportObserver:
+    def find_spec(self, fullname, path, target=None):
+        if fullname != "mlx.core" or _NATIVE_MLX_STREAM_RUNTIME is not None:
+            return None
+        for finder in sys.meta_path[sys.meta_path.index(self) + 1 :]:
+            find_spec = getattr(finder, "find_spec", None)
+            spec = find_spec(fullname, path, target) if find_spec else None
+            if spec is not None:
+                break
+        else:
+            return None
+        if not isinstance(spec.loader, importlib.machinery.ExtensionFileLoader):
+            return spec
+        execute = spec.loader.exec_module
+
+        def execute_and_capture(module):
+            spec.loader.exec_module = execute
+            execute(module)
+            _capture_native_mlx_stream_runtime(module)
+
+        spec.loader.exec_module = execute_and_capture
+        return spec
+
+
+# Observe collection-time imports too, without forcing MLX onto no-Metal hosts.
+_capture_native_mlx_stream_runtime(sys.modules.get("mlx.core"))
+sys.meta_path.insert(0, _MlxStreamImportObserver())
+
+
+def _get_native_mlx_stream_runtime():
+    return _NATIVE_MLX_STREAM_RUNTIME
+
+
+def _repair_mlx_generation_streams():
+    """Replace foreign-thread streams at test boundaries without importing MLX.
+
+    A snapshot can already contain a dead worker's stream. Probe usability on
+    this thread instead, preserving valid streams and intentional test changes.
+    """
+
+    def foreign_stream(stream):
+        if not isinstance(stream, (mx.Stream, mx.ThreadLocalStream)):
+            return False
+        try:
+            mx.synchronize(stream)
+        except RuntimeError as exc:
+            message = str(exc)
+            return (
+                message.startswith("There is no Stream")
+                and "in current thread" in message
+            )
+        except Exception:
+            # An inconclusive probe must never turn test doubles into failures.
+            return False
+        return False
+
+    try:
+        mx = _get_native_mlx_stream_runtime()
+        if mx is None:
+            return
+        device = mx.default_device()
+        if foreign_stream(mx.default_stream(device)):
+            # set_default_stream requires Stream, not ThreadLocalStream.
+            mx.set_default_stream(mx.new_stream(device))
+        for name in (
+            "mlx_lm.generate",
+            "mlx_vlm.generate",
+            "rapid_mlx.models.mlx_vlm_vendored.generate.common",
+        ):
+            module = sys.modules.get(name)
+            if module is not None and foreign_stream(
+                getattr(module, "generation_stream", None)
+            ):
+                module.generation_stream = mx.new_thread_local_stream(device)
+    except Exception:
+        # Boundary cleanup is best effort, including API lookup/allocation.
+        # Tests may still have their patches installed during fixture teardown.
+        return
+
+
+@pytest.fixture(scope="module")
+def preserve_mlx_generation_streams():
+    """Repair again after dependent module executors have joined."""
+    _repair_mlx_generation_streams()
+    try:
+        yield
+    finally:
+        _repair_mlx_generation_streams()
+
+
+@pytest.fixture(autouse=True)
+def _repair_mlx_generation_streams_per_test():
+    """Repair before every test, even if an earlier module snapshot was stale."""
+    _repair_mlx_generation_streams()
+    try:
+        yield
+    finally:
+        _repair_mlx_generation_streams()
 
 
 @pytest.fixture(scope="session")

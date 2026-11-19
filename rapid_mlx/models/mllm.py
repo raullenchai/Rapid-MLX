@@ -1890,6 +1890,11 @@ class MLXMultimodalLM:
                 else:
                     fuse_gate_up(self.model)
 
+            if config_model_type == "gemma4":
+                from ..patches.gemma4_affine4 import install_gemma4_affine4
+
+                install_gemma4_affine4(self.model)
+
             if config_model_type == "qwen3_5_moe":
                 from ..qwen35_fused_gdn_decode import (
                     install_qwen35_fused_gdn_decode,

@@ -68,6 +68,72 @@ def _walk(root, **kw):
     return out
 
 
+@pytest.mark.parametrize("raw", [None, False, True, {}, []])
+def test_datetime_segment_missing_or_invalid_value_is_unverifiable(raw):
+    actual = ax_driver._datetime_segment_text({"AXValue": raw})
+    assert actual is None
+    assert ax_driver._datetime_segment_matches(actual, "00") is False
+
+
+@pytest.mark.parametrize(
+    "description,raw,expected",
+    [
+        ("0", 0, ""),
+        ("", 0, ""),
+        ("--", 0, "--"),
+        ("00", 0, "00"),
+        ("PM", 2, "PM"),
+        ("02", 2, "02"),
+        (None, 0, "(unknown; possibly empty)"),
+        (None, 2, "2"),
+        (None, "02", "02"),
+        (None, 2.5, "2.5"),
+        (None, None, None),
+        (None, True, None),
+        (None, 2, "2"),
+        (None, "09", "09"),
+        (None, [], None),
+    ],
+)
+def test_datetime_segment_visible_text(tree, description, raw, expected):
+    nodes, _ = tree
+    nodes.update(
+        {
+            "page": {"AXRole": "AXWebArea", "AXChildren": ["time", "ordinary"]},
+            "time": {"AXRole": "AXTimeField", "AXChildren": ["group"]},
+            "group": {"AXRole": "AXGroup", "AXChildren": ["segment"]},
+            "segment": {
+                "AXRole": "AXIncrementor",
+                "AXTitle": "Minutes",
+                "AXValue": raw,
+                "AXValueDescription": description,
+            },
+            "ordinary": {
+                "AXRole": "AXIncrementor",
+                "AXTitle": "Quantity",
+                "AXValue": 0,
+                "AXValueDescription": "zero",
+            },
+            "native": {
+                "AXRole": "AXIncrementor",
+                "AXTitle": "Native",
+                "AXValue": 0,
+                "AXValueDescription": "zero",
+            },
+        }
+    )
+    for node in nodes.values():
+        node.setdefault("AXSubrole", "")
+        if node["AXRole"] == "AXIncrementor":
+            node["actions"] = ["AXIncrement", "AXDecrement"]
+    rows = {row["text"]: row for row in _walk("page")}
+    assert rows["Minutes"]["value"] == expected
+    assert rows["Minutes"]["datetime_segment"] is True
+    assert rows["Quantity"]["value"] == "0"
+    assert rows["Quantity"]["datetime_segment"] is False
+    assert _walk("native")[0]["value"] == "0"
+
+
 def test_a_long_value_is_cut_and_carries_its_whole_length(tree):
     nodes, _ = tree
     long = "x" * (ax_driver.MAX_VALUE_CHARS + 30)
@@ -811,3 +877,22 @@ def test_set_value_writes_a_field_scrolled_out_of_view(monkeypatch):
     monkeypatch.setattr(backend, "_read_value", lambda live: "a\nb")
     out = backend.set_value("A", 0, "a\nb", expected_snapshot=snapshot)
     assert out["verified"] is True and asked == [False]
+
+
+@pytest.mark.parametrize(
+    "actual,requested,expected",
+    [
+        ("--", "00", False),
+        ("(unknown; possibly empty)", "00", False),
+        ("00", "0", True),
+        ("02", "2", True),
+        ("0001", "1", True),
+        ("P.M.", "PM", True),
+        ("a. m.", "A", True),
+        ("午後", "PM", False),
+        (None, "2", False),
+        ("", "0", False),
+    ],
+)
+def test_datetime_segment_matching(actual, requested, expected):
+    assert ax_driver._datetime_segment_matches(actual, requested) is expected

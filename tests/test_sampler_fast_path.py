@@ -356,7 +356,8 @@ class TestDistributionalEquivalence:
         uses ``mx.argpartition`` (also position-based, unstable on ties),
         so both paths keep exactly ``top_k`` tokens. They may arbitrarily
         disagree on WHICH tied token gets picked, but the kept-set SIZE
-        is invariant and the distribution shape is unaffected.
+        is invariant. Different retained IDs change token support; MTP must
+        share the fused mask rather than this fallback mask.
 
         Codex round 4 raised a BLOCKER claiming mlx-lm was partition+
         threshold ("keep all ties"); inspecting ``apply_top_k`` in

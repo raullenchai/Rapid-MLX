@@ -446,6 +446,50 @@ _WALK_ATTRIBUTES = (
     "AXExpanded",
 )
 _TEXT_ATTRIBUTES = ("AXDescription", "AXTitle", "AXValue", "AXPlaceholderValue")
+WEB_DATETIME_ROLES = {"AXDateField", "AXTimeField", "AXDateTimeArea"}
+
+
+def _datetime_segment_text(node: dict) -> str | None:
+    """Read a known Chromium date/time segment, including its empty state.
+
+    Blink formats numeric values with at least two digits and supplies symbolic
+    text through aria-valuetext. When unset, the mac bridge synthesizes "0"
+    for AXValueDescription from the default spinbutton range value instead.
+    See Chromium's DateTimeFieldElement::UpdateVisibleValue and
+    BrowserAccessibilityCocoa::valueDescription.
+    """
+    description = node.get("AXValueDescription")
+    if isinstance(description, str):
+        return "" if description == "0" else description
+    raw = node.get("AXValue")
+    if raw is None or isinstance(raw, bool):
+        return None
+    if raw in (0, "0"):
+        # Older bridges may omit the description: zero alone cannot distinguish
+        # an unset minute from midnight. Never claim this verifies a filled 00.
+        return "(unknown; possibly empty)"
+    return str(raw) if isinstance(raw, (str, int, float)) else None
+
+
+def _datetime_period_text(text: str) -> str:
+    """Normalize case, spacing and punctuation in AM/PM labels and values."""
+    return "".join(ch for ch in text.upper() if ch != "." and not ch.isspace())
+
+
+def _datetime_segment_matches(actual: str | None, requested: str) -> bool:
+    if actual is None or not actual.strip():
+        return False
+    actual, requested = actual.strip(), requested.strip()
+    if actual.isdecimal() and requested.isdecimal():
+        return int(actual) == int(requested)
+    period = _datetime_period_text(requested)
+    if period in {"A", "AM", "P", "PM"}:
+        return _datetime_period_text(actual) == {"A": "AM", "P": "PM"}.get(
+            period, period
+        )
+    return actual == requested
+
+
 # AX messaging timeouts are per element (not inherited), so each node gets one
 # before its first read: a wedged node costs this, not the 6 s default.
 NODE_MESSAGING_TIMEOUT_S = 0.25
@@ -705,6 +749,7 @@ def _walk(
     parent_role: str = "",
     budget: dict[str, Any] | None = None,
     in_web: bool = False,
+    in_datetime: bool = False,
     path: tuple[int, ...] = (),
 ) -> None:
     if depth > MAX_DEPTH or counter[0] >= MAX_NODES:
@@ -721,6 +766,7 @@ def _walk(
     role = raw_role if isinstance(raw_role, str) else ""
     if roles_seen is not None:
         roles_seen.add(role)
+    datetime_segment = in_web and in_datetime and role == "AXIncrementor"
     raw_subrole = node.get("AXSubrole")
     subrole = raw_subrole if isinstance(raw_subrole, str) else ""
     # Never read AXDescription/AXTitle/AXValue from a secure field. Redacting
@@ -774,6 +820,9 @@ def _walk(
                 value = raw_value[:MAX_VALUE_CHARS]
                 if len(raw_value) > MAX_VALUE_CHARS:
                     value_chars = len(raw_value)
+            if datetime_segment:
+                node.update(_read_batch(element, ("AXValueDescription",)))
+                value = _datetime_segment_text(node)
         target: dict[str, Any] = {
             "target_id": f"t{counter[0] - 1:03d}",
             "role": role,
@@ -782,6 +831,7 @@ def _walk(
             "text": label,
             "value": value,
             "value_chars": value_chars,
+            "datetime_segment": datetime_segment,
             "actions": actions[:6],
             "rect": geom,
             "states": _states_of(node, role),
@@ -845,6 +895,7 @@ def _walk(
             parent_role=role,
             budget=budget,
             in_web=in_web,
+            in_datetime=in_datetime or (in_web and role in WEB_DATETIME_ROLES),
             path=(*path, position),
         )
         if counter[0] >= MAX_NODES:

@@ -1976,6 +1976,81 @@ wait_settings_stable() {
     die "Settings AX tree did not settle with required identifiers: $*"
 }
 
+start_fixture_chat_model() {
+    # Skip can hand off the RAM-only starter before catalog discovery, or
+    # leave the cached fixture selected if the picker resolved first. These
+    # journeys test chat persistence/recovery, so explicitly choose their
+    # fixture instead of starting whichever side of that race won.
+    wait_identifier_enabled ModelPickerBar.ModelMenu "$OUT/fixture-picker-ready.json"
+    # The onboarding/discovery race can switch the picker back to the starter
+    # after any single snapshot, so (re)select whenever the observed alias is
+    # not the fixture, with a bounded number of selections.
+    # A selection takes a moment to show in the picker, so wait at least
+    # 8 polls (about 2 s) before selecting again to avoid repeated starts.
+    local selections=0 since_select=8
+    for _ in {1..60}; do
+        see_main "$OUT/fixture-model-selected.json"
+        since_select=$((since_select + 1))
+        if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+            if (( selections < 4 && since_select >= 8 )); then
+                selections=$((selections + 1))
+                since_select=0
+                "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+                    "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
+                    || die "chat fixture model could not be selected"
+            fi
+            sleep 0.25
+            continue
+        fi
+        if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]]; then
+            # Discovery may already have activated this fixture. The waiter
+            # accepts its existing launch event in this persona's log; no new
+            # launch is required. Starting and ready both hide Readiness.Action,
+            # so independently wait for the composer before sending a prompt.
+            # Selecting a cached model does not always start it: an idle
+            # fixture still shows Start. Press it once enabled, as a user
+            # would. If the action disappears, startup is already under way.
+            local start_check="$OUT/fixture-model-selected.json"
+            for _ in {1..80}; do
+                jq -e '.data.ui_elements[]?
+                       | select(.identifier == "Readiness.Action"
+                                and (.description == "Start" or .description == "启动"))' \
+                    "$start_check" >/dev/null || break
+                if jq -e '.data.ui_elements[]?
+                          | select(.identifier == "Readiness.Action"
+                                   and (.description == "Start" or .description == "启动")
+                                   and .enabled == true)' \
+                    "$start_check" >/dev/null; then
+                    # Auto-start can remove Start between the snapshot and
+                    # the press. A failed press is not fatal: the startup
+                    # event check below decides whether the model came up.
+                    press "$start_check" Readiness.Action "$OUT/fixture-model-start.json" \
+                        || log "  Start vanished before press; checking startup evidence"
+                    break
+                fi
+                sleep 0.25
+                start_check="$OUT/fixture-model-start-ready.json"
+                see_main "$start_check"
+                # Discovery can reset the picker while Start is disabled.
+                # Re-enter bounded selection before acting on another alias.
+                if [[ "$(element_field "$start_check" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+                    continue 2
+                fi
+            done
+            wait_fake_event_after_start \
+                ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
+                "chat fixture model did not become ready" \
+                readiness
+            wait_send_idle "$OUT/fixture-model-ready.json"
+            [[ "$(element_field "$OUT/fixture-model-ready.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]] \
+                || die "chat fixture model changed while waiting for composer readiness"
+            return
+        fi
+        sleep 0.25
+    done
+    die "chat fixture model selection did not settle on $FAKE_ALIAS"
+}
+
 start_model() {
     # The readiness band is mounted before its action becomes interactive
     # while the catalog finishes resolving the selected model.  Pressing the
@@ -2775,7 +2850,7 @@ flow_chat_restore() {
     log "3/6 basic chat and session restore"
     start_persona chat-restore
     dismiss_first_run
-    start_model
+    start_fixture_chat_model
     send_prompt "golden restore marker" chat
     for _ in {1..100}; do
         see_main "$OUT/chat-complete.json"
@@ -3037,12 +3112,7 @@ flow_model_crash_recovery() {
     start_persona model-crash-recovery FAKE_DIE_AFTER_CHUNKS=2 \
         FAKE_DIE_ONCE_STATE="$OUT_ROOT/model-crash-recovery/died-once"
     dismiss_first_run
-    # Skipping onboarding can leave the recommended starter selected. This
-    # journey's baseline and crash fixture belong to the cached fake model.
-    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
-        "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/select-crash-model.json" \
-        || die "crash fixture model could not be selected"
-    start_model
+    start_fixture_chat_model
     send_prompt "golden crash marker" crash
     for _ in {1..160}; do
         see_main "$OUT/crash-recovered.json"

@@ -130,6 +130,108 @@ def _apply_argmax_rescue(mask: mx.array, argmax_idx: mx.array) -> mx.array:
     return mx.where(any_kept, mask, argmax_keep)
 
 
+def _make_seeded_logits_filter(
+    *,
+    temperature: float,
+    top_p: float = 0.0,
+    min_p: float = 0.0,
+    top_k: int = 0,
+    min_tokens_to_keep: int = 1,
+    xtc_probability: float = 0.0,
+    xtc_threshold: float = 0.0,
+    xtc_special_tokens: list[int] | None = None,
+) -> Callable[..., mx.array]:
+    """Share seeded serving's masks and temperature with speculative sampling.
+
+    XTC runs on the retained distribution before temperature, preserves the
+    least probable candidate above its threshold, and exempts special tokens.
+    Its caller supplies a request-owned draw so draft and verify can reuse it.
+    Minimum token retention applies only to min-p, preserving other masks.
+    """
+    if min_p > 0 and (
+        not isinstance(min_tokens_to_keep, int) or min_tokens_to_keep < 1
+    ):
+        raise ValueError("min_tokens_to_keep must be a positive integer")
+    if xtc_probability > 0 and not (xtc_probability <= 1 and 0 <= xtc_threshold <= 0.5):
+        raise ValueError("XTC requires probability in [0, 1] and threshold in [0, 0.5]")
+    temp_inv = 1.0 / float(temperature)
+    use_top_p = 0.0 < top_p < 1.0
+    use_top_k = top_k > 0
+    use_min_p = min_p > 0.0
+    top_p_threshold = 1.0 - float(top_p)
+    min_p_val = float(min_p)
+    top_k_val = int(top_k)
+
+    def filter_logits(
+        logprobs: mx.array, *, xtc_draw: mx.array | None = None
+    ) -> mx.array:
+        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
+        vocab = work.shape[-1]
+
+        mask = mx.ones(work.shape, dtype=mx.bool_)
+
+        if use_top_p:
+            probs = mx.exp(work)
+            sorted_indices = mx.argsort(probs, axis=-1)
+            sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+            cumulative = mx.cumsum(sorted_probs, axis=-1)
+            sorted_mask = cumulative > top_p_threshold
+            top_one = mx.arange(vocab) == (vocab - 1)
+            sorted_mask = sorted_mask | top_one
+            vocab_mask = mx.zeros(work.shape, dtype=mx.bool_)
+            vocab_mask = mx.put_along_axis(
+                vocab_mask, sorted_indices, sorted_mask, axis=-1
+            )
+            mask = mask & vocab_mask
+
+        if use_top_k:
+            effective_top_k = min(top_k_val, vocab)
+            sorted_desc = mx.argsort(-work, axis=-1)
+            top_k_positions = sorted_desc[..., :effective_top_k]
+            vocab_mask_k = mx.zeros(work.shape, dtype=mx.bool_)
+            ones = mx.ones(top_k_positions.shape, dtype=mx.bool_)
+            vocab_mask_k = mx.put_along_axis(
+                vocab_mask_k, top_k_positions, ones, axis=-1
+            )
+            mask = mask & vocab_mask_k
+
+        if use_min_p:
+            probs_for_min = mx.exp(work)
+            max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
+            min_p_mask = probs_for_min >= (min_p_val * max_prob)
+            if min_tokens_to_keep > 1:
+                positions = mx.argsort(-work, axis=-1)[..., :min_tokens_to_keep]
+                min_p_mask = mx.put_along_axis(
+                    min_p_mask,
+                    positions,
+                    mx.ones(positions.shape, dtype=mx.bool_),
+                    axis=-1,
+                )
+            mask = mask & min_p_mask
+
+        argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
+        mask = _apply_argmax_rescue(mask, argmax_idx)
+
+        if xtc_probability > 0:
+            if xtc_draw is None:
+                raise ValueError("seeded XTC requires a request-owned draw")
+            filtered = mx.where(mask, work, -mx.inf)
+            probs = mx.softmax(filtered, axis=-1)
+            floor = mx.min(
+                mx.where(probs > xtc_threshold, probs, mx.inf), axis=-1, keepdims=True
+            )
+            remove = probs > floor
+            if xtc_special_tokens:
+                remove[..., xtc_special_tokens] = False
+            mask = mask & ((xtc_draw > xtc_probability) | ~remove)
+
+        masked = mx.where(mask, work * temp_inv, -mx.inf)
+
+        return masked
+
+    return filter_logits
+
+
 def make_seeded_sampler(
     *,
     seed: int,
@@ -137,6 +239,10 @@ def make_seeded_sampler(
     top_p: float = 0.0,
     min_p: float = 0.0,
     top_k: int = 0,
+    min_tokens_to_keep: int = 1,
+    xtc_probability: float = 0.0,
+    xtc_threshold: float = 0.0,
+    xtc_special_tokens: list[int] | None = None,
 ) -> Callable[[mx.array], mx.array]:
     """Build a per-request sampler that threads an explicit PRNG key.
 
@@ -152,6 +258,10 @@ def make_seeded_sampler(
         top_p: Nucleus cutoff in ``[0, 1]``. ``0.0`` (default) disables.
         min_p: Min-p cutoff in ``[0, 1]``. ``0.0`` (default) disables.
         top_k: Top-k cutoff. ``0`` (default) disables.
+        min_tokens_to_keep: Minimum number retained by the min-p mask.
+        xtc_probability: Probability of excluding high-probability candidates.
+        xtc_threshold: Probability floor for XTC candidates before temperature.
+        xtc_special_tokens: Token IDs exempt from XTC exclusion.
 
     Returns:
         ``sampler(logprobs) -> token_ids`` matching the shape contract
@@ -186,13 +296,16 @@ def make_seeded_sampler(
             f"seeded sampler requires temperature >= 0 (got {temperature})"
         )
 
-    temp_inv = 1.0 / float(temperature)
-    use_top_p = 0.0 < top_p < 1.0
-    use_top_k = top_k > 0
-    use_min_p = min_p > 0.0
-    top_p_threshold = 1.0 - float(top_p)
-    min_p_val = float(min_p)
-    top_k_val = int(top_k)
+    filter_logits = _make_seeded_logits_filter(
+        temperature=temperature,
+        top_p=top_p,
+        min_p=min_p,
+        top_k=top_k,
+        min_tokens_to_keep=min_tokens_to_keep,
+        xtc_probability=xtc_probability,
+        xtc_threshold=xtc_threshold,
+        xtc_special_tokens=xtc_special_tokens,
+    )
 
     # Per-request key state lives in a one-element list so the closure
     # can rebind it (Python doesn't expose ``nonlocal`` on assignment
@@ -246,132 +359,6 @@ def make_seeded_sampler(
     state_lock = threading.Lock()
 
     def sampler(logprobs: mx.array) -> mx.array:
-        # Promote bfloat16/float16 to float32 — same rationale as the
-        # fused fast path: half precision rounds the top-p cutoff away
-        # on production logits and ``mx.cumsum`` over bfloat16 is
-        # unsupported in MLX 0.21.
-        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
-        vocab = work.shape[-1]
-
-        # Build the kept-token mask in VOCAB order so we can sample
-        # in vocab space and return the token id directly. This is
-        # different from the fused fast path (which samples in sorted
-        # space to fuse the scatter); the seeded path optimises for
-        # clarity + math parity with mlx-lm, not for tok/s — seeded
-        # requests are an eval / snapshot use case where 1-3 ms / token
-        # is acceptable.
-        mask = mx.ones(work.shape, dtype=mx.bool_)
-
-        if use_top_p:
-            # Top-p: sort probs ascending, find cumulative-from-low
-            # cutoff, OR-back the top-1 (argmax) to guarantee at least
-            # one sampleable token (mirrors mlx-lm's invariant and
-            # the fast path's ``top_one_mask`` belt). Re-scatter the
-            # sorted mask back into vocab order.
-            #
-            # Boundary semantics: ``cumulative > 1 - top_p`` is a
-            # STRICT comparison and matches both
-            # ``mlx_lm.sample_utils.apply_top_p`` (which uses
-            # ``cumulative_probs > 1 - top_p`` — see mlx-lm
-            # 0.31.3 sample_utils.py:222) and the fused fast path in
-            # ``_sampler_fast_path.py``. Codex round-5 raised a BLOCKING
-            # claim that this should be ``>=`` so a token whose
-            # cumulative prob is exactly the cutoff is kept; that would
-            # actually DIVERGE from mlx-lm's contract (and from the
-            # HuggingFace reference apply_top_p the upstream points to).
-            # The boundary token is recovered via the OR-with-argmax
-            # rescue at the bottom of this function on the rare cases
-            # where the strict cut alone would drop the head of the
-            # nucleus — matching mlx-lm's documented "at least one
-            # token kept" invariant. Bit-level parity with the stock
-            # sampler is the priority for the seeded path because the
-            # reproducibility contract advertises within-engine
-            # determinism.
-            probs = mx.exp(work)
-            sorted_indices = mx.argsort(probs, axis=-1)
-            sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
-            cumulative = mx.cumsum(sorted_probs, axis=-1)
-            sorted_mask = cumulative > top_p_threshold
-            # Guarantee top-1 (last position under ascending sort)
-            top_one = mx.arange(vocab) == (vocab - 1)
-            sorted_mask = sorted_mask | top_one
-            # Scatter back to vocab order
-            vocab_mask = mx.zeros(work.shape, dtype=mx.bool_)
-            vocab_mask = mx.put_along_axis(
-                vocab_mask, sorted_indices, sorted_mask, axis=-1
-            )
-            mask = mask & vocab_mask
-
-        if use_top_k:
-            # Top-k: keep the ``top_k`` largest logits. Use argsort
-            # descending then mark positions <= top_k. Mirrors the
-            # fast path's intersection semantics — kept-set size is
-            # exactly ``min(top_k, vocab)``.
-            #
-            # Codex round-2 BLOCKING #1 fix: clamp ``top_k_val`` to
-            # the vocab dimension. ``sorted_desc[..., :top_k_val]``
-            # with ``top_k_val > vocab`` silently returns the whole
-            # tensor (NumPy/MLX over-slice semantics), but the
-            # subsequent ``put_along_axis`` would then write
-            # ``vocab + something`` positions into a shape that only
-            # has ``vocab`` slots — undefined behaviour in MLX. The
-            # clamp normalises the contract so ``top_k=10**9`` on a
-            # 32k-vocab model collapses to "all tokens eligible"
-            # rather than crashing the sampler.
-            effective_top_k = min(top_k_val, vocab)
-            sorted_desc = mx.argsort(-work, axis=-1)
-            top_k_positions = sorted_desc[..., :effective_top_k]
-            vocab_mask_k = mx.zeros(work.shape, dtype=mx.bool_)
-            ones = mx.ones(top_k_positions.shape, dtype=mx.bool_)
-            vocab_mask_k = mx.put_along_axis(
-                vocab_mask_k, top_k_positions, ones, axis=-1
-            )
-            mask = mask & vocab_mask_k
-
-        if use_min_p:
-            # Min-p: keep tokens whose prob >= min_p * max_prob.
-            # Mirrors mlx-lm's ``apply_min_p`` formula.
-            probs_for_min = mx.exp(work)
-            max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
-            min_p_mask = probs_for_min >= (min_p_val * max_prob)
-            mask = mask & min_p_mask
-
-        # Codex round-2 BLOCKING #2 + round-7 BLOCKING fix: guarantee
-        # at least one sampleable token WITHOUT changing the intersection
-        # semantics for non-empty rows.
-        #
-        # The original round-2 fix unconditionally OR'd argmax into the
-        # combined mask, which fixed the empty-row crash but silently
-        # broke ``top_k`` when combined with a tight ``top_p`` / ``min_p``
-        # that excluded argmax from the top-k set — the rescue would
-        # re-introduce a token the caller's intersection contract had
-        # already filtered out. Codex r7 caught this: ``top_k`` no
-        # longer means "sample only from the top K" when layered with
-        # a stricter cutoff.
-        #
-        # The conditional form below preserves the round-2 contract
-        # (no all-``-inf`` rows ever reach ``mx.random.categorical``)
-        # while only invoking the argmax rescue when the row would
-        # otherwise be empty. Non-empty rows keep their exact mask,
-        # so ``top_k`` / ``top_p`` / ``min_p`` intersection semantics
-        # match the documented behaviour and the fused fast path.
-        #
-        # Empty-row case (combined cutoffs filtered every token): fall
-        # back to argmax so the sampler returns a sensible token
-        # rather than uint32 garbage from a degenerate ``-inf``
-        # distribution. This matches mlx-lm's "at least one token
-        # kept" invariant on the individual ``apply_top_p`` /
-        # ``apply_top_k`` / ``apply_min_p`` masks — each preserves a
-        # token by construction, so empty rows can only arise from
-        # the combined intersection, which is exactly the case the
-        # rescue targets.
-        argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
-        mask = _apply_argmax_rescue(mask, argmax_idx)
-
-        # Apply mask + temperature scaling. Use ``-inf`` for masked
-        # positions so categorical never picks them.
-        masked = mx.where(mask, work * temp_inv, -mx.inf)
-
         # Pull a fresh subkey for this step. Held under the per-closure
         # lock so the read-split-write is atomic — two concurrent
         # callers can't both read the same carried key and then both
@@ -379,7 +366,13 @@ def make_seeded_sampler(
         # See the ``state_lock`` block above for why this is defensive
         # rather than load-bearing under the current scheduler.
         with state_lock:
+            xtc_draw = (
+                mx.random.uniform(key=lane_rng.next_key())
+                if xtc_probability > 0
+                else None
+            )
             key = lane_rng.next_key()
+        masked = filter_logits(logprobs, xtc_draw=xtc_draw)
         return mx.random.categorical(masked, key=key)
 
     # The priming sample and the speculative verifier execute on the same
