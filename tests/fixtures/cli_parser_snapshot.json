@@ -3787,6 +3787,21 @@
        ],
        "required": false,
        "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "Print cached models as JSON",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": true,
@@ -3804,7 +3819,8 @@
       {
        "description": null,
        "dests": [
-        "help"
+        "help",
+        "json"
        ],
        "title": "options"
       }
@@ -3957,6 +3973,21 @@
        ],
        "required": false,
        "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "Print schema-versioned server state as JSON",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
       }
      ],
      "allow_abbrev": true,
@@ -3974,7 +4005,8 @@
       {
        "description": null,
        "dests": [
-        "help"
+        "help",
+        "json"
        ],
        "title": "options"
       }
