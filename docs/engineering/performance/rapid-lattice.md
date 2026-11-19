@@ -83,6 +83,7 @@ QSA enable-knob resolution remains at its existing call site.
 | `qwen35_affine4` | `False` | Explicit `qwen35_affine4_install` fact; exact expert classes, packed-bank layout, installed router and real-weight probe | `True` |
 | `qwen35_moe_router` | `False` | Explicit `qwen35_moe_router_install` fact; existing classes, expert/top-k bounds and parity probe | `True` |
 | `moe_decode_fusion` | `False` | Explicit `moe_decode_fusion_install` fact; existing block class and per-call single-row, alignment, dtype/bias/sharding checks | `True` |
+| `gemma4_moe_decode_fusion` | `False` | Explicit `gemma4_moe_decode_fusion_install` fact; Gemma 4 exact expert types. Fuses expert gate/up (both SwitchGLU call contracts), reduces the selected experts in one launch (single row, Metal/GPU, supported dtypes, K ≤ 8), and compiles each MoE layer's post-attention half for single-token decode after a bit-exact per-layer probe (any decline restores every layer). `RAPID_MLX_GEMMA4_MOE_DECODE_FUSION=1` opts in; existing decode/gate-up env opt-outs still apply | None |
 | `moe_gate_up_fusion` | `False` | Explicit `moe_gate_up_fusion_install` fact; existing expert classes, basic/extended call contracts and compatible projection formats | `True` |
 
 These five contiguous enrollment cells have no hardware or software selectors:
