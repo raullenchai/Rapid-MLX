@@ -13578,11 +13578,14 @@ def _elide_front(text: str, width: int) -> str:
     return "…" + text[-(width - 1) :]
 
 
-def _scan_running_servers() -> list[tuple[int, str, str, str]]:
+def _scan_running_servers(
+    *, states: list[dict] | None = None
+) -> list[tuple[int, str, str, str]]:
     """``[(pid, port, model, uptime), ...]`` for running ``rapid-mlx serve``
     processes, found by a local process scan (no network).
 
     Shared by ``rapid-mlx ps`` and the bare-command front door.
+    Supplying ``states`` additionally collects JSON metadata and probes readiness.
     """
     import time
 
@@ -13598,61 +13601,55 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
         if serve_index is None:
             continue
 
-        # Extract model arg and --port flag. argparse accepts options
-        # before positionals, so the model is the first non-flag token
-        # after `serve` whose prior token isn't a value-taking flag.
-        # The small list of flags here is conservative; unknown flags
-        # are assumed to NOT take a value.
-        VALUE_FLAGS = {
-            "--host",
-            "--port",
-            "--api-key",
-            "--tool-call-parser",
-            "--reasoning-parser",
-            "--log-level",
-            "--mcp-config",
-            "--cors-origins",
-            "--trusted-hosts",
-            "--served-model-name",
-            "--max-tokens",
-            "--gpu-memory-utilization",
-        }
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from rapid_mlx.cli_parser import build_parser
+
+        parser = next(
+            action
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+        ).choices["serve"]
+        argv = cmd[serve_index + 1 :]
+        # Collect every occurrence, including overwritten keys. Parsing is
+        # solely argparse's job; this pass only identifies values to hide
+        # if a credential is repeated in a model, host, or log target.
+        credentials = []
+        for index, token in enumerate(argv):
+            if token.startswith("--api-key="):
+                credentials.append(token.split("=", 1)[1])
+            elif token == "--api-key" and index + 1 < len(argv):
+                credentials.append(argv[index + 1])
+        options = None
+        # Never print argparse diagnostics: invalid values can be credentials.
+        # Unknown options can also make their values look like positionals, so
+        # discard all argv metadata unless the entire invocation is understood.
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            try:
+                parsed, unknown = parser.parse_known_args(argv)
+                if not unknown:
+                    options = {
+                        "--" + name.replace("_", "-"): value
+                        for name, value in vars(parsed).items()
+                    }
+            except (SystemExit, argparse.ArgumentError, ValueError):
+                pass
+
         model = "(unknown)"
-        port = "8000"  # serve's default
-        served = None  # --served-model-name value, if any (issue #2353)
-        try:
-            i = serve_index + 1
-            # Pre-PR this loop ``break``ed on the first positional, so a
-            # ``rapid-mlx serve qwen3.5-4b-4bit --port 8005`` ended with
-            # port="8000" because the positional model token came before
-            # ``--port``. Keep scanning for flags after we've captured the
-            # model — argparse accepts them on either side.
-            model_seen = False
-            while i < len(cmd):
-                tok = cmd[i]
-                if tok.startswith("--"):
-                    if "=" in tok:
-                        key, val = tok.split("=", 1)
-                        if key == "--port":
-                            port = val
-                        elif key == "--served-model-name":
-                            served = val
-                        i += 1
-                    elif tok in VALUE_FLAGS:
-                        if tok == "--port" and i + 1 < len(cmd):
-                            port = cmd[i + 1]
-                        elif tok == "--served-model-name" and i + 1 < len(cmd):
-                            served = cmd[i + 1]
-                        i += 2
-                    else:
-                        i += 1
-                else:
-                    if not model_seen:
-                        model = tok
-                        model_seen = True
-                    i += 1
-        except ValueError:
-            pass
+        port = "8000"
+        served = None
+        if options is not None:
+            model = _ps_redact(options.get("--model") or model, credentials)
+            served = _ps_redact(options.get("--served-model-name"), credentials)
+            port = str(8000 if options["--port"] is None else options["--port"])
+
+        if states is not None:
+            states.append(
+                _ps_server_state(
+                    proc, options, served or model, credentials=credentials
+                )
+            )
 
         # #2353: a user sets --served-model-name to choose the API model
         # identity; the process surface should lead with that identity and
@@ -13668,10 +13665,95 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
     return rows
 
 
+def _ps_ready(base_url: str) -> bool | None:
+    """Probe readiness without credentials, proxies, or redirects."""
+    import requests
+
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                f"{base_url}/health/ready", timeout=0.25, allow_redirects=False
+            )
+            if response.status_code == 200:
+                return True
+            if response.status_code == 503:
+                return False
+    except requests.RequestException:
+        pass
+    return None
+
+
+def _ps_redact(value, credentials):
+    if isinstance(value, str):
+        for credential in sorted(set(credentials), key=len, reverse=True):
+            if credential:
+                value = value.replace(credential, "[redacted]")
+    return value
+
+
+def _ps_server_state(proc, options: dict | None, model: str, *, credentials=()) -> dict:
+    import psutil
+
+    parsed = options is not None
+    options = options or {}
+    host = options.get("--host", "127.0.0.1")
+    port = int(8000 if options.get("--port") is None else options["--port"])
+    try:
+        listeners = [
+            c.laddr
+            for c in proc.net_connections(kind="inet")
+            if c.status == psutil.CONN_LISTEN and c.laddr
+        ]
+        matching = [a for a in listeners if a.port == port]
+        if matching or len(listeners) == 1:
+            address = (matching or listeners)[0]
+            host, port = address.ip, address.port
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    # Wildcard binds are reachable through loopback. IPv6 URL literals need brackets.
+    connect_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    authority = f"[{connect_host}]" if ":" in connect_host else connect_host
+    base_url = f"http://{authority}:{port}" if port else None
+    try:
+        env = proc.environ()
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        env = None
+    auth: bool | None = bool(options.get("--api-key"))
+    if not auth:
+        auth = bool(env.get("RAPID_MLX_API_KEY")) if env is not None else None
+    if not parsed:
+        auth = None
+    credentials = [*credentials, options.get("--api-key") or ""]
+    if env is not None:
+        credentials.append(env.get("RAPID_MLX_API_KEY", ""))
+    state = {
+        "pid": proc.info["pid"],
+        "bind_host": host,
+        "port": port or None,
+        "base_url": base_url,
+        "model_ids": [] if model == "(unknown)" else [model],
+        "auth_required": auth,
+        "ready": _ps_ready(base_url) if base_url else None,
+        "started_at": proc.info.get("create_time"),
+        "log_path": options.get("--log-file")
+        or (env.get("RAPID_MLX_LOG_FILE") if env is not None else None),
+    }
+    state["model_ids"] = [
+        _ps_redact(model_id, credentials) for model_id in state["model_ids"]
+    ]
+    return {key: _ps_redact(value, credentials) for key, value in state.items()}
+
+
 def ps_command(_args):
     """List running rapid-mlx servers (process scan)."""
-    # Surface the staleness nudge up front. ps has no ``--json`` form, so
-    # there is no machine-readable mode whose stderr must stay clean.
+    if getattr(_args, "json", False):
+        import json
+
+        states: list[dict] = []
+        _scan_running_servers(states=states)
+        print(json.dumps({"schema_version": 1, "servers": states}))
+        return
     if not getattr(_args, "json", False):
         from rapid_mlx._version_check import print_staleness_warning_if_any
 

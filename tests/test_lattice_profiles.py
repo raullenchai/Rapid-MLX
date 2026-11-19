@@ -290,7 +290,7 @@ def test_builtin_resource_and_package_declaration():
     resource = files("rapid_mlx.lattice").joinpath("profiles/builtin.json")
     data = json.loads(resource.read_text())
     assert data["schema_version"] == 1
-    assert len(defaults.builtin_profile().cells) == len(data["cells"]) == 37
+    assert len(defaults.builtin_profile().cells) == len(data["cells"]) == 36
     config = tomllib.loads(Path("pyproject.toml").read_text())
     assert (
         "lattice/profiles/*.json"
@@ -300,7 +300,17 @@ def test_builtin_resource_and_package_declaration():
 
 @pytest.mark.parametrize(
     "generation,tier,expected",
-    [(14, "Pro", False), (17, "Max", True), (15, "Ultra", True)],
+    [
+        (17, "Max", True),
+        (17, "Pro", True),
+        (17, "base", True),
+        (17, "Ultra", True),
+        (14, "Pro", False),
+        (16, "Pro", False),
+        (15, "Ultra", False),
+        (99, "Max", False),
+        (None, "unknown", False),
+    ],
 )
 def test_lfm2moe_affine4_hardware_enrollment(generation, tier, expected):
     ctx = context(
@@ -313,9 +323,8 @@ def test_lfm2moe_affine4_hardware_enrollment(generation, tier, expected):
     if expected:
         assert decision.source == "builtin:lfm2moe-affine4-enrollment"
     else:
-        # Conflicting universal and hardware cells use the safe knob default.
         assert decision.source == "default"
-        assert decision.reason == "conflicting lattice profile cells"
+        assert decision.reason is None
 
 
 # Golden values recorded from origin/main (1cbe83308), independent of profile data.

@@ -467,8 +467,13 @@ def test_incompatible_block_prevents_probe(portable, monkeypatch):
 def test_lattice_policy():
     from rapid_mlx.lattice import ModelProfile, resolve, runtime_context
 
-    ctx = runtime_context({}, model=ModelProfile(family="lfm2moe_affine4_install"))
+    ctx = runtime_context(
+        {"device_name": "Apple M5 Max"},
+        model=ModelProfile(family="lfm2moe_affine4_install"),
+    )
     assert resolve("lfm2moe_affine4", ctx, environ={}).value is True
+    ctx = runtime_context({}, model=ModelProfile(family="lfm2moe_affine4_install"))
+    assert resolve("lfm2moe_affine4", ctx, environ={}).value is False
     ctx = runtime_context({}, model=ModelProfile(family="unknown"))
     assert resolve("lfm2moe_affine4", ctx, environ={}).value is False
 
@@ -482,8 +487,11 @@ def metal():
 
 
 @pytest.mark.parametrize("combined", [False, True])
-def test_metal_full_geometry(metal, combined):
+def test_metal_full_geometry(metal, combined, monkeypatch):
     mx = metal
+    # Kernel parity is hardware-independent; pin enrollment so the result does
+    # not depend on whether this host's chip is in the performance cell.
+    monkeypatch.setattr(router, "install_enabled", lambda *a, **k: True)
     import mlx.nn as nn
     from mlx_lm.models.lfm2_moe import Lfm2MoeSparseMoeBlock
     from mlx_lm.models.switch_layers import QuantizedSwitchLinear, SwiGLU, SwitchGLU

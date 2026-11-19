@@ -540,3 +540,151 @@ def test_legacy_single_arg_configure_cors_keeps_wide_open_headers(
         f"Expected the requested header to be echoed or wildcarded; "
         f"got Access-Control-Allow-Headers={allowed!r}"
     )
+
+
+_EXTENSION_ORIGINS = (
+    "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+    "moz-extension://12345678-1234-4321-abcd-123456789abc",
+    "safari-web-extension://12345678-1234-4321-abcd-123456789abc",
+)
+
+
+@pytest.mark.parametrize("source", ["cli", "env"])
+@pytest.mark.parametrize("origin", _EXTENSION_ORIGINS + ("https://literal.example",))
+@pytest.mark.parametrize("credentials", [False, True])
+def test_extension_patterns_allow_requests(
+    fresh_app, monkeypatch, source, origin, credentials
+):
+    from rapid_mlx.cli_parser import build_parser
+
+    entries = [
+        "chrome-extension://*",
+        "moz-extension://*",
+        "safari-web-extension://*",
+        "https://literal.example",
+    ]
+    if credentials:
+        monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "true")
+    if source == "cli":
+        args = build_parser().parse_args(
+            ["serve", "qwen3.5-4b-4bit", "--cors-origins", *entries]
+        )
+        resolved = _server_mod().configure_cors_from_env(args.cors_origins)
+    else:
+        monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", ",".join(entries))
+        resolved = _server_mod().configure_cors_from_env()
+    assert resolved == entries
+    client = TestClient(fresh_app)
+    for method, path, extra in (
+        ("OPTIONS", "/v1/chat/completions", {"Access-Control-Request-Method": "POST"}),
+        ("GET", "/healthz", {}),
+        ("POST", "/v1/chat/completions", {"Content-Type": "text/plain"}),
+    ):
+        response = client.request(method, path, headers={"Origin": origin, **extra})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == origin
+        assert (
+            response.headers.get("access-control-allow-credentials") == "true"
+        ) == credentials
+        assert "Origin" in response.headers.get("vary", "")
+
+
+@pytest.mark.parametrize("origin", _EXTENSION_ORIGINS)
+@pytest.mark.parametrize(
+    "method,path",
+    [("OPTIONS", "/healthz"), ("GET", "/healthz"), ("POST", "/v1/chat/completions")],
+)
+def test_default_denies_extension_origins(fresh_app, origin, method, path):
+    _server_mod().configure_cors_from_env()
+    response = TestClient(fresh_app).request(
+        method,
+        path,
+        headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
+    )
+    assert response.status_code == 403
+    assert "access-control-allow-origin" not in response.headers
+
+
+@pytest.mark.parametrize("source", ["cli", "env"])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://evil.com",
+        "http://localhost:3000",
+        "ms-browser-extension://abcdefghijklmnopabcdefghijklmnop",
+        "chrome-extension://",
+        "chrome-extension://*",
+        "chrome-extension://short",
+        "chrome-extension://" + "z" * 32,
+        "moz-extension://not-a-uuid",
+        "safari-web-extension://not-a-uuid",
+        *(
+            _EXTENSION_ORIGINS[0] + suffix
+            for suffix in (
+                "/",
+                "/path",
+                ":80",
+                "?query",
+                "#fragment",
+                ".evil.com",
+                "@evil.com",
+                "\n",
+            )
+        ),
+        "chrome-extension://user@abcdefghijklmnopabcdefghijklmnop",
+    ],
+)
+def test_extension_patterns_reject_other_origins(
+    fresh_app, monkeypatch, source, origin
+):
+    entries = [
+        "chrome-extension://*",
+        "moz-extension://*",
+        "safari-web-extension://*",
+        "https://*",
+    ]
+    if source == "env":
+        monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", ",".join(entries))
+    _server_mod().configure_cors_from_env(entries if source == "cli" else None)
+    client = TestClient(fresh_app)
+    for method, path in (
+        ("OPTIONS", "/healthz"),
+        ("GET", "/healthz"),
+        ("POST", "/v1/chat/completions"),
+    ):
+        response = client.request(
+            method,
+            path,
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert "access-control-allow-origin" not in response.headers
+
+
+def test_extension_pattern_does_not_enable_other_extension_schemes(fresh_app):
+    _server_mod().configure_cors_from_env(["chrome-extension://*"])
+    client = TestClient(fresh_app)
+    for origin in _EXTENSION_ORIGINS[1:]:
+        response = client.get("/healthz", headers={"Origin": origin})
+        assert "access-control-allow-origin" not in response.headers
+
+
+def test_bare_wildcard_keeps_all_origin_and_no_credentials_behavior(fresh_app):
+    _server_mod().configure_cors(["*", "chrome-extension://*"], allow_credentials=True)
+    client = TestClient(fresh_app)
+    for origin in (_EXTENSION_ORIGINS[0], "https://evil.com"):
+        response = client.get("/healthz", headers={"Origin": origin})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "*"
+        assert "access-control-allow-credentials" not in response.headers
+
+
+def test_legacy_extension_pattern_keeps_credentials_behavior(fresh_app):
+    _server_mod().configure_cors(["chrome-extension://*"])
+    response = TestClient(fresh_app).get(
+        "/healthz", headers={"Origin": _EXTENSION_ORIGINS[0]}
+    )
+    assert response.headers.get("access-control-allow-origin") == _EXTENSION_ORIGINS[0]
+    assert response.headers.get("access-control-allow-credentials") == "true"

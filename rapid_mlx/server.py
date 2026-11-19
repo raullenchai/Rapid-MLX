@@ -1612,6 +1612,23 @@ class ResolvedCORSPolicy:
 
 _last_resolved_cors_policy: ResolvedCORSPolicy | None = None
 
+_EXTENSION_UUID_HOST = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+_EXTENSION_ORIGIN_PATTERNS = {
+    "chrome-extension://*": r"chrome-extension://[a-p]{32}",
+    "moz-extension://*": f"moz-extension://{_EXTENSION_UUID_HOST}",
+    "safari-web-extension://*": f"safari-web-extension://{_EXTENSION_UUID_HOST}",
+}
+
+
+def _extension_origin_regex(origins: list[str]) -> str | None:
+    """Compile only supported scheme wildcards, never operator-supplied regex."""
+    patterns = [
+        pattern
+        for entry, pattern in _EXTENSION_ORIGIN_PATTERNS.items()
+        if entry in origins
+    ]
+    return "(?:" + "|".join(patterns) + ")" if patterns else None
+
 
 def get_resolved_cors_policy() -> ResolvedCORSPolicy | None:
     """Return the policy configured during this process's CLI startup."""
@@ -1729,6 +1746,10 @@ def configure_cors(
     module-level ``app``. ``configure_cors_from_env`` is the production
     entry-point — it skips registration entirely when no origins are
     configured, which is what closes F-090 at the default-deny layer.
+
+    Extension scheme wildcards use Starlette's full-match regex alongside
+    literal origins, so preflight and simple requests share one matcher.
+    They echo the matched origin and keep non-wildcard credential semantics.
     """
     if not origins:
         # Defensive: callers should not invoke ``configure_cors`` with an
@@ -1767,7 +1788,10 @@ def configure_cors(
     # header instead of a cryptic 400 envelope.
     app.add_middleware(
         _SpecAlignedCORSMiddleware,
-        allow_origins=origins,
+        allow_origins=[
+            origin for origin in origins if origin not in _EXTENSION_ORIGIN_PATTERNS
+        ],
+        allow_origin_regex=_extension_origin_regex(origins),
         allow_credentials=allow_credentials,
         allow_methods=list(methods) if methods is not None else ["*"],
         allow_headers=list(headers) if headers is not None else ["*"],

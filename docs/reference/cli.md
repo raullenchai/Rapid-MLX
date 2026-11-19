@@ -225,3 +225,39 @@ the current monitoring endpoints. The request table omits prefill percentage
 and client route; per-model KV usage is marked unavailable. Prompts, responses,
 request IDs, and local checkpoint paths are never displayed. Unavailable optional
 endpoints appear in the view without printing server error bodies.
+
+## Machine-readable server state
+
+`rapid-mlx ps --json` writes one JSON object to stdout, including when no
+servers are running (`{"schema_version": 1, "servers": []}`). This is a stable
+integration contract. Consumers should ignore additional fields; incompatible
+changes require a new `schema_version`.
+
+```json
+{"schema_version":1,"servers":[{"pid":123,"bind_host":"192.168.1.4","port":8123,"base_url":"http://192.168.1.4:8123","model_ids":["my-model"],"auth_required":true,"ready":true,"started_at":1795000000.5,"log_path":null}]}
+```
+
+| Field | Schema version 1 |
+| --- | --- |
+| `pid` | Integer process ID of a discovered local CLI `serve` process |
+| `bind_host` | String bind address; prefers an observed listener over `--host` (default `127.0.0.1`) |
+| `port` | Integer listener port, otherwise the command-line port (default `8000`); `null` for an unresolved OS-assigned port |
+| `base_url` | HTTP server root, without `/v1`; wildcard IPv4/IPv6 binds use `127.0.0.1`/`[::1]` and IPv6 literals are bracketed; `null` when the port is unknown |
+| `model_ids` | Array of declared model IDs: `--served-model-name`, otherwise the requested model; empty when unknown. Does not enumerate models loaded after startup. |
+| `auth_required` | Boolean from the process's `--api-key` or `RAPID_MLX_API_KEY`; `null` if its environment cannot be inspected and no key flag is present, or if serve arguments cannot be parsed completely. Unparseable argv metadata is discarded. The key is never emitted. |
+| `ready` | `true` for HTTP 200 from `/health/ready`, `false` for 503, otherwise `null` (unreachable, rejected, or unavailable probe). Each probe times out after 0.25 seconds and sends no credentials, uses no environment proxies, and follows no redirects. |
+| `started_at` | Unix timestamp in seconds (number), or `null` when unknown |
+| `log_path` | String from `--log-file` or the process's `RAPID_MLX_LOG_FILE`, or `null` when unknown |
+
+Discovery is a snapshot and may race with process startup or shutdown. Servers
+whose process information is inaccessible may be absent. Readiness does not
+imply that an authenticated inference request will succeed. JSON mode suppresses
+the human table and version-staleness notice.
+
+`rapid-mlx ls --json` is equivalent to `rapid-mlx models --cached --json` and
+uses that existing cached-model payload.
+
+A rejected HTTP Host returns 400 with the sanitized hostname and guidance to
+configure `--trusted-hosts <name>`; the same message is logged at warning level.
+Ports and other header content are omitted. Malformed or ambiguous hosts are
+shown as `<invalid>`. Add only the intended hostname to the trusted list.
