@@ -415,7 +415,9 @@ def test_tool_parser_parity_coverage():
     )
 
 
-def _stream_xml_deltas(parser_name, text, chunks, request, *, raw_arguments=False):
+def _stream_xml_deltas(
+    parser_name, text, chunks, request, *, raw_arguments=False, allow_eos_recovery=False
+):
     parser = ToolParserManager.get_tool_parser(parser_name)(None)
     accumulated = ""
     deltas = []
@@ -436,17 +438,25 @@ def _stream_xml_deltas(parser_name, text, chunks, request, *, raw_arguments=Fals
         delta = finalize(text, request=request)
         if delta:
             deltas.append(delta)
-    if not any(delta.get("tool_calls") for delta in deltas):
-        # Match the endpoint's EOS recovery when a single coarse delta
-        # returned a prose prefix before reaching its complete call.
-        result = parser.extract_tool_calls(text, request=request)
-        return [
-            (
-                tc["name"],
-                tc["arguments"] if raw_arguments else json.loads(tc["arguments"]),
-            )
-            for tc in result.tool_calls
-        ]
+    if allow_eos_recovery and (
+        parser_name == "qwen3_coder_xml"
+        and len(chunks) == 2
+        and chunks[0] in ["<tool_call>"[:i] for i in range(2, 11)]
+    ):
+        # A single call finishing a split wrapper returns its prefix as content
+        # and needs endpoint EOS recovery. Restrict this opt-in to those exact
+        # boundaries; every other chunking must emit streaming tool deltas.
+        assert not any(delta.get("tool_calls") for delta in deltas), chunks
+        pp = StreamingPostProcessor(
+            _make_cfg_for_parser(parser_name), tools_requested=True
+        )
+        pp.tool_parser = parser
+        pp.request = request
+        pp.tool_accumulated_text = text
+        for event in pp.finalize():
+            if event.type == "tool_call":
+                deltas.append({"tool_calls": event.tool_calls})
+    assert any(delta.get("tool_calls") for delta in deltas), chunks
     calls = {}
     name_emissions = []
     for delta in deltas:
@@ -555,7 +565,12 @@ def test_duplicate_parameter_closers_streaming_parity(parser_name, tail, sibling
     assert _normalize(_extract_stream(parser_name, text)) == expected
     request = _xml_request(("edit",))
     for chunks in _every_split(text):
-        assert _stream_xml_deltas(parser_name, text, chunks, request) == expected
+        assert (
+            _stream_xml_deltas(
+                parser_name, text, chunks, request, allow_eos_recovery=True
+            )
+            == expected
+        )
 
 
 @pytest.mark.parametrize("parser_name", ["hermes", "qwen3_coder_xml"])
@@ -597,9 +612,12 @@ def test_balanced_literal_parameter_markup_at_every_byte_split(
     assert _normalize(_extract_stream(parser_name, text)) == expected
     # ASCII text makes every character split a byte boundary too.
     for chunks in _every_split(text):
-        assert _stream_xml_deltas(parser_name, text, chunks, request) == expected, (
-            chunks
-        )
+        assert (
+            _stream_xml_deltas(
+                parser_name, text, chunks, request, allow_eos_recovery=True
+            )
+            == expected
+        ), chunks
 
 
 @pytest.mark.parametrize("parser_name", ["qwen3_coder_xml", "hermes"])
@@ -671,7 +689,12 @@ def test_literal_marker_and_duplicate_closers_together_at_every_split(quoted, ta
         # Raw marker text is ambiguous; streaming must match the complete parse.
         expected = _normalize(_extract_nonstream("qwen3_coder_xml", text))
     for chunks in _every_split(text):
-        assert _stream_xml_deltas("qwen3_coder_xml", text, chunks, request) == expected
+        assert (
+            _stream_xml_deltas(
+                "qwen3_coder_xml", text, chunks, request, allow_eos_recovery=True
+            )
+            == expected
+        )
 
 
 def test_later_quoted_marker_payload_is_lossless_at_every_byte_split():
@@ -722,4 +745,84 @@ def test_duplicate_closer_edge_cases_match_at_every_split(value, expected_value)
     expected = [("edit", {"new_string": expected_value})]
     assert _normalize(_extract_nonstream("qwen3_coder_xml", text)) == expected
     for chunks in _every_split(text):
-        assert _stream_xml_deltas("qwen3_coder_xml", text, chunks, request) == expected
+        assert (
+            _stream_xml_deltas(
+                "qwen3_coder_xml", text, chunks, request, allow_eos_recovery=True
+            )
+            == expected
+        )
+
+
+@pytest.mark.parametrize("fresh_count", [0, 1])
+def test_complete_body_short_batch_keeps_last_emitted_index(monkeypatch, fresh_count):
+    """An empty or single-call batch slice must use the current-call path."""
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    parser = parser_cls(None)
+    request = _xml_request(("read",))
+    bodies = [
+        f'<tool_call><function=read><parameter=filePath>"file{i}.txt"'
+        "</parameter></function></tool_call>"
+        for i in range(3)
+    ]
+    text = "".join(bodies)
+    expected = parser.extract_tool_calls(text, request=request).tool_calls
+    extract = parser.extract_tool_calls
+    short_batches = []
+
+    def extract_with_short_batch(current_text, request=None):
+        result = extract(current_text, request=request)
+        if len(parser.prev_tool_call_arr) == 2:
+            # Model a complete-body pass whose recovery list has no new call,
+            # or just the current call. Structural parsing still has its body.
+            result.tool_calls = result.tool_calls[
+                : 2 + (fresh_count if parser.current_tool_index == 2 else 0)
+            ]
+            if parser.current_tool_index == 2:
+                short_batches.append(len(result.tool_calls[2:]))
+        return result
+
+    monkeypatch.setattr(parser, "extract_tool_calls", extract_with_short_batch)
+    chunks = ["".join(bodies[:2]), bodies[2][: -len("</tool_call>")], "</tool_call>"]
+    accumulated = ""
+    calls = []
+    for chunk in chunks:
+        previous = accumulated
+        accumulated += chunk
+        delta = parser.extract_tool_calls_streaming(
+            previous, accumulated, chunk, request=request
+        )
+        calls.extend((delta or {}).get("tool_calls", []))
+    assert short_batches == [fresh_count]
+    assert parser.current_tool_index == 2
+    assert calls[-1]["id"] == parser._current_tool_id
+    assert [call["index"] for call in calls] == [0, 1, 2]
+    assert [
+        (call["function"]["name"], json.loads(call["function"]["arguments"]))
+        for call in calls
+    ] == [(call["name"], json.loads(call["arguments"])) for call in expected]
+    # Later framing must not reopen an already emitted call.
+    for chunk in ("\n", " ", "\n"):
+        previous = accumulated
+        accumulated += chunk
+        delta = parser.extract_tool_calls_streaming(
+            previous, accumulated, chunk, request=request
+        )
+        assert not (delta or {}).get("tool_calls")
+
+
+def test_xml_stream_helper_requires_streamed_calls(monkeypatch):
+    """A silent streaming parser cannot pass parity via complete extraction."""
+    parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
+    text = '<tool_call><function=read><parameter=path>"a"</parameter></function></tool_call>'
+    monkeypatch.setattr(
+        parser_cls, "extract_tool_calls_streaming", lambda *a, **kw: None
+    )
+    for allow_eos_recovery in (False, True):
+        with pytest.raises(AssertionError):
+            _stream_xml_deltas(
+                "qwen3_coder_xml",
+                text,
+                [text],
+                _xml_request(("read",)),
+                allow_eos_recovery=allow_eos_recovery,
+            )

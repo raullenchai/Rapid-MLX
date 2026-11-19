@@ -2281,29 +2281,33 @@ class Qwen3CoderToolParser(ToolParser):
                             calls = complete.tool_calls[
                                 self.current_tool_index : closed_count
                             ]
-                            self.prev_tool_call_arr.extend(calls)
-                            self.current_tool_index += len(calls) - 1
-                            self.json_started = True
-                            self.json_closed = True
-                            self.in_function = False
-                            self.accumulated_params = {}
-                            return {
-                                "tool_calls": [
-                                    {
-                                        "index": index,
-                                        "id": call["id"],
-                                        "type": "function",
-                                        "function": {
-                                            "name": call["name"],
-                                            "arguments": call["arguments"],
-                                        },
-                                    }
-                                    for index, call in enumerate(
-                                        calls,
-                                        start=self.current_tool_index + 1 - len(calls),
-                                    )
-                                ]
-                            }
+                            # Empty/single slices use the current-call path below.
+                            if len(calls) > 1:
+                                self.prev_tool_call_arr.extend(calls)
+                                self.current_tool_index += len(calls) - 1
+                                self.json_started = True
+                                self.json_closed = True
+                                self.in_function = False
+                                self.accumulated_params = {}
+                                return {
+                                    "tool_calls": [
+                                        {
+                                            "index": index,
+                                            "id": call["id"],
+                                            "type": "function",
+                                            "function": {
+                                                "name": call["name"],
+                                                "arguments": call["arguments"],
+                                            },
+                                        }
+                                        for index, call in enumerate(
+                                            calls,
+                                            start=self.current_tool_index
+                                            + 1
+                                            - len(calls),
+                                        )
+                                    ]
+                                }
                         tools = None
                         if request and isinstance(request, dict):
                             tools = request.get("tools")
