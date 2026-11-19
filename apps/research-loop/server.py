@@ -1076,6 +1076,8 @@ class Handler(BaseHTTPRequestHandler):
                 "each with Claim / Why (cite [S#] when supported) / Prediction. "
                 "Use at most 30 words for the answer and 55 words per hypothesis. "
                 "Describe possible causes as hypotheses, not established diagnoses. "
+                "Only propose changes the task rules allow; never propose changing a fixed "
+                "constant, the data split, the budget, or the metric. "
                 "Cite only claims supported by the provided passages; say when the literature is silent. "
                 "Never narrate your own reasoning, plans, or these instructions. "
                 "Never claim to run experiments or invent results. Stop when the answer is complete."
