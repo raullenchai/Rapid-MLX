@@ -1754,3 +1754,158 @@ def test_required_multi_tool_retry_cancelled_output_returns_499(monkeypatch):
     assert resp.status_code == 499, resp.text
     assert resp.content == b""
     assert len(engine.guided_calls) == 1
+
+
+@pytest.mark.parametrize("choice", ["pinned", "required", "multi"])
+@pytest.mark.parametrize("parsed", [True, False])
+def test_forced_schema_failure_guided_retry(monkeypatch, choice, parsed):
+    import copy
+    import json
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    tools = copy.deepcopy(_TOOLS_FIXTURE if choice == "multi" else _TOOLS_FIXTURE[:1])
+    tools[0]["function"]["parameters"]["required"] = ["city"]
+    tools[0]["function"]["parameters"]["properties"]["city"]["maxLength"] = 5
+
+    class InvalidEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            if parsed:
+                output.text = output.raw_text = (
+                    '<tool_call>{"name":"get_weather",'
+                    '"arguments":{"city":"Too long a city"}}</tool_call>'
+                )
+            return output
+
+    engine = InvalidEngine('[{"name":"get_weather","parameters":{"city":"Tokyo"}}]')
+    resp = _required_retry_request(
+        _make_client(engine),
+        tools=tools,
+        tool_choice=(
+            {"type": "function", "function": {"name": "get_weather"}}
+            if choice == "pinned"
+            else "required"
+        ),
+        parallel_tool_calls=True,
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    calls = result["choices"][0]["message"]["tool_calls"]
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_weather"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Tokyo"}
+    assert result["usage"]["completion_tokens"] == 13
+    assert result["usage"]["prompt_tokens"] == 8
+    assert len(engine.guided_calls) == 1
+    schema = engine.guided_calls[0][1]
+    assert len(schema["items"]["anyOf"]) == len(tools)
+    if choice == "pinned":
+        assert schema["maxItems"] == 1
+    else:
+        assert "maxItems" not in schema
+
+
+@pytest.mark.parametrize("parsed", [True, False])
+@pytest.mark.parametrize(
+    "failure", ["unavailable", "invalid", "compile", "wrong_tool", "multiple"]
+)
+@pytest.mark.parametrize("pinned", [True, False])
+def test_forced_schema_retry_preserves_original_error(
+    monkeypatch, parsed, failure, pinned
+):
+    import copy
+
+    tools = copy.deepcopy(_TOOLS_FIXTURE[:1])
+    tools[0]["function"]["parameters"]["required"] = ["city"]
+    tools[0]["function"]["parameters"]["properties"]["city"]["maxLength"] = 5
+
+    class InvalidEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            if parsed:
+                output.text = output.raw_text = (
+                    '<tool_call>{"name":"get_weather",'
+                    '"arguments":{"city":"Too long a city"}}</tool_call>'
+                )
+            return output
+
+    retry_text = {
+        "compile": RuntimeError("schema compile failed"),
+        "wrong_tool": '[{"name":"get_time","parameters":{"city":"Tokyo"}}]',
+        "multiple": '[{"name":"get_weather","parameters":{"city":"Tokyo"}},'
+        '{"name":"get_weather","parameters":{"city":"Tokyo"}}]',
+    }.get(failure, '[{"name":"get_weather","parameters":{"city":7}}]')
+    engine = InvalidEngine(retry_text)
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: False)
+    client = _make_client(engine)
+    overrides = {
+        "tools": tools,
+        "tool_choice": (
+            {"type": "function", "function": {"name": "get_weather"}}
+            if pinned
+            else "required"
+        ),
+    }
+    original = _required_retry_request(client, **overrides)
+    assert original.status_code == (400 if parsed else 422), original.text
+    assert (
+        "violates declared schema" if parsed else "required property"
+    ) in original.text
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.is_guided_available",
+        lambda: failure != "unavailable",
+    )
+    response = _required_retry_request(client, **overrides)
+    assert response.status_code == original.status_code
+    assert response.json() == original.json()
+    assert len(engine.guided_calls) == (0 if failure == "unavailable" else 1)
+
+
+def test_auto_schema_violation_does_not_retry(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+
+    class InvalidEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            output.text = output.raw_text = (
+                '<tool_call>{"name":"get_weather","arguments":{"city":"Too long a city"}}</tool_call>'
+            )
+            return output
+
+    engine = InvalidEngine()
+    import copy
+
+    tools = copy.deepcopy(_TOOLS_FIXTURE)
+    tools[0]["function"]["parameters"]["properties"]["city"]["maxLength"] = 5
+    response = _required_retry_request(
+        _make_client(engine), tool_choice="auto", tools=tools
+    )
+    assert response.status_code == 400, response.text
+    assert "violates declared schema" in response.text
+    assert not engine.guided_calls
+
+
+def test_pinned_argument_repair_failure_guided_retry(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._repair_forced_call_arguments",
+        lambda *args: "Arguments do not satisfy the declared schema",
+    )
+
+    class ParsedEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            output.text = output.raw_text = (
+                '<tool_call>{"name":"get_weather","arguments":{"city":"Tokyo"}}'
+                "</tool_call>"
+            )
+            return output
+
+    engine = ParsedEngine('[{"name":"get_weather","parameters":{"city":"Tokyo"}}]')
+    response = _required_retry_request(
+        _make_client(engine),
+        tool_choice={"type": "function", "function": {"name": "get_weather"}},
+    )
+    assert response.status_code == 200, response.text
+    assert len(engine.guided_calls) == 1
