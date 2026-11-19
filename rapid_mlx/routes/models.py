@@ -541,6 +541,68 @@ def _locked_embedding_id() -> str | None:
         return None
 
 
+def _embedding_metadata() -> dict:
+    """Read discovery facts from the dedicated, already loaded embedding engine.
+
+    Never load weights or run a probe inference during model discovery. The
+    engine's effective limit is the one used by both embedding input paths;
+    suppress its compatibility fallback when no real limit was discovered.
+    """
+    try:
+        engine = get_config().embedding_engine
+        if engine is None:
+            from ..server import _embedding_engine
+
+            engine = _embedding_engine
+        if engine is None or engine.is_loaded is not True:
+            return {}
+        model = engine._model
+        config = getattr(model, "config", None)
+        if config is None:
+            config = getattr(model, "args", None)
+        text_config = getattr(config, "text_config", config)
+        metadata: dict = {}
+        # Projection sizes take precedence over the encoder hidden width.
+        for holder, fields in (
+            (config, ("embedding_dim", "projection_dim")),
+            (text_config, ("embedding_dim", "projection_dim", "hidden_size")),
+        ):
+            for field in fields:
+                value = getattr(holder, field, None)
+                if type(value) is int and value > 0:
+                    metadata["embedding_dimensions"] = value
+                    # The embeddings route accepts every integer in this range
+                    # and L2-renormalizes the sliced vector. This describes API
+                    # support, not a guarantee of retrieval quality at each size.
+                    metadata["supported_dimensions"] = {"min": 1, "max": value}
+                    break
+            if "embedding_dimensions" in metadata:
+                break
+        limit = engine.effective_max_length
+        if type(limit) is int and limit > 0:
+            if (
+                engine._discover_model_max_length() is not None
+                or engine._max_length_setting != "auto"
+            ):
+                metadata["max_input_tokens"] = limit
+        pooling = getattr(config, "pooling_config", None)
+        if isinstance(pooling, dict):
+            mode = pooling.get("pooling_mode")
+            if isinstance(mode, str) and mode:
+                metadata["pooling"] = mode
+        normalized = getattr(config, "normalized", None)
+        if isinstance(normalized, bool):
+            metadata["normalized"] = normalized
+        # The local native encoder always mean-pools and normalizes after its
+        # configured projection. These are implementation facts, not catalog data.
+        if getattr(model, "model_type", None) == "embedding_gemma2":
+            metadata["pooling"] = "mean"
+            metadata["normalized"] = True
+        return metadata
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _locked_rerank_id() -> str | None:
     """Return the configured ``--rerank-model`` id, if any."""
     locked = get_config().rerank_model_locked
@@ -1151,6 +1213,7 @@ def _build_model_info_base(model_id: str) -> ModelInfo:
 
     locked = _locked_embedding_id()
     if locked is not None and model_id == locked:
+        embedding_metadata = _embedding_metadata()
         # The embedding entry: ``capabilities=["embedding"]`` plus an
         # explicit ``modality="text"`` (F-D01 cosmetic — pre-fix this
         # came back as ``null`` and clients couldn't tell embedding
@@ -1161,6 +1224,7 @@ def _build_model_info_base(model_id: str) -> ModelInfo:
         if profile is None:
             return ModelInfo(
                 id=model_id,
+                **embedding_metadata,
                 modality=_reported_modality_for_embedding(),
                 capabilities=["embedding"],
                 context_window=context_window,
@@ -1178,6 +1242,7 @@ def _build_model_info_base(model_id: str) -> ModelInfo:
         )
         return ModelInfo(
             id=model_id,
+            **embedding_metadata,
             recommended_sampling=sampling,
             is_hybrid=reported_hybrid,
             is_moe=profile.is_moe,

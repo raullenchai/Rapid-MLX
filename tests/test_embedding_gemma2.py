@@ -765,3 +765,72 @@ def test_native_vision_loader_dispatch_and_legacy_rejection(vision_engine, monke
     legacy = EmbeddingEngine("legacy-model", vision=True)
     with pytest.raises(ValueError, match="requires EmbeddingGemma 2"):
         legacy.load()
+
+
+@pytest.mark.parametrize("input_value", ["2 3", [2, 3]])
+def test_discovery_dimension_matches_real_embedding_call(
+    native_engine, monkeypatch, input_value
+):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models
+    from tests.test_embeddings_route import _build_embed_app
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "model_name", None)
+    monkeypatch.setattr(cfg, "model_alias", None)
+    monkeypatch.setattr(cfg, "model_registry", None)
+    monkeypatch.setattr(cfg, "engine", None)
+    # Use a small serving limit so discovery must expose the policy's
+    # effective limit rather than the checkpoint's larger rotary window.
+    native_engine.effective_max_length = 16
+    client, restore = _build_embed_app(
+        monkeypatch, native_engine, embedding_model_locked=native_engine.model_name
+    )
+    client.app.include_router(models.router)
+    try:
+        with client:
+            listing = client.get("/v1/models")
+            assert listing.status_code == 200
+            card = next(
+                item
+                for item in listing.json()["data"]
+                if item["id"] == native_engine.model_name
+            )
+            detail = client.get(f"/v1/models/{native_engine.model_name}")
+            assert detail.status_code == 200
+            assert detail.json()["embedding_dimensions"] == card["embedding_dimensions"]
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": native_engine.model_name, "input": input_value},
+            )
+            assert response.status_code == 200, response.text
+            assert card["embedding_dimensions"] == len(
+                response.json()["data"][0]["embedding"]
+            )
+            assert (
+                card["embedding_dimensions"]
+                == native_engine._model.config.text_config.embedding_dim
+            )
+            assert card["max_input_tokens"] == 16
+            for dimension in (1, card["embedding_dimensions"]):
+                response = client.post(
+                    "/v1/embeddings",
+                    json={
+                        "model": native_engine.model_name,
+                        "input": input_value,
+                        "dimensions": dimension,
+                    },
+                )
+                assert response.status_code == 200, response.text
+                assert len(response.json()["data"][0]["embedding"]) == dimension
+            response = client.post(
+                "/v1/embeddings",
+                json={
+                    "model": native_engine.model_name,
+                    "input": input_value,
+                    "dimensions": card["supported_dimensions"]["max"] + 1,
+                },
+            )
+            assert response.status_code == 400
+    finally:
+        restore()
