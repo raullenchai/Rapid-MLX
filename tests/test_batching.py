@@ -9,7 +9,10 @@ for the vLLM-style continuous batching implementation.
 import pytest
 
 pytest.importorskip("mlx")
-pytestmark = pytest.mark.requires_mlx
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.usefixtures("preserve_mlx_generation_streams"),
+]
 
 
 import asyncio

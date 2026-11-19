@@ -31,7 +31,7 @@ async def _warmup_engine(engine, sampling_params) -> None:
 
 
 @pytest.fixture(scope="module")
-def mlx_executor():
+def mlx_executor(preserve_mlx_generation_streams):
     """Single mlx-step worker thread, initialized via ``_init_mlx_step_thread``.
 
     Tests share one executor across the module so model weights, KV caches,
