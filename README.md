@@ -728,8 +728,9 @@ For the complete feature set — chat, embeddings, audio, and System One on top 
 ## Build on Rapid-MLX
 
 Building a launcher, model picker, or monitoring tool? See [Build on Rapid-MLX](docs/guides/build-on-rapid-mlx.md)
-for stable service commands, model loading and eviction, health, status, and metrics examples.
-After preparing a dedicated service account and its model cache, start a background server:
+for child-process startup, existing-server detection, readiness polling, clean shutdown,
+and stable model, health, status, and metrics examples. For an unattended, always-on Mac,
+prepare a dedicated service account and its model cache, then install the system daemon:
 
 ```bash
 sudo rapid-mlx service install --service-user serveuser --model qwen3.5-4b-4bit

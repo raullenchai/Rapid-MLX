@@ -1,8 +1,9 @@
 # Build on Rapid-MLX
 
-Use Rapid-MLX's existing service and HTTP control plane to build launchers,
-model pickers, and monitoring tools on an Apple Silicon Mac. You do not need
-to start a separate server process for each model.
+Build menubar apps, editor plugins, scripts, and model pickers on an Apple
+Silicon Mac by starting `rapid-mlx serve` as a child process or connecting to
+an existing server. Use its HTTP control plane to manage models; one server
+can switch models without starting another process.
 
 **Stable** below means the documented commands, request fields, response
 field types, and success codes are covered by
@@ -13,43 +14,83 @@ specialized serving lanes may expose different controls.
 
 ## Run a background server
 
-**Stable:** the service commands shown here. `rapid-mlx service` manages a
-macOS system LaunchDaemon, which starts at boot without a graphical login.
-First create a dedicated non-administrator account (`serveuser` below), install
-Rapid-MLX as that account, and download the intended model once as that account.
-Then run installation from an administrator session:
+**Stable:** `rapid-mlx serve <model> --host 127.0.0.1 --port 8000` and the
+readiness endpoint below. For tools that manage their own server lifetime,
+run `serve` as a child process without sudo. The equivalent terminal command is:
 
 ```bash
-sudo rapid-mlx service install --service-user serveuser --model qwen3.5-4b-4bit --host 127.0.0.1 --port 8000
-rapid-mlx service status --json
-sudo rapid-mlx service restart
+rapid-mlx serve qwen3.5-4b-4bit --host 127.0.0.1 --port 8000
 ```
 
-From Python, run the same CLI with an argument list. Run installation/restart
-from an administrator terminal where `sudo` can request authorization:
+This Python example uses `httpx` (installed with Rapid-MLX). First probe the
+known port: reuse an existing server, including one returning HTTP 503 while
+starting, and start a child only when the connection fails. Unexpected HTTP
+errors or an unresponsive listener are surfaced instead of starting a second
+server. Reserve a port for your integration; a readiness response alone does
+not establish the listener's identity or guarantee a particular model.
 
 ```python
 import subprocess
+import time
 
-subprocess.run([
-    "sudo", "rapid-mlx", "service", "install",
-    "--service-user", "serveuser", "--model", "qwen3.5-4b-4bit",
-    "--host", "127.0.0.1", "--port", "8000",
-], check=True)
-subprocess.run(["rapid-mlx", "service", "status", "--json"], check=True)
+import httpx
+
+child = None
+with httpx.Client(base_url="http://127.0.0.1:8000", timeout=2.0, trust_env=False) as probe:
+    try:
+        try:
+            response = probe.get("/health/ready")
+        except httpx.ConnectError:
+            child = subprocess.Popen([
+                "rapid-mlx", "serve", "qwen3.5-4b-4bit",
+                "--host", "127.0.0.1", "--port", "8000",
+            ])
+        else:
+            if response.status_code != 503:
+                response.raise_for_status()
+
+        deadline = time.monotonic() + 300.0
+        while True:
+            if child is not None and child.poll() is not None:
+                raise RuntimeError("Rapid-MLX exited before becoming ready")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Rapid-MLX did not become ready within 300 seconds")
+            try:
+                response = probe.get("/health/ready")
+            except httpx.ConnectError:
+                pass  # The child may not have bound its listener yet.
+            else:
+                if response.status_code != 503:
+                    response.raise_for_status()
+                    if response.json()["ready"] is True:
+                        break
+            time.sleep(0.5)
+
+        # Keep your controller's work here (see the model/status examples below).
+        # The finally block runs when that work finishes or raises an exception.
+    finally:
+        if child is not None:  # Never stop a server this controller did not start.
+            child.terminate()  # SIGTERM requests graceful server shutdown on macOS.
+            try:
+                child.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
 ```
 
-After installation, use the curl health example below to check the HTTP listener;
-there is no HTTP service-install operation. To remove the daemon registration:
+Use an installed `rapid-mlx` on your controller's PATH and a model appropriate
+for the Mac. Initial downloads can exceed the example's five-minute readiness
+budget; adjust it for your deployment. Readiness can also mean lazy standby,
+with weights not yet loaded. Keep the child handle for your app's lifetime,
+and run the cleanup on cancellation or normal exit. The thirty-second shutdown
+budget is an example policy: allow longer for active work before forcing exit.
+Abrupt termination of the controller cannot run Python's `finally` block.
+
+To inspect a known listener manually (HTTP 503 means it is not ready yet):
 
 ```bash
-sudo rapid-mlx service uninstall
+curl -fsS http://127.0.0.1:8000/health/ready
 ```
-
-See the [headless macOS service guide](headless-macos-service.md) for account
-setup, FileVault boot limits, credentials, persistent configuration changes,
-and recovery. Runtime model loading below changes the running process only;
-it does not rewrite the service's boot configuration.
 
 ## Connect your controller
 
@@ -68,6 +109,7 @@ api = httpx.Client(
     base_url="http://127.0.0.1:8000",
     headers={"Authorization": f"Bearer {os.environ['RAPID_MLX_API_KEY']}"},
     timeout=1800.0,
+    trust_env=False,  # Never send the API key through an HTTP(S)_PROXY.
 )
 ```
 
@@ -258,11 +300,54 @@ rapid_mlx_model_loaded 1
 **Experimental:** metric families beyond the sample guaranteed here; consult
 [the server guide](server.md) before depending on individual series.
 
+## Always-on Mac (system daemon)
+
+For an unattended, always-on Mac, use the system daemon instead of tying the
+server lifetime to your app. **Stable:** the service commands shown here.
+`rapid-mlx service` manages a macOS system LaunchDaemon, which starts at boot
+without a graphical login.
+First create a dedicated non-administrator account (`serveuser` below), install
+Rapid-MLX as that account, and download the intended model once as that account.
+Then run installation from an administrator session:
+
+```bash
+sudo rapid-mlx service install --service-user serveuser --model qwen3.5-4b-4bit --host 127.0.0.1 --port 8000
+rapid-mlx service status --json
+sudo rapid-mlx service restart
+```
+
+From Python, run the same CLI with an argument list. Run installation/restart
+from an administrator terminal where `sudo` can request authorization:
+
+```python
+import subprocess
+
+subprocess.run([
+    "sudo", "rapid-mlx", "service", "install",
+    "--service-user", "serveuser", "--model", "qwen3.5-4b-4bit",
+    "--host", "127.0.0.1", "--port", "8000",
+], check=True)
+subprocess.run(["rapid-mlx", "service", "status", "--json"], check=True)
+```
+
+After installation, use the curl health example above to check the HTTP listener;
+there is no HTTP service-install operation. To remove the daemon registration:
+
+```bash
+sudo rapid-mlx service uninstall
+```
+
+See the [headless macOS service guide](headless-macos-service.md) for account
+setup, FileVault boot limits, credentials, persistent configuration changes,
+and recovery. Runtime model loading below changes the running process only;
+it does not rewrite the service's boot configuration.
+
 ## Discover running servers
 
 **Experimental / forthcoming:** `ps --json` (#5884) is **coming in the next release**.
 This guide intentionally makes no schema promise for it. Until then, use the
-stable service status command above and query known server addresses directly.
+readiness probe on known server addresses as above. For a system daemon,
+use the stable service status command above as well.
 Close the Python client when your controller shuts down:
 
 ```python

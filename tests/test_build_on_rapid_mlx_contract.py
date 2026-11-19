@@ -5,8 +5,13 @@ import asyncio
 import json
 import re
 import shlex
+import subprocess
+import time
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
+
+import httpx
+import pytest
 
 from rapid_mlx.cli import build_parser
 from rapid_mlx.routes import health, residency
@@ -72,6 +77,102 @@ def test_stable_inventory_and_readme_link():
         assert (GUIDE.parent / target.split("#")[0]).is_file(), target
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "existing_ready",
+        "existing_starting",
+        "existing_timeout",
+        "foreign_listener",
+        "probe_timeout",
+        "child_ready",
+        "child_exited",
+        "child_timeout",
+        "child_kill",
+        "interrupted",
+    ],
+)
+def test_documented_child_lifecycle(scenario, monkeypatch):
+    text = GUIDE.read_text()
+    lifecycle = text.split("## Run a background server", 1)[1].split("\n## ", 1)[0]
+    block = re.search(r"```python\n(.*?)\n```", lifecycle, re.S)[1]
+    assert "subprocess.Popen" in block
+    assert text.index("## Always-on Mac (system daemon)") > text.index(
+        "## Observe the server"
+    )
+    request = httpx.Request("GET", "http://127.0.0.1:8000/health/ready")
+    ready = httpx.Response(200, json={"ready": True}, request=request)
+    starting = httpx.Response(503, json={"detail": "model loading"}, request=request)
+    refused = httpx.ConnectError("refused", request=request)
+    scenarios = {
+        "existing_ready": ([ready, ready], None),
+        "existing_starting": ([starting, starting, ready], None),
+        "existing_timeout": ([starting], TimeoutError),
+        "foreign_listener": (
+            [httpx.Response(404, request=request)],
+            httpx.HTTPStatusError,
+        ),
+        "probe_timeout": (
+            [httpx.ReadTimeout("timed out", request=request)],
+            httpx.ReadTimeout,
+        ),
+        "child_ready": ([refused, refused, starting, ready], None),
+        "child_exited": ([refused], RuntimeError),
+        "child_timeout": ([refused, starting], TimeoutError),
+        "child_kill": ([refused, starting], TimeoutError),
+        "interrupted": ([refused, KeyboardInterrupt()], KeyboardInterrupt),
+    }
+    responses, error = scenarios[scenario]
+
+    def get(path):
+        assert path == "/health/ready"
+        result = responses.pop(0) if len(responses) > 1 else responses[0]
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    client = Mock()
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock(return_value=False)
+    client.get.side_effect = get
+    monkeypatch.setattr(httpx, "Client", Mock(return_value=client))
+    child = Mock()
+    child.poll.return_value = 1 if scenario == "child_exited" else None
+    if scenario == "child_kill":
+        child.wait.side_effect = [subprocess.TimeoutExpired("rapid-mlx", 30), 0]
+    popen = Mock(return_value=child)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    now = 0.0
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    monkeypatch.setattr(time, "sleep", sleep)
+    if error:
+        with pytest.raises(error):
+            exec(compile(block, str(GUIDE), "exec"), {})
+    else:
+        exec(compile(block, str(GUIDE), "exec"), {})
+    owns_child = scenario.startswith("child_") or scenario == "interrupted"
+    assert popen.call_count == int(owns_child)
+    if owns_child:
+        args = build_parser().parse_args(popen.call_args.args[0][1:])
+        assert (args.command, args.model, args.host, args.port) == (
+            "serve",
+            "qwen3.5-4b-4bit",
+            "127.0.0.1",
+            8000,
+        )
+        child.terminate.assert_called_once_with()
+        assert child.wait.call_count == (2 if scenario == "child_kill" else 1)
+        assert child.kill.call_count == int(scenario == "child_kill")
+    else:
+        child.terminate.assert_not_called()
+    client.__exit__.assert_called_once()
+
+
 def test_stable_command_examples_parse():
     parser = build_parser()
     commands = re.findall(r"^(?:sudo )?rapid-mlx (.+)$", GUIDE.read_text(), re.M)
@@ -80,18 +181,21 @@ def test_stable_command_examples_parse():
     for block in re.findall(r"```python\n(.*?)\n```", GUIDE.read_text(), re.S):
         for node in ast.walk(ast.parse(block)):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if ast.unparse(node.func) == "subprocess.run":
+                if ast.unparse(node.func) in {"subprocess.run", "subprocess.Popen"}:
                     argv = ast.literal_eval(node.args[0])
-                    assert argv[:2] == ["rapid-mlx", "service"] or argv[:3] == [
-                        "sudo",
-                        "rapid-mlx",
-                        "service",
-                    ]
+                    assert "rapid-mlx" in argv[:2]
                     commands.append(shlex.join(argv[argv.index("rapid-mlx") + 1 :]))
     for command in commands:
         args = parser.parse_args(shlex.split(command))
-        assert args.command == "service"
-        assert args.service_command in {"install", "status", "restart", "uninstall"}
+        if args.command == "serve":
+            assert (args.model, args.host, args.port) == (
+                "qwen3.5-4b-4bit",
+                "127.0.0.1",
+                8000,
+            )
+        else:
+            assert args.command == "service"
+            assert args.service_command in {"install", "status", "restart", "uninstall"}
 
 
 def test_stable_route_examples(metrics_client, residency_device_memory, monkeypatch):
