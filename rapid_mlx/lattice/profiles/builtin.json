@@ -843,6 +843,19 @@
       }
     },
     {
+      "id": "lfm2moe-affine4-enrollment",
+      "model": {
+        "family": "lfm2moe_affine4_install"
+      },
+      "knobs": {
+        "lfm2moe_affine4": true
+      },
+      "provenance": {
+        "evidence": "LFM2-MoE affine4 singleton expert fusion; exact class/layout checks and a per-block 2% relative-RMS load-time probe are mandatory. Performance qualification pending.",
+        "hardware_scope": "Metal devices passing the local numerical probe; no new performance claim."
+      }
+    },
+    {
       "id": "moe-decode-fusion-enrollment",
       "model": {
         "family": "moe_decode_fusion_install"

@@ -665,6 +665,7 @@ rapid_mlx = [
     "kernels/*.metal",
     "patches/qwen35_affine4_*.metal",
     "patches/gemma4_affine4_*.metal",
+    "patches/lfm2moe_affine4_*.metal",
     "patches/QWEN35_AFFINE4_LICENSE",
     "chat_runtime/LICENSE-PROMPTS",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
