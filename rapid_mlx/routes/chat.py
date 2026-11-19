@@ -6848,320 +6848,12 @@ async def _create_chat_completion_impl(
     # restore symmetry we synthesise a tool_call server-side when the
     # target tool is unambiguous — named-function form (the name is
     # the choice), or ``"required"`` with a single tool entry (the
-    # name is unique). When ``"required"`` is paired with multiple
-    # tools and the parser returned nothing, retry once with a tool-array
-    # schema so the decoder selects the tool and its arguments together.
-    # Preserve the existing 422 diagnostic if that retry cannot satisfy it.
+    # name is unique). If no call can be recovered, or the forced call
+    # fails schema validation, retry once with a tool-array schema. A pinned
+    # function permits exactly one call to that function; required permits
+    # any declared tool. Preserve the original 400/422 if recovery fails.
     # Streaming path is best-effort prompt-injection only; once SSE
     # chunks are out we can't 422 mid-flight.
-    if request.tool_choice is not None and request.tools:
-        if request.tool_choice == "required" and not tool_calls:
-            if len(request.tools) == 1:
-                _solo_name = request.tools[0].function.get("name")
-                if _solo_name:
-                    logger.warning(
-                        "tool_choice='required' on a parser-only path produced "
-                        "no tool_calls; synthesising a call to the sole "
-                        "available tool %r (recovering arguments from raw "
-                        "text where possible) to honor the OpenAI tool_call-"
-                        "guaranteed contract (#571).",
-                        _solo_name,
-                    )
-                    tool_calls = [
-                        _synthesize_forced_tool_call(
-                            _solo_name,
-                            raw_text=output.raw_text or output.text,
-                            tools=request.tools,
-                        )
-                    ]
-                    # #1256: never report a successful forced call whose
-                    # synthesised arguments fail the tool's ``required`` schema.
-                    _synth_err = _forced_synth_schema_error(
-                        _solo_name,
-                        tool_calls[0].function.arguments,
-                        request.tools,
-                    )
-                    if _synth_err:
-                        raise HTTPException(status_code=422, detail=_synth_err)
-            elif len(request.tools) > 1 and not request.stream:
-                from ..api.guided import (
-                    build_json_schema_logits_processor,
-                    is_guided_available,
-                    resolve_schema_reasoning_end_id,
-                )
-
-                if is_guided_available():
-                    retry_schema = {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "anyOf": [
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "name": {"const": fn["name"]},
-                                        "parameters": fn.get("parameters")
-                                        or {"type": "object", "properties": {}},
-                                    },
-                                    "required": ["name", "parameters"],
-                                    "additionalProperties": False,
-                                }
-                                for tool in request.tools
-                                if (fn := tool.function) is not None
-                                and isinstance(fn.get("name"), str)
-                            ]
-                        },
-                    }
-                    if request.parallel_tool_calls is False:
-                        retry_schema["maxItems"] = 1
-                    retry_kwargs = {
-                        key: value
-                        for key, value in chat_kwargs.items()
-                        if key
-                        not in {
-                            "grammar_logits_processor",
-                            "forced_assistant_prefix",
-                            "raise_on_failure",
-                        }
-                    }
-                    # Processor cursors belong to the abandoned generation.
-                    retry_kwargs.pop("reasoning_budget_logits_processor", None)
-                    try:
-                        logger.info(
-                            "tool_choice='required': attempting single guided "
-                            "tool-array retry after no parsed tool_calls"
-                        )
-                        if _schema_reasoning:
-                            end_id = resolve_schema_reasoning_end_id(
-                                engine.tokenizer, cfg.reasoning_parser
-                            )
-                            if end_id is None:
-                                raise RuntimeError("No atomic reasoning-end marker")
-                            processor = await asyncio.to_thread(
-                                build_json_schema_logits_processor,
-                                engine.tokenizer,
-                                retry_schema,
-                                reasoning_end_id=end_id,
-                            )
-                            if processor is None:
-                                raise RuntimeError("Tool-array schema compile failed")
-                            retry_kwargs["grammar_logits_processor"] = processor
-                            budget = _build_reasoning_budget_processor(
-                                engine,
-                                request,
-                                cfg,
-                                messages,
-                                resolved_thinking,
-                                allow_tools=True,
-                            )
-                            if budget is not None:
-                                retry_kwargs["reasoning_budget_logits_processor"] = (
-                                    budget
-                                )
-                            retry_coro = engine.chat(messages=messages, **retry_kwargs)
-                        else:
-                            retry_coro = engine.generate_with_schema(
-                                messages=messages,
-                                json_schema=retry_schema,
-                                raise_on_failure=True,
-                                **retry_kwargs,
-                            )
-                        retry_output = await _wait_with_disconnect(
-                            retry_coro, raw_request, timeout=timeout
-                        )
-                        if is_cancellation_finish_reason(retry_output.finish_reason):
-                            return Response(status_code=499)
-                        retry_output, retry_channels = split_buffered(
-                            retry_output,
-                            served_model_identity(cfg),
-                            cfg=cfg,
-                            request=request,
-                        )
-                        retry_text = retry_output.text
-                        if _schema_reasoning and not retry_channels:
-                            retry_text = _line1_split_reasoning_for_tool_parse(
-                                cfg.reasoning_parser, retry_text
-                            )
-                        calls = json.loads(retry_text)
-                        from jsonschema import validate
-
-                        validate(calls, retry_schema)
-                        from ..api.models import FunctionCall, ToolCall
-
-                        retry_calls = []
-                        for call in calls:
-                            arguments = json.dumps(
-                                call["parameters"], ensure_ascii=False, allow_nan=False
-                            )
-                            error = _forced_synth_schema_error(
-                                call["name"], arguments, request.tools
-                            )
-                            if error:
-                                raise ValueError(error)
-                            retry_calls.append(
-                                ToolCall(
-                                    id=f"call_{uuid.uuid4().hex[:8]}",
-                                    type="function",
-                                    function=FunctionCall(
-                                        name=call["name"], arguments=arguments
-                                    ),
-                                )
-                            )
-                        if retry_output.finish_reason != "length":
-                            from dataclasses import replace
-
-                            output = replace(
-                                retry_output,
-                                text="",
-                                raw_text="",
-                                prompt_tokens=output.prompt_tokens
-                                + retry_output.prompt_tokens,
-                                completion_tokens=output.completion_tokens
-                                + retry_output.completion_tokens,
-                            )
-                            tool_calls = retry_calls
-                            cleaned_text = ""
-                            channels_owned = retry_channels
-                            token_logprobs_list = []
-                            logger.info(
-                                "tool_choice='required': guided tool-array retry "
-                                "succeeded (%d calls)",
-                                len(tool_calls),
-                            )
-                    except (HTTPException, asyncio.CancelledError, TimeoutError):
-                        raise
-                    except GuidedGenerationCancelledError as exc:
-                        if _consume_guided_lifecycle_cancel(engine, exc):
-                            from ..request import lifecycle_cancel_error_payload
-
-                            raise HTTPException(
-                                status_code=503,
-                                detail={"error": lifecycle_cancel_error_payload()},
-                            ) from exc
-                        raise asyncio.CancelledError() from exc
-                    except Exception:
-                        logger.warning(
-                            "tool_choice='required': guided tool-array retry failed",
-                            exc_info=True,
-                        )
-            if not tool_calls:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        'tool_choice="required" but the model returned a text response '
-                        "with no tool_calls. Local inference has no decoder-level "
-                        "constraint; the system-prompt enforcement was insufficient "
-                        "for this prompt. Retry with a more concrete user message or "
-                        'use tool_choice={"type":"function","function":{"name":...}} '
-                        "to pin a specific tool."
-                    ),
-                )
-        if (
-            isinstance(request.tool_choice, dict)
-            and request.tool_choice.get("type") == "function"
-        ):
-            _target = (request.tool_choice.get("function") or {}).get("name")
-
-            # OpenAI spec: a named ``tool_choice`` allows ONLY the named
-            # function. A response that includes the target plus any
-            # other call violates the contract — refuse to forward.
-            # Round-4 codex BLOCKING #2: prior ``any(...)`` accepted
-            # ``[target, wrong]`` and shipped the extra call to the
-            # client. Now require: at least one match AND every emitted
-            # call matches.
-            if _target:
-                _names = [_tool_call_name(tc) for tc in tool_calls or []]
-                _mismatched = [n for n in _names if n != _target]
-                # Codex R1 BLOCKING (#675): defense-in-depth — never
-                # synthesise a call to a function the client did not
-                # submit. The early prompt-level validation (~line 488)
-                # already 400s when ``_target`` is absent from
-                # ``request.tools``, but a future refactor could shift
-                # or bypass that gate, and the synthesis branch must
-                # not trust ``_target`` blindly. Gate on the submitted
-                # tool-name set; on miss, raise 422 rather than
-                # fabricating a call to a tool the client never
-                # defined.
-                _submitted_tool_names = {
-                    t.function.get("name")
-                    for t in (request.tools or [])
-                    if t.type == "function"
-                }
-                _target_is_submitted = _target in _submitted_tool_names
-                # #571: when the parser returned NOTHING (``_names`` is
-                # empty), the request still has a deterministic target
-                # — the named-function form names it. Synthesise rather
-                # than 422 so hermes matches harmony on the same input.
-                # A non-empty-but-wrong list (the model called a
-                # different tool) is a different failure mode: the
-                # model actively defied the choice, which we still
-                # surface as 422 — synthesising over a real wrong call
-                # would silently drop the model's output and is a worse
-                # client experience than the explicit failure.
-                if not _names and _target_is_submitted:
-                    logger.warning(
-                        "tool_choice pinned function %r on a parser-only path "
-                        "produced no tool_calls; synthesising a call (recovering "
-                        "arguments from raw text where possible) to honor the "
-                        "OpenAI tool_call-guaranteed contract (#571).",
-                        _target,
-                    )
-                    tool_calls = [
-                        _synthesize_forced_tool_call(
-                            _target,
-                            raw_text=output.raw_text or output.text,
-                            tools=request.tools,
-                        )
-                    ]
-                    # #1256: refuse a synthesised pinned call whose arguments
-                    # fail the pinned tool's ``required`` schema.
-                    _synth_err = _forced_synth_schema_error(
-                        _target,
-                        tool_calls[0].function.arguments,
-                        request.tools,
-                    )
-                    if _synth_err:
-                        raise HTTPException(status_code=422, detail=_synth_err)
-                elif not _names and not _target_is_submitted:
-                    # Codex R1 BLOCKING (#675): named tool_choice points
-                    # at a function that is not in ``request.tools`` —
-                    # we must not fabricate a call to it. The early 400
-                    # gate normally catches this; reaching here implies
-                    # the gate was bypassed (e.g. cloud-fallback rewrite
-                    # or future refactor). Refuse rather than synthesise.
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"tool_choice pinned function {_target!r} but it is "
-                            "not present in the request's 'tools' array; refusing "
-                            "to synthesise a call to an undefined tool."
-                        ),
-                    )
-                elif _mismatched:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            f"tool_choice pinned function {_target!r} but the model "
-                            f"emitted calls to {_mismatched}. Local "
-                            "inference cannot decoder-enforce a specific function; "
-                            "retry with a more direct user message."
-                        ),
-                    )
-                elif _names:
-                    # Every emitted call names the target, but the wire
-                    # can still be garbage INSIDE the envelope — repair
-                    # non-object arguments to the synthesis fallback's
-                    # semantics (dogfood 2026-08-12: 35B answered the
-                    # forced hermes prefix with a bare ``1``).
-                    _repair_err = _repair_forced_call_arguments(
-                        tool_calls,
-                        output.raw_text or output.text,
-                        _target,
-                        request.tools,
-                    )
-                    if _repair_err:
-                        raise HTTPException(status_code=422, detail=_repair_err)
-
     # Required and named tool choices are executable contracts, not best-effort
     # extraction. Decoder constraints normally make these calls schema-valid;
     # fail closed if a future template/parser mismatch still reaches this
@@ -7172,13 +6864,335 @@ async def _create_chat_completion_impl(
         and _normalized_tool_choice.get("mode") in ("required", "named")
     )
 
-    # Validate tool call parameter values against schemas
-    if tool_calls and request.tools:
-        _validate_tool_call_params(
-            tool_calls,
-            request.tools,
-            enforce_required=_is_forced_choice,
+    # Preserve the original diagnostic if the single constrained recovery fails.
+    forced_retry_eligible = False
+    try:
+        if request.tool_choice is not None and request.tools:
+            if request.tool_choice == "required" and not tool_calls:
+                if len(request.tools) == 1:
+                    _solo_name = request.tools[0].function.get("name")
+                    if _solo_name:
+                        logger.warning(
+                            "tool_choice='required' on a parser-only path produced "
+                            "no tool_calls; synthesising a call to the sole "
+                            "available tool %r (recovering arguments from raw "
+                            "text where possible) to honor the OpenAI tool_call-"
+                            "guaranteed contract (#571).",
+                            _solo_name,
+                        )
+                        tool_calls = [
+                            _synthesize_forced_tool_call(
+                                _solo_name,
+                                raw_text=output.raw_text or output.text,
+                                tools=request.tools,
+                            )
+                        ]
+                        # #1256: never report a successful forced call whose
+                        # synthesised arguments fail the tool's ``required`` schema.
+                        _synth_err = _forced_synth_schema_error(
+                            _solo_name,
+                            tool_calls[0].function.arguments,
+                            request.tools,
+                        )
+                        if _synth_err:
+                            forced_retry_eligible = True
+                            raise HTTPException(status_code=422, detail=_synth_err)
+                if not tool_calls:
+                    forced_retry_eligible = True
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            'tool_choice="required" but the model returned a text response '
+                            "with no tool_calls. Local inference has no decoder-level "
+                            "constraint; the system-prompt enforcement was insufficient "
+                            "for this prompt. Retry with a more concrete user message or "
+                            'use tool_choice={"type":"function","function":{"name":...}} '
+                            "to pin a specific tool."
+                        ),
+                    )
+            if (
+                isinstance(request.tool_choice, dict)
+                and request.tool_choice.get("type") == "function"
+            ):
+                _target = (request.tool_choice.get("function") or {}).get("name")
+
+                # OpenAI spec: a named ``tool_choice`` allows ONLY the named
+                # function. A response that includes the target plus any
+                # other call violates the contract — refuse to forward.
+                # Round-4 codex BLOCKING #2: prior ``any(...)`` accepted
+                # ``[target, wrong]`` and shipped the extra call to the
+                # client. Now require: at least one match AND every emitted
+                # call matches.
+                if _target:
+                    _names = [_tool_call_name(tc) for tc in tool_calls or []]
+                    _mismatched = [n for n in _names if n != _target]
+                    # Codex R1 BLOCKING (#675): defense-in-depth — never
+                    # synthesise a call to a function the client did not
+                    # submit. The early prompt-level validation (~line 488)
+                    # already 400s when ``_target`` is absent from
+                    # ``request.tools``, but a future refactor could shift
+                    # or bypass that gate, and the synthesis branch must
+                    # not trust ``_target`` blindly. Gate on the submitted
+                    # tool-name set; on miss, raise 422 rather than
+                    # fabricating a call to a tool the client never
+                    # defined.
+                    _submitted_tool_names = {
+                        t.function.get("name")
+                        for t in (request.tools or [])
+                        if t.type == "function"
+                    }
+                    _target_is_submitted = _target in _submitted_tool_names
+                    # #571: when the parser returned NOTHING (``_names`` is
+                    # empty), the request still has a deterministic target
+                    # — the named-function form names it. Synthesise rather
+                    # than 422 so hermes matches harmony on the same input.
+                    # A non-empty-but-wrong list (the model called a
+                    # different tool) is a different failure mode: the
+                    # model actively defied the choice, which we still
+                    # surface as 422 — synthesising over a real wrong call
+                    # would silently drop the model's output and is a worse
+                    # client experience than the explicit failure.
+                    if not _names and _target_is_submitted:
+                        logger.warning(
+                            "tool_choice pinned function %r on a parser-only path "
+                            "produced no tool_calls; synthesising a call (recovering "
+                            "arguments from raw text where possible) to honor the "
+                            "OpenAI tool_call-guaranteed contract (#571).",
+                            _target,
+                        )
+                        tool_calls = [
+                            _synthesize_forced_tool_call(
+                                _target,
+                                raw_text=output.raw_text or output.text,
+                                tools=request.tools,
+                            )
+                        ]
+                        # #1256: refuse a synthesised pinned call whose arguments
+                        # fail the pinned tool's ``required`` schema.
+                        _synth_err = _forced_synth_schema_error(
+                            _target,
+                            tool_calls[0].function.arguments,
+                            request.tools,
+                        )
+                        if _synth_err:
+                            forced_retry_eligible = True
+                            raise HTTPException(status_code=422, detail=_synth_err)
+                    elif not _names and not _target_is_submitted:
+                        # Codex R1 BLOCKING (#675): named tool_choice points
+                        # at a function that is not in ``request.tools`` —
+                        # we must not fabricate a call to it. The early 400
+                        # gate normally catches this; reaching here implies
+                        # the gate was bypassed (e.g. cloud-fallback rewrite
+                        # or future refactor). Refuse rather than synthesise.
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"tool_choice pinned function {_target!r} but it is "
+                                "not present in the request's 'tools' array; refusing "
+                                "to synthesise a call to an undefined tool."
+                            ),
+                        )
+                    elif _mismatched:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"tool_choice pinned function {_target!r} but the model "
+                                f"emitted calls to {_mismatched}. Local "
+                                "inference cannot decoder-enforce a specific function; "
+                                "retry with a more direct user message."
+                            ),
+                        )
+                    elif _names:
+                        # Every emitted call names the target, but the wire
+                        # can still be garbage INSIDE the envelope — repair
+                        # non-object arguments to the synthesis fallback's
+                        # semantics (dogfood 2026-08-12: 35B answered the
+                        # forced hermes prefix with a bare ``1``).
+                        _repair_err = _repair_forced_call_arguments(
+                            tool_calls,
+                            output.raw_text or output.text,
+                            _target,
+                            request.tools,
+                        )
+                        if _repair_err:
+                            forced_retry_eligible = True
+                            raise HTTPException(status_code=422, detail=_repair_err)
+
+        # Validate tool call parameter values against schemas
+        if tool_calls and request.tools:
+            forced_retry_eligible = _is_forced_choice
+            _validate_tool_call_params(
+                tool_calls,
+                request.tools,
+                enforce_required=_is_forced_choice,
+            )
+
+    except HTTPException:
+        if not forced_retry_eligible or request.stream or not request.tools:
+            raise
+        retry_succeeded = False
+        from ..api.guided import (
+            build_json_schema_logits_processor,
+            is_guided_available,
+            resolve_schema_reasoning_end_id,
         )
+
+        if is_guided_available():
+            retry_schema = {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "name": {"const": fn["name"]},
+                                "parameters": fn.get("parameters")
+                                or {"type": "object", "properties": {}},
+                            },
+                            "required": ["name", "parameters"],
+                            "additionalProperties": False,
+                        }
+                        for tool in request.tools
+                        if (fn := tool.function) is not None
+                        and isinstance(fn.get("name"), str)
+                    ]
+                },
+            }
+            if request.parallel_tool_calls is False or isinstance(
+                request.tool_choice, dict
+            ):
+                retry_schema["maxItems"] = 1
+            retry_kwargs = {
+                key: value
+                for key, value in chat_kwargs.items()
+                if key
+                not in {
+                    "grammar_logits_processor",
+                    "forced_assistant_prefix",
+                    "raise_on_failure",
+                }
+            }
+            # Processor cursors belong to the abandoned generation.
+            retry_kwargs.pop("reasoning_budget_logits_processor", None)
+            try:
+                logger.info(
+                    "Forced tool_choice: attempting single guided "
+                    "tool-array retry after forced-call validation failed"
+                )
+                if _schema_reasoning:
+                    end_id = resolve_schema_reasoning_end_id(
+                        engine.tokenizer, cfg.reasoning_parser
+                    )
+                    if end_id is None:
+                        raise RuntimeError("No atomic reasoning-end marker")
+                    processor = await asyncio.to_thread(
+                        build_json_schema_logits_processor,
+                        engine.tokenizer,
+                        retry_schema,
+                        reasoning_end_id=end_id,
+                    )
+                    if processor is None:
+                        raise RuntimeError("Tool-array schema compile failed")
+                    retry_kwargs["grammar_logits_processor"] = processor
+                    budget = _build_reasoning_budget_processor(
+                        engine,
+                        request,
+                        cfg,
+                        messages,
+                        resolved_thinking,
+                        allow_tools=True,
+                    )
+                    if budget is not None:
+                        retry_kwargs["reasoning_budget_logits_processor"] = budget
+                    retry_coro = engine.chat(messages=messages, **retry_kwargs)
+                else:
+                    retry_coro = engine.generate_with_schema(
+                        messages=messages,
+                        json_schema=retry_schema,
+                        raise_on_failure=True,
+                        **retry_kwargs,
+                    )
+                retry_output = await _wait_with_disconnect(
+                    retry_coro, raw_request, timeout=timeout
+                )
+                if is_cancellation_finish_reason(retry_output.finish_reason):
+                    return Response(status_code=499)
+                retry_output, retry_channels = split_buffered(
+                    retry_output,
+                    served_model_identity(cfg),
+                    cfg=cfg,
+                    request=request,
+                )
+                retry_text = retry_output.text
+                if _schema_reasoning and not retry_channels:
+                    retry_text = _line1_split_reasoning_for_tool_parse(
+                        cfg.reasoning_parser, retry_text
+                    )
+                calls = json.loads(retry_text)
+                from jsonschema import validate
+
+                validate(calls, retry_schema)
+                from ..api.models import FunctionCall, ToolCall
+
+                retry_calls = []
+                for call in calls:
+                    arguments = json.dumps(
+                        call["parameters"], ensure_ascii=False, allow_nan=False
+                    )
+                    error = _forced_synth_schema_error(
+                        call["name"], arguments, request.tools
+                    )
+                    if error:
+                        raise ValueError(error)
+                    retry_calls.append(
+                        ToolCall(
+                            id=f"call_{uuid.uuid4().hex[:8]}",
+                            type="function",
+                            function=FunctionCall(
+                                name=call["name"], arguments=arguments
+                            ),
+                        )
+                    )
+                if retry_output.finish_reason != "length":
+                    from dataclasses import replace
+
+                    output = replace(
+                        retry_output,
+                        text="",
+                        raw_text="",
+                        prompt_tokens=output.prompt_tokens + retry_output.prompt_tokens,
+                        completion_tokens=output.completion_tokens
+                        + retry_output.completion_tokens,
+                    )
+                    tool_calls = retry_calls
+                    cleaned_text = ""
+                    channels_owned = retry_channels
+                    token_logprobs_list = []
+                    retry_succeeded = True
+                    logger.info(
+                        "Forced tool_choice: guided tool-array retry "
+                        "succeeded (%d calls)",
+                        len(tool_calls),
+                    )
+            except (HTTPException, asyncio.CancelledError, TimeoutError):
+                raise
+            except GuidedGenerationCancelledError as exc:
+                if _consume_guided_lifecycle_cancel(engine, exc):
+                    from ..request import lifecycle_cancel_error_payload
+
+                    raise HTTPException(
+                        status_code=503,
+                        detail={"error": lifecycle_cancel_error_payload()},
+                    ) from exc
+                raise asyncio.CancelledError() from exc
+            except Exception:
+                logger.warning(
+                    "Forced tool_choice: guided tool-array retry failed",
+                    exc_info=True,
+                )
+        if not retry_succeeded:
+            raise
 
     # D-TOOLCHOICE-R1 T3: scrub wire-marker leftovers from the
     # response text. Two trigger conditions:
