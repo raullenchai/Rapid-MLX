@@ -324,8 +324,25 @@ if statusMenuCommand {
             string($0, kAXTitleAttribute as CFString) == "Rapid-MLX"
                 || string($0, kAXDescriptionAttribute as CFString) == "Rapid-MLX"
         }) else { fail("Rapid-MLX status item not found") }
-        let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
-        guard result == .success else { fail("status item AXPress failed: \(result.rawValue)") }
+        // The status item's AXPress returns cannotComplete on the CI host.
+        // Use the same AX-bounds click as native popup
+        // menus, once only: retrying could close a menu that already opened.
+        // The caller verifies the freshly opened menu's contents separately.
+        guard let origin = point(item, kAXPositionAttribute as CFString),
+              let extent = size(item, kAXSizeAttribute as CFString),
+              origin.x.isFinite, origin.y.isFinite,
+              extent.width.isFinite, extent.height.isFinite,
+              extent.width > 0, extent.height > 0
+        else { fail("status item has no usable AX bounds") }
+        let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: center, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                               mouseCursorPosition: center, mouseButton: .left)
+        else { fail("could not create status item click events") }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        usleep(150_000)
         print("{\"success\":true,\"action\":\"status-menu\"}")
         exit(0)
     }
