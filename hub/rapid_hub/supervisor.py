@@ -14,6 +14,8 @@ class Supervisor:
         self.hub, self.manifests = hub, manifests
         self.retries, self.delay, self.ready_timeout = retries, delay, ready_timeout
         self.items, self.tasks = {}, {}
+        self.locks = {ident: asyncio.Lock() for ident in manifests}
+        self.stopping = False
         for ident, manifest in manifests.items():
             token = secrets.token_urlsafe(32)
             hub.tokens[token] = ident
@@ -173,17 +175,30 @@ class Supervisor:
             await self.terminate(item)
 
     async def restart(self, ident):
-        self.hub.tokens.pop(self.items[ident]["token"], None)
-        if ident in self.tasks:
-            self.tasks[ident].cancel()
-            await asyncio.gather(self.tasks[ident], return_exceptions=True)
-        self.items[ident]["state"] = "starting"
-        self.tasks[ident] = asyncio.create_task(self.run(ident))
+        async with self.locks[ident]:
+            if self.stopping:
+                return
+            old = self.items[ident]
+            self.hub.tokens.pop(old["token"], None)
+            task = self.tasks.get(ident)
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # A runner owns its record for its entire lifetime.
+            self.items[ident] = dict(old, state="starting", process=None)
+            self.tasks[ident] = asyncio.create_task(self.run(ident))
 
     async def stop(self):
-        for task in self.tasks.values():
-            task.cancel()
-        await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        self.stopping = True
+
+        async def stop_one(ident):
+            async with self.locks[ident]:
+                task = self.tasks.get(ident)
+                if task:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+        await asyncio.gather(*(stop_one(ident) for ident in self.locks))
 
     def public(self):
         result = []

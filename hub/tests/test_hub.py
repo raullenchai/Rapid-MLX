@@ -292,7 +292,11 @@ HTTPServer((os.environ["RAPID_PLUGIN_HOST"], int(os.environ["RAPID_PLUGIN_PORT"]
         supervisor.tasks["research-loop"] = task
 
         async def ready():
-            while item["state"] != "ready":
+            nonlocal item
+            while True:
+                item = supervisor.items["research-loop"]
+                if item["state"] == "ready":
+                    return
                 await asyncio.sleep(0.02)
 
         try:

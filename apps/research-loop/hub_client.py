@@ -160,7 +160,10 @@ def watch_run(project, run, process):
                         )
                         registered = True
                     job = call("jobs/" + ident)
-                    if job["state"] == "cancel_requested" and not cancelled:
+                    if (
+                        job["state"] in ("cancel_requested", "cancelling")
+                        and not cancelled
+                    ):
                         call(
                             "jobs/" + ident,
                             dict(
@@ -200,8 +203,9 @@ def watch_run(project, run, process):
                                 pass
                     call("jobs/" + ident, dict(progress=progress), "PATCH")
                 except (OSError, ValueError):
-                    if code is not None:
-                        return
+                    # Re-read on the next attempt: cancellation may have raced
+                    # the terminal PATCH, or its response may have been lost.
+                    pass
                 time.sleep(1)
 
     threading.Thread(target=worker, daemon=True).start()

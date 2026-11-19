@@ -302,3 +302,58 @@ def test_cancel_ack_terminates_real_long_experiment_group(
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.mark.parametrize("failure", ["conflict", "transient"])
+def test_terminal_job_update_reconciles_and_retries(
+    hub_env, monkeypatch, tmp_path, failure
+):
+    import threading
+    from urllib.error import HTTPError
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "PAUSE").touch()
+    state = "running"
+    attempts, updates = [], []
+    finished = threading.Event()
+
+    def call(path, body=None, method=None):
+        nonlocal state
+        if method == "PATCH":
+            target = body.get("state")
+            updates.append(target)
+            if target == "done" and not attempts:
+                attempts.append(target)
+                if failure == "conflict":
+                    state = "cancel_requested"
+                raise HTTPError(
+                    "http://hub/jobs",
+                    409 if failure == "conflict" else 503,
+                    "retry",
+                    {},
+                    None,
+                )
+            if target:
+                state = target
+            if target in ("done", "cancelled"):
+                finished.set()
+        return {"state": state}
+
+    class Process:
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr(hub_client, "call", call)
+    hub_client.watch_run(tmp_path, run, Process())
+    assert finished.wait(4), updates
+    assert state == ("cancelled" if failure == "conflict" else "done")
+    if failure == "conflict":
+        assert updates == ["done", "cancelling", "cancelled"]
+        assert (run / "STOP").exists() and not (run / "PAUSE").exists()

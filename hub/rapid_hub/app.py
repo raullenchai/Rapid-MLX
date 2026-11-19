@@ -25,6 +25,30 @@ from .storage import Journal, atomic_write, private_write
 from .supervisor import Supervisor
 
 
+class Identity(str):
+    """A serializable caller name with authority independent of that name."""
+
+    def __new__(cls, name, *, is_admin=False):
+        value = super().__new__(cls, name)
+        value.is_admin = is_admin
+        return value
+
+
+async def await_connected(operation, request):
+    task = asyncio.create_task(operation)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.05)
+            if await request.is_disconnected():
+                raise asyncio.CancelledError()
+            if done:
+                return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 def supports_admission(payload):
     caps = payload.get("capabilities", [])
     return payload.get("admission") is True or (
@@ -155,7 +179,7 @@ class Hub:
         )
         self.admin = secrets.token_urlsafe(32)
         self.login = secrets.token_urlsafe(32)
-        self.tokens = {self.admin: "admin"}
+        self.tokens = {}
         self.sessions = set()
         self.client = httpx.AsyncClient(
             transport=transport, timeout=httpx.Timeout(1800, connect=5), trust_env=False
@@ -225,16 +249,18 @@ class Hub:
 
     def identity(self, request, admin=False):
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
-        identity = self.tokens.get(token)
+        identity = Identity(self.tokens[token]) if token in self.tokens else None
+        if secrets.compare_digest(token, self.admin):
+            identity = Identity("admin", is_admin=True)
         if (
             not identity
             and request.url.hostname == "hub.localhost"
             and request.cookies.get("rapid_hub") in self.sessions
         ):
-            identity = "admin"
+            identity = Identity("admin", is_admin=True)
         if not identity:
             raise HTTPException(401, "Bearer token required")
-        if admin and identity != "admin":
+        if admin and not identity.is_admin:
             raise HTTPException(403, "Admin required")
         return identity
 
@@ -282,7 +308,7 @@ class Hub:
                 previous_plugins = plugins
             self.stale_jobs()
             if time.monotonic() - last_prune >= 3600:
-                self.journal.prune()
+                await self.journal.call("prune")
                 last_prune = time.monotonic()
             await asyncio.sleep(5)
 
@@ -314,6 +340,7 @@ def create_app(hub, supervise=True):
                 ):
                     path.unlink()
             await hub.client.aclose()
+            await hub.journal.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.hub = hub
@@ -353,7 +380,7 @@ def create_app(hub, supervise=True):
                         yield ": keepalive\n\n"
                         continue
                     if (
-                        identity != "admin"
+                        not identity.is_admin
                         and event["event"] == "job_state"
                         and event["data"].get("plugin") != identity
                     ):
@@ -408,8 +435,8 @@ def create_app(hub, supervise=True):
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", project):
             raise HTTPException(422, "Invalid project")
         body = await request.json()
-        owner = body.get("plugin", "*" if identity == "admin" else identity)
-        if identity != "admin" and owner != identity:
+        owner = body.get("plugin", "*" if identity.is_admin else identity)
+        if not identity.is_admin and owner != identity:
             raise HTTPException(403, "Own project namespace only")
         ttl = body.get("ttl_hours", 24)
         if (
@@ -420,14 +447,15 @@ def create_app(hub, supervise=True):
             raise HTTPException(
                 422, "payload boolean and ttl_hours in (0,168] required"
             )
-        hub.journal.configure(owner, project, body["payload"], ttl)
+        await hub.journal.call("configure", owner, project, body["payload"], ttl)
         return hub.journal.policy(owner, project)
 
     @app.delete("/hub/v1/journal")
     async def delete_journal(request: Request, project: str | None = None):
         identity = hub.identity(request)
-        hub.journal.prune(
-            plugin=None if identity == "admin" else identity,
+        await hub.journal.call(
+            "prune",
+            plugin=None if identity.is_admin else identity,
             project=project,
             delete=True,
         )
@@ -464,11 +492,15 @@ def create_app(hub, supervise=True):
         limit: int = 50,
     ):
         identity = hub.identity(request)
-        if identity != "admin":
+        if not identity.is_admin:
             if plugin and plugin != identity:
                 raise HTTPException(403, "Own journal only")
             plugin = identity
-        return {"entries": hub.journal.read(plugin, project, min(max(limit, 1), 1000))}
+        return {
+            "entries": await hub.journal.call(
+                "read", plugin, project, min(max(limit, 1), 1000)
+            )
+        }
 
     def own_job(request, ident):
         identity = hub.identity(request)
@@ -476,7 +508,7 @@ def create_app(hub, supervise=True):
         job = hub.jobs.get(ident)
         if not job:
             raise HTTPException(404)
-        if identity != "admin" and job["plugin"] != identity:
+        if not identity.is_admin and job["plugin"] != identity:
             raise HTTPException(403)
         return job
 
@@ -488,7 +520,7 @@ def create_app(hub, supervise=True):
             "jobs": [
                 j
                 for j in hub.jobs.values()
-                if identity == "admin" or j["plugin"] == identity
+                if identity.is_admin or j["plugin"] == identity
             ]
         }
 
@@ -630,7 +662,7 @@ def create_app(hub, supervise=True):
         capture_payload = hub.journal.policy(identity, project).get("payload", False)
         acquired, upstream = False, None
 
-        async def finish():
+        async def cleanup():
             nonlocal acquired
             try:
                 if upstream is not None:
@@ -640,7 +672,15 @@ def create_app(hub, supervise=True):
                     hub.gates[engine].release()
                     acquired = False
                 entry["latency_ms"] = round((time.monotonic() - started) * 1000, 3)
-                hub.journal.append(entry)
+                await hub.journal.call("append", entry)
+
+        async def finish():
+            # Cleanup must outlive a cancelled ASGI streaming scope.
+            await asyncio.shield(asyncio.create_task(cleanup()))
+
+        async def send_upstream():
+            nonlocal upstream
+            upstream = await hub.client.send(req, stream=True)
 
         try:
             if hub.admission == "auto" and hub.last_catalog is None:
@@ -692,8 +732,8 @@ def create_app(hub, supervise=True):
                 content=body,
                 headers=headers,
             )
-            hub.journal.append(dict(entry, status=None))
-            upstream = await hub.client.send(req, stream=True)
+            await hub.journal.call("append", dict(entry, status=None))
+            await await_connected(send_upstream(), request)
             entry["status"] = upstream.status_code
             headers = {
                 k: v
@@ -702,7 +742,7 @@ def create_app(hub, supervise=True):
                 in ("content-type", "retry-after", "cache-control", "x-request-id")
             }
             if "text/event-stream" not in upstream.headers.get("content-type", ""):
-                data = await upstream.aread()
+                data = await await_connected(upstream.aread(), request)
                 entry["response_bytes"] = len(data)
                 entry["response"] = data if capture_payload else ""
                 try:

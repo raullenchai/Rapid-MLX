@@ -14,8 +14,8 @@ def load(path):
                 raise ValueError(f"{key} must be nonempty text")
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value["id"]):
             raise ValueError("invalid plugin id")
-        if value["id"] == "hub":
-            raise ValueError("plugin id hub is reserved for the dashboard hostname")
+        if value["id"] in ("hub", "admin"):
+            raise ValueError("plugin id is reserved for Hub administration")
         if value["hub_api"] not in ("^1", "1", "1.0"):
             raise ValueError("incompatible hub_api; supported major is 1")
         command = value["run"]["command"]
