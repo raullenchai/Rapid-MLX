@@ -18,6 +18,10 @@ spec = importlib.util.spec_from_file_location(
     Path(__file__).parents[1] / "rapid_mlx/patches/gemma4_affine4.py",
 )
 fused = importlib.util.module_from_spec(spec)
+# Import the real dependencies first: patch.dict drops modules first imported
+# inside it, which would leave later tests with duplicate Lattice modules.
+importlib.import_module("rapid_mlx._env")
+importlib.import_module("rapid_mlx.lattice.fusion")
 mlx = MagicMock()
 mlx.core = mx
 with patch.dict(sys.modules, {"mlx": mlx, "mlx.core": mx, "mlx.nn": mlx.nn}):

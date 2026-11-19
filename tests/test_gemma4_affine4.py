@@ -117,6 +117,15 @@ def test_exact_geometry_against_composed(
         monkeypatch.setattr(
             "rapid_mlx.moe_fusion.install_enabled", lambda *a, **k: True
         )
+        # fuse_gate_up rewrites the SwitchGLU class; restore it after this test.
+        cls = type(block.switch_glu)
+        monkeypatch.setattr(cls, "__call__", cls.__call__)
+        for name in ("_rapid_gate_up_fused_call", "_rapid_gate_up_original_call"):
+            if name in cls.__dict__:
+                monkeypatch.setattr(cls, name, cls.__dict__[name])
+            else:
+                monkeypatch.setattr(cls, name, None, raising=False)
+                monkeypatch.delattr(cls, name)
         assert fuse_gate_up(block, extended_call_contract=True) == 1
     assert fused._compatible(block)
     actual = fused.forward(block, x, ids, scores)
