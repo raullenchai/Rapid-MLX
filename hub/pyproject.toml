@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rapid-hub"
+version = "0.1.0"
+description = "Local app supervision and shared model services"
+requires-python = ">=3.12"
+dependencies = ["fastapi", "uvicorn", "httpx"]
+
+[project.scripts]
+rapid-hub = "rapid_hub.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["rapid_hub*"]
+
+[tool.setuptools.package-data]
+rapid_hub = ["*.html"]

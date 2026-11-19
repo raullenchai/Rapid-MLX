@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Rapid Hub</title>
+<style>
+body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 24px;color:#1e293b;background:#f8fafc}h1{letter-spacing:-1px}section{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin:20px 0}article{border-top:1px solid #eee;padding:12px 0}button,a{margin-right:12px}button{padding:6px 12px;cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:250px;overflow:auto}.muted{color:#64748b}
+</style>
+<h1>Rapid Hub</h1><p class="muted">Local apps and shared model services</p><p id="error" role="status"></p>
+<section><h2>Engines</h2><div id="engines"></div></section>
+<section><h2>Plugins</h2><div id="plugins"></div></section>
+<section><h2>Running jobs</h2><div id="jobs"></div></section>
+<section><h2>Recent model activity</h2><div id="journal"></div></section>
+<script>
+const el=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e};
+async function api(path,method='GET'){const r=await fetch('/hub/v1/'+path,{method});if(!r.ok)throw Error('Hub request failed: '+r.status);return r.json()}
+function rows(id,items,render){const target=document.getElementById(id);target.replaceChildren();if(!items.length)target.append(el('p','None'));items.forEach(x=>{const row=el('article');render(row,x);target.append(row)})}
+function action(row,label,path){const b=el('button',label);b.onclick=async()=>{try{await api(path,'POST');await refresh()}catch(e){document.getElementById('error').textContent=e.message}};row.append(b)}
+async function refresh(){try{const [s,j,q]=await Promise.all([api('status'),api('jobs'),api('journal?limit=50')]);
+rows('engines',s.engines,(r,x)=>r.append(el('p',x.name+' · '+(x.ready?'Ready':'Unavailable')+' · '+x.models.map(m=>m.id+' ('+m.capabilities.join(', ')+')').join(', '))));
+rows('plugins',s.plugins,(r,x)=>{r.append(el('p',x.name+' · '+x.state+(x.error?' · '+x.error:'')));if(x.url){const a=el('a','Open');a.href=x.url;a.target='_blank';a.rel='noopener noreferrer';r.append(a)}action(r,'Restart','plugins/'+x.id+'/restart');r.append(el('pre',Object.values(x.logs).flat().join('\n')))});
+rows('jobs',j.jobs.filter(x=>['running','cancel_requested'].includes(x.state)),(r,x)=>{r.append(el('p',x.title+' · '+x.project+' · '+x.state+' · '+(x.progress||'')));action(r,'Cancel','jobs/'+encodeURIComponent(x.id)+'/cancel')});
+rows('journal',q.entries,(r,x)=>{r.append(el('p',x.ts+' · '+x.plugin+' / '+(x.project||'—')+' · '+x.engine+' · '+x.path+' · '+x.status+' · '+Math.round(x.latency_ms)+' ms'));const d=el('details');d.append(el('summary','Request and response'),el('pre',JSON.stringify(x,null,2)));r.append(d)});
+document.getElementById('error').textContent=s.errors.join('\n');}catch(e){document.getElementById('error').textContent=e.message}}
+refresh();setInterval(refresh,5000);
+</script></html>

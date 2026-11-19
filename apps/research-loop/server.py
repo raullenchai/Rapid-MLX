@@ -5,6 +5,7 @@ import base64
 import difflib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+import hub_client
 import hypotheses
 import literature
 import protocol
@@ -500,6 +502,8 @@ class Handler(BaseHTTPRequestHandler):
         parts = parsed.path.strip("/").split("/")
         query = parse_qs(parsed.query)
         try:
+            if parsed.path == "/healthz":
+                return self.json({"ready": True})
             if parts == ["api", "templates"]:
                 return self.json(
                     {
@@ -1013,7 +1017,10 @@ class Handler(BaseHTTPRequestHandler):
                     ],
                     stdout=log,
                     stderr=subprocess.STDOUT,
+                    env=hub_client.subprocess_env(project),
                 )
+            if os.environ.get("RAPID_HUB_URL"):
+                hub_client.watch_run(project, run, self.server.processes[str(run)])
             project_meta = read_json(project, "project.json")
             project_meta["model"] = model
             safe_path(project, "project.json").write_text(
@@ -1146,7 +1153,7 @@ class Handler(BaseHTTPRequestHandler):
             request = Request(
                 self.server.models[model] + "/chat/completions",
                 body,
-                {"Content-Type": "application/json"},
+                hub_client.headers(project.name, "interactive"),
             )
             try:
                 upstream = urlopen(request, timeout=1800)
@@ -1227,9 +1234,25 @@ if __name__ == "__main__":
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--embeddings", help="OpenAI-compatible embedding endpoint URL")
     parser.add_argument("--embedding-model", default=literature.DEFAULT_MODEL)
+    parser.add_argument(
+        "--hub", action="store_true", help="Use scoped Rapid Hub services"
+    )
+    parser.add_argument(
+        "--data-dir", type=Path, help="Store projects and runs in this directory"
+    )
     args = parser.parse_args()
     try:
         models = parse_models(args.models, args.base_url, args.model)
+        if args.hub:
+            args.host = os.environ["RAPID_PLUGIN_HOST"]
+            args.port = int(os.environ["RAPID_PLUGIN_PORT"])
+            args.data_dir = args.data_dir or Path(os.environ["RAPID_PLUGIN_DATA_DIR"])
+            models, args.embeddings, discovered_embedding = hub_client.discover()
+            if discovered_embedding:
+                args.embedding_model = discovered_embedding
+        if args.data_dir:
+            args.data_dir.mkdir(parents=True, exist_ok=True)
+            (args.data_dir / "runs").mkdir(exist_ok=True)
     except ValueError as exc:
         parser.error(str(exc))
     app = App(
@@ -1240,6 +1263,7 @@ if __name__ == "__main__":
         models=models,
         embeddings=args.embeddings,
         embedding_model=args.embedding_model,
+        projects=args.data_dir / "projects" if args.data_dir else None,
     )
     print(f"Research Loop: http://{args.host}:{args.port}", flush=True)
     try:

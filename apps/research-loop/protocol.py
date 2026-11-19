@@ -19,6 +19,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import hub_client
 import hypotheses
 
 PROTOCOL = 1
@@ -903,7 +904,7 @@ class Model:
                     request = urllib.request.Request(
                         f"{self.base_url}/chat/completions",
                         json.dumps(body).encode(),
-                        {"Content-Type": "application/json"},
+                        hub_client.headers(priority="background"),
                     )
                     response = json.load(urllib.request.urlopen(request, timeout=1800))
                     break

@@ -11,7 +11,10 @@ import threading
 from pathlib import Path
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import hub_client
+
 # Standalone scripts also work without installing the repository as a package.
+# TODO: Move these pure Python helpers to a Hub retrieval service.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from rapid_mlx.local_search.chunking import chunk_units
 from rapid_mlx.local_search.extraction import (
@@ -44,7 +47,7 @@ class HTTPEmbedder:
         request = Request(
             self.url + "/embeddings",
             json.dumps(dict(model=self.model, input=texts)).encode(),
-            {"Content-Type": "application/json"},
+            hub_client.headers(),
         )
         with build_opener(NoRedirect).open(request, timeout=180) as response:
             rows = json.load(response)["data"]
@@ -100,7 +103,7 @@ class HTTPMetadata:
         request = Request(
             self.url + "/chat/completions",
             json.dumps(body).encode(),
-            {"Content-Type": "application/json"},
+            hub_client.headers(),
         )
         with build_opener(NoRedirect).open(request, timeout=180) as response:
             return json.loads(json.load(response)["choices"][0]["message"]["content"])
@@ -481,7 +484,8 @@ class Literature:
 
     def _worker(self, project):
         try:
-            self.index(project)
+            with hub_client.project_scope(project):
+                self.index(project)
         except Exception as exc:
             with self.lock:
                 self.jobs[str(project)].update(
@@ -602,6 +606,10 @@ class Literature:
             job.update(state="ready", errors=errors)
 
     def retrieve(self, project, query, goal="", limit=6):
+        with hub_client.project_scope(project):
+            return self._retrieve(project, query, goal, limit)
+
+    def _retrieve(self, project, query, goal="", limit=6):
         if self.embedder is None:
             return []
         data = snapshot(project)

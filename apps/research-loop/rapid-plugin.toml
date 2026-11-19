@@ -1,0 +1,17 @@
+id = "research-loop"
+name = "Research Loop"
+version = "1.0.0"
+description = "Project discussions, literature, and supervised experiments"
+hub_api = "^1"
+requires = ["models.chat", "models.embeddings?"]
+
+[run]
+command = ["{python}", "{plugin_dir}/server.py", "--hub"]
+
+[ui]
+kind = "web"
+health = "/healthz"
+
+[permissions]
+network = true
+files = "plugin"

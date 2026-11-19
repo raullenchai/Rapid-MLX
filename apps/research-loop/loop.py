@@ -37,6 +37,22 @@ ap.add_argument("--python", default=sys.executable)
 ap.add_argument("--embeddings")
 ap.add_argument("--embedding-model", default=literature.DEFAULT_MODEL)
 args = ap.parse_args()
+CHILD_GROUPS = set()
+
+
+def hub_shutdown(signum, frame):
+    """Hub terminates the plugin group; experiments have their own groups."""
+    for pid in tuple(CHILD_GROUPS):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    raise SystemExit(128 + signum)
+
+
+if os.environ.get("RAPID_HUB_URL"):
+    signal.signal(signal.SIGTERM, hub_shutdown)
+
 library = literature.Literature(
     literature.HTTPEmbedder(args.embeddings, args.embedding_model)
     if args.embeddings
@@ -237,6 +253,7 @@ def run(src, rnd, execute=True):
                 cwd=out,
                 start_new_session=True,
             )
+            CHILD_GROUPS.add(p.pid)
             # Hard wall-clock limit: a script that ignores its own budget is
             # killed (with its whole process group) and recorded as crashed.
             limit = float(task_cfg.get("timeout_s", DEFAULT_TIMEOUT_S))
@@ -301,6 +318,7 @@ def run(src, rnd, execute=True):
                 except (ValueError, TypeError, AttributeError):
                     pass
             p.wait()
+            CHILD_GROUPS.discard(p.pid)
             watchdog.cancel()
             thread.join()
             if timed_out.is_set():
