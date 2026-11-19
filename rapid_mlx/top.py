@@ -22,9 +22,9 @@ def _number(value: Any) -> float | None:
     return None
 
 
-def _fmt(value: Any) -> str:
+def _fmt(value: Any, *, count: bool = False) -> str:
     number = _number(value)
-    return "-" if number is None else f"{number:.1f}"
+    return "-" if number is None else format(number, ".0f" if count else ".1f")
 
 
 def _model(value: Any) -> str:
@@ -73,13 +73,34 @@ def snapshot(client: httpx.Client) -> dict:
     }
 
 
+def _failure(current: dict, port: int) -> str:
+    address = f"127.0.0.1:{port}"
+    if "HTTP 401" in (
+        current["error"],
+        current["residency_error"],
+        current["metrics_error"],
+    ):
+        return (
+            f"Rapid-MLX server at {address}: HTTP 401 Unauthorized. "
+            "Set RAPID_MLX_API_KEY to the server's API key."
+        )
+    if current["error"] == "unavailable":
+        return (
+            f"No Rapid-MLX server at {address}. Start one with: rapid-mlx serve <model>"
+        )
+    if current["error"]:
+        return f"Rapid-MLX server at {address}: {current['error']}."
+    return ""
+
+
 def render(current: dict, previous: dict | None, port: int) -> str:
+    failure = _failure(current, port)
+    if failure:
+        return failure
     status = current["status"]
     metrics = current["metrics"]
     state = status.get("status")
     state = state if state in ("idle", "generating", "not_loaded") else "unavailable"
-    if current["error"]:
-        state = f"stopped/unreachable ({current['error']})"
     lines = [f"Rapid-MLX top | 127.0.0.1:{port} | {state}"]
     for name in ("residency", "metrics"):
         if current[f"{name}_error"]:
@@ -103,7 +124,7 @@ def render(current: dict, previous: dict | None, port: int) -> str:
                         (new - old) / (uptime - old_uptime) * (60 if i == 0 else 1)
                     )
     lines.append(
-        f"Totals: requests/min {_fmt(rates[0])} | in tok/s {_fmt(rates[1])} | out tok/s {_fmt(rates[2])} | queue {_fmt(status.get('num_waiting'))}"
+        f"Totals: requests/min {_fmt(rates[0])} | in tok/s {_fmt(rates[1])} | out tok/s {_fmt(rates[2])} | queue {_fmt(status.get('num_waiting'), count=True)}"
     )
     metal = _object(status.get("metal"))
     lines.append(
@@ -143,18 +164,15 @@ def render(current: dict, previous: dict | None, port: int) -> str:
             )
     else:
         lines.append(f"  {_model(status.get('model'))} | -")
-    lines.append(
-        "Requests: phase | prompt tokens | decode tok/s | elapsed s | prefill % | client route"
-    )
+    lines.append("Requests: phase | prompt tokens | decode tok/s | elapsed s")
     requests = status.get("requests")
     if isinstance(requests, list):
         for index, value in enumerate(requests, 1):
             request = _object(value)
             phase = request.get("phase")
             phase = phase if phase in ("queued", "prefill", "generation") else "unknown"
-            # `progress` is output/max_tokens, NOT prefill completion.
             lines.append(
-                f"  {index}: {phase} | {_fmt(request.get('prompt_tokens'))} | {_fmt(request.get('tokens_per_second'))} | {_fmt(request.get('elapsed_s'))} | - | -"
+                f"  {index}: {phase} | {_fmt(request.get('prompt_tokens'), count=True)} | {_fmt(request.get('tokens_per_second'))} | {_fmt(request.get('elapsed_s'))}"
             )
     lines.append("- = unavailable; rates need two samples. Ctrl-C to quit.")
     return "\n".join(lines)
@@ -182,6 +200,8 @@ def top_command(args: Any) -> None:
                     flush=True,
                 )
                 if not interactive:
+                    if _failure(current, args.port):
+                        raise SystemExit(1)
                     return
                 previous = current
                 time.sleep(1)
