@@ -1061,7 +1061,19 @@ class Handler(BaseHTTPRequestHandler):
                     sources = self.server.literature.retrieve(
                         project, message, safe_path(project, "program.md").read_text()
                     )
-                    source_note = "" if sources else "No relevant passages found."
+                    has_papers = any(
+                        p.is_file()
+                        for p in (project / "literature").glob("*")
+                        if (project / "literature").is_dir()
+                    ) or bool(read_json(project, "project.json").get("literature_dirs"))
+                    source_note = (
+                        ""
+                        if sources
+                        else "No relevant passages found."
+                        if has_papers
+                        else "No papers in this project: any literature claims are the model's "
+                        "general knowledge, not checked against sources."
+                    )
                 except (ValueError, OSError, KeyError) as exc:
                     source_note = f"Literature retrieval unavailable: {exc}"
             messages, sources = literature.prompt_sources(
@@ -1078,8 +1090,14 @@ class Handler(BaseHTTPRequestHandler):
                 "Describe possible causes as hypotheses, not established diagnoses. "
                 "Only propose changes the task rules allow; never propose changing a fixed "
                 "constant, the data split, the budget, or the metric. "
-                "Cite only claims supported by the provided passages; say when the literature is silent. "
-                "Never narrate your own reasoning, plans, or these instructions. "
+                "Ground each hypothesis in the observed experiment ledger as well as any passages. "
+                + (
+                    "Cite only claims supported by the provided passages; say when the literature is silent. "
+                    if sources
+                    else "No literature passages are provided: do not write [S#] markers and do not "
+                    "attribute claims to 'the literature'; label general knowledge as such. "
+                )
+                + "Never narrate your own reasoning, plans, or these instructions. "
                 "Never claim to run experiments or invent results. Stop when the answer is complete."
             )
             with INBOX_LOCK:
