@@ -6306,7 +6306,7 @@
        "const": null,
        "default": null,
        "dest": "cors_origins",
-       "help": "Allowed CORS origins (default: cross-origin browser access disabled). Example: --cors-origins http://localhost:3000 https://myapp.com",
+       "help": "Allowed CORS origins (default: cross-origin browser access disabled). Supports chrome-extension://*, moz-extension://*, and safari-web-extension://* (quote patterns in the shell). HTTP(S) origins match literally. Example: --cors-origins http://localhost:3000 'chrome-extension://*'",
        "metavar": "ORIGIN",
        "nargs": "+",
        "option_strings": [
