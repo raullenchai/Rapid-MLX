@@ -892,3 +892,81 @@ for(const id of ['queue','experiment-groups','ledger']){
 run('openSource({dataset:{passage:JSON.stringify(evidenceSource)}})');
 assert.match(get('source-drawer-content').innerHTML,/§2 Method · p\. 3/);
 console.log('Round 6 hypothesis evidence chips open the existing source drawer.');
+
+// Round 8: proposal parsing and per-proposal discussion actions.
+const proposalMessage=`Here are two testable ideas [S1].
+
+**Hypothesis 1: Initialization Scale**
+**Claim:** **Larger** initial weights improve grok_step [S2].
+**Why:** Omnigrok suggests *scale* matters [S1, S2].
+**Prediction:** Reduce __grokking time__ [S2].
+
+Hypothesis 2 — Weight Decay
+Claim: Stronger decay improves generalisation [S1].
+Why: Less overfitting.
+Prediction: Lower error.
+`;
+context.proposalMessage=proposalMessage;
+const parsed=JSON.parse(run('JSON.stringify(window.ResearchLoop.parseDiscussionProposals(proposalMessage))'));
+assert.deepEqual(parsed,[
+  {title:'Initialization Scale',claim:'Larger initial weights improve grok_step.',why:'Omnigrok suggests scale matters.',prediction:'Reduce grokking time.'},
+  {title:'Weight Decay',claim:'Stronger decay improves generalisation.',why:'Less overfitting.',prediction:'Lower error.'}
+]);
+assert.deepEqual(JSON.parse(run('JSON.stringify(parseDiscussionProposals("H1: Simple\\nClaim: A claim\\ncontinued here.\\n\\nH2: Incomplete\\nWhy: No claim"))')),[{title:'Simple',claim:'A claim continued here.',why:'',prediction:''}]);
+for(const text of ['Ordinary prose [S1].','Claim: No proposal heading','Hypothesis 1: No claim\nWhy: A reason','H1: Empty\nClaim: ** ** [S2]']){
+  context.parserText=text;assert.equal(run('parseDiscussionProposals(parserText).length'),0);
+}
+assert.equal(run('cleanHypothesisText("**Bold** _plain_ grok_step [S1, S2] [S3]")'),'Bold plain grok_step');
+setup();
+run('state.data.discussion=[{role:"assistant",content:proposalMessage}];renderConversation()');
+assert.equal((get('conversation').innerHTML.match(/data-queue=/g)||[]).length,2);
+assert.match(get('conversation').innerHTML,/data-proposal="0"/);
+assert.match(get('conversation').innerHTML,/data-proposal="1"/);
+assert.ok(get('conversation').innerHTML.indexOf('data-proposal="0"')<get('conversation').innerHTML.indexOf('Weight Decay'));
+console.log('Round 8 parser and per-proposal rendering passed.');
+const proposalFetch=context.fetch;
+context.fetch=async(path,options)=>{requests.push({path,options});return {ok:true,json:async()=>({hypotheses:[]})};};
+function queueClick(index,proposal){
+  const button={dataset:{queue:String(index),...(proposal===undefined?{}:{proposal:String(proposal)})},disabled:false,textContent:'Add as hypothesis'};
+  return {button,event:{target:{closest(selector){return selector==='[data-queue]'?button:null;}}}};
+}
+const firstProposal=queueClick(0,0);
+await get('conversation').onclick(firstProposal.event);
+assert.deepEqual(JSON.parse(requests.at(-1).options.body),{statement:parsed[0].claim,source:'discussion',why:parsed[0].why,prediction:parsed[0].prediction,discussion_index:0});
+assert.equal(firstProposal.button.disabled,true);assert.equal(firstProposal.button.textContent,'Added');
+run('renderConversation();controls()');
+assert.match(get('conversation').innerHTML,/data-proposal="0" disabled>Added/);
+const beforeDuplicate=requests.length;
+await get('conversation').onclick(queueClick(0,0).event);
+assert.equal(requests.length,beforeDuplicate);
+run('state.data.hypotheses=[{statement:parseDiscussionProposals(proposalMessage)[1].claim}];renderConversation()');
+assert.match(get('conversation').innerHTML,/data-proposal="1" disabled>Added/);
+await get('conversation').onclick(queueClick(0,1).event);
+assert.equal(requests.length,beforeDuplicate);
+run('state.data.hypotheses=[];state.replay=true;renderConversation()');
+assert.match(get('conversation').innerHTML,/data-proposal="1" disabled>Add as hypothesis/);
+await get('conversation').onclick(queueClick(0,1).event);
+assert.equal(requests.length,beforeDuplicate);
+run('state.replay=false');
+context.fetch=async()=>{throw new Error('Could not save proposal');};
+const failedProposal=queueClick(0,1);
+await get('conversation').onclick(failedProposal.event);
+assert.equal(failedProposal.button.disabled,false);
+assert.match(get('notice').textContent,/Could not save proposal/);
+assert.doesNotMatch(get('conversation').innerHTML,/data-proposal="1" disabled/);
+context.fetch=async(path,options)=>{requests.push({path,options});return {ok:true,json:async()=>({hypotheses:[]})};};
+await get('conversation').onclick(queueClick(0,1).event);
+assert.match(get('conversation').innerHTML,/data-proposal="1" disabled>Added/);
+run('state.slug="another-project";renderConversation()');
+assert.doesNotMatch(get('conversation').innerHTML,/>Added</);
+run('state.data.discussion=[{role:"assistant",content:"Unstructured **answer** [S1]"}];renderConversation()');
+assert.equal((get('conversation').innerHTML.match(/data-queue=/g)||[]).length,1);
+assert.doesNotMatch(get('conversation').innerHTML,/data-proposal=/);
+const fallback=queueClick(0);
+await get('conversation').onclick(fallback.event);
+assert.deepEqual(JSON.parse(requests.at(-1).options.body),{statement:'Unstructured **answer** [S1]',source:'discussion',why:'',prediction:'',discussion_index:0});
+assert.equal(fallback.button.disabled,false);
+run('state.replay=true;renderConversation()');
+assert.match(get('conversation').innerHTML,/data-queue="0" disabled/);
+context.fetch=proposalFetch;
+console.log('Round 8 actions: clean payloads retain evidence index; duplicates, persistence, retries, fallback and replay passed.');

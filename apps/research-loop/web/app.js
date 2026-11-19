@@ -437,9 +437,59 @@ function renderQueue() {
   for(const d of $('experiment-groups').querySelectorAll('details'))if(openGroups.includes(d.dataset.group))d.open=true;
   if(focusedExperiment!==undefined)$('experiment-groups').querySelector(`[data-experiment="${focusedExperiment}"]`)?.focus({preventScroll:true});
 }
+// Keep source spans internally so actions can follow the original rendered blocks.
+function cleanHypothesisText(text='') {
+  return text.replace(/\[S\d+(?:\s*,\s*S\d+)*\]/gi,'')
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')
+    .replace(/(?<!\w)_{1,3}(.+?)_{1,3}(?!\w)/g,'$1')
+    .replace(/\s+/g,' ').replace(/\s+([.,;:!?])/g,'$1').trim();
+}
+function discussionProposalBlocks(text='') {
+  const blocks=[];let current=null, field=null, offset=0, fenced=false;
+  for(const line of text.split('\n')) {
+    const plain=cleanHypothesisText(line).replace(/^#{1,6}\s+/,'').replace(/^[-*]\s+/,'');
+    if(/^\s*(```|~~~)/.test(line))fenced=!fenced;
+    const heading=!fenced && plain.match(/^(?:Hypothesis\s*\d+|H\s*\d+)\s*[:—–-]\s*(.*)$/i);
+    if(heading) {
+      if(current)current.end=offset;
+      current={start:offset,end:text.length,proposal:{title:heading[1],claim:'',why:'',prediction:''}};
+      blocks.push(current);field=null;
+    } else if(current && !fenced) {
+      const label=plain.match(/^(Claim|Why|Prediction)\s*:\s*(.*)$/i);
+      if(label){field=label[1].toLowerCase();current.proposal[field]+=' '+label[2];}
+      else if(field)current.proposal[field]+=' '+plain;
+    }
+    offset+=line.length+1;
+  }
+  for(const block of blocks)for(const key of ['claim','why','prediction'])block.proposal[key]=cleanHypothesisText(block.proposal[key]);
+  return blocks.filter(block=>block.proposal.claim);
+}
+function parseDiscussionProposals(text='') { return discussionProposalBlocks(text).map(block=>block.proposal); }
+window.ResearchLoop={parseDiscussionProposals,cleanHypothesisText};
+const addedDiscussionProposals=new Set(), pendingDiscussionProposals=new Set();
+function proposalKey(index,proposal) { return JSON.stringify([state.slug,index,state.data?.discussion?.[index]?.content,proposal]); }
+function proposalAdded(index,proposal) {
+  return addedDiscussionProposals.has(proposalKey(index,proposal)) || (state.data?.hypotheses || []).some(h=>h.statement===proposal.claim);
+}
+function proposalButton(index,proposal,number) {
+  const added=proposalAdded(index,proposal), disabled=state.replay || added || pendingDiscussionProposals.has(proposalKey(index,proposal));
+  return `<button class="secondary queue-action" type="button" data-queue="${index}" data-proposal="${number}"${disabled?' disabled':''}>${added?'Added':'Add as hypothesis'}</button>`;
+}
+function discussionContent(message,index) {
+  const text=message.content || 'Thinking…', sources=orderedSources(message.content,message.citations);
+  const render=part=>citationMarkdown(part,sources,message.citation_sentences);
+  const blocks=message.role==='assistant' && !message.pending ? discussionProposalBlocks(text) : [];
+  if(!blocks.length)return render(text);
+  let html='',offset=0;
+  blocks.forEach((block,number)=>{
+    html+=render(text.slice(offset,block.start))+render(text.slice(block.start,block.end))+proposalButton(index,block.proposal,number);
+    offset=block.end;
+  });
+  return html+render(text.slice(offset));
+}
 function renderConversation() {
   const messages=[...(state.data?.discussion || [])]; if(state.chatDraft)messages.push(state.chatDraft);
-  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header>${m.role==='assistant'?sourceMarkup(orderedSources(m.content,m.citations),m.citation_sentences):''}${m.retrieval?`<p class="search-step" role="status">Searching ${esc(countLabel(m.retrieval.papers,'paper'))} · ${esc(countLabel(m.retrieval.passages,'passage'))} found</p>`:m.pending?'<p class="search-step" role="status">Searching papers…</p>':''}<div class="message-content">${citationMarkdown(m.content || 'Thinking…',orderedSources(m.content,m.citations),m.citation_sentences)}</div>${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
+  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header>${m.role==='assistant'?sourceMarkup(orderedSources(m.content,m.citations),m.citation_sentences):''}${m.retrieval?`<p class="search-step" role="status">Searching ${esc(countLabel(m.retrieval.papers,'paper'))} · ${esc(countLabel(m.retrieval.passages,'passage'))} found</p>`:m.pending?'<p class="search-step" role="status">Searching papers…</p>':''}<div class="message-content">${discussionContent(m,i)}</div>${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending && !parseDiscussionProposals(m.content).length ? `<button class="secondary queue-action" type="button" data-queue="${i}"${state.replay?' disabled':''}>Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
   $('conversation').scrollTop=messages.length ? $('conversation').scrollHeight : 0;
   controls();
 }
@@ -477,7 +527,12 @@ function controls() {
   $('run-state').className=active && !state.run.paused && !state.replay ? 'is-live' : '';
   $('start-summary').textContent=`Baseline + ${$('round-count').value || 10} experiments · seeds ${state.data?.task.seeds.join(', ') || '—'} · fixed budget`;
   $('run-model').textContent=state.run ? modelName(state.run.model)+' · '+state.run.id : 'Start from Discuss when your goal is ready.';
-  for(const button of $('conversation').querySelectorAll('[data-queue]'))button.disabled=state.replay;
+  for(const button of $('conversation').querySelectorAll('[data-queue]')) {
+    const index=Number(button.dataset.queue), proposal=parseDiscussionProposals(state.data?.discussion?.[index]?.content)[Number(button.dataset.proposal)];
+    const added=proposal && proposalAdded(index,proposal);
+    button.disabled=state.replay || Boolean(added) || Boolean(proposal && pendingDiscussionProposals.has(proposalKey(index,proposal)));
+    if(added)button.textContent='Added';
+  }
 }
 function renderRun() {
   if(!state.data)return;
@@ -750,7 +805,22 @@ $('conversation').onclick=async event=>{
   if(citation){openSource(citation);return;}
   const prompt=event.target.closest('[data-prompt]');
   if(prompt){if(state.replay)return;$('message').value=starterPrompts()[Number(prompt.dataset.prompt)] || '';$('message').focus();return;}
-  const button=event.target.closest('[data-queue]');if(!button)return;const message=state.data.discussion[Number(button.dataset.queue)];if(!message)return;button.disabled=true;try{await addHypothesis(message.content,'discussion','','',Number(button.dataset.queue));}catch(e){notice(e.message);}finally{button.disabled=state.replay;}
+  const button=event.target.closest('[data-queue]');if(!button || button.disabled || state.replay)return;
+  const index=Number(button.dataset.queue), message=state.data.discussion[index];if(!message)return;
+  const proposal=button.dataset.proposal===undefined ? null : parseDiscussionProposals(message.content)[Number(button.dataset.proposal)];
+  if(proposal && (proposalAdded(index,proposal) || pendingDiscussionProposals.has(proposalKey(index,proposal))))return;
+  const key=proposal && proposalKey(index,proposal), slug=state.slug;
+  if(key)pendingDiscussionProposals.add(key);
+  button.disabled=true;
+  try {
+    await addHypothesis(proposal?proposal.claim:message.content,'discussion',proposal?.why || '',proposal?.prediction || '',index);
+    if(key){addedDiscussionProposals.add(key);button.textContent='Added';}
+  } catch(e){notice(e.message);}
+  finally {
+    if(key)pendingDiscussionProposals.delete(key);
+    button.disabled=state.replay || Boolean(key && addedDiscussionProposals.has(key));
+    if(proposal && slug===state.slug)renderConversation();
+  }
 };
 $('composer').onsubmit=async event=>{
   event.preventDefault();const message=$('message').value.trim();if(!message || state.chatBusy || state.replay)return;
