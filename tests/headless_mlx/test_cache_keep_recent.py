@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from rapid_mlx.engine.batched import BatchedEngine
 from rapid_mlx.engine_core import AsyncEngineCore, EngineCore
 from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 from rapid_mlx.paged_cache import PagedCacheManager
 from rapid_mlx.prefix_cache import (
     BlockAwarePrefixCache,
@@ -170,6 +171,7 @@ def client(monkeypatch, engine, api_key=None):
     app = FastAPI()
     app.include_router(health.admin_router)
     app.include_router(health.router)
+    install_exception_handlers(app)
     return TestClient(app)
 
 
@@ -197,15 +199,46 @@ def test_route_and_text_stats(monkeypatch):
         {"keep_recent": True},
         {"keep_recent": "1"},
         {"keep_recent": 1.1},
+        {"keep_recent": None},
+        {"keep_recent": []},
+        {"keep_recent": {}},
         {},
-        {"keep_recent": 1, "unknown": 2},
     ],
 )
 def test_route_validation(monkeypatch, body):
-    assert (
-        client(monkeypatch, object()).post("/v1/cache/clear", json=body).status_code
-        == 422
+    engine = SimpleNamespace(retain_prefix_cache=Mock())
+    response = client(monkeypatch, engine).post("/v1/cache/clear", json=body)
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["message"].startswith("Invalid request body: keep_recent:")
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "invalid_request"
+    assert error["param"] == "keep_recent"
+    engine.retain_prefix_cache.assert_not_called()
+
+
+def test_route_validation_redacts_unknown_fields_and_values(monkeypatch):
+    engine = SimpleNamespace(retain_prefix_cache=Mock())
+    c = client(monkeypatch, engine)
+    response = c.post(
+        "/v1/cache/clear",
+        json={"keep_recent": "private-value", "private-key": "private-value"},
     )
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "keep_recent"
+    assert "private-key" not in response.text
+    assert "private-value" not in response.text
+    response = c.post(
+        "/v1/cache/clear", json={"keep_recent": 1, "private-key": "private-value"}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] is None
+    assert (
+        "<field>: Extra inputs are not permitted" in response.json()["error"]["message"]
+    )
+    assert "private-key" not in response.text
+    assert "private-value" not in response.text
+    engine.retain_prefix_cache.assert_not_called()
 
 
 def test_route_missing_engine_backend_and_conflict(monkeypatch):
