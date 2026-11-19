@@ -1502,64 +1502,69 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_no_mlx)
 
 
+def _repair_mlx_generation_streams():
+    """Replace foreign-thread streams at test boundaries without importing MLX.
+
+    A snapshot can already contain a dead worker's stream. Probe usability on
+    this thread instead, preserving valid streams and intentional test changes.
+    """
+    mx = sys.modules.get("mlx.core")
+    if mx is None or not all(
+        hasattr(mx, name)
+        for name in (
+            "default_device",
+            "default_stream",
+            "set_default_stream",
+            "new_stream",
+            "new_thread_local_stream",
+            "synchronize",
+        )
+    ):
+        # No-MLX tests also install partial mlx.core stubs in sys.modules.
+        return
+    device = mx.default_device()
+
+    def usable(stream):
+        try:
+            mx.synchronize(stream)
+        except RuntimeError as exc:
+            if "There is no Stream" not in str(exc):
+                raise
+            return False
+        return True
+
+    if not usable(mx.default_stream(device)):
+        # set_default_stream requires a concrete Stream, not ThreadLocalStream.
+        mx.set_default_stream(mx.new_stream(device))
+    for name in (
+        "mlx_lm.generate",
+        "mlx_vlm.generate",
+        "rapid_mlx.models.mlx_vlm_vendored.generate.common",
+    ):
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "generation_stream"):
+            if not usable(module.generation_stream):
+                module.generation_stream = mx.new_thread_local_stream(device)
+
+
 @pytest.fixture(scope="module")
 def preserve_mlx_generation_streams():
-    """Restore stream globals after a suite shuts down its MLX workers.
-
-    The step-thread initializer overwrites process-global generation streams.
-    Keep this fixture outside executor lifetimes so restoration happens only
-    after their workers have joined, including on failed or skipped tests.
-    """
-    mx = pytest.importorskip("mlx.core", exc_type=ImportError)
-    default = mx.default_stream(mx.default_device())
-    names = ("mlx_lm.generate", "mlx_vlm.generate")
-    previous = {
-        name: sys.modules[name].generation_stream
-        for name in names
-        if name in sys.modules
-    }
+    """Repair again after dependent module executors have joined."""
+    _repair_mlx_generation_streams()
     try:
         yield
     finally:
-        mx.set_default_stream(default)
-        for name in names:
-            module = sys.modules.get(name)
-            if module is not None:
-                # A module first imported by the worker has no prior stream
-                # to restore. Bind it to the surviving caller's default.
-                module.generation_stream = previous.get(name, default)
+        _repair_mlx_generation_streams()
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _restore_mlx_generation_streams_per_module():
-    """Restore MLX stream globals after every test module, not only opted-in ones.
-
-    Any suite that starts an MLX worker thread can leave ``generation_stream``
-    bound to that thread's stream, and a later module on the same xdist
-    worker then fails with "There is no Stream(gpu, N) in current thread".
-    As the outermost module fixture this tears down after the module's own
-    executors have joined. It is a no-op when MLX was never imported.
-    """
-    names = ("mlx_lm.generate", "mlx_vlm.generate")
-    previous = {
-        name: sys.modules[name].generation_stream
-        for name in names
-        if name in sys.modules
-    }
-    mx = sys.modules.get("mlx.core")
-    default = mx.default_stream(mx.default_device()) if mx is not None else None
-    yield
-    mx = sys.modules.get("mlx.core")
-    if mx is None:
-        return
-    if default is None:
-        default = mx.default_stream(mx.default_device())
-    else:
-        mx.set_default_stream(default)
-    for name in names:
-        module = sys.modules.get(name)
-        if module is not None:
-            module.generation_stream = previous.get(name, default)
+@pytest.fixture(autouse=True)
+def _repair_mlx_generation_streams_per_test():
+    """Repair before every test, even if an earlier module snapshot was stale."""
+    _repair_mlx_generation_streams()
+    try:
+        yield
+    finally:
+        _repair_mlx_generation_streams()
 
 
 @pytest.fixture(scope="session")
