@@ -2510,9 +2510,13 @@ def _add_recipe_parser(
     recipe_parser.add_argument(
         "--json", action="store_true", help="Print the recommendation as JSON"
     )
-    subparsers.add_parser(
+    ls_parser = subparsers.add_parser(
         "ls",
         help="List models in the local HuggingFace cache (alias for `models --cached`)",
+    )
+
+    ls_parser.add_argument(
+        "--json", action="store_true", help="Print cached models as JSON"
     )
 
     # Version + help — utility commands that mirror the existing flags but
@@ -2671,7 +2675,12 @@ def _add_alias_parser(
     alias_remove = alias_subparsers.add_parser("remove", help="Remove an alias mapping")
     alias_remove.add_argument("name", help="Private alias name")
     alias_subparsers.add_parser("list", help="List user alias mappings")
-    subparsers.add_parser("ps", help="List running rapid-mlx servers")
+    ps_parser = subparsers.add_parser("ps", help="List running rapid-mlx servers")
+    ps_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print schema-versioned server state as JSON",
+    )
 
 
 def _add_upgrade_parser(
