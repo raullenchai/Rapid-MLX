@@ -1523,11 +1523,15 @@ def test_required_single_tool_skips_guided_retry(monkeypatch):
     assert not engine.guided_calls
 
 
-def test_required_multi_tool_reasoning_retry_uses_gated_processor(monkeypatch):
+@pytest.mark.parametrize("with_budget", [False, True])
+def test_required_multi_tool_reasoning_retry_uses_gated_processor(
+    monkeypatch, with_budget
+):
     from rapid_mlx.config import get_config
     from rapid_mlx.reasoning import get_parser
 
     processor = object()
+    budget = object() if with_budget else None
     builds = []
     monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
     monkeypatch.setattr(
@@ -1542,7 +1546,8 @@ def test_required_multi_tool_reasoning_retry_uses_gated_processor(monkeypatch):
         "rapid_mlx.api.guided.build_json_schema_logits_processor", build
     )
     monkeypatch.setattr(
-        "rapid_mlx.routes.chat._build_reasoning_budget_processor", lambda *a, **k: None
+        "rapid_mlx.routes.chat._build_reasoning_budget_processor",
+        lambda *a, **k: budget,
     )
 
     class ReasoningEngine(_GuidedRetryEngine):
@@ -1579,4 +1584,173 @@ def test_required_multi_tool_reasoning_retry_uses_gated_processor(monkeypatch):
     assert builds[0][1] == {"reasoning_end_id": 42}
     assert len(engine.chat_calls) == 2
     assert engine.chat_calls[0][0] == engine.chat_calls[1][0]
+    assert engine.chat_calls[1][1].get("reasoning_budget_logits_processor") is budget
     assert not engine.guided_calls
+
+
+@pytest.mark.parametrize(
+    ("end_id", "error_message"),
+    [
+        (None, "No atomic reasoning-end marker"),
+        (42, "Tool-array schema compile failed"),
+    ],
+)
+def test_required_multi_tool_reasoning_setup_failure(
+    monkeypatch, caplog, end_id, error_message
+):
+    from unittest.mock import Mock
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.reasoning import get_parser
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.resolve_schema_reasoning_end_id", lambda *_: end_id
+    )
+    build = Mock(return_value=None)
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.build_json_schema_logits_processor", build
+    )
+    engine = _GuidedRetryEngine()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser = get_parser("qwen3")()
+
+    resp = _required_retry_request(
+        client, chat_template_kwargs={"enable_thinking": True}
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert 'tool_choice="required"' in resp.json()["detail"]
+    assert not engine.guided_calls
+    assert build.call_count == (0 if end_id is None else 1)
+    failure = next(
+        record
+        for record in caplog.records
+        if "guided tool-array retry failed" in record.getMessage()
+    )
+    assert failure.exc_info[0] is RuntimeError
+    assert str(failure.exc_info[1]) == error_message
+
+
+def test_required_multi_tool_retry_rejects_forced_schema_error(monkeypatch, caplog):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    validate = Mock(return_value="Tool arguments failed validation")
+    monkeypatch.setattr("rapid_mlx.routes.chat._forced_synth_schema_error", validate)
+    engine = _GuidedRetryEngine()
+
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 422, resp.text
+    assert 'tool_choice="required"' in resp.json()["detail"]
+    assert len(engine.guided_calls) == 1
+    validate.assert_called_once()
+    assert validate.call_args.args[:2] == ("get_time", '{"city": "Tokyo"}')
+    failure = next(
+        record
+        for record in caplog.records
+        if "guided tool-array retry failed" in record.getMessage()
+    )
+    assert failure.exc_info[0] is ValueError
+    assert str(failure.exc_info[1]) == "Tool arguments failed validation"
+
+
+def test_required_multi_tool_retry_http_error_passthrough(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    detail = {"error": {"code": "retry_unavailable", "message": "Try again"}}
+    engine = _GuidedRetryEngine(
+        HTTPException(status_code=503, detail=detail, headers={"Retry-After": "1"})
+    )
+
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json() == {"detail": detail}
+    assert resp.headers["Retry-After"] == "1"
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_retry_timeout_passthrough(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    error = TimeoutError("guided retry timed out")
+    engine = _GuidedRetryEngine(error)
+
+    with pytest.raises(TimeoutError, match="guided retry timed out") as exc:
+        _required_retry_request(_make_client(engine))
+
+    assert exc.value is error
+    assert len(engine.guided_calls) == 1
+
+
+@pytest.mark.parametrize("guided_cancel", [False, True])
+def test_required_multi_tool_retry_user_cancel_passthrough(monkeypatch, guided_cancel):
+    import asyncio
+    import concurrent.futures
+
+    from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+
+    class CancelledEngine(_GuidedRetryEngine):
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            self.guided_calls.append((messages, json_schema, kwargs))
+            if guided_cancel:
+                raise GuidedGenerationCancelledError()
+            raise asyncio.CancelledError()
+
+    engine = CancelledEngine()
+    # TestClient transports ASGI task cancellation as a futures cancellation.
+    with pytest.raises(concurrent.futures.CancelledError):
+        _required_retry_request(_make_client(engine))
+
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_retry_lifecycle_cancel_returns_503(monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    owner = object()
+    engine = _GuidedRetryEngine(GuidedGenerationCancelledError(lifecycle_task=owner))
+    engine.consume_lifecycle_task_abort = Mock(return_value=True)
+
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json() == {
+        "detail": {
+            "error": {
+                "message": "Request cancelled by model replacement",
+                "type": "server_error",
+                "code": "model_replacement",
+                "param": None,
+            }
+        }
+    }
+    engine.consume_lifecycle_task_abort.assert_called_once_with(owner)
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_retry_cancelled_output_returns_499(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+
+    class CancelledOutputEngine(_GuidedRetryEngine):
+        async def generate_with_schema(self, **kwargs):
+            output = await super().generate_with_schema(**kwargs)
+            return replace(output, finish_reason="cancelled")
+
+    engine = CancelledOutputEngine()
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 499, resp.text
+    assert resp.content == b""
+    assert len(engine.guided_calls) == 1
