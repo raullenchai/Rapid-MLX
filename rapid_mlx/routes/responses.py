@@ -2033,15 +2033,16 @@ async def _non_stream(
     # A strict schema applies only to the assistant's final text. Tool-call
     # turns retain the ordinary parser and wire representation unchanged.
     _strict_tool_turn = False
+    _parsed_tools: tuple[str, list | None] | None = None
     if _strict_schema and openai_request.tools:
         _engine_calls = getattr(output, "tool_calls", None)
-        _unused_text, _detected_calls = _parse_tool_calls_with_parser(
+        _parsed_tools = _parse_tool_calls_with_parser(
             output.text,
             _tool_parse_request(openai_request),
             structured_tool_calls=_engine_calls,
             finish_reason=output.finish_reason,
         )
-        _strict_tool_turn = bool(_detected_calls)
+        _strict_tool_turn = bool(_parsed_tools[1])
 
     # R12-4: when the strict path took the unconstrained branch
     # (i.e. ``_strict_schema`` was set but ``supports_guided_generation``
@@ -2211,6 +2212,7 @@ async def _non_stream(
                     # cost the server billed.
                     usage_detail_output = repair_output
                     output = _aggregate_generation_attempts(output, repair_output)
+                    _parsed_tools = None
                     ok = True
                     failure_details = None
                 else:
@@ -2370,13 +2372,17 @@ async def _non_stream(
     )
     engine_tool_calls = getattr(output, "tool_calls", None)
     tool_parse_request = _tool_parse_request(openai_request)
-    cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-        output.text,
-        tool_parse_request,
-        structured_tool_calls=engine_tool_calls,
-        channels_owned=channels_owned,
-        finish_reason=output.finish_reason,
-    )
+    # Channel decoding changes the parser input and reasoning ownership.
+    if _parsed_tools is None or channels_owned:
+        cleaned_text, tool_calls = _parse_tool_calls_with_parser(
+            output.text,
+            tool_parse_request,
+            structured_tool_calls=engine_tool_calls,
+            channels_owned=channels_owned,
+            finish_reason=output.finish_reason,
+        )
+    else:
+        cleaned_text, tool_calls = _parsed_tools
 
     # Yuki F6 (0.8.5 dogfood): mirror the chat-route ``tool_choice``
     # coercion. The local engine has no decoder-level FSM constraint, so
