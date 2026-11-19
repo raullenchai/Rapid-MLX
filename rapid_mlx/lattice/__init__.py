@@ -288,6 +288,10 @@ KNOBS = {
         "qwen35_moe_router",
         lambda c: c.model.family == "qwen35_moe_router_install",
     ),
+    "lfm2moe_affine4": _knob(
+        "lfm2moe_affine4",
+        lambda c: c.model.family == "lfm2moe_affine4_install",
+    ),
     "moe_decode_fusion": _knob(
         "moe_decode_fusion",
         lambda c: c.model.family == "moe_decode_fusion_install",

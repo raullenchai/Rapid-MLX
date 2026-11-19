@@ -73,6 +73,7 @@ def test_builtin_resolution_snapshot(monkeypatch):
         "gemma4_affine4",
         "qwen35_moe_router",
         "moe_decode_fusion",
+        "lfm2moe_affine4",
         "moe_gate_up_fusion",
         "qsa_stage1_min_query",
         "qsa_indexed_splitk_min_kv",

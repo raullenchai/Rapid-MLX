@@ -262,6 +262,10 @@ def _decode_type(base, original):
         if not eligible(self, x):
             return original(self, x)
         indices, scores = route(self, x)
+        from . import lfm2moe_affine4
+
+        if lfm2moe_affine4.eligible(self, x):
+            return lfm2moe_affine4.forward(self, x, indices, scores)
         y = self.switch_mlp(x, indices)
         return combine(y, scores)
 
@@ -294,11 +298,18 @@ def install_moe_decode_fusion(model) -> int:
     named_modules = getattr(model, "named_modules", None)
     if not callable(named_modules):
         return 0
+    from . import lfm2moe_affine4
+
+    affine4_enabled = not env_falsey("RAPID_MLX_LFM2MOE_AFFINE4") and install_enabled(
+        "lfm2moe_affine4", mx, route="lfm2moe_affine4_install"
+    )
     types = _block_types()
     count = 0
     for _, block in named_modules():
         replacement = types.get(type(block))
         if replacement is not None:
+            if affine4_enabled:
+                lfm2moe_affine4.enroll(block)
             block.__class__ = replacement
             count += 1
     return count

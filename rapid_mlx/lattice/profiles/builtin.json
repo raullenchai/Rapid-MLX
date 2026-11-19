@@ -843,6 +843,39 @@
       }
     },
     {
+      "id": "lfm2moe-affine4-enrollment",
+      "model": {
+        "family": "lfm2moe_affine4_install"
+      },
+      "knobs": {
+        "lfm2moe_affine4": true
+      },
+      "provenance": {
+        "evidence": "LFM2-MoE affine4 singleton expert fusion; exact class/layout checks and a per-block 2% relative-RMS load-time probe are mandatory. Performance qualification pending.",
+        "hardware_scope": "Metal devices passing the local numerical probe; no new performance claim."
+      }
+    },
+    {
+      "id": "lfm2moe-affine4-m2-pro-disable",
+      "hardware": [
+        {
+          "gpu_generation": 14,
+          "tier": "Pro"
+        }
+      ],
+      "model": {
+        "family": "lfm2moe_affine4_install"
+      },
+      "knobs": {
+        "lfm2moe_affine4": false
+      },
+      "provenance": {
+        "evidence": "Apple M2 Pro 32 GB, LiquidAI/LFM2.5-24B-A2B-MLX-4bit, 256-token decode, fresh server per run, 3 interleaved rounds: fused 84.44 / 84.66 / 84.66 vs stock 94.62 / 95.90 / 95.67 tok/s (11.5% slower). M5 Max (gpu_generation 17) measured +2.6%.",
+        "decision": "disable on M2 Pro: measured regression",
+        "hardware_scope": "Explicit generation/tier generalization to all Apple M2 Pro (gpu_generation 14, tier Pro) core/memory variants, including missing core/memory facts; no generalization to other generations or tiers."
+      }
+    },
+    {
       "id": "moe-decode-fusion-enrollment",
       "model": {
         "family": "moe_decode_fusion_install"

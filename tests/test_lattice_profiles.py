@@ -290,12 +290,32 @@ def test_builtin_resource_and_package_declaration():
     resource = files("rapid_mlx.lattice").joinpath("profiles/builtin.json")
     data = json.loads(resource.read_text())
     assert data["schema_version"] == 1
-    assert len(defaults.builtin_profile().cells) == len(data["cells"]) == 35
+    assert len(defaults.builtin_profile().cells) == len(data["cells"]) == 37
     config = tomllib.loads(Path("pyproject.toml").read_text())
     assert (
         "lattice/profiles/*.json"
         in config["tool"]["setuptools"]["package-data"]["rapid_mlx"]
     )
+
+
+@pytest.mark.parametrize(
+    "generation,tier,expected",
+    [(14, "Pro", False), (17, "Max", True), (15, "Ultra", True)],
+)
+def test_lfm2moe_affine4_hardware_enrollment(generation, tier, expected):
+    ctx = context(
+        hardware=lattice.HardwareProfile(gpu_generation=generation, tier=tier),
+        model=lattice.ModelProfile(family="lfm2moe_affine4_install"),
+        mode="plain",
+    )
+    decision = lattice.resolve("lfm2moe_affine4", ctx, environ={})
+    assert decision.value is expected
+    if expected:
+        assert decision.source == "builtin:lfm2moe-affine4-enrollment"
+    else:
+        # Conflicting universal and hardware cells use the safe knob default.
+        assert decision.source == "default"
+        assert decision.reason == "conflicting lattice profile cells"
 
 
 # Golden values recorded from origin/main (1cbe83308), independent of profile data.
