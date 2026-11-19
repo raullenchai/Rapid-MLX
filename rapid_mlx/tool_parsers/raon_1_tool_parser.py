@@ -418,6 +418,8 @@ class RaonToolParser(ToolParser):
         self._calls: list[_Call] = []
         self._held_content = ""
         self._content_started = False
+        self._pending_arguments = ""
+        self._pending_name = ""
 
     def _use_request(self, request: Any) -> None:
         request = _request(request)
@@ -520,6 +522,64 @@ class RaonToolParser(ToolParser):
             events.append(("reasoning_end", "", -1))
         return events
 
+    def _bounded_argument_events(self) -> list[tuple[str, str, int]]:
+        """Resolve held bodies with the complete parser's sibling boundaries."""
+        # The first header has already passed through the grammar. Restore a
+        # header for the shared call scanner without emitting its name twice.
+        header = f"<function={self._pending_name}>"
+        raw = header + self._pending_arguments
+        self._pending_arguments = ""
+        names = declared_tool_names({"tools": self._request_tools})
+        spans = split_marked_calls(
+            raw,
+            r"<function=([^>]+)>",
+            FUNCTION_CLOSE,
+            valid_names=names,
+        )
+        markup = RaonMarkupStream(self.markup)
+        if not spans:
+            return self._events(markup.feed(raw[len(header) :], [])) + self._events(
+                markup.finish()
+            )
+        events = []
+        cursor = len(header)
+        for _, body, start, end in spans:
+            if start:
+                header_end = raw.index(">", start) + 1
+                events += self._events(markup.feed(raw[cursor:header_end], []))
+            events.append(("args", body, self._index))
+            events += self._events(markup.feed(FUNCTION_CLOSE, []))
+            cursor = end
+        events += self._events(markup.feed(raw[cursor:], []))
+        events += self._events(markup.finish())
+        return events
+
+    def _stream_events(self, pieces: list[Piece]) -> list[tuple[str, str, int]]:
+        events = []
+        for piece in pieces:
+            if self._state == _ARGS and piece.kind != DISCARD:
+                if (
+                    not self._pending_arguments
+                    and piece.kind in (None, PARAMETER_OPEN)
+                    and piece.value
+                ):
+                    events.append(("args", "", self._index))
+                self._pending_arguments += piece.value
+                # A closer alone remains ambiguous: it may be literal file
+                # content. Keep the body until its enclosing call ends (or
+                # EOF), then select the last closer using the shared scanner.
+                if piece.kind == TOOL_CALL_END:
+                    events += self._bounded_argument_events()
+            else:
+                current = self._events([piece])
+                for kind, value, _ in current:
+                    if kind == "open":
+                        self._pending_name = ""
+                    elif kind == "name":
+                        self._pending_name += value
+                events += current
+        return events
+
     # -- tool schema ------------------------------------------------------------
 
     def _properties(self, name: str) -> dict:
@@ -601,7 +661,7 @@ class RaonToolParser(ToolParser):
         return True
 
     def _argument_delta(self, call: _Call) -> str | None:
-        current = _parameters_json(call.raw, True)
+        current = self._arguments(call)
         if call.name:
             current = self._typed(current, call.name)
         stable = _stable_prefix(current, call.string_keys)
@@ -615,7 +675,7 @@ class RaonToolParser(ToolParser):
         return delta
 
     def _argument_rest(self, call: _Call) -> str | None:
-        final = self._typed(_parameters_json(call.raw, False), call.name)
+        final = self._typed(self._arguments(call), call.name)
         if len(final) <= len(call.sent) or (
             call.sent and not final.startswith(call.sent)
         ):
@@ -747,17 +807,7 @@ class RaonToolParser(ToolParser):
             if not name and raw.strip():
                 name, arguments = self._json_call(raw)
             elif raw.strip():
-                parameters = split_marked_parameters(
-                    raw,
-                    _NAMED_PARAMETER.pattern,
-                    PARAMETER_CLOSE,
-                    valid_names=set(self._properties(name)) or None,
-                )
-                arguments = (
-                    json.dumps(dict(parameters), ensure_ascii=False)
-                    if parameters
-                    else _parameters_json(raw, False)
-                )
+                arguments = self._arguments(call)
             else:
                 arguments = "{}"
             if name:
@@ -771,6 +821,20 @@ class RaonToolParser(ToolParser):
                     )
                 )
         return found
+
+    def _arguments(self, call: _Call) -> str:
+        parameters = split_marked_parameters(
+            call.raw,
+            _NAMED_PARAMETER.pattern,
+            PARAMETER_CLOSE,
+            valid_names=set(self._properties(call.name.strip())) or None,
+        )
+        arguments = (
+            json.dumps(dict(parameters), ensure_ascii=False)
+            if parameters
+            else _parameters_json(call.raw, False)
+        )
+        return arguments
 
     @staticmethod
     def _json_call(raw: str) -> tuple[str, str]:
@@ -848,13 +912,22 @@ class RaonToolParser(ToolParser):
             self._started = True
             self._reset(_CONTENT)
         self._use_request(request)
-        return self._delta(self._events(self._stream.feed(delta_text, delta_token_ids)))
+        return self._delta(
+            self._stream_events(self._stream.feed(delta_text, delta_token_ids))
+        )
 
     def finish_streaming(self) -> DeltaMessage | None:
-        events = self._finish_events()
+        events = self._stream_events(self._stream.finish())
+        if self._pending_arguments:
+            events += self._bounded_argument_events()
+        events += self._finish_events()
         if events or self._held_content:
             return self._delta(events, finished=True)
         return None
+
+    def finalize_legacy_raw_stream(self, full_text: str, request=None):
+        """Release bare calls whose final boundary stays ambiguous until EOF."""
+        return _wire(self.finish_streaming())
 
     def reset(self):
         super().reset()

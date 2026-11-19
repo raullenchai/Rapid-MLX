@@ -108,6 +108,63 @@ def test_complete_literal_markers_preserve_values_and_call_boundaries(value):
     ] == [("run", {"text": value}), ("run", {"count": 42})]
 
 
+@pytest.mark.parametrize("marker", ["</parameter>", "</function>"])
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_postprocessor_literal_marker_value_parity_at_every_split(marker, wrapped):
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    value = f"a literal {marker} inside"
+    text = call({"text": value})
+    if not wrapped:
+        text = text.removeprefix("<tool_call>\n").removesuffix("\n</tool_call>")
+    complete = RaonToolParser().extract_tool_calls(text, REQUEST)
+    expected = [(tc["name"], json.loads(tc["arguments"])) for tc in complete.tool_calls]
+    assert expected == [("run", {"text": value})]
+
+    for chunks in [list(text)] + [
+        [text[:offset], text[offset:]] for offset in range(len(text) + 1)
+    ]:
+        cfg = MagicMock()
+        cfg.engine = None
+        cfg.reasoning_parser = None
+        cfg.reasoning_parser_name = None
+        cfg.tool_call_parser = "raon_1"
+        cfg.tool_parser_instance = None
+        cfg.enable_auto_tool_choice = True
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=REQUEST)
+        events = []
+        for chunk in chunks:
+            events.extend(
+                pp.process_chunk(
+                    SimpleNamespace(
+                        new_text=chunk,
+                        finished=False,
+                        token=0,
+                        finish_reason=None,
+                        prompt_tokens=0,
+                        generation_tokens=0,
+                        channel=None,
+                        tool_calls=None,
+                        completion_tokens=0,
+                        tokens=[],
+                        logprobs=None,
+                    )
+                )
+            )
+        events.extend(pp.finalize())
+        calls = {}
+        for event in events:
+            if event.type != "tool_call":
+                continue
+            for tc in event.tool_calls:
+                current = calls.setdefault(tc["index"], {"name": "", "arguments": ""})
+                for key in current:
+                    current[key] += tc.get("function", {}).get(key, "")
+        assert [
+            (tc["name"], json.loads(tc["arguments"])) for tc in calls.values()
+        ] == expected, chunks
+
+
 @pytest.mark.parametrize("step", [1, 2, 7, 31, 10000])
 def test_multiple_calls_typed_multiline_and_streaming(step):
     text = "Working.\n" + call() + "\n" + call({"text": "끝", "count": "0"}) + "\nDone."
