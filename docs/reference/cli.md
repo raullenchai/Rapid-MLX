@@ -203,3 +203,22 @@ These commands provide explicit agent configuration, connection tests, and foreg
 ## Settings and diagnostics
 
 The [configuration reference](configuration.md) gives the setup path for server settings. Run `rapid-mlx doctor --help` and `rapid-mlx telemetry --help` for current diagnostic and privacy controls.
+
+## `rapid-mlx top`
+
+Watch one local `serve` or `service` server with `rapid-mlx top --port 8000`.
+The view refreshes every second; press Ctrl-C to exit. `--once` prints a single
+plain-text snapshot. Redirected output also takes one snapshot automatically.
+Set `RAPID_MLX_API_KEY` when the server requires authentication.
+
+The monitor only reads `/v1/status`, `/v1/models/residency`, and `/metrics`.
+It shows resident models and measured (or explicitly estimated) memory,
+request token counts, phase, decode speed and elapsed time, queue depth,
+Metal memory, and the primary engine's prefix-cache usage and hit rate.
+Requests/min and input/output tokens/s are counter deltas between refreshes;
+the first snapshot and counter resets show `-` until a rate is available.
+Per-model KV usage, prefill percentage, and client route are unavailable on
+the current monitoring endpoints and are marked accordingly. Output progress
+is not a measure of prefill completion. Prompts, responses, request IDs,
+and local checkpoint paths are never displayed. Unreachable servers and
+unavailable endpoints appear in the view without printing server error bodies.

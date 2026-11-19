@@ -17337,6 +17337,11 @@ def main():
             ):
                 _print_next_step()
         raise
+    if args.command == "top":
+        from rapid_mlx.top import top_command
+
+        top_command(args)
+        return
     if args.command == "pull":
         if getattr(args, "json", False) and not getattr(args, "check", False):
             parser.error("pull --json requires --check")
