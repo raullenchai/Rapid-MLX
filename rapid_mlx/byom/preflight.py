@@ -64,6 +64,7 @@ RAPID_MODEL_TYPES: frozenset[str] = frozenset(
         "flint",
         "gpt_oss_puzzle",
         "hy_v3",
+        "hy_v4_flash",
         "raon1_nano",
         "k2_horizon",
         "lfm3",
