@@ -43,6 +43,26 @@ struct MenuBarResourceTests {
         }
     }
 
+    @Test func allCardByteLabelsUseDecimalGigabytes() {
+        for used: UInt64 in [0, 2_500_000_000, 3_500_000_000] {
+            for count in [0, 1, 2] {
+                let models = (0..<count).map { resident("model-\($0)", measured: used) }
+                let model = MenuBarResourceModel(residency: snapshot(models, used: used),
+                                                 totalBytes: 17_179_869_184, status: nil)
+                let amount = MemoryOverviewFormat.bytes(used)
+                #expect(model.memoryLabel == "\(amount) / 17.18 GB")
+                // A zero measurement falls back to the endpoint's estimate.
+                let rowAmount = MemoryOverviewFormat.bytes(used == 0 ? 2_000_000_000 : used)
+                #expect(model.rows.allSatisfy { $0.memoryLabel == rowAmount })
+                let action = count == 1 ? "Unload model" : "Unload all models"
+                #expect(model.unloadAllLabel == "\(action) and free \(amount)")
+                if used == 3_500_000_000 {
+                    #expect(model.unloadAllLabel.hasSuffix("3.50 GB"))
+                }
+            }
+        }
+    }
+
     @Test func onlyMemoryHoldingModelsAppearAndUnloadRespectsServerGuards() {
         let models = [resident("idle"), resident("busy", active: 1), resident("pinned", pinned: true),
                       resident("primary", primary: true), resident("loading", state: "loading"),

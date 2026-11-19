@@ -15,26 +15,48 @@ def validate(payload, state, physical_bytes):
     assert data["walk"]["complete"] is True, "incomplete AX walk"
     elements = data["ui_elements"]
 
-    def scope(identifier):
+    def scope(identifier, *, row=False):
         indexes = [
             i for i, e in enumerate(elements) if e.get("identifier") == identifier
         ]
-        assert len(indexes) == 1, f"expected one {identifier}"
+        assert indexes, f"missing {identifier}"
+        if not row:
+            assert len(indexes) == 1, f"expected one {identifier}"
         start = indexes[0]
         end = start + 1
-        while end < len(elements) and elements[end]["depth"] > elements[start]["depth"]:
+        # A contained row owns its descendants. Some macOS SwiftUI versions
+        # flatten it into siblings inheriting the same ID, including its button.
+        # Accept one contiguous run, never merge a separate occurrence elsewhere.
+        while end < len(elements) and (
+            elements[end]["depth"] > elements[start]["depth"]
+            or (
+                row
+                and elements[end]["depth"] == elements[start]["depth"]
+                and elements[end].get("identifier") == identifier
+            )
+        ):
             end += 1
+        assert indexes[-1] < end, f"discontiguous {identifier}"
         return elements[start:end]
 
     def text(identifier):
         return " ".join(
             str(e.get(key, ""))
-            for e in scope(identifier)
+            for e in scope(identifier, row=identifier.startswith(PREFIX + "Model."))
             for key in ("title", "description", "value")
         )
 
     def enabled(identifier, expected):
         assert scope(identifier)[0].get("enabled") is expected, identifier
+
+    def row_unload_enabled(alias, expected):
+        buttons = [
+            e
+            for e in scope(PREFIX + "Model." + alias, row=True)
+            if e.get("role") == "AXButton"
+        ]
+        assert len(buttons) == 1, f"expected one unload button in {alias}"
+        assert buttons[0].get("enabled") is expected, f"unload enabled in {alias}"
 
     rows = {
         e.get("identifier")
@@ -48,6 +70,10 @@ def validate(payload, state, physical_bytes):
     used = {"idle": "0.00", "one": "2.50", "two": "3.50"}[state]
     memory = f"{used} GB / {physical_bytes / 1e9:.2f} GB"
     assert memory in text(PREFIX + "Memory"), "incorrect used/physical memory"
+    action = "Unload model" if state == "one" else "Unload all models"
+    assert f"{action} and free {used} GB" in text(PREFIX + "UnloadAll"), (
+        "incorrect unload-all memory"
+    )
     # Native progress indicators expose a numeric AXValue, even when SwiftUI
     # supplies a spoken memory label. Check the fill against its native range.
     meter = scope(PREFIX + "Meter")[0]
@@ -78,11 +104,11 @@ def validate(payload, state, physical_bytes):
         assert "42.5 tok/s" in text(PREFIX + "Activity")
         assert "fake-alias" in text(PREFIX + "Model.fake-alias")
         assert "2.50 GB" in text(PREFIX + "Model.fake-alias")
-        enabled(PREFIX + "Unload.fake-alias", False)
+        row_unload_enabled("fake-alias", False)
         if state == "two":
             assert "fake-evictable-alias" in text(PREFIX + "Model.fake-evictable-alias")
             assert "1.00 GB" in text(PREFIX + "Model.fake-evictable-alias")
-            enabled(PREFIX + "Unload.fake-evictable-alias", True)
+            row_unload_enabled("fake-evictable-alias", True)
     enabled(PREFIX + "UnloadAll", False)
 
 

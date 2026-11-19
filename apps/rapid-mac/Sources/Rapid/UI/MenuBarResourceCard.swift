@@ -36,6 +36,13 @@ struct MenuBarResourceModel {
         "\(MemoryOverviewFormat.bytes(residency?.memoryUsedBytes)) / \(MemoryOverviewFormat.bytes(totalBytes))"
     }
 
+    var unloadAllLabel: String {
+        let freed = MemoryOverviewFormat.bytes(residency?.memoryUsedBytes ?? 0)
+        return rows.count + audioRows.count == 1
+            ? String(localized: "Unload model and free \(freed)")
+            : String(localized: "Unload all models and free \(freed)")
+    }
+
     var fraction: Double? {
         guard let residency, let totalBytes, totalBytes > 0 else { return nil }
         return min(1, Double(residency.memoryUsedBytes) / Double(totalBytes))
@@ -209,6 +216,7 @@ struct MenuBarResourceCard: View {
                             .accessibilityLabel(String(localized: "Unload") + " " + row.name)
                             .accessibilityIdentifier("MenuBar.Resources.Unload.\(row.id)")
                         }
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("MenuBar.Resources.Model.\(row.id)")
                     }
                     ForEach(model.audioRows) { row in
@@ -217,16 +225,14 @@ struct MenuBarResourceCard: View {
                             Spacer()
                             Text(row.memoryLabel).foregroundStyle(.secondary)
                         }
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("MenuBar.Resources.Audio.\(row.id)")
                     }
                 }
                 .font(.caption)
             }
             .frame(height: 72)
-            Button(SidebarView.residentUnloadLabel(
-                modelCount: model.rows.count + model.audioRows.count,
-                memoryUsedBytes: model.residency?.memoryUsedBytes ?? 0
-            )) {
+            Button(model.unloadAllLabel) {
                 Task { await monitor.unload(id: nil, server: server) }
             }
             .disabled(!model.canUnloadAll || monitor.unloading || server.isOperating || !server.residentLoadsInFlight.isEmpty)

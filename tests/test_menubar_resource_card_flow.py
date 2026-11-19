@@ -21,7 +21,7 @@ CARD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CARD)
 
 
-def evidence(state):
+def evidence(state, *, layout="inherited"):
     elements = []
 
     def add(identifier, text="", enabled=None):
@@ -43,14 +43,36 @@ def evidence(state):
     if state == "idle":
         elements.append({"depth": 2, "value": "Unloaded"})
     else:
-        add("Model.fake-alias")
-        elements.append({"depth": 3, "value": "fake-alias 2.50 GB"})
-        add("Unload.fake-alias", enabled=False)
+
+        def row(alias, amount, enabled):
+            # macOS can flatten the HStack and propagate its identifier to
+            # both text nodes and the button, overriding the button's ID.
+            if layout == "container":
+                add("Model." + alias)
+                elements[-1]["role"] = "AXGroup"
+            for role, value in [
+                ("AXStaticText", alias),
+                ("AXStaticText", amount),
+                ("AXButton", ""),
+            ]:
+                identifier = (
+                    "Unload." + alias
+                    if layout == "container" and role == "AXButton"
+                    else "Model." + alias
+                )
+                add(identifier, value, enabled if role == "AXButton" else True)
+                elements[-1].update(role=role, depth=3 if layout == "container" else 2)
+                if layout == "container" and role == "AXStaticText":
+                    del elements[-1]["identifier"]
+                if role == "AXButton":
+                    elements[-1]["description"] = "Unload " + alias
+
+        row("fake-alias", "2.50 GB", False)
         if state == "two":
-            add("Model.fake-evictable-alias")
-            elements.append({"depth": 3, "value": "fake-evictable-alias 1.00 GB"})
-            add("Unload.fake-evictable-alias", enabled=True)
-    add("UnloadAll", enabled=False)
+            row("fake-evictable-alias", "1.00 GB", True)
+    action = "Unload model" if state == "one" else "Unload all models"
+    add("UnloadAll", f"{action} and free {used} GB", enabled=False)
+    elements[-1]["role"] = "AXButton"
     return {
         "success": True,
         "data": {"walk": {"complete": True}, "ui_elements": elements},
@@ -58,8 +80,29 @@ def evidence(state):
 
 
 @pytest.mark.parametrize("state", ["idle", "two", "one"])
-def test_card_accepts_each_observed_state(state):
-    CARD.validate(evidence(state), state, 8_000_000_000)
+@pytest.mark.parametrize("layout", ["inherited", "container"])
+def test_card_accepts_each_observed_state(state, layout):
+    CARD.validate(evidence(state, layout=layout), state, 8_000_000_000)
+
+
+@pytest.mark.parametrize("layout", ["inherited", "container"])
+def test_card_two_matches_ci_memory_and_row_identity(layout):
+    tree = evidence("two", layout=layout)
+    nodes = tree["data"]["ui_elements"]
+    nodes[1]["value"] = "3.50 GB / 17.18 GB, ·, Total RAM"
+    nodes[2]["value"] = 3_500_000_000 / 17_179_869_184
+    CARD.validate(tree, "two", 17_179_869_184)
+    nodes[-1]["value"] = "Unload all models and free 3.26 GB"
+    with pytest.raises(AssertionError, match="incorrect unload-all memory"):
+        CARD.validate(tree, "two", 17_179_869_184)
+
+
+def test_card_accepts_container_with_inherited_descendant_identifiers():
+    tree = evidence("two", layout="container")
+    for node in tree["data"]["ui_elements"]:
+        if node.get("value") in {"fake-alias", "2.50 GB"}:
+            node["identifier"] = CARD.PREFIX + "Model.fake-alias"
+    CARD.validate(tree, "two", 8_000_000_000)
 
 
 @pytest.mark.parametrize(
@@ -75,6 +118,12 @@ def test_card_accepts_each_observed_state(state):
         "evictable-disabled",
         "unrelated-copy",
         "stale-row",
+        "binary-unload-amount",
+        "missing-unload-amount",
+        "missing-row-button",
+        "duplicate-row-button",
+        "discontiguous-row",
+        "unrelated-row-size",
     ],
 )
 def test_card_rejects_false_positive_evidence(mutation):
@@ -99,13 +148,36 @@ def test_card_rejects_false_positive_evidence(mutation):
             "fake-alias" if mutation == "pinned-enabled" else "fake-evictable-alias"
         )
         next(
-            n for n in nodes if n.get("identifier") == CARD.PREFIX + "Unload." + target
+            n
+            for n in nodes
+            if n.get("identifier") == CARD.PREFIX + "Model." + target
+            and n.get("role") == "AXButton"
         )["enabled"] = mutation == "pinned-enabled"
     elif mutation == "unrelated-copy":
         nodes[0]["value"] = "Idle"
         nodes.append({"depth": 2, "value": "Generating · 42.5 tok/s"})
-    else:
+    elif mutation == "stale-row":
         nodes.append({"depth": 2, "identifier": CARD.PREFIX + "Model.stale"})
+    elif mutation in {"binary-unload-amount", "missing-unload-amount"}:
+        nodes[-1]["value"] = (
+            "Unload all models and free 3.26 GB"
+            if mutation == "binary-unload-amount"
+            else "Unload all models"
+        )
+    elif mutation == "missing-row-button":
+        nodes[:] = [n for n in nodes if n.get("description") != "Unload fake-alias"]
+    elif mutation == "duplicate-row-button":
+        index = next(
+            i
+            for i, n in enumerate(nodes)
+            if n.get("description") == "Unload fake-alias"
+        )
+        nodes.insert(index, deepcopy(nodes[index]))
+    elif mutation == "discontiguous-row":
+        nodes.append(deepcopy(nodes[3]))
+    elif mutation == "unrelated-row-size":
+        next(n for n in nodes if n.get("value") == "2.50 GB")["value"] = "wrong size"
+        nodes.append({"depth": 2, "value": "2.50 GB"})
     with pytest.raises(AssertionError):
         CARD.validate(tree, "two", 8_000_000_000)
 
