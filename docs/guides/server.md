@@ -1446,6 +1446,25 @@ For a browser frontend, explicitly allow its origin:
 rapid-mlx serve qwen3.5-4b-4bit --cors-origins http://localhost:3000
 ```
 
+For browser extensions, opt in to an entire extension scheme without looking up
+each extension's ID:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --cors-origins 'chrome-extension://*' 'moz-extension://*'
+# Equivalent environment configuration:
+export RAPID_MLX_CORS_ALLOW_ORIGINS='chrome-extension://*,moz-extension://*'
+```
+
+Supported scheme patterns are `chrome-extension://*`, `moz-extension://*`, and
+`safari-web-extension://*`. They match only extension IDs (32 lowercase letters
+`a`–`p` for Chrome, UUID hosts for Firefox and Safari), with no port, path,
+userinfo, query, or fragment. HTTP(S) entries remain literal; general globs and
+regular expressions are unsupported. Bare `*` retains its all-origin meaning.
+Scheme patterns trust every extension using that scheme; prefer literal origins
+when access should be limited to specific extensions. Credentials stay disabled
+by default on the CLI/env path; `RAPID_MLX_CORS_ALLOW_CREDENTIALS=true` opts in.
+Scheme patterns echo the matched origin and support credentials, unlike bare `*`.
+
 For LAN or reverse-proxy access, set the expected Host names explicitly; this
 replaces the local defaults, so include loopback names if they are also needed:
 
