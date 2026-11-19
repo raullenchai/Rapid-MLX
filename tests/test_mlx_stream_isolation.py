@@ -148,15 +148,65 @@ def test_worker_stream_restored_after_executor_shutdown(
     "filename",
     [
         "test_batching.py",
+        "test_batching_deterministic.py",
         "test_mtp_cli_wiring.py",
         "test_qwen36_native_text_cache.py",
         "test_no_mllm_flag.py",
     ],
 )
 def test_leaking_suites_request_stream_restoration(filename):
-    """Guard the module-level restoration of suites that initialize MLX workers."""
+    """Module fixtures must tear down before generation streams are restored."""
     root = Path(__file__).resolve().parent
     suite = ast.parse((root / filename).read_text())
+    fixtures = {}
+    module_fixtures = []
+    for node in ast.walk(suite):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            call = decorator if isinstance(decorator, ast.Call) else None
+            func = call.func if call else decorator
+            if not isinstance(func, ast.Attribute) or func.attr != "fixture":
+                continue
+            options = (
+                {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+                if call
+                else {}
+            )
+            name = options.get("name", node.name)
+            fixtures[name] = {
+                arg.arg
+                for arg in (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                )
+            }
+            if options.get("scope") == "module":
+                module_fixtures.append(name)
+
+    # Check all module fixtures so a worker hidden behind a helper or an engine
+    # fixture cannot evade the contract through its name. Function fixtures
+    # already tear down before module-scoped restoration.
+    for name in module_fixtures:
+        pending = [name]
+        visited = set()
+        while pending:
+            dependency = pending.pop()
+            if dependency in visited:
+                continue
+            visited.add(dependency)
+            pending.extend(fixtures.get(dependency, ()))
+        assert "preserve_mlx_generation_streams" in visited, (
+            f"{filename}: module fixture {name!r} must depend on "
+            "preserve_mlx_generation_streams so workers shut down before restoration"
+        )
+
+    # The deterministic suite requests restoration through its executor;
+    # suites with workers created in test bodies still need the module marker.
+    if filename == "test_batching_deterministic.py":
+        assert "mlx_executor" in module_fixtures
+        return
     marker = next(
         node
         for node in suite.body
