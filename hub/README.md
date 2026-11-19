@@ -244,7 +244,7 @@ unauthenticated local UI and API, flags and paths.
 Plugins and experiments run with the current account's permissions and can read
 account files. Browser hostname isolation does not protect against malicious
 native code. Bind only to loopback. No remote TLS/session-management product,
-registration flow, distributed scheduling, log retention, data-dir locking, or
+registration flow, distributed scheduling, log retention, or
 orphan-job adoption is provided. Run one Hub per data directory. A deliberately
 detached descendant can escape process-group supervision. SSE usage is available
 only when engines emit it. Engine admission is honored only when advertised or
@@ -264,3 +264,21 @@ byte-identical tool-call SSE, mid-stream and queued disconnects, queue bounds an
 expiry, engine outage/recovery events, token revocation, host-only cookies/UI
 codes, metadata/capture/redaction/retention/cap/failure, discovery cleanup, stale
 and previous-instance jobs, acknowledgement and experiment-group termination.
+
+To reopen the dashboard after consuming the startup link:
+
+```sh
+rapid-hub login --data-dir /private/tmp/rapid-mlx-hub/data
+```
+
+The CLI checks the discovered instance, reads the mode-0600 `admin-token` file,
+and calls the admin-only `POST /hub/v1/login-nonce` endpoint. It prints a fresh
+single-use `hub.localhost` URL containing only a nonce. Minting a nonce replaces
+any unconsumed startup/login nonce; existing sessions stay valid.
+
+Hub validates fixed plugin assignments and port availability before changing
+credentials or persisted jobs. An exclusive OS file lock on the data directory
+prevents concurrent Hub ownership; graceful shutdown releases it and process
+exit releases it automatically. Keep `.owner.lock` in place (the lock is on its
+inode, not its filename). Research Loop prints its `research-loop.localhost` URL
+in Hub mode.

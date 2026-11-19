@@ -1731,3 +1731,6 @@ summary:hover { color:var(--blue); }
 #source-drawer h3 { font-size:13px; margin-top:24px; }
 mark { background:#f4d785; color:#27211a; }
 [data-passage]:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+
+.evidence-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.source-chip { background:var(--surface); color:var(--ink); border:1px solid var(--rule); border-radius:12px; padding:3px 8px; font-size:11px; text-align:left; max-width:100%; }

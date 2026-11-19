@@ -95,7 +95,9 @@ def test_protocol_and_literature_http_headers(hub_env, monkeypatch):
     class Opener:
         def open(self, request, **kwargs):
             requests.append(request)
-            return io.BytesIO(b'{"data":[{"index":0,"embedding":[1,0]}]}')
+            return io.BytesIO(
+                b'{"model":"org/actual-embed","data":[{"index":0,"embedding":[1,0]}]}'
+            )
 
     monkeypatch.setattr(literature, "build_opener", lambda *a: Opener())
     with hub_client.project_scope("grokking"):
@@ -357,3 +359,13 @@ def test_terminal_job_update_reconciles_and_retries(
     if failure == "conflict":
         assert updates == ["done", "cancelling", "cancelled"]
         assert (run / "STOP").exists() and not (run / "PAUSE").exists()
+
+
+def test_printed_public_plugin_url():
+    import server
+
+    assert (
+        server.public_url("127.0.0.1", 54321, True)
+        == "http://research-loop.localhost:54321"
+    )
+    assert server.public_url("127.0.0.1", 54321, False) == "http://127.0.0.1:54321"

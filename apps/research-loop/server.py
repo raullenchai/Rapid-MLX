@@ -235,6 +235,10 @@ class App(ThreadingHTTPServer):
             literature.HTTPEmbedder(embeddings, embedding_model)
             if embeddings
             else None,
+            chat=lambda query: literature.HTTPQueryChat(
+                self.models[self.model], self.model
+            )(query),
+            rerank=literature.configured_reranker() if embeddings else None,
             metadata_resolver=lambda text: literature.HTTPMetadata(
                 self.models[self.model], self.model
             )(text),
@@ -1234,6 +1238,10 @@ class Handler(BaseHTTPRequestHandler):
             lock.release()
 
 
+def public_url(host, port, hub_mode=False):
+    return f"http://{'research-loop.localhost' if hub_mode else host}:{port}"
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
@@ -1287,7 +1295,7 @@ if __name__ == "__main__":
                 and re.fullmatch(SLUG, project.name)
             ):
                 hub_client.enable_capture(project)
-    print(f"Research Loop: http://{args.host}:{args.port}", flush=True)
+    print(f"Research Loop: {public_url(args.host, args.port, args.hub)}", flush=True)
     try:
         app.serve_forever()
     except KeyboardInterrupt:

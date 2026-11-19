@@ -849,3 +849,46 @@ assert.equal(context.grokSource.snippet,context.pdfPassage);
 context.grokSource.cited_sentences=['No matching vocabulary whatsoever.'];
 assert.match(run('highlightedPassage(grokSource)'),/<mark>Training accuracy saturates first\.<\/mark>/);
 console.log('Round 5 test_flowing_pdf_passages / test_grokking_body_highlight: line joins, dehyphenation, paragraphs, body match and fallback.');
+
+// Round 6: normalized and wrapped headings never enter the selected body sentence.
+for(const [heading,title] of [['ABSTRACT','Abstract'],['A GENERALIZATION','Generalization'],['5.2 PHASES OF GROKKING:\nMEMORIZATION, CIRCUIT FORMATION,\nAND CLEANUP','Phases Of Grokking: Memorization, Circuit Formation, And Cleanup'],['G ENERALIZATION','Generalization']]){
+  context.headingSource={...context.literatureSource,section_title:title,snippet:heading+'\nWeight decay improves generalization.',cited_sentences:['Weight decay improves generalization [S1].']};
+  assert.match(run('highlightedPassage(headingSource)'),/<mark>Weight decay improves generalization\.<\/mark>/);
+  context.headingSource.cited_sentences=[];
+  assert.match(run('highlightedPassage(headingSource)'),/<mark>Weight decay improves generalization\.<\/mark>/);
+}
+setup();
+run('state.data.discussion=[{role:"assistant",content:"Evidence",retrieval:{papers:1,passages:1}}];renderConversation()');
+assert.match(get('conversation').innerHTML,/Searching 1 paper · 1 passage found/);
+run('state.data.discussion[0].retrieval={papers:2,passages:3};renderConversation()');
+assert.match(get('conversation').innerHTML,/Searching 2 papers · 3 passages found/);
+run('state.data.literature={configured:true,state:"indexing",files:[],phase:"reading",paper:"Grokking.pdf",current:2,count:8};renderLiterature();clearTimeout(literatureTimer)');
+assert.equal(get('literature-state').textContent,'Reading Grokking.pdf · page 2/8');
+run('state.data.literature.phase="embedding";state.data.literature.current=16;state.data.literature.count=40;renderLiterature();clearTimeout(literatureTimer)');
+assert.equal(get('literature-state').textContent,'Embedding passages 16/40');
+run('state.data.literature={configured:true,state:"ready",files:[{}],passages:1};renderLiterature()');
+assert.equal(get('literature-state').textContent,'Ready · 1 paper · 1 passage');
+for(const hash of ['#/p/study/results','#/p/other','#/']){
+  get('source-drawer').open=true;
+  let closed=false;
+  get('source-drawer').close=()=>{closed=true;get('source-drawer').open=false;};
+  get('source-popover').hidden=false;
+  context.location.hash=hash;
+  const promise=run('route()');
+  assert.equal(closed,true);
+  assert.equal(get('source-popover').hidden,true);
+  await promise;
+}
+console.log('Round 6: heading spans, singular/plural, live indexing phases, and route dismissal passed.');
+
+setup();
+context.evidenceSource={...context.literatureSource,label:'Power et al. 2022 · Grokking',section:'§2 Method',section_number:'2',section_title:'Method',page:3};
+run('state.data.hypotheses=[{id:"h1",statement:"Claim",sources:[evidenceSource],experiments:[]}];renderQueue();renderResults()');
+for(const id of ['queue','experiment-groups','ledger']){
+  assert.match(get(id).innerHTML,/class="source-chip"/);
+  assert.match(get(id).innerHTML,/Power et al\. 2022 · §2 Method · p\. 3/);
+  assert.match(get(id).innerHTML,/data-passage=/);
+}
+run('openSource({dataset:{passage:JSON.stringify(evidenceSource)}})');
+assert.match(get('source-drawer-content').innerHTML,/§2 Method · p\. 3/);
+console.log('Round 6 hypothesis evidence chips open the existing source drawer.');

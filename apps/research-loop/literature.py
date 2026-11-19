@@ -7,11 +7,13 @@ import json
 import math
 import re
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import hub_client
+import retrieval
 
 # Standalone scripts also work without installing the repository as a package.
 # TODO: Move these pure Python helpers to a Hub retrieval service.
@@ -41,13 +43,7 @@ class NoRedirect(HTTPRedirectHandler):
 class HTTPEmbedder:
     def __init__(self, url, model=DEFAULT_MODEL):
         self.url, self.model = url.rstrip("/"), model
-        # The Hub qualifies a model with its engine; repository slashes in the
-        # underlying id must survive. Routing endpoints are not model identity.
-        self.model_id = (
-            model.split("/", 1)[1]
-            if self.url.endswith("/hub/v1") and "/" in model
-            else model
-        )
+        self.model_id = None
         self.dimensions = None
 
     @property
@@ -57,23 +53,21 @@ class HTTPEmbedder:
         return [self.model_id, self.dimensions]
 
     def snapshot_identity(self, data):
+        # Old snapshots recorded a requested alias, never a resolved model.
+        # They cannot prove vector compatibility even when dimensions agree.
         identity = data.get("identity")
-        # Read pre-Hub snapshots without rebuilding or rewriting the index.
-        if (
-            isinstance(identity, list)
-            and len(identity) == 2
-            and isinstance(identity[0], str)
-            and identity[0].startswith(("http://", "https://"))
-        ):
-            url, model = identity
-            model = (
-                model.split("/", 1)[1]
-                if url.rstrip("/").endswith("/hub/v1") and "/" in model
-                else model
+        return (
+            identity
+            if (
+                data.get("identity_resolved")
+                and isinstance(identity, list)
+                and len(identity) == 2
+                and isinstance(identity[0], str)
+                and not identity[0].startswith(("http://", "https://"))
+                and type(identity[1]) is int
             )
-            vectors = data.get("vectors", [])
-            return [model, len(vectors[0]) if vectors else None]
-        return identity
+            else None
+        )
 
     def __call__(self, texts):
         request = Request(
@@ -82,11 +76,25 @@ class HTTPEmbedder:
             hub_client.headers(),
         )
         with build_opener(NoRedirect).open(request, timeout=180) as response:
-            rows = json.load(response)["data"]
-        vectors = [row["embedding"] for row in sorted(rows, key=lambda r: r["index"])]
-        if not vectors or not vectors[0]:
-            raise ValueError("Embedding response has no dimensions")
-        self.dimensions = len(vectors[0])
+            payload = json.load(response)
+        model = payload.get("model")
+        if not isinstance(model, str) or not model.strip() or model == "default":
+            raise ValueError("Embedding response must report a resolved model")
+        # Hub forwards the engine's resolved model unchanged. Never infer
+        # identity from a routing prefix or strip repository namespaces.
+        rows = sorted(payload["data"], key=lambda r: r["index"])
+        if [r["index"] for r in rows] != list(range(len(texts))):
+            raise ValueError("Embedding count or index mismatch")
+        vectors = [row["embedding"] for row in rows]
+        normalize(vectors, len(texts))
+        dimensions = len(vectors[0])
+        if self.model_id is not None and (
+            model != self.model_id or dimensions != self.dimensions
+        ):
+            raise ValueError(
+                "Embedding model or dimensions changed; re-index literature."
+            )
+        self.model_id, self.dimensions = model, dimensions
         return vectors
 
 
@@ -214,6 +222,117 @@ def normalize(vectors, count):
     return result
 
 
+def baseline_rank(data, query, embed, goal="", limit=6):
+    """Established dense + lexical-coverage/heading ranker, retained as default."""
+    chunks = data["chunks"]
+    if not chunks or limit <= 0:
+        return []
+    vector = normalize(
+        embed([f"task: search result | query: {query}\nResearch goal: {goal}"]),
+        1,
+    )[0]
+    if len(vector) != len(data["vectors"][0]):
+        raise ValueError("Embedding dimensions changed; re-index literature.")
+    # A named first author scopes a paper-specific question before ranking;
+    # otherwise incidental citations in other papers can dominate matches.
+    query_tokens = {t.casefold() for t in query_terms(query)}
+    named_files = {
+        name
+        for name, info in data["files"].items()
+        if info.get("metadata", {}).get("first_author_surname", "").casefold()
+        in query_tokens
+    }
+    eligible = {
+        i
+        for i, c in enumerate(chunks)
+        if (c.get("section_title") or "").casefold() != "references"
+        and (not named_files or c["file"] in named_files)
+    }
+    scores = sorted(
+        [
+            (i, sum(a * b for a, b in zip(vector, v, strict=True)))
+            for i, v in enumerate(data["vectors"])
+            if i in eligible
+        ],
+        key=lambda p: -p[1],
+    )
+    rows = {i: dict(path=c["file"]) for i, c in enumerate(chunks)}
+    admitted = semantic_ranking(scores, rows, 0.5)
+    admitted_files = {chunks[i]["file"] for i in admitted}
+    semantic = [
+        i for i, score in scores if chunks[i]["file"] in admitted_files and score >= 0.5
+    ]
+    stop = {
+        "the",
+        "a",
+        "an",
+        "is",
+        "of",
+        "to",
+        "and",
+        "in",
+        "for",
+        "what",
+        "how",
+        "does",
+        "we",
+        "with",
+        "should",
+        "et",
+        "al",
+        "which",
+        "it",
+        "do",
+        "as",
+        "by",
+        "its",
+    }
+    terms = [t.casefold() for t in query_terms(query) if t.casefold() not in stop]
+    coverage = {
+        i: sum(
+            (t in c["text"].casefold())
+            + 3 * (t in (c.get("section_title") or "").casefold())
+            for t in terms
+        )
+        for i, c in enumerate(chunks)
+    }
+    lexical = sorted(
+        [i for i, n in coverage.items() if n and i in eligible],
+        key=lambda i: -coverage[i],
+    )
+    selected = []
+    ranked = fuse(semantic, lexical)
+    # A section-location question needs the defining heading's passage,
+    # rather than only later passages that mention or apply the mechanism.
+    if "section" in query_tokens:
+
+        def section_evidence(row):
+            c = chunks[row[0]]
+            title_terms = {
+                t.casefold() for t in query_terms(c.get("section_title") or "")
+            }
+            at_heading = bool(heading(c["text"].splitlines()[0]))
+            return (
+                int(at_heading and bool(title_terms.intersection(terms))),
+                row[1],
+            )
+
+        ranked.sort(key=section_evidence, reverse=True)
+    for i, _, _ in ranked:
+        c = chunks[i]
+        if any(
+            c["file"] == s["file"]
+            and c["page"] == s["page"]
+            and max(c["start"], s["start"]) < min(c["end"], s["end"])
+            for s in selected
+        ):
+            continue
+        selected.append(c)
+        if len(selected) == limit:
+            break
+    return [chunks.index(c) for c in selected]
+
+
 def local_path(project, name):
     path = Path(project) / name
     if path.is_symlink():
@@ -243,7 +362,38 @@ def snapshot(project):
     )
 
 
-async def parse_document(path, data):
+async def parse_document(path, data, progress=None):
+    if path.suffix.lower() == ".pdf" and progress:
+        from rapid_mlx.local_search.parsing import run_parser
+
+        with tempfile.TemporaryDirectory(
+            prefix="rapid-mlx-hub-pdf-", dir="/private/tmp"
+        ) as folder:
+            status = Path(folder) / "progress.json"
+
+            async def poll():
+                while True:
+                    if status.exists():
+                        progress(*json.loads(status.read_text()))
+                    await asyncio.sleep(0.05)
+
+            poller = asyncio.create_task(poll())
+            try:
+                result = await run_parser(
+                    [
+                        sys.executable,
+                        str(Path(__file__).with_name("pdf_progress.py")),
+                        str(status),
+                    ],
+                    data,
+                )
+                if status.exists():
+                    progress(*json.loads(status.read_text()))
+                return result
+            finally:
+                poller.cancel()
+                await asyncio.gather(poller, return_exceptions=True)
+
     # Preserve explicit HTML heading boundaries through the shared text extractor.
     if path.suffix.lower() == ".html":
         text = data.decode("utf-8")
@@ -470,7 +620,8 @@ def citation_sentences(content, sources):
 
 
 class Literature:
-    def __init__(self, embedder=None, metadata_resolver=None):
+    def __init__(self, embedder=None, metadata_resolver=None, chat=None, rerank=None):
+        self.chat, self.rerank = chat, rerank
         self.embedder = embedder
         self.metadata_resolver = metadata_resolver
         self.lock = threading.RLock()
@@ -499,6 +650,10 @@ class Literature:
                 for f in data["files"].values()
             ],
             passages=len(data["chunks"]),
+            phase=job.get("phase", ""),
+            paper=job.get("paper", ""),
+            current=job.get("current", 0),
+            count=job.get("count", 0),
             progress=job.get("progress", 0),
             total=job.get("total", 0),
             errors=job.get("errors", data.get("errors", {})),
@@ -527,6 +682,16 @@ class Literature:
                 self.jobs[str(project)].update(
                     state="error", errors={"index": str(exc)}
                 )
+
+    def read_document(self, project, path, data):
+        def progress(current, count):
+            with self.lock:
+                self.jobs[str(project)].update(
+                    phase="reading", paper=path.name, current=current, count=count
+                )
+
+        progress(0, 0)
+        return asyncio.run(parse_document(path, data, progress))
 
     def index(self, project):
         """Publish one atomic snapshot; failed/removed files never keep stale passages."""
@@ -576,12 +741,16 @@ class Literature:
                     ]
                     records, embedded = [p[0] for p in pairs], [p[1] for p in pairs]
                 else:
-                    units = asyncio.run(parse_document(path, data))
+                    units = self.read_document(project, path, data)
                     records = chunks_for(name, sha, units)
                     if not records:
                         raise ValueError("No readable text")
                     embedded = []
                     for start in range(0, len(records), 16):
+                        with self.lock:
+                            job.update(
+                                phase="embedding", current=start, count=len(records)
+                            )
                         batch = records[start : start + 16]
                         embedded.extend(
                             normalize(
@@ -594,6 +763,8 @@ class Literature:
                                 len(batch),
                             )
                         )
+                        with self.lock:
+                            job.update(current=min(start + 16, len(records)))
                 if embedded and vectors and len(embedded[0]) != len(vectors[0]):
                     raise ValueError(
                         "Embedding dimensions changed; re-index with a consistent model"
@@ -634,6 +805,8 @@ class Literature:
                 dict(
                     version=VERSION,
                     identity=identity,
+                    identity_resolved=isinstance(self.embedder, HTTPEmbedder),
+                    bm25=retrieval.bm25_index(chunks, files),
                     descriptions=descriptions,
                     files=files,
                     chunks=chunks,
@@ -664,113 +837,12 @@ class Literature:
         )
         if stored_identity != getattr(self.embedder, "identity", ["test"]):
             raise ValueError("Embedding configuration changed; re-index literature.")
-        vector = normalize(
-            self.embedder(
-                [f"task: search result | query: {query}\nResearch goal: {goal}"]
-            ),
-            1,
-        )[0]
-        if len(vector) != len(data["vectors"][0]):
-            raise ValueError("Embedding dimensions changed; re-index literature.")
-        # A named first author scopes a paper-specific question before ranking;
-        # otherwise incidental citations in other papers can dominate matches.
-        query_tokens = {t.casefold() for t in query_terms(query)}
-        named_files = {
-            name
-            for name, info in data["files"].items()
-            if info.get("metadata", {}).get("first_author_surname", "").casefold()
-            in query_tokens
-        }
-        eligible = {
-            i
-            for i, c in enumerate(chunks)
-            if (c.get("section_title") or "").casefold() != "references"
-            and (not named_files or c["file"] in named_files)
-        }
-        scores = sorted(
-            [
-                (i, sum(a * b for a, b in zip(vector, v, strict=True)))
-                for i, v in enumerate(data["vectors"])
-                if i in eligible
-            ],
-            key=lambda p: -p[1],
-        )
-        rows = {i: dict(path=c["file"]) for i, c in enumerate(chunks)}
-        admitted = semantic_ranking(scores, rows, 0.5)
-        admitted_files = {chunks[i]["file"] for i in admitted}
-        semantic = [
-            i
-            for i, score in scores
-            if chunks[i]["file"] in admitted_files and score >= 0.5
+        selected = [
+            chunks[i]
+            # Round-6 components did not improve dev quality. Preserve the
+            # established coverage/heading ranker until an ablation earns a win.
+            for i in baseline_rank(data, query, self.embedder, goal, limit)
         ]
-        stop = {
-            "the",
-            "a",
-            "an",
-            "is",
-            "of",
-            "to",
-            "and",
-            "in",
-            "for",
-            "what",
-            "how",
-            "does",
-            "we",
-            "with",
-            "should",
-            "et",
-            "al",
-            "which",
-            "it",
-            "do",
-            "as",
-            "by",
-            "its",
-        }
-        terms = [t.casefold() for t in query_terms(query) if t.casefold() not in stop]
-        coverage = {
-            i: sum(
-                (t in c["text"].casefold())
-                + 3 * (t in (c.get("section_title") or "").casefold())
-                for t in terms
-            )
-            for i, c in enumerate(chunks)
-        }
-        lexical = sorted(
-            [i for i, n in coverage.items() if n and i in eligible],
-            key=lambda i: -coverage[i],
-        )
-        selected = []
-        ranked = fuse(semantic, lexical)
-        # A section-location question needs the defining heading's passage,
-        # rather than only later passages that mention or apply the mechanism.
-        if "section" in query_tokens:
-
-            def section_evidence(row):
-                c = chunks[row[0]]
-                title_terms = {
-                    t.casefold() for t in query_terms(c.get("section_title") or "")
-                }
-                at_heading = bool(heading(c["text"].splitlines()[0]))
-                return (
-                    int(at_heading and bool(title_terms.intersection(terms))),
-                    row[1],
-                )
-
-            ranked.sort(key=section_evidence, reverse=True)
-        for i, _, _ in ranked:
-            c = chunks[i]
-            if any(
-                c["file"] == s["file"]
-                and c["page"] == s["page"]
-                and max(c["start"], s["start"]) < min(c["end"], s["end"])
-                for s in selected
-            ):
-                continue
-            selected.append(c)
-            if len(selected) == limit:
-                break
         labels = json.loads(local_path(project, "project.json").read_text()).get(
             "literature_labels", {}
         )
@@ -821,3 +893,81 @@ def context(sources):
 def cited(content, sources):
     numbers = set(re.findall(r"\[(S\d+)\]", normalize_citations(content, sources)))
     return [s for s in sources if s["number"] in numbers]
+
+
+class HTTPQueryChat(HTTPMetadata):
+    """Bounded interactive multi-query expansion; never retries."""
+
+    def __call__(self, query):
+        schema = dict(
+            type="object",
+            additionalProperties=False,
+            properties=dict(
+                queries=dict(
+                    type="array", minItems=2, maxItems=3, items=dict(type="string")
+                )
+            ),
+            required=["queries"],
+        )
+        body = dict(
+            model=self.model,
+            stream=False,
+            max_tokens=180,
+            response_format=dict(
+                type="json_schema",
+                json_schema=dict(name="search_queries", strict=True, schema=schema),
+            ),
+            messages=[
+                dict(
+                    role="system",
+                    content="Rewrite the question into 2-3 focused literature search queries. Preserve the subject; use complementary mechanisms and terminology. Return JSON only.",
+                ),
+                dict(role="user", content=query[:2000]),
+            ],
+        )
+        request = Request(
+            self.url + "/chat/completions",
+            json.dumps(body).encode(),
+            hub_client.headers(priority="interactive"),
+        )
+        with build_opener(NoRedirect).open(request, timeout=30) as response:
+            return json.loads(json.load(response)["choices"][0]["message"]["content"])
+
+
+class HTTPReranker(HTTPMetadata):
+    def __call__(self, query, passages):
+        request = Request(
+            self.url + "/rerank",
+            json.dumps(
+                dict(model=self.model, query=query, documents=passages)
+            ).encode(),
+            hub_client.headers(priority="interactive"),
+        )
+        with build_opener(NoRedirect).open(request, timeout=30) as response:
+            payload = json.load(response)
+        rows = payload.get("results", payload.get("data", []))
+        ordered = sorted(rows, key=lambda row: row["index"])
+        if [r["index"] for r in ordered] != list(range(len(passages))):
+            raise ValueError("Invalid reranking indices")
+        return [r["relevance_score"] for r in ordered]
+
+
+def configured_reranker():
+    """Optional Hub capability discovery, or standalone env configuration."""
+    import os
+
+    if os.environ.get("RAPID_HUB_URL"):
+        try:
+            for model in hub_client.call("models")["data"]:
+                if "rerank" in model.get("capabilities", []):
+                    return HTTPReranker(
+                        os.environ["RAPID_HUB_URL"] + "/hub/v1",
+                        model["engine"] + "/" + model["id"],
+                    )
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    elif os.environ.get("RAPID_RERANK_URL") and os.environ.get("RAPID_RERANK_MODEL"):
+        return HTTPReranker(
+            os.environ["RAPID_RERANK_URL"], os.environ["RAPID_RERANK_MODEL"]
+        )
+    return None

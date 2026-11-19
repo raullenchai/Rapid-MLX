@@ -585,16 +585,23 @@ def http_embeddings(monkeypatch):
         def open(self, request, timeout):
             body = json.loads(request.data)
             config["calls"].append(body)
+            model = config.get("model") or body["model"]
+            if not config.get("model") and (
+                request.full_url.startswith("http://hub/")
+                or request.full_url.startswith("http://new-hub/")
+            ):
+                model = model.split("/", 1)[1]
             return io.StringIO(
                 json.dumps(
                     {
+                        "model": model,
                         "data": [
                             {
                                 "index": i,
                                 "embedding": [1] + [0] * (config["dimensions"] - 1),
                             }
                             for i, _ in enumerate(body["input"])
-                        ]
+                        ],
                     }
                 )
             )
@@ -646,7 +653,7 @@ def test_embedding_identity_standalone_hub_copy_reuses_index(tmp_path, http_embe
         ("http://old-hub/hub/v1", "old-engine/org/embed-model"),
     ],
 )
-def test_legacy_embedding_identity_reuses_without_rewriting(
+def test_legacy_embedding_identity_rejected_then_rebuilt(
     library, http_embeddings, url, model
 ):
     project, _ = library
@@ -660,12 +667,17 @@ def test_legacy_embedding_identity_reuses_without_rewriting(
     data["identity"] = [url, model]
     path.write_text(json.dumps(data))
     original = path.read_bytes()
-    assert service.retrieve(project, "Weight decay")
+    with pytest.raises(ValueError, match="configuration changed"):
+        service.retrieve(project, "Weight decay")
     assert path.read_bytes() == original
     http_embeddings["calls"].clear()
     service.index(project)
-    assert not http_embeddings["calls"]
+    assert any(
+        "title:" in text for call in http_embeddings["calls"] for text in call["input"]
+    )
     assert literature.snapshot(project)["identity"] == ["org/embed-model", 2]
+    assert literature.snapshot(project)["identity_resolved"] is True
+    assert service.retrieve(project, "Weight decay")
 
 
 @pytest.mark.parametrize(

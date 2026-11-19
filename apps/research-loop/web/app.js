@@ -286,6 +286,8 @@ function templateNote() {
   $('template-note').textContent=t ? `${metricLabel(t)}${t.unit ? ' ('+t.unit+')' : ''} · ${t.direction==='min'?'lower':'higher'} is better · editable file: ${t.editable}` : 'No templates found. Add a template folder to get started.';
 }
 async function route() {
+  if($('source-drawer').open)$('source-drawer').close();
+  $('source-popover').hidden=true;
   const target=parseRoute();
   if(target.invalid){notice('Page not found. Choose a project.');location.hash='#/';return;}
   const oldSlug=state.slug;
@@ -428,16 +430,16 @@ function experimentLink(e) {
 function renderQueue() {
   const claims=hypothesisGroups();
   $('queue-count').textContent=String(claims.length);
-  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span>${sourceMarkup(h.sources)}<small class="muted">${countLabel(h.experiments.length,'experiment')} · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
+  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span>${evidenceMarkup(h.sources)}<small class="muted">${countLabel(h.experiments.length,'experiment')} · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
   $('hypothesis-rule').textContent=hypothesisRule();
   const openGroups=[...$('experiment-groups').querySelectorAll('details[open]')].map(d=>d.dataset.group), focusedExperiment=document.activeElement?.dataset?.experiment;
-  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')}</small></summary>${sourceMarkup(h.sources)}<ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${esc(e.round)}" aria-pressed="${e.round===state.selected}">Experiment ${esc(e.round)} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
+  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')}</small></summary>${evidenceMarkup(h.sources)}<ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${esc(e.round)}" aria-pressed="${e.round===state.selected}">Experiment ${esc(e.round)} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
   for(const d of $('experiment-groups').querySelectorAll('details'))if(openGroups.includes(d.dataset.group))d.open=true;
   if(focusedExperiment!==undefined)$('experiment-groups').querySelector(`[data-experiment="${focusedExperiment}"]`)?.focus({preventScroll:true});
 }
 function renderConversation() {
   const messages=[...(state.data?.discussion || [])]; if(state.chatDraft)messages.push(state.chatDraft);
-  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header>${m.role==='assistant'?sourceMarkup(orderedSources(m.content,m.citations),m.citation_sentences):''}${m.retrieval?`<p class="search-step" role="status">Searching ${esc(m.retrieval.papers)} papers · ${esc(m.retrieval.passages)} passages found</p>`:m.pending?'<p class="search-step" role="status">Searching papers…</p>':''}<div class="message-content">${citationMarkdown(m.content || 'Thinking…',orderedSources(m.content,m.citations),m.citation_sentences)}</div>${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
+  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header>${m.role==='assistant'?sourceMarkup(orderedSources(m.content,m.citations),m.citation_sentences):''}${m.retrieval?`<p class="search-step" role="status">Searching ${esc(countLabel(m.retrieval.papers,'paper'))} · ${esc(countLabel(m.retrieval.passages,'passage'))} found</p>`:m.pending?'<p class="search-step" role="status">Searching papers…</p>':''}<div class="message-content">${citationMarkdown(m.content || 'Thinking…',orderedSources(m.content,m.citations),m.citation_sentences)}</div>${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
   $('conversation').scrollTop=messages.length ? $('conversation').scrollHeight : 0;
   controls();
 }
@@ -679,7 +681,7 @@ function renderResults() {
   const html=claims.map(h=>{
     const values=h.experiments.map(e=>e.value ?? e.result?.[task.metric]).filter(Number.isFinite);
     const bestValue=values.length?(task.direction==='min'?Math.min(...values):Math.max(...values)):null;
-    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${sourceMarkup(h.sources)}${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.label || h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div><div class="hypothesis-conclusion" data-hypothesis-report="${esc(h.id)}" hidden></div></details></td><td>${pill(h.status)}</td><td>${esc(format(bestValue))}</td><td>${h.experiments.length}</td></tr>`;
+    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${evidenceMarkup(h.sources)}${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.label || h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div><div class="hypothesis-conclusion" data-hypothesis-report="${esc(h.id)}" hidden></div></details></td><td>${pill(h.status)}</td><td>${esc(format(bestValue))}</td><td>${h.experiments.length}</td></tr>`;
   }).join('') || '<tr><td colspan="4" class="empty">No results yet. Add a hypothesis in Discuss, then start experiments.</td></tr>';
   if($('ledger').innerHTML!==html){
     $('result-artifacts').dataset.key='';
@@ -1026,6 +1028,9 @@ function citationMarkdown(content,sources=[],sentences={}) {
     });
   }).join('');
 }
+function evidenceMarkup(sources=[]) {
+  return sources.length ? `<div class="source-row evidence-chips" aria-label="Supporting context">${sources.map(s=>`<button type="button" class="source-chip" title="${esc(sourceLabel(s))}" data-source="${esc(s.number)}" data-chunk="${esc(s.chunk_id)}" data-passage="${sourceData(s)}" aria-haspopup="dialog">${esc(sourceLabel(s).split(' · ')[0])} · ${esc(sourceLocator(s,true))}</button>`).join('')}</div>` : '';
+}
 function sourceMarkup(sources=[],sentences={}) {
   return sources.length ? `<div class="source-row" aria-label="Sources"><span class="muted">Sources</span><div class="source-cards">${sources.map((s,i)=>`<button type="button" class="source-card" data-source="${esc(s.number)}" data-chunk="${esc(s.chunk_id)}" data-passage="${sourceData(s,sentences[s.number] || [])}" aria-haspopup="dialog" aria-label="Open source ${i+1}: ${esc(sourceLabel(s))}"><span class="source-number">${i+1}</span><strong>${esc(sourceLabel(s).split(' · ')[0])}</strong><span>${esc(sourceLabel(s).split(' · ').slice(1).join(' · ') || s.file.split('/').at(-1))}</span><small>${esc(sourceLocator(s))}</small></button>`).join('')}</div></div>` : '';
 }
@@ -1035,10 +1040,17 @@ function flowingPassage(text='') {
 }
 function passageSelection(s) {
   const raw=String(s.snippet || ''),passage=flowingPassage(raw);
-  const first=raw.split('\n')[0].trim();
-  const title=String(s.section_title || s.section || '').trim();
-  const heading=raw.includes('\n') && first && (first===title || /^(?:#{1,6}\s|\d+(?:\.\d+)*[. ]\s*\S)/.test(first));
-  const offset=heading ? flowingPassage(first).length : 0;
+  const lines=raw.split('\n');
+  const normalizeHeading=t=>t.replace(/^\s*(?:#{1,6}\s+)?(?:§?\d+(?:\.\d+)*[. ]+|(?:Appendix\s+)?[A-Z](?:\.\d+)*\s+)?/,'').replace(/[^\p{L}\p{N}]/gu,'').toLowerCase();
+  const title=normalizeHeading(String(s.section_title || s.section || ''));
+  let span='',consumed=0;
+  for(let i=0;i<Math.min(lines.length-1,6);i++){
+    span+=(i?' ':'')+lines[i].trim();
+    const compact=span.replace(/[^\p{L}\p{N}]/gu,'').toLowerCase(),normalized=normalizeHeading(span);
+    if(title && (normalized===title || compact===title)){consumed=i+1;break;}
+    if(!title || (!title.startsWith(normalized) && !title.startsWith(compact)))break;
+  }
+  const offset=consumed ? flowingPassage(lines.slice(0,consumed).join('\n')).length : 0;
   const body=passage.slice(offset),claims=flowingPassage((s.cited_sentences || []).join(' '));
   const quotes=[...claims.matchAll(/[“"]([^”"]{3,})[”"]/g)].map(m=>m[1]);
   let phrase=quotes.find(q=>body.toLowerCase().includes(q.toLowerCase()));
@@ -1111,7 +1123,7 @@ function renderLiterature() {
   clearTimeout(literatureTimer);
   if(!state.data || !state.slug)return;
   const l=state.data.literature || {configured:false,state:'not configured',files:[],errors:{}};
-  $('literature-state').textContent=l.configured ? `${l.state} · ${l.files.length} papers · ${l.passages || 0} passages${l.state==='indexing'?` · ${l.progress}/${l.total} files`:''}` : 'Not configured. Start the server with --embeddings URL to use literature.';
+  $('literature-state').textContent=l.configured ? l.state==='indexing' && l.phase==='reading' ? `Reading ${l.paper} · page ${l.current}/${l.count}` : l.state==='indexing' && l.phase==='embedding' ? `Embedding passages ${l.current}/${l.count}` : `${l.state==='ready'?'Ready':l.state} · ${countLabel(l.files.length,'paper')} · ${countLabel(l.passages || 0,'passage')}${l.state==='indexing'?` · ${l.progress}/${l.total} files`:''}` : 'Not configured. Start the server with --embeddings URL to use literature.';
   $('literature-controls').hidden=!l.configured;
   for(const id of ['literature-add','literature-files','literature-folder','literature-index'])$(id).disabled=state.replay || l.state==='indexing';
   $('literature-list').innerHTML=[...l.files.map(f=>`<li><strong>${esc(f.label || f.file)}</strong><span class="muted">${f.pages?esc(f.pages)+' pages · ':''}${esc(f.passages)} passages</span><details class="label-edit"><summary class="text-button">Edit label</summary><form data-label-file="${esc(f.file)}"><label>Paper label<input name="label" aria-label="Paper label" value="${esc(f.label || f.file)}" maxlength="200" required${state.replay || l.state==='indexing'?' disabled':''}></label><button type="submit" class="text-button"${state.replay || l.state==='indexing'?' disabled':''}>Save label</button></form></details>${f.uploaded?` <button type="button" class="text-button" data-remove-literature="${esc(f.file.slice(11))}"${state.replay || l.state==='indexing'?' disabled':''}>Remove</button>`:''}</li>`),...(l.literature_dirs || []).map(p=>`<li>${esc(p)} (read-only) <button type="button" class="text-button" data-remove-folder="${esc(p)}"${state.replay || l.state==='indexing'?' disabled':''}>Detach</button></li>`)].join('');

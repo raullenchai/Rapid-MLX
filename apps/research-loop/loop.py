@@ -59,6 +59,9 @@ library = literature.Literature(
     else None
 )
 
+library.chat = literature.HTTPQueryChat(args.base_url, args.model)
+library.rerank = literature.configured_reranker()
+
 task_cfg = json.load(open(f"{args.task}/task.json"))
 program = open(f"{args.task}/program.md").read()
 EDITABLE, METRIC, NOISE = task_cfg["editable"], task_cfg["metric"], task_cfg["noise"]
@@ -557,6 +560,14 @@ def next_experiment(rnd):
         ),
     )
     hid = proposal["hypothesis_id"]
+    if not hid:
+        try:
+            sources = library.retrieve(
+                args.task, proposal["new_hypothesis"]["statement"], program, limit=3
+            )
+        except (ValueError, OSError, KeyError) as exc:
+            sources = []
+            log("literature_error", round=rnd, error=str(exc))
     claim = (
         next((h for h in claims if h["id"] == hid), None)
         if hid

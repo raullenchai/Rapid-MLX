@@ -1,6 +1,7 @@
 """Authenticated model gateway and local control plane."""
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import os
@@ -185,6 +186,18 @@ class Hub:
         self.login = secrets.token_urlsafe(32)
         self.tokens = {}
         self.sessions = set()
+        manifests, self.errors = discover(plugins_dir)
+        self.supervisor = Supervisor(self, manifests, ports=plugin_ports)
+        # Hold an OS lock for this Hub's lifetime. Never unlink the lock file:
+        # another process may already hold the inode open while waiting.
+        self.data_lock = (self.data_dir / ".owner.lock").open("a+")
+        try:
+            fcntl.flock(self.data_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            self.data_lock.close()
+            raise ValueError(
+                "Hub data directory is already owned by another instance"
+            ) from exc
         self.client = httpx.AsyncClient(
             transport=transport, timeout=httpx.Timeout(1800, connect=5), trust_env=False
         )
@@ -206,8 +219,9 @@ class Hub:
                 job["state"] = "interrupted"
         self.save_jobs()
         private_write(self.data_dir / "admin-token", self.admin)
-        manifests, self.errors = discover(plugins_dir)
-        self.supervisor = Supervisor(self, manifests, ports=plugin_ports)
+
+    def release_ownership(self):
+        self.data_lock.close()
 
     async def catalog(self):
         data, engines = [], []
@@ -355,6 +369,7 @@ def create_app(hub, supervise=True):
                 await asyncio.gather(*hub.cleanup_tasks)
             await hub.client.aclose()
             await hub.journal.close()
+            hub.release_ownership()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.hub = hub
@@ -377,6 +392,12 @@ def create_app(hub, supervise=True):
         response = RedirectResponse("/", status_code=303)
         response.set_cookie("rapid_hub", session, httponly=True, samesite="strict")
         return response
+
+    @app.post("/hub/v1/login-nonce")
+    async def login_nonce(request: Request):
+        hub.identity(request, admin=True)
+        hub.login = secrets.token_urlsafe(32)
+        return {"url": f"{hub.dashboard_url}/login?nonce={hub.login}"}
 
     @app.get("/hub/v1/instance")
     async def instance():

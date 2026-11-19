@@ -300,8 +300,7 @@ python apps/research-loop/server.py \
 The embedding model name defaults to `embeddinggemma-2-4bit`. Without
 `--embeddings`, Literature clearly says **Not configured** and discussion and
 experiments continue to work. The server never loads an embedding model or MLX.
-The existing local-search extraction, chunking, semantic admission and rank-fusion
-helpers are reused. PDF extraction needs the engine environment's `pypdf` and
+Local-search extraction and chunking helpers are reused; retrieval lives in the portable `retrieval.py` pipeline. PDF extraction needs the engine environment's `pypdf` and
 `psutil`; missing readers produce a per-file error without blocking other files.
 No new packages are installed by the workbench.
 
@@ -320,7 +319,7 @@ finishes. The atomic `literature_index/index.json` snapshot holds file SHA-256,
 stable chunk IDs, PDF page or section/line locators, character spans in extracted
 text (per page for PDFs), passages and normalized vectors. Unchanged files reuse
 vectors; changed/new files are embedded, removed/failed files lose their old
-passages. Changing endpoint or embedding model requires re-indexing. Snapshots
+passages. Changing the resolved embedding model or dimensions requires re-indexing. Responses must report the actual model; requested aliases are never identities. Legacy snapshots without resolved-model provenance require re-indexing once. Snapshots
 live under gitignored `projects/`; templates are unchanged.
 
 Discuss retrieves up to six semantic/lexical passages, removes overlapping
@@ -399,7 +398,7 @@ Sections carry across pages, but chunks split at page and heading boundaries,
 so `page` and `page_end` currently match. Old indexes rebuild on re-index (vectors
 are re-embedded for this version change); PDF metadata caches remain reusable.
 References passages are excluded from retrieval. A named first author scopes
-retrieval to that paper; section questions favor defining heading passages.
+retrieval to that paper; section queries skip query rewriting.
 Heading detection remains heuristic and cannot infer headings missing from the
 extracted text. Real-PDF tests use optional read-only fixtures in the supplied
 external papers directory and skip when those files are unavailable.
@@ -452,3 +451,92 @@ service.
 
 Plugins and experiments are **trusted local code, with no sandbox**. A browser
 session protects local HTTP access, not account files from installed plugin code.
+
+Retrieval defaults to the established dense + lexical-coverage ranker, including
+section-heading evidence, first-author scoping, reference exclusion, cosine-only
+semantic admission, and overlapping-span suppression. The former "dense-only"
+eval baseline also used lexical fusion; the eval now labels it `legacy-r5`.
+Round 7 restores that behavior: BM25, multiquery, MMR and reranking are disabled
+in the application until they demonstrate a quality win. Identity checks, PDF
+progress and hypothesis evidence from round 6 remain in place.
+
+`retrieval.py` retains injectable ablations for experimentation. BM25 removes
+stopwords, preserves decimal/section identifiers and boosts section titles twice.
+Versioned statistics invalidate old tokenization. Weighted RRF uses original
+query dense weight 1, BM25 weight 0.05, and a total rewrite budget of 0.2 shared
+across rewrites. MMR is opt-in with a 0.1 similarity penalty and no adjacency or
+paper penalty. Equal reranker scores preserve fusion order. Only dense cosine
+scores face the 0.5 admission threshold; lexical candidates can have low cosine.
+No fused score is passed to `semantic_ranking`.
+
+The eval uses reranking only when Hub advertises `rerank`, or standalone
+`RAPID_RERANK_URL` (ending in `/v1`) and `RAPID_RERANK_MODEL` are configured.
+An absent reranker is reported as skipped. An unavailable reranker leaves fusion
+order intact. This is evaluated separately for each experimental stage; it is
+not enabled in the application default.
+
+New model hypotheses retrieve up to three passages using their final statement.
+Discussion hypotheses retain only the passages cited by that answer. Their small
+source chips open the same source drawer and represent supporting context, not
+an experimental verdict. Literature polling shows reading page progress, passage
+embedding progress and ready counts. PDF progress retains the subprocess parser's
+CPU/time, memory and output bounds.
+
+The retrieval eval freezes 30 hand-written paper/section questions: the original
+15 plus 15 authored from source text/headings without new retrieval output.
+The exposed original 15 and five new questions form dev (20); ten new questions
+form held-out (10). Both splits include lexical and conceptual reporting, with
+recall@1/@3/@6, MRR and per-question ranks. Never tune on held-out results.
+
+The script copies only the index and metadata to persistent scratch keyed by
+source SHA-256. Missing model provenance triggers re-embedding of the copy.
+Per-text embeddings, rewrites (including prompt version), and reranker responses
+are cached on disk with model/routing identity. Repeated offline runs make no
+model/discovery calls and fail on cache misses. The live demo stays read-only;
+model calls through Hub are journaled under `retrieval-eval`.
+
+```sh
+/private/tmp/rapid-mlx-grokdemo/env/bin/python apps/research-loop/tests/retrieval_eval.py \
+  --hub http://127.0.0.1:4800 \
+  --token-file /private/tmp/rapid-mlx-hub/demo-data/admin-token \
+  --scratch /private/tmp/rapid-mlx-hub-eval-r7 --split dev
+# After choosing settings on dev, evaluate held-out once with --split both.
+# Reproduce cached results without any model calls:
+/private/tmp/rapid-mlx-grokdemo/env/bin/python apps/research-loop/tests/retrieval_eval.py \
+  --scratch /private/tmp/rapid-mlx-hub-eval-r7 --offline --split both
+```
+
+Use `--embedding-model engine/model`, `--chat-model engine/model`,
+`--lexical-weight` and `--rewrite-weight` for dev experiments. Console tables and
+per-question ranks accompany detailed `results-<split>.json` in the scratch copy.
+`--round6-source /path/to/preserved/retrieval.py` optionally adds a paired round-6
+row. The printed held-out gate checks aggregate MRR/recall@6 non-regression and
+strict lexical MRR improvement over true dense retrieval.
+
+Measured round-7 ablations (no reranker available):
+
+| Pipeline | Dev R@1 / R@3 / R@6 / MRR | Held-out R@1 / R@3 / R@6 / MRR |
+| --- | --- | --- |
+| Dense only | .700 / .800 / .800 / .750 | .600 / .800 / .800 / .683 |
+| Dense + BM25 | .650 / .800 / .800 / .725 | .500 / .700 / .800 / .625 |
+| + Multiquery | .700 / .800 / .800 / .750 | .500 / .700 / .800 / .608 |
+| + MMR (experimental full) | .700 / .800 / .800 / .750 | .500 / .700 / .800 / .608 |
+| Restored default (legacy-r5) | .750 / .850 / .850 / .800 | .700 / .700 / .800 / .717 |
+
+Held-out lexical MRR is 1.000 for the restored default, .833 for dense and .821
+for the experimental full pipeline (all have lexical recall@6 = 1.000).
+The experimental full pipeline **fails** the gate and is disabled by default.
+The default passes it. The default was restored after pure dense broke existing
+planning-context and section-location regression tests; it also had the best dev
+MRR. No experimental parameters were adjusted after inspecting held-out.
+
+Root-cause isolation on the original 15 using identical cached vectors: round-6
+dense MRR .667; equal-weight BM25 fusion .602; adding rewrites .602; adding MMR
+.617. The original .767 comparison was against coverage fusion, not dense alone.
+BM25 replaced heading/coverage evidence with length-normalized term frequency,
+including stopwords, while receiving an equal vote. That is the primary measured
+regression. Rewrites did not change these 15 scores. Forced adjacency redundancy
+was questionable, but MMR actually recovered some recall here (.733 to .800)
+and is not the primary cause. Weighted fusion, token cleanup and milder MMR did
+not earn a default on dev. Fixture tests validate these contracts, not model
+quality. All 30 questions, including the difficult misses, remain in the eval.

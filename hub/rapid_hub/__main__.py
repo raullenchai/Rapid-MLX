@@ -39,8 +39,10 @@ def main():
     up.add_argument("--discovery-file", type=Path)
     status = commands.add_parser("status")
     status.add_argument("--data-dir", type=Path, default=Path("~/.rapid-hub"))
+    login = commands.add_parser("login")
+    login.add_argument("--data-dir", type=Path, default=Path("~/.rapid-hub"))
     args = parser.parse_args()
-    if args.command == "status":
+    if args.command in ("status", "login"):
         directory = args.data_dir.expanduser()
         try:
             connection = json.loads((directory / "connection.json").read_text())
@@ -48,15 +50,22 @@ def main():
             instance = httpx.get(url + "/hub/v1/instance", trust_env=False).json()
             if instance["instance_id"] != connection["instance_id"]:
                 raise ValueError("Stale discovery file")
-            response = httpx.get(
-                url + "/hub/v1/status",
-                headers={
-                    "Authorization": "Bearer " + (directory / "admin-token").read_text()
-                },
-                trust_env=False,
-            )
-            response.raise_for_status()
-            print(json.dumps(response.json(), indent=2))
+            token_path = directory / "admin-token"
+            if token_path.stat().st_mode & 0o777 != 0o600:
+                raise ValueError("Admin token must have mode 0600")
+            headers = {"Authorization": "Bearer " + token_path.read_text()}
+            if args.command == "login":
+                response = httpx.post(
+                    url + "/hub/v1/login-nonce", headers=headers, trust_env=False
+                )
+                response.raise_for_status()
+                print(response.json()["url"])
+            else:
+                response = httpx.get(
+                    url + "/hub/v1/status", headers=headers, trust_env=False
+                )
+                response.raise_for_status()
+                print(json.dumps(response.json(), indent=2))
         except (OSError, ValueError, httpx.HTTPError) as exc:
             parser.exit(1, f"Hub unavailable: {type(exc).__name__}\n")
         return
