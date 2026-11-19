@@ -30,15 +30,14 @@ cutoff after temperature scaling, slightly changing the kept set when
 ``T != 1`` (sharper at ``T < 1``, wider at ``T > 1``).
 
 This module ships a vendored single-function variant that **preserves
-mlx-lm semantics exactly**: the top-p cutoff is computed on
+the unscaled top-p rule**: the top-p cutoff is computed on
 ``exp(logprobs)`` (the unscaled probability distribution, matching
 ``apply_top_p``); temperature is applied to the masked logits before
 ``mx.random.categorical``. Only the index space differs (sorted vs
-vocab order) — the kept set, the relative weights inside it, and the
-expected sample distribution are all identical to mlx-lm's chain.
+vocab order). Untied inputs preserve the kept set and relative weights;
+cutoff ties follow the sorted-position rule documented below.
 
-The two observable differences vs mlx-lm are both bit-level (not
-distributional):
+The observable differences from the fallback chain are:
 
 1. Sample determinism under a fixed ``mx.random.seed``: mlx-lm draws
    Gumbel noise in vocab order while we draw it in sorted order, so
@@ -47,19 +46,10 @@ distributional):
    regression for OpenAI-style ``seed=`` requests which only promise
    within-engine reproducibility.
 
-2. Tie-break at the ``top_k`` cutoff: mlx-lm's ``apply_top_k`` uses
-   ``mx.argpartition`` (unstable on ties), the fast path uses
-   ``mx.argsort`` + position-based mask (stable but ordering depends on
-   the sort implementation). When two logits are bit-exact tied at the
-   ``top_k`` cutoff, the two paths may keep different specific tokens
-   from the tied pair — but BOTH paths keep exactly ``top_k`` tokens
-   and the dropped one has the same logit value as the kept one. The
-   sampled token-frequency distribution is therefore mathematically
-   identical (tied tokens are fungible by definition); only the
-   specific token ID differs. In practice production fp32 logits from
-   real models never tie exactly (probability ~2⁻²³ per pair), so this
-   corner case only matters for synthetic test inputs. Pinned with
-   ``test_top_k_tie_at_boundary_keeps_k_tokens``.
+2. Top-k ties use the stable ascending sort order: higher token IDs
+   occupy the retained tail at a tied cutoff. The partition-based
+   fallback can retain different IDs, which changes token support.
+   MTP shares this fused mask whenever plain serving selects it.
 
 Validated 2026-06-08 against Qwen 3.6 35B-A3B 4-bit B=1 HTTP:
 ``bg_next`` 14.07 -> 9.77 ms, HTTP 65.7 -> 100.3 tok/s (also clears
@@ -146,72 +136,13 @@ def make_fused_top_p_temp_sampler(
             "fused sampler requires top_p in (0, 1); top-k-only configurations "
             "should route through mlx-lm's apply_top_k partition primitive"
         )
-    use_top_k = top_k > 0
-
     temp_inv = 1.0 / float(temperature)
     one_minus_p = 1.0 - float(top_p)
     top_k_val = int(top_k)
 
     def sampler(logprobs: mx.array) -> mx.array:
-        # mlx-lm passes ``logprobs`` = ``logits - logsumexp(logits)``;
-        # exp(logprobs) is exactly the unscaled probability distribution
-        # that ``apply_top_p`` masks on.
-        #
-        # Codex round-6 BLOCKER #1 fix: promote any low-precision input
-        # (``bfloat16`` / ``float16``) to ``float32`` so the
-        # ``exp`` / ``cumsum`` chain doesn't round the nucleus cutoff
-        # away. Half-precision has only ~3 decimal digits — a top_p
-        # cutoff of 0.95 vs a cumsum value of 0.9501 can swap inclusion
-        # state under fp16 noise, silently changing the kept set vs
-        # mlx-lm on production half-precision logits. ``mx.cumsum`` over
-        # bfloat16 is also unsupported as of MLX 0.21.
-        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
-        probs = mx.exp(work)
-        sorted_indices = mx.argsort(probs, axis=-1)
-        sorted_logits = mx.take_along_axis(work, sorted_indices, axis=-1)
-
-        # Build mask in sorted space. argsort returns ascending order, so
-        # the top-k tokens sit at positions ``[V - top_k, V - 1]`` and
-        # top-p's cumulative-from-low cutoff is ``cumulative > 1 - top_p``.
-        # The fast path is only constructed when top_p is active (top-k-only
-        # falls through to mlx-lm — see ``is_fused_top_p_eligible``), so
-        # we always build the top_p mask first.
-        vocab = sorted_logits.shape[-1]
-        sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
-        cumulative = mx.cumsum(sorted_probs, axis=-1)
-        # Codex round-2 BLOCKER #1 fix: for sub-fp32-epsilon top_p (e.g.
-        # 1e-9), ``one_minus_p`` rounds to 1.0 in the float32 comparison
-        # and ``cumulative > one_minus_p`` is all-false, producing an
-        # all-``-inf`` masked vector that breaks ``mx.random.categorical``.
-        # OR in the top-1 position (vocab - 1 under ascending argsort) to
-        # guarantee the argmax token is always sampleable, mirroring
-        # mlx-lm's "at least one token" invariant on its apply_top_p path.
-        top_one_mask = mx.arange(vocab) == (vocab - 1)
-        mask = (cumulative > one_minus_p) | top_one_mask
-        if use_top_k:
-            # Codex round-4 raised a BLOCKER claiming mlx-lm's
-            # ``apply_top_k`` is partition+threshold ("keep all ties at
-            # the boundary"). Verified false against the live mlx-lm
-            # 0.21 source: ``apply_top_k`` is
-            #   ``mask_idx = mx.argpartition(-logprobs, kth=top_k-1)[top_k:]``
-            # which is itself position-based + unstable on ties. Both
-            # mlx-lm and our position-based mask keep exactly ``top_k``
-            # tokens; on a tied cutoff both paths arbitrarily admit one
-            # of the ties and drop the other (the WHICH may differ across
-            # paths, but the kept-set SIZE matches and the distribution
-            # shape is unaffected). See
-            # ``test_top_k_tie_at_boundary_keeps_k_tokens`` for the
-            # contract.
-            top_k_mask = mx.arange(vocab) >= (vocab - top_k_val)
-            # Re-apply the top-1 guarantee after intersecting with top-k
-            # so degenerate inputs (e.g. all-equal logits) still keep at
-            # least one sampleable token.
-            mask = (mask & top_k_mask) | top_one_mask
-
-        masked_sorted = mx.where(
-            mask,
-            sorted_logits * temp_inv,
-            -float("inf"),
+        masked_sorted, sorted_indices = _fused_top_p_logits(
+            logprobs, temp_inv, one_minus_p, top_k_val
         )
         sampled_pos = mx.random.categorical(masked_sorted)
         return mx.take_along_axis(
@@ -219,3 +150,27 @@ def make_fused_top_p_temp_sampler(
         ).squeeze(-1)
 
     return sampler
+
+
+def _fused_top_p_logits(
+    logprobs: mx.array, temp_inv: float, one_minus_p: float, top_k: int
+) -> tuple[mx.array, mx.array]:
+    """Return temperature-scaled, filtered logits and token IDs in sorted space.
+
+    Both serving and MTP use this mask. Promote the already-normalized input
+    before exp/cumsum, retain at least the final sorted position, and intersect
+    top-k by position. Stable ascending ties retain the higher token IDs.
+    """
+    work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
+    probs = mx.exp(work)
+    sorted_indices = mx.argsort(probs, axis=-1)
+    sorted_logits = mx.take_along_axis(work, sorted_indices, axis=-1)
+    vocab = sorted_logits.shape[-1]
+    sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+    cumulative = mx.cumsum(sorted_probs, axis=-1)
+    top_one_mask = mx.arange(vocab) == (vocab - 1)
+    mask = (cumulative > one_minus_p) | top_one_mask
+    if top_k > 0:
+        top_k_mask = mx.arange(vocab) >= (vocab - top_k)
+        mask = (mask & top_k_mask) | top_one_mask
+    return mx.where(mask, sorted_logits * temp_inv, -float("inf")), sorted_indices
