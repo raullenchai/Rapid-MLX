@@ -6,6 +6,9 @@ The invariant, stated once and enforced everywhere:
     A string argument that a model emits must reach the caller
     byte-identical. Not trimmed, not re-escaped, not truncated.
 
+Trailing duplicate parameter closers are framing (#5830). Literal closers
+separated by payload retain the legacy sibling-bounded interpretation.
+
 Why this file exists rather than another per-parser test. The tool-call
 suite is organised one-file-per-parser, which is the right shape for
 format quirks but the wrong shape for value handling: the code that
@@ -778,6 +781,159 @@ def test_scan_rejects_parameter_with_no_closing_marker():
     ) == [("a", "ok")]
 
 
+@pytest.mark.parametrize(
+    "extra", ["", "</parameter>", "\n</parameter>\n</parameter>\n"]
+)
+@pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
+def test_scan_discards_trailing_duplicate_parameter_closers(extra, sibling):
+    """Duplicate closers cannot enter a value, even at EOF (#5830)."""
+    from rapid_mlx.tool_call_scan import split_marked_parameters
+
+    block = "<parameter=new_string>\nhi-second\n</parameter>" + extra + sibling
+    expected = [("new_string", "hi-second")]
+    if sibling:
+        expected.append(("path", "nonce.txt"))
+    assert split_marked_parameters(block, _P_OPEN, _P_CLOSE) == expected
+
+
+@pytest.mark.parametrize(
+    "head",
+    ["[" * 100000 + "<parameter", "[" * 100000 + '"<parameter"' + "]" * 100000],
+    ids=["malformed-array", "nested-array"],
+)
+def test_duplicate_parameter_closers_preserve_deeply_nested_json(head):
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    value = head + "</parameter></parameter>"
+    assert _strip_duplicate_parameter_closers(value) == value
+
+
+@pytest.mark.parametrize("marker", ["<parameter=example>", "</parameter>"])
+def test_duplicate_parameter_closers_strip_after_quoted_marker(marker):
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    head = " \t" + json.dumps(f"before {marker} after") + " \n"
+    assert (
+        _strip_duplicate_parameter_closers(head + "</parameter>\n</parameter>") == head
+    )
+
+
+@pytest.mark.parametrize("marker", ["<parameter=example>", "</parameter>"])
+def test_duplicate_parameter_closers_preserve_raw_marker(marker):
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    value = f"before {marker} after</parameter></parameter>"
+    assert _strip_duplicate_parameter_closers(value) == value
+
+
+def test_duplicate_parameter_closers_preserve_invalid_quoted_marker():
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    value = '"a" <parameter "b"' + "</parameter></parameter>"
+    assert _strip_duplicate_parameter_closers(value) == value
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (
+            "\n<parameter=example>literal</parameter>\n",
+            "<parameter=example>literal</parameter>",
+        ),
+        ("x\n</parameter>\n</parameter>", "x"),
+        # Marker text in the value: left exactly as selected, as before.
+        (
+            "\n<parameter=example>literal</parameter>\n</parameter>\n",
+            "<parameter=example>literal</parameter>\n</parameter>",
+        ),
+        (
+            "\n<parameter =example>literal</parameter>\n",
+            "<parameter =example>literal</parameter>",
+        ),
+        # Whitespace before the duplicated closer is payload, not framing.
+        ("\nhello  \n</parameter>\n", "hello  "),
+        ("\nline\n\n</parameter>", "line\n"),
+    ],
+    ids=[
+        "balanced-literal",
+        "duplicate-closers",
+        "literal-and-duplicate",
+        "spaced-literal",
+        "trailing-spaces-kept",
+        "trailing-newline-kept",
+    ],
+)
+@pytest.mark.parametrize("sibling", ["", "<parameter=path>nonce.txt</parameter>"])
+def test_scan_preserves_balanced_literal_parameter_markup(value, expected, sibling):
+    from rapid_mlx.tool_call_scan import split_marked_parameters
+
+    block = f"<parameter=new_string>{value}</parameter>{sibling}"
+    pairs = [("new_string", expected)]
+    if sibling:
+        pairs.append(("path", "nonce.txt"))
+    assert split_marked_parameters(block, _P_OPEN, _P_CLOSE) == pairs
+
+
+@pytest.mark.parametrize(
+    "parser_name", ["hermes", "nemotron", "qwen3_coder_xml", "raon_1", "api"]
+)
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ('"before </parameter> after"', '"before </parameter> after"'),
+        ('"unbalanced', '"unbalanced'),
+    ],
+)
+def test_parameter_boundary_preserves_quoted_payload_for_every_scanner_caller(
+    parser_name, content, expected
+):
+    from rapid_mlx.api.tool_calling import parse_tool_calls
+    from rapid_mlx.tool_call_scan import split_marked_parameters
+
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "path": {"type": "string"},
+                        },
+                    },
+                },
+            }
+        ]
+    }
+    text = (
+        "<tool_call><function=write><parameter=content>"
+        + content
+        + '</parameter><parameter=path>"ok.txt"</parameter></function></tool_call>'
+    )
+    assert split_marked_parameters(text, _P_OPEN, _P_CLOSE) == [
+        ("content", expected),
+        ("path", '"ok.txt"'),
+    ]
+    if parser_name == "api":
+        _, calls = parse_tool_calls(text, request)
+        assert calls and len(calls) == 1
+        arguments = calls[0].function.arguments
+    else:
+        parser = ToolParserManager.get_tool_parser(parser_name)(None)
+        result = parser.extract_tool_calls(text, request=request)
+        assert result.tools_called and len(result.tool_calls) == 1
+        arguments = result.tool_calls[0]["arguments"]
+    # Existing schema conversion differs; the raw boundary above is shared.
+    if parser_name != "raon_1":
+        expected = expected[1:-1] if expected.endswith('"') else expected
+    if parser_name == "qwen3_coder_xml":
+        expected = expected.removeprefix('"')
+    path = '"ok.txt"' if parser_name == "raon_1" else "ok.txt"
+    assert json.loads(arguments) == {"content": expected, "path": path}
+
+
 def test_scan_requires_outer_marker_when_one_is_requested():
     """``outer`` is required when passed, not opportunistic.
 
@@ -1074,3 +1230,25 @@ def test_no_tools_service_preserves_text_without_changing_low_level_scanner():
     _, calls = parse_tool_calls(text, None)
     assert [c.function.name for c in calls] == ["whatever"]
     assert _parse_tool_calls_with_parser(text, None) == (text, None)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"hello" world </parameter> after',
+        '"hello" world </parameter> after </parameter> tail',
+    ],
+)
+def test_raw_value_starting_with_quote_keeps_main_boundaries(value):
+    from rapid_mlx.tool_call_scan import split_marked_parameters
+
+    text = (
+        "<tool_call><function=write><parameter=content>"
+        + value
+        + "</parameter></function></tool_call>"
+    )
+    assert split_marked_parameters(text, _P_OPEN, _P_CLOSE) == [("content", value)]
+    parser = ToolParserManager.get_tool_parser("hermes")(None)
+    result = parser.extract_tool_calls(text)
+    assert result.tools_called and len(result.tool_calls) == 1
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"content": value}

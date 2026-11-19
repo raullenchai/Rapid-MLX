@@ -33,6 +33,7 @@ the same defect could be fixed in ``tool_calling.py`` and still be live in
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -248,6 +249,36 @@ def split_marked_calls(
     return calls
 
 
+_TRAILING_PARAMETER_CLOSERS = re.compile(r"(?:</parameter>\s*)+$")
+
+
+def _strip_duplicate_parameter_closers(value: str) -> str:
+    """Discard duplicate parameter closers repeated after a plain value.
+
+    A model can repeat the closer it just wrote (#5830). Strip the trailing
+    run only when the rest of the value has no parameter markup at all; a
+    value that contains marker text in any form is left exactly as selected,
+    because a literal closer there cannot be told apart from framing.
+    Whitespace before the first stripped closer is payload and is kept.
+    """
+    match = _TRAILING_PARAMETER_CLOSERS.search(value)
+    if match is None:
+        return value
+    head = value[: match.start()]
+    if "<parameter" in head or "</parameter" in head:
+        # Marker text inside a complete JSON string is quoted payload, so the
+        # closers after it are framing; raw marker text stays ambiguous.
+        stripped = head.strip()
+        if not (stripped.startswith('"') and stripped.endswith('"')):
+            return value
+        try:
+            # A valid JSON value wrapped in quotes is a JSON string.
+            json.loads(stripped)
+        except (ValueError, RecursionError, MemoryError):
+            return value
+    return head
+
+
 def split_marked_parameters(
     block: str,
     opener: str,
@@ -283,7 +314,12 @@ def split_marked_parameters(
         sibling = _next_sibling(block, openers, i, closer, valid_names)
         if segmented is not None:
             out.append(
-                (openers[i].group(1).strip(), trim_wrapping_newlines(segmented[0]))
+                (
+                    openers[i].group(1).strip(),
+                    trim_wrapping_newlines(
+                        _strip_duplicate_parameter_closers(segmented[0])
+                    ),
+                )
             )
         # Jump to the sibling, not i+1: the openers in between are literal
         # text inside the value just consumed. Advancing one at a time is

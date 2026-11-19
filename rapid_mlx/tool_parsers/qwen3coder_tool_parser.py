@@ -2169,7 +2169,12 @@ class Qwen3CoderToolParser(ToolParser):
             if self._pending_partial_opener and self._pending_tool_start is not None:
                 held = current_text[self._pending_tool_start :]
                 if not self.tool_call_prefix.startswith(held):
-                    self._advance_past(0)
+                    # A split closing wrapper can start with the same '<'.
+                    # Reject only this candidate; earlier call indices and
+                    # emitted headers must survive for the next parallel call.
+                    self._pending_partial_opener = False
+                    self._pending_tool_start = None
+                    self.is_tool_call_started = False
                     return {"content": held}
             return None
         self._pending_partial_opener = False
@@ -2267,30 +2272,42 @@ class Qwen3CoderToolParser(ToolParser):
                     if func_close_idx != -1:
                         complete = self.extract_tool_calls(current_text, request)
                         if complete.tools_called and len(complete.tool_calls) > 1:
-                            calls = complete.tool_calls[self.current_tool_index :]
-                            self.prev_tool_call_arr.extend(calls)
-                            self.current_tool_index = len(complete.tool_calls) - 1
-                            self.json_started = True
-                            self.json_closed = True
-                            self.in_function = False
-                            self.accumulated_params = {}
-                            return {
-                                "tool_calls": [
-                                    {
-                                        "index": index,
-                                        "id": call["id"],
-                                        "type": "function",
-                                        "function": {
-                                            "name": call["name"],
-                                            "arguments": call["arguments"],
-                                        },
-                                    }
-                                    for index, call in enumerate(
-                                        calls,
-                                        start=self.current_tool_index + 1 - len(calls),
-                                    )
-                                ]
-                            }
+                            # EOS recovery also accepts unfinished headers;
+                            # only structurally closed calls can stream now.
+                            closed_count = self._top_level_function_close_count(
+                                current_text,
+                                self._function_start_positions(current_text),
+                            )
+                            calls = complete.tool_calls[
+                                self.current_tool_index : closed_count
+                            ]
+                            # Empty/single slices use the current-call path below.
+                            if len(calls) > 1:
+                                self.prev_tool_call_arr.extend(calls)
+                                self.current_tool_index += len(calls) - 1
+                                self.json_started = True
+                                self.json_closed = True
+                                self.in_function = False
+                                self.accumulated_params = {}
+                                return {
+                                    "tool_calls": [
+                                        {
+                                            "index": index,
+                                            "id": call["id"],
+                                            "type": "function",
+                                            "function": {
+                                                "name": call["name"],
+                                                "arguments": call["arguments"],
+                                            },
+                                        }
+                                        for index, call in enumerate(
+                                            calls,
+                                            start=self.current_tool_index
+                                            + 1
+                                            - len(calls),
+                                        )
+                                    ]
+                                }
                         tools = None
                         if request and isinstance(request, dict):
                             tools = request.get("tools")
