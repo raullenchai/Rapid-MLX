@@ -239,6 +239,9 @@
             "dense_decode_fusion": {
               "type": "boolean"
             },
+            "gemma4_affine4": {
+              "type": "boolean"
+            },
             "qwen35_affine4": {
               "type": "boolean"
             },

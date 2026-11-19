@@ -70,6 +70,7 @@ def test_builtin_resolution_snapshot(monkeypatch):
         "memory_check_interval",
         "dense_decode_fusion",
         "qwen35_affine4",
+        "gemma4_affine4",
         "qwen35_moe_router",
         "moe_decode_fusion",
         "moe_gate_up_fusion",

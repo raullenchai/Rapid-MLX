@@ -804,6 +804,19 @@
       }
     },
     {
+      "id": "gemma4-affine4-enrollment",
+      "model": {
+        "family": "gemma4_affine4_install"
+      },
+      "knobs": {
+        "gemma4_affine4": true
+      },
+      "provenance": {
+        "evidence": "Selected affine-4 Gemma experts; exact class/layout gates and a per-block 2% relative RMS probe are mandatory. Performance qualification remains separate.",
+        "hardware_scope": "Metal devices passing the local numerical probe."
+      }
+    },
+    {
       "id": "qwen35-affine4-enrollment",
       "model": {
         "family": "qwen35_affine4_install"
