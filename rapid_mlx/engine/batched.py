@@ -5523,6 +5523,12 @@ class BatchedEngine(BaseEngine):
             return self._engine.get_cache_stats()
         return None
 
+    def retain_prefix_cache(self, keep_recent: int) -> dict[str, int]:
+        """Partially release scheduler KV state on the owning model worker."""
+        if self._mllm_scheduler is not None or self._engine is None:
+            raise RuntimeError("partial prefix release is unavailable for this backend")
+        return self._engine.retain_prefix_cache(keep_recent)
+
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Clear reusable prompt state while keeping weights loaded."""
         cleared = False

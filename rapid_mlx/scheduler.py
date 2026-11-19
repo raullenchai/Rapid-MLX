@@ -8419,23 +8419,26 @@ class Scheduler:
             )
         return evicted
 
-    def _evict_one_prefix_cache_entry(self, keep_mru: bool = False) -> bool:
+    def _evict_one_prefix_cache_entry(
+        self, keep_mru: bool = False, *, keep_recent: int = 0
+    ) -> bool:
         """Evict a single LRU prefix-cache entry across all cache variants.
 
         Returns True if an entry was actually removed. ``keep_mru`` refuses to
         evict the memory-aware cache's last remaining (most-recently-used)
         entry — used by the cache-self pressure trigger. Encapsulates the
         cache-variant dispatch so ``evict_prefix_cache_under_pressure``
-        stays variant-agnostic.
+        stays variant-agnostic. ``keep_recent`` reserves N newest entries
+        for manual partial release, independently of memory pressure.
 
         The three cache variants share an LRU policy but their
         internal data structures differ:
         - ``memory_aware_cache``: OrderedDict-based, exposes
           ``_evict_lru`` under its own lock.
         - ``prefix_cache``: trie + OrderedDict LRU.
-        - ``block_aware_cache``: paged block table; out of scope for
-          the pressure trigger (blocks are released by
-          ``PagedCacheManager`` ref-counts), so we no-op.
+        - ``block_aware_cache``: stored tables ordered by last access;
+          release references while preserving pinned/shared blocks and
+          tables belonging to active requests.
 
         Exception policy (codex round 2 BLOCKING #1): a failing
         ``_evict_lru`` call MUST propagate to
@@ -8452,12 +8455,12 @@ class Scheduler:
         if self.memory_aware_cache is not None:
             with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
                 remaining = len(self.memory_aware_cache._entries)  # noqa: SLF001
-                if remaining == 0 or (keep_mru and remaining == 1):
+                if remaining <= max(keep_recent, int(keep_mru)):
                     return False
                 self.memory_aware_cache._evict_lru()  # noqa: SLF001
             return True
         if self.prefix_cache is not None:
-            if not getattr(self.prefix_cache, "_lru", None):
+            if len(self.prefix_cache._lru) <= keep_recent:
                 return False
             self.prefix_cache._evict_lru()  # noqa: SLF001 — coordinated eviction
             return True
@@ -8498,6 +8501,17 @@ class Scheduler:
                     (rid, rentry)
                     for rid in list(rt.keys())
                     if (rentry := rt.get(rid)) is not None
+                ]
+                if keep_recent:
+                    evictable.sort(key=lambda kv: kv[1].last_access)
+                    evictable = evictable[:-keep_recent]
+                # Fetch-held tables can be the sole owner of live blocks.
+                # Refcounts alone cannot identify them as active requests.
+                evictable = [
+                    (rid, entry)
+                    for rid, entry in evictable
+                    if rid not in getattr(self, "requests", {})
+                    and rid not in getattr(self, "running", {})
                 ]
                 if evictable:
                     rid, rentry = min(evictable, key=lambda kv: kv[1].last_access)
@@ -8569,7 +8583,7 @@ class Scheduler:
             # identities and therefore always verify). Resident KV on
             # unreferenced (ref_count == 0) free-queue slabs is reclaimed
             # exclusively by release_paged_cache_blocks_under_pressure.
-            if index:
+            if index and not keep_recent:
                 # dict preserves insertion order: first key = LRU.
                 for oldest_hash in list(index.keys()):
                     cached_tokens, block_ids = index[oldest_hash]
@@ -12979,13 +12993,74 @@ class Scheduler:
 
     def get_cache_stats(self) -> dict[str, Any] | None:
         """Get cache statistics."""
+        stats = None
         if self.block_aware_cache is not None:
-            return self.block_aware_cache.get_stats()
+            stats = self.block_aware_cache.get_stats()
         elif self.memory_aware_cache is not None:
-            return self.memory_aware_cache.get_stats()
+            stats = self.memory_aware_cache.get_stats()
         elif self.prefix_cache is not None:
-            return self.prefix_cache.get_stats()
-        return None
+            stats = self.prefix_cache.get_stats()
+        if stats is not None:
+            stats["last_release"] = getattr(self, "_last_prefix_cache_release", None)
+        return stats
+
+    def _prefix_cache_usage(self) -> tuple[int, int]:
+        """Entries and resident KV bytes, excluding model and allocator memory."""
+        from .memory_cache import _state_memory, estimate_kv_cache_memory
+
+        if self.memory_aware_cache is not None:
+            with self.memory_aware_cache._lock:
+                return (
+                    len(self.memory_aware_cache._entries),
+                    self.memory_aware_cache._current_memory,
+                )
+        if self.prefix_cache is not None:
+            cache = self.prefix_cache
+            keys = set(cache._lru) | cache._pinned
+            size = 0
+            for _, tokens in keys:
+                entry = cache._get_cache_entry(list(tokens))
+                if entry is not None:
+                    size += estimate_kv_cache_memory(entry.prompt_cache)
+            return len(keys), size
+        if self.block_aware_cache is not None:
+            paged = self.block_aware_cache.paged_cache
+            # Pinned/free-queue slabs can retain KV after their last table
+            # reference is released, so include the whole physical pool.
+            with paged._lock:
+                return len(self.block_aware_cache._request_tables), sum(
+                    _state_memory(block.cache_data) for block in paged.blocks
+                )
+        return 0, 0
+
+    def retain_prefix_cache(self, keep_recent: int) -> dict[str, int]:
+        """Release LRU reusable entries on the model worker, keeping N newest.
+
+        Pinned trie entries and active paged tables may keep the count above N.
+        Memory/trie fetches own independent cache copies; paged blocks retain
+        their existing refcount and pin protection in the shared LRU evictor.
+        Byte counts describe logical resident KV, not process/Metal memory.
+        """
+        if (
+            isinstance(keep_recent, bool)
+            or not isinstance(keep_recent, int)
+            or keep_recent < 0
+        ):
+            raise ValueError("keep_recent must be a nonnegative integer")
+        before_entries, before_bytes = self._prefix_cache_usage()
+        for _ in range(max(0, before_entries - keep_recent)):
+            if not self._evict_one_prefix_cache_entry(keep_recent=keep_recent):
+                break
+        entries, size = self._prefix_cache_usage()
+        result = {
+            "entries_freed": before_entries - entries,
+            "bytes_freed": max(0, before_bytes - size),
+            "entries_kept": entries,
+            "bytes_kept": size,
+        }
+        self._last_prefix_cache_release = result
+        mx.clear_cache()
+        return dict(result)
 
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Clear scheduler-owned reusable KV state without touching requests."""
