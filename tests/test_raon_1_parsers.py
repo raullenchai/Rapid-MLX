@@ -51,8 +51,8 @@ EXPECTED = {
     "count": 42,
     "enabled": True,
     "ratio": 2.5,
-    "items": ["1", 2],
-    "options": {"n": "3"},
+    "items": [1, 2],
+    "options": {"n": 3},
     "maybe": None,
     "choice": 7,
 }
@@ -198,6 +198,126 @@ def test_argument_prefixes_and_resolved_parameters_stream_before_function_close(
         "count": 42,
         "enabled": True,
     }
+
+
+@pytest.mark.parametrize("occurrences", [2, 3])
+@pytest.mark.parametrize(
+    "key, values",
+    [
+        ("text", ["first", "second", "third"]),
+        ("text", ["first </parameter> inside", "second", "third"]),
+        ("text", ["first", "second </function> inside", "third"]),
+        (
+            "text",
+            ["first </function> inside", "second </parameter> inside", "third"],
+        ),
+        ("count", ["1", "2", "3"]),
+        ("choice", ["1", "second", "3"]),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [True, False])
+@pytest.mark.parametrize("trailing_parameter", [True, False])
+def test_repeated_parameters_stream_valid_last_value_wins_at_every_split(
+    occurrences, key, values, wrapped, trailing_parameter
+):
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _wire
+
+    parameters = [
+        f"<parameter={key}>{value}</parameter>" for value in values[:occurrences]
+    ]
+    # A distinct trailing parameter also exercises reconciliation after repeats.
+    if trailing_parameter:
+        parameters.append("<parameter=enabled>1</parameter>")
+    text = "<function=run>" + "".join(parameters) + "</function>"
+    if wrapped:
+        text = "<tool_call>" + text + "</tool_call>"
+    complete = RaonToolParser().extract_tool_calls(text, REQUEST).tool_calls[0]
+    last = values[occurrences - 1]
+    expected = {key: int(last) if last.isdigit() and key != "text" else last}
+    if trailing_parameter:
+        expected["enabled"] = True
+    assert json.loads(complete["arguments"]) == expected
+
+    chunkings = [
+        list(text),
+        # The reported failure: one closed parameter per chunk.
+        [
+            ("<tool_call>" if wrapped else "") + "<function=run>" + parameters[0],
+            *parameters[1:],
+            "</function>" + ("</tool_call>" if wrapped else ""),
+        ],
+    ] + [[text[:offset], text[offset:]] for offset in range(len(text) + 1)]
+    for chunks in chunkings:
+        parser = RaonToolParser()
+        arguments = []
+
+        def collect(delta, arguments=arguments):
+            for item in (delta or {}).get("tool_calls", []):
+                assert item["index"] == 0
+                arguments.append(item.get("function", {}).get("arguments", ""))
+
+        for chunk in chunks:
+            collect(parser.extract_tool_calls_streaming("", "", chunk, request=REQUEST))
+        collect(_wire(parser.finish_streaming()))
+        streamed = "".join(arguments)
+        assert json.loads(streamed) == expected, chunks
+        assert streamed == complete["arguments"], chunks
+        assert len(json.loads(streamed, object_pairs_hook=list)) == occurrences + int(
+            trailing_parameter
+        )
+
+
+@pytest.mark.parametrize(
+    "key,values,typed",
+    [
+        ("options", ['{"n":"1"}', '{"n":"2"}'], [{"n": 1}, {"n": 2}]),
+        ("items", ['["1"]', '["2", "3"]'], [[1], [2, 3]]),
+        ("options", ["plain text", '{"n":"2"}'], ["plain text", {"n": 2}]),
+    ],
+)
+def test_repeated_nested_parameters_use_identical_typed_entries_at_every_split(
+    key, values, typed
+):
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _wire
+
+    parameters = [f"<parameter={key}>{value}</parameter>" for value in values]
+    chunks = [
+        "<tool_call><function=run>" + parameters[0],
+        parameters[1],
+        "</function></tool_call>",
+    ]
+    text = "".join(chunks)
+    expected_pairs = list(zip([key, key], typed))
+    for parts in [chunks, list(text)] + [
+        [text[:offset], text[offset:]] for offset in range(len(text) + 1)
+    ]:
+        parser = RaonToolParser()
+        arguments = []
+        for part in parts:
+            delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+            for item in (delta or {}).get("tool_calls", []):
+                arguments.append(item.get("function", {}).get("arguments", ""))
+            if parts is chunks and part == chunks[1]:
+                # The first entry is resolved before the call closes, already
+                # carrying its final nested types.
+                assert "".join(arguments) == (
+                    "{" + json.dumps(key) + ": " + json.dumps(typed[0])
+                )
+        delta = _wire(parser.finish_streaming())
+        for item in (delta or {}).get("tool_calls", []):
+            arguments.append(item.get("function", {}).get("arguments", ""))
+        streamed = "".join(arguments)
+        complete = RaonToolParser().extract_tool_calls(text, REQUEST).tool_calls[0]
+        assert (
+            json.loads(streamed)
+            == json.loads(complete["arguments"])
+            == {key: typed[-1]}
+        ), parts
+        assert json.loads(streamed, object_pairs_hook=list) == [
+            (key, list(value.items()) if isinstance(value, dict) else value)
+            for key, value in expected_pairs
+        ], parts
+        assert streamed == complete["arguments"], parts
 
 
 def test_large_argument_stream_has_linear_buffering():
@@ -638,8 +758,14 @@ def test_token_alignment_uses_detokenized_text(text, ids, expected):
     "value,schema,expected",
     [
         ({"n": "2"}, {"properties": {"n": {"type": "integer"}}}, {"n": 2}),
+        (
+            '{"n":"2"}',
+            {"type": "object", "properties": {"n": {"type": "integer"}}},
+            {"n": 2},
+        ),
         ({"n": 2}, {}, {"n": 2}),
         (["2", "3"], {"items": {"type": "integer"}}, [2, 3]),
+        ('["2", "3"]', {"type": "array", "items": {"type": "integer"}}, [2, 3]),
         ([1], {}, [1]),
         (True, {"type": "integer"}, True),
         ("0", {"type": "boolean"}, False),

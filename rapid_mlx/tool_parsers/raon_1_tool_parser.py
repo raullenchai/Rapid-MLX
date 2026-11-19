@@ -298,6 +298,8 @@ def _cast(text: str, types: set[str]) -> Any:
 def _conform(value: Any, schema: dict) -> tuple[Any, bool]:
     if isinstance(value, str):
         cast = _cast(value, _schema_types(schema))
+        if isinstance(cast, (dict, list)):
+            cast, _ = _conform(cast, schema)
         return cast, cast is not value
     if isinstance(value, dict):
         properties = schema.get("properties")
@@ -329,6 +331,14 @@ def _conform_object(arguments: dict, properties: dict) -> bool:
             arguments[key] = cast
             changed = True
     return changed
+
+
+def _parameter_json(key: str, value: str, properties: dict) -> str:
+    """Serialize one entry with all schema coercion completed before emission."""
+    schema = properties.get(key)
+    if isinstance(schema, dict):
+        value, _ = _conform(value, schema)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _stable_prefix(arguments: str, string_keys: set[str] | None) -> str:
@@ -442,10 +452,7 @@ class _ParameterPrefix:
         if not parameters:
             return ""
         key, value = parameters[0]
-        schema = self.properties.get(key)
-        if schema is not None:
-            value = _cast(value, _schema_types(schema))
-        encoded = json.dumps(value, ensure_ascii=False)
+        encoded = _parameter_json(key, value, self.properties)
         if self.string:
             rest = encoded[1 + self.sent :]
         else:
@@ -830,8 +837,6 @@ class RaonToolParser(ToolParser):
 
     def _argument_delta(self, call: _Call) -> str | None:
         current = self._arguments(call)
-        if call.name:
-            current = self._typed(current, call.name)
         stable = _stable_prefix(current, call.string_keys)
         if (
             not stable
@@ -843,7 +848,7 @@ class RaonToolParser(ToolParser):
         return delta
 
     def _argument_rest(self, call: _Call) -> str | None:
-        final = self._typed(self._arguments(call), call.name)
+        final = self._arguments(call)
         if len(final) <= len(call.sent) or (
             call.sent and not final.startswith(call.sent)
         ):
@@ -986,6 +991,7 @@ class RaonToolParser(ToolParser):
             name, raw = call.name.strip(), call.raw
             if not name and raw.strip():
                 name, arguments = self._json_call(raw)
+                arguments = self._typed(arguments, name)
             elif raw.strip():
                 arguments = self._arguments(call)
             else:
@@ -995,26 +1001,32 @@ class RaonToolParser(ToolParser):
                 found.append(
                     ToolCall(
                         id=call.id,
-                        function=FunctionCall(
-                            name=name, arguments=self._typed(arguments, name)
-                        ),
+                        function=FunctionCall(name=name, arguments=arguments),
                     )
                 )
         return found
 
     def _arguments(self, call: _Call) -> str:
+        properties = self._properties(call.name.strip())
         parameters = split_marked_parameters(
             call.raw,
             _NAMED_PARAMETER.pattern,
             PARAMETER_CLOSE,
-            valid_names=set(self._properties(call.name.strip())) or None,
+            valid_names=set(properties) or None,
         )
-        arguments = (
-            json.dumps(dict(parameters), ensure_ascii=False)
-            if parameters
-            else _parameters_json(call.raw, False)
-        )
-        return arguments
+        if parameters:
+            # Preserve repeated entries so append-only deltas can finish the
+            # object. JSON decoding retains the established last-value-wins
+            # result. Use the prefix serializer for every occurrence, including
+            # nested coercion; never reserialize a collapsed dictionary later.
+            pairs = [
+                json.dumps(key, ensure_ascii=False)
+                + ": "
+                + _parameter_json(key, value, properties)
+                for key, value in parameters
+            ]
+            return "{" + ", ".join(pairs) + "}"
+        return self._typed(_parameters_json(call.raw, False), call.name)
 
     @staticmethod
     def _json_call(raw: str) -> tuple[str, str]:
