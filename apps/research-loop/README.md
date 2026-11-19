@@ -284,3 +284,86 @@ Scripts keep their curve JSON lines and final `RESULT {...}`. To add outputs,
 write files into `$ARTIFACT_DIR`, then declare each in `manifest.jsonl` with kind,
 path, title and optional role/refs/columns. The chemistry template demonstrates
 coordinates, an SVG projection and a summary without project-specific UI code.
+
+## Project literature
+
+Start with an already running OpenAI-compatible embedding endpoint:
+
+```sh
+python apps/research-loop/server.py \
+  --models q35=http://127.0.0.1:8482/v1 \
+  --embeddings http://127.0.0.1:8483/v1 \
+  --embedding-model embeddinggemma-2-4bit
+```
+
+The embedding model name defaults to `embeddinggemma-2-4bit`. Without
+`--embeddings`, Literature clearly says **Not configured** and discussion and
+experiments continue to work. The server never loads an embedding model or MLX.
+The existing local-search extraction, chunking, semantic admission and rank-fusion
+helpers are reused. PDF extraction needs the engine environment's `pypdf` and
+`psutil`; missing readers produce a per-file error without blocking other files.
+No new packages are installed by the workbench.
+
+Open **Literature** beside the goal in Discuss, or use **2 Literature** in the
+research strip. Upload PDF, Markdown, UTF-8 text, TeX or HTML files (20 MiB each),
+or attach an absolute local folder path. Folder attachments are stored in
+`project.json` as `literature_dirs` and are read-only: **Detach** removes the
+attachment, never the original files. **Remove** deletes an uploaded copy only.
+Existing uploaded filenames are replaced on upload. Hidden/sensitive files and
+symlinks are excluded using the engine's local-search policy.
+
+Uploads, folder changes and removals start background indexing; **Re-index**
+rescans for changes made outside the UI. Status shows files, passages, file
+progress and individual errors. Changes to attachments wait until indexing
+finishes. The atomic `literature_index/index.json` snapshot holds file SHA-256,
+stable chunk IDs, PDF page or section/line locators, character spans in extracted
+text (per page for PDFs), passages and normalized vectors. Unchanged files reuse
+vectors; changed/new files are embedded, removed/failed files lose their old
+passages. Changing endpoint or embedding model requires re-indexing. Snapshots
+live under gitignored `projects/`; templates are unchanged.
+
+Discuss retrieves up to six semantic/lexical passages, removes overlapping
+chunks, and supplies them as `[S1]`…`[S6]` with instructions to cite only supporting
+claims and acknowledge silence. A reply saves `citations` only for supplied
+source markers actually present in its text. Expand a citation chip to read the
+saved passage, filename, page/section and chunk ID. A Sources note explains empty
+retrieval, unused sources or an unavailable endpoint. Citations are source
+snapshots, so old discussions remain inspectable after a file is removed.
+**Add as hypothesis** copies that reply's citations into the append-only claim's
+optional `sources` field; older claims remain readable. Sources appear on cards
+and in Results. Citation markers identify provided text; they do not certify that
+the model's interpretation is scientifically correct.
+
+Experiment planning receives up to three passages for the priority hypothesis
+(or open claims/goal when selecting a new claim). Before implementing the chosen
+experiment, retrieval uses that exact hypothesis statement again. Each supplied
+context is recorded as a `literature_context` journal event with source IDs and
+passage snapshots. Typed plan/edit schemas and numerical verdict rules are
+unchanged. Direct `loop.py` use accepts the same embedding flags.
+
+**Privacy:** literature indexing and retrieval make no network calls except to
+the configured embedding endpoint; discussion and loop messages go only to the
+configured model endpoints. No paper URLs are fetched, no external search service
+is used, and extraction does not follow HTML links. With localhost endpoints,
+passages, vectors, discussions and sources stay on this machine. An external
+endpoint will receive the text provided to it. Literature adds no telemetry,
+frontend dependency, CDN or build step.
+
+Literature APIs are relative to `/api/projects/<p>`:
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| GET | `/literature` | Configuration, state, files/passages, progress, errors, attached directories |
+| POST | `/literature/upload` | `{name, content}` (base64 bytes); starts indexing |
+| POST | `/literature/folder` | `{path}` (absolute read-only directory); starts indexing |
+| POST | `/literature/remove-folder` | `{path}`; detaches and re-indexes |
+| POST | `/literature/remove` | `{name}`; removes uploaded copy and re-indexes |
+| POST | `/literature/index` | `{}`; background incremental re-index |
+| POST | `/hypotheses` | Also accepts `discussion_index` to copy a saved assistant turn's citations |
+
+Indexing currently uses one thread per active project and exhaustive in-memory
+vector search; it is intended for project-sized collections. There is no OCR for
+scanned PDFs or filesystem watcher. TeX is indexed as source, not compiled.
+Interrupted indexing leaves the previous complete snapshot; re-index after a
+server restart to resume. Model grounding is prompt-based and requires human
+review.

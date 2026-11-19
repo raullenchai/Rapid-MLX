@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 import hypotheses
+import literature
 import protocol
 
 ap = argparse.ArgumentParser()
@@ -33,7 +34,14 @@ ap.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
 ap.add_argument("--model", default="default")
 ap.add_argument("--rounds", type=int, default=10)
 ap.add_argument("--python", default=sys.executable)
+ap.add_argument("--embeddings")
+ap.add_argument("--embedding-model", default=literature.DEFAULT_MODEL)
 args = ap.parse_args()
+library = literature.Literature(
+    literature.HTTPEmbedder(args.embeddings, args.embedding_model)
+    if args.embeddings
+    else None
+)
 
 task_cfg = json.load(open(f"{args.task}/task.json"))
 program = open(f"{args.task}/program.md").read()
@@ -420,6 +428,24 @@ def next_experiment(rnd):
         ),
         None,
     )
+    sources = []
+    if library.embedder:
+        try:
+            query = (
+                pending["statement"]
+                if pending
+                else "; ".join(h["statement"] for h in open_claims) or program
+            )
+            sources = library.retrieve(args.task, query, program, limit=3)
+        except (ValueError, OSError, KeyError) as exc:
+            log("literature_error", round=rnd, error=str(exc))
+    if sources:
+        log(
+            "literature_context",
+            round=rnd,
+            source_ids=[s["chunk_id"] for s in sources],
+            sources=sources,
+        )
     tried = {norm(e.get("change", "")) for h in claims for e in h["experiments"]}
     if pending and pending.get("change") and norm(pending["change"]) not in tried:
         return (
@@ -430,6 +456,7 @@ def next_experiment(rnd):
                 prediction=pending["prediction"],
                 change=pending["change"],
                 source=pending["source"],
+                literature_sources=sources,
             ),
             0,
             {},
@@ -461,6 +488,8 @@ def next_experiment(rnd):
         "Experiment verdicts: improved, worse, no effect, crashed. "
         "Use experiment_plan: hypothesis_id for an existing claim, or null with new_hypothesis."
     )
+    if library.embedder:
+        prompt += literature.context(sources)
     if pending:
         prompt += f"\nResearcher priority: you MUST test {pending['id']}: {pending['statement']}. Return that hypothesis_id."
     tried = {norm(e.get("change", "")) for h in claims for e in h["experiments"]}
@@ -513,7 +542,9 @@ def next_experiment(rnd):
     claim = (
         next((h for h in claims if h["id"] == hid), None)
         if hid
-        else hypotheses.add(args.task, proposal["new_hypothesis"], "model")
+        else hypotheses.add(
+            args.task, dict(proposal["new_hypothesis"], sources=sources), "model"
+        )
     )
     log("hypothesis", hypothesis=claim)
     return (
@@ -523,6 +554,7 @@ def next_experiment(rnd):
             hypothesis=claim["statement"],
             why=claim["why"],
             source=claim["source"],
+            literature_sources=sources,
         ),
         round(time.time() - started, 1),
         {},
@@ -629,9 +661,25 @@ for rnd in range(1, args.rounds + 1):
         },
     )
     gate()
+    experiment_sources = []
+    if library.embedder:
+        try:
+            experiment_sources = library.retrieve(
+                args.task, idea["hypothesis"], program, limit=3
+            )
+            log(
+                "literature_context",
+                round=rnd,
+                phase="implementation",
+                source_ids=[s["chunk_id"] for s in experiment_sources],
+                sources=experiment_sources,
+            )
+        except (ValueError, OSError, KeyError) as exc:
+            log("literature_error", round=rnd, error=str(exc))
     src = edit(
         best_src,
-        f"Implement exactly this change and nothing else: {idea['change'] or idea['hypothesis']}\n(Hypothesis: {idea['hypothesis']})",
+        f"Implement exactly this change and nothing else: {idea['change'] or idea['hypothesis']}\n(Hypothesis: {idea['hypothesis']})"
+        + (literature.context(experiment_sources) if library.embedder else ""),
         rnd,
         "code",
     )

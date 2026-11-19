@@ -1,6 +1,7 @@
-"""Local Research Loop web server. Python standard library only."""
+"""Local Research Loop web server with CPU-only literature extraction helpers."""
 
 import argparse
+import base64
 import difflib
 import json
 import math
@@ -18,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 import hypotheses
+import literature
 import protocol
 
 ROOT = Path(__file__).resolve().parent
@@ -214,6 +216,8 @@ class App(ThreadingHTTPServer):
         projects=None,
         templates=None,
         models=None,
+        embeddings=None,
+        embedding_model=literature.DEFAULT_MODEL,
     ):
         super().__init__(address, Handler)
         self.models = models or {model: base_url.rstrip("/")}
@@ -225,6 +229,10 @@ class App(ThreadingHTTPServer):
         safe_path(self.templates)
         self.projects.mkdir(parents=True, exist_ok=True)
         self.processes, self.chat_locks = {}, {}
+        self.literature = literature.Literature(
+            literature.HTTPEmbedder(embeddings, embedding_model) if embeddings else None
+        )
+        self.embeddings, self.embedding_model = embeddings, embedding_model
 
     def folder(self, root, slug):
         if not isinstance(slug, str) or not re.fullmatch(SLUG, slug):
@@ -415,6 +423,7 @@ class App(ThreadingHTTPServer):
             "task": self.task(project),
             "runs": runs,
             "discussion": jsonl(project, "discussion.jsonl"),
+            "literature": self.literature.status(project),
             "ideas": ideas,  # Legacy API alias; new clients use hypotheses.
             "hypotheses": hypotheses.collect(project, self.task(project)),
             "models": list(self.models),
@@ -513,6 +522,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if len(parts) >= 3 and parts[:2] == ["api", "projects"]:
                 project = self.server.project_path(parts[2])
+                if parts[3:] == ["literature"]:
+                    return self.json(self.server.literature.status(project))
                 if len(parts) == 3:
                     return self.json(self.server.detail(project))
                 if len(parts) >= 5 and parts[3] == "runs":
@@ -738,8 +749,11 @@ class Handler(BaseHTTPRequestHandler):
         if origin and urlparse(origin).netloc != self.headers.get("Host"):
             raise PermissionError("Cross-origin request rejected")
         length = int(self.headers.get("Content-Length", "0"))
-        if not 0 < length <= 100000:
-            raise ValueError("Expected a JSON body under 100 KB.")
+        upload = urlparse(self.path).path.endswith("/literature/upload")
+        if not 0 < length <= (28 * 1024 * 1024 if upload else 100000):
+            raise ValueError(
+                "Expected a JSON body under 28 MiB for uploads or 100 KB otherwise."
+            )
         data = json.loads(self.rfile.read(length))
         if not isinstance(data, dict):
             raise ValueError("Expected a JSON object.")
@@ -759,6 +773,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.create_project(data)
             if len(parts) >= 4 and parts[:2] == ["api", "projects"]:
                 project = self.server.project_path(parts[2])
+                if len(parts) == 5 and parts[3] == "literature" and method == "POST":
+                    return self.literature_action(project, parts[4], data)
                 if len(parts) == 4:
                     action = parts[3]
                     if method == "PUT" and action == "program":
@@ -782,6 +798,16 @@ class Handler(BaseHTTPRequestHandler):
                         return self.chat(project, data)
                     if method == "POST" and action in ("hypotheses", "ideas"):
                         hypotheses.migrate_queue(project)
+                        if "discussion_index" in data:
+                            index = data["discussion_index"]
+                            messages = jsonl(project, "discussion.jsonl")
+                            if (
+                                type(index) is not int
+                                or not 0 <= index < len(messages)
+                                or messages[index]["role"] != "assistant"
+                            ):
+                                raise ValueError("Choose a saved assistant message.")
+                            data["sources"] = messages[index].get("citations", [])
                         row = hypotheses.add(project, data, data.get("source", "you"))
                         return self.json(
                             {
@@ -822,6 +848,47 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, OSError, KeyError) as exc:
             if not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
                 self.json({"error": str(exc)}, 400)
+
+    def literature_action(self, project, action, data):
+        service = self.server.literature
+        if service.embedder is None:
+            raise ValueError(
+                "Literature embeddings are not configured. Start with --embeddings URL."
+            )
+        with INBOX_LOCK, service.lock:
+            if service.jobs.get(str(project), {}).get("state") == "indexing":
+                raise ValueError(
+                    "Indexing is in progress. Wait before changing sources."
+                )
+            folder = safe_path(project, "literature", exists=False)
+            folder.mkdir(exist_ok=True)
+            if action == "upload":
+                name = data.get("name", "")
+                path = literature.upload_path(project, name)
+                if path.suffix.lower() not in literature.SUFFIXES:
+                    raise ValueError("Supported files: PDF, Markdown, text, TeX, HTML.")
+                content = base64.b64decode(data.get("content", ""), validate=True)
+                if not content or len(content) > literature.MAX_BYTES:
+                    raise ValueError("File must contain 1 byte to 20 MiB.")
+                path.write_bytes(content)
+            elif action in ("folder", "remove-folder"):
+                meta = read_json(project, "project.json")
+                dirs = meta.get("literature_dirs", [])
+                if action == "folder":
+                    path = str(literature.validate_folder(data.get("path", "")))
+                    dirs = list(dict.fromkeys([*dirs, path]))
+                else:
+                    dirs = [p for p in dirs if p != data.get("path")]
+                meta["literature_dirs"] = dirs
+                safe_path(project, "project.json").write_text(
+                    json.dumps(meta, indent=2)
+                )
+            elif action == "remove":
+                literature.upload_path(project, data.get("name", "")).unlink()
+            elif action != "index":
+                raise ValueError("Unknown literature action.")
+            service.start(project)
+        return self.json(service.status(project), 202)
 
     def create_project(self, data):
         title, goal = data.get("title"), data.get("goal", "")
@@ -904,6 +971,16 @@ class Handler(BaseHTTPRequestHandler):
                         model,
                         "--rounds",
                         str(rounds),
+                        *(
+                            [
+                                "--embeddings",
+                                self.server.embeddings,
+                                "--embedding-model",
+                                self.server.embedding_model,
+                            ]
+                            if self.server.embeddings
+                            else []
+                        ),
                     ],
                     stdout=log,
                     stderr=subprocess.STDOUT,
@@ -964,6 +1041,18 @@ class Handler(BaseHTTPRequestHandler):
                 + "\nObserved experiment ledger (latest 60):\n"
                 + json.dumps(history[-60:])
             )
+            sources, source_note = [], "Literature not configured."
+            if self.server.literature.embedder:
+                try:
+                    sources = self.server.literature.retrieve(
+                        project, message, safe_path(project, "program.md").read_text()
+                    )
+                    source_note = "" if sources else "No relevant passages found."
+                except (ValueError, OSError, KeyError) as exc:
+                    source_note = f"Literature retrieval unavailable: {exc}"
+                system += literature.context(sources)
+                if source_note:
+                    system += "\n" + source_note
             messages = [
                 {"role": m["role"], "content": m["content"]}
                 for m in jsonl(project, "discussion.jsonl")[-30:]
@@ -1027,7 +1116,19 @@ class Handler(BaseHTTPRequestHandler):
                         )
                 finally:
                     if content:
-                        append_message(project, "assistant", content, model=model)
+                        append_message(
+                            project,
+                            "assistant",
+                            content,
+                            model=model,
+                            citations=literature.cited(content, sources),
+                            sources_note=source_note
+                            or (
+                                "No provided sources cited."
+                                if not literature.cited(content, sources)
+                                else ""
+                            ),
+                        )
         finally:
             lock.release()
 
@@ -1042,13 +1143,21 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4900)
     parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--embeddings", help="OpenAI-compatible embedding endpoint URL")
+    parser.add_argument("--embedding-model", default=literature.DEFAULT_MODEL)
     args = parser.parse_args()
     try:
         models = parse_models(args.models, args.base_url, args.model)
     except ValueError as exc:
         parser.error(str(exc))
     app = App(
-        (args.host, args.port), args.base_url, args.model, args.rounds, models=models
+        (args.host, args.port),
+        args.base_url,
+        args.model,
+        args.rounds,
+        models=models,
+        embeddings=args.embeddings,
+        embedding_model=args.embedding_model,
     )
     print(f"Research Loop: http://{args.host}:{args.port}", flush=True)
     try:

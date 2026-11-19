@@ -115,6 +115,21 @@ def add(project, data, source="you"):
         )
     if source not in ("you", "discussion", "model"):
         raise ValueError("Invalid hypothesis source.")
+    sources = data.get("sources", [])
+    if (
+        not isinstance(sources, list)
+        or len(sources) > 6
+        or any(
+            not isinstance(s, dict)
+            or not all(
+                isinstance(s.get(k), str)
+                for k in ("number", "file", "chunk_id", "snippet")
+            )
+            for s in sources
+        )
+        or len(json.dumps(sources)) > 60000
+    ):
+        raise ValueError("Invalid hypothesis sources.")
     path = Path(project) / "hypotheses.jsonl"
     if path.is_symlink():
         raise ValueError("Symlinks are not allowed.")
@@ -147,6 +162,8 @@ def add(project, data, source="you"):
             source=source,
             created=time.time(),
         )
+        if sources:
+            row["sources"] = sources
         if key:
             row["migration_key"] = key
         if fields[3]:

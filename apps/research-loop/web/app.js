@@ -338,6 +338,7 @@ function showStage() {
   (state.stage==='experiments' ? $('rail-discussion') : $('discussion-host')).append($('chat-panel'));
   // Scroll after mounting in the visible stage; hidden hosts have no scroll height.
   if(state.stage!=='results')renderConversation();
+  renderLiterature();
 }
 function renderRunPicker() {
   $('runs').innerHTML=orderedRuns(state.data.runs).map(r=>`<option value="${esc(r.id)}">${esc(r.id)}${r.active?' · running':''}</option>`).join('') || '<option value="">No runs yet</option>';
@@ -426,16 +427,16 @@ function experimentLink(e) {
 function renderQueue() {
   const claims=hypothesisGroups();
   $('queue-count').textContent=String(claims.length);
-  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')} · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
+  $('queue').innerHTML=claims.length ? claims.map(h=>`<li><strong>${esc(h.label || h.id)}</strong> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span>${sourceMarkup(h.sources)}<small class="muted">${countLabel(h.experiments.length,'experiment')} · ${esc(h.source==='discussion'?'discussion':h.source==='you'?'you':'model')}</small></li>`).join('') : '<li class="queue-empty muted">A hypothesis is a claim; each will be tested by one or more experiments.</li>';
   $('hypothesis-rule').textContent=hypothesisRule();
   const openGroups=[...$('experiment-groups').querySelectorAll('details[open]')].map(d=>d.dataset.group), focusedExperiment=document.activeElement?.dataset?.experiment;
-  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')}</small></summary><ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${e.round}" aria-pressed="${e.round===state.selected}">Experiment ${e.round} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
+  $('experiment-groups').innerHTML=claims.length ? claims.map(h=>`<details class="hypothesis-group" data-group="${esc(h.id)}"${h.experiments.some(e=>e.round===state.selected && e.run===state.run?.id)?' open':''}><summary><span class="hypothesis-id" style="color:${hypothesisColor(h)}">${esc(h.label || h.id)}</span> ${pill(h.status)}<span class="hypothesis-statement">${esc(h.statement)}</span><small class="muted">${countLabel(h.experiments.length,'experiment')}</small></summary>${sourceMarkup(h.sources)}<ol>${h.experiments.map(e=>`<li${e.round===state.selected && e.run===state.run?.id?' class="is-selected"':''}>${e.run===state.run?.id?`<button type="button" class="text-button" data-experiment="${e.round}" aria-pressed="${e.round===state.selected}">Experiment ${e.round} · ${changeMarkup(e)}</button>`:experimentLink(e)} ${pill(e.verdict || 'testing')}</li>`).join('') || '<li class="muted">Ready for its first experiment.</li>'}</ol></details>`).join('') : '<p class="muted">Hypotheses and their experiments appear here as testing begins.</p>';
   for(const d of $('experiment-groups').querySelectorAll('details'))if(openGroups.includes(d.dataset.group))d.open=true;
   if(focusedExperiment!==undefined)$('experiment-groups').querySelector(`[data-experiment="${focusedExperiment}"]`)?.focus({preventScroll:true});
 }
 function renderConversation() {
   const messages=[...(state.data?.discussion || [])]; if(state.chatDraft)messages.push(state.chatDraft);
-  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header><div class="message-content">${markdown(m.content || 'Thinking…')}</div>${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
+  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header><div class="message-content">${markdown(m.content || 'Thinking…')}</div>${sourceMarkup(m.citations)}${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
   $('conversation').scrollTop=messages.length ? $('conversation').scrollHeight : 0;
   controls();
 }
@@ -677,7 +678,7 @@ function renderResults() {
   const html=claims.map(h=>{
     const values=h.experiments.map(e=>e.value ?? e.result?.[task.metric]).filter(Number.isFinite);
     const bestValue=values.length?(task.direction==='min'?Math.min(...values):Math.max(...values)):null;
-    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.label || h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div><div class="hypothesis-conclusion" data-hypothesis-report="${esc(h.id)}" hidden></div></details></td><td>${pill(h.status)}</td><td>${format(bestValue)}</td><td>${h.experiments.length}</td></tr>`;
+    return `<tr class="hypothesis-row"><td><details data-hypothesis="${esc(h.id)}"><summary><strong>${esc(h.label || h.id)}</strong> <span>${esc(h.statement)}</span></summary>${sourceMarkup(h.sources)}${h.why?`<p><strong>Why:</strong> ${esc(h.why)}</p>`:''}${h.prediction?`<p><strong>Prediction:</strong> ${esc(h.prediction)}</p>`:''}<div class="nested-experiments"><table aria-label="Experiments for ${esc(h.label || h.id)}"><thead><tr><th>Change</th><th>${esc(metricLabel())}</th><th>Δ vs best</th><th>Experiment verdict</th></tr></thead><tbody>${experimentRows(h.experiments) || '<tr><td colspan="4" class="muted">No experiments yet.</td></tr>'}</tbody></table></div><div class="hypothesis-conclusion" data-hypothesis-report="${esc(h.id)}" hidden></div></details></td><td>${pill(h.status)}</td><td>${format(bestValue)}</td><td>${h.experiments.length}</td></tr>`;
   }).join('') || '<tr><td colspan="4" class="empty">No results yet. Add a hypothesis in Discuss, then start experiments.</td></tr>';
   if($('ledger').innerHTML!==html){
     $('result-artifacts').dataset.key='';
@@ -717,10 +718,10 @@ async function loadArtifacts(r) {
     $('diff-stats').textContent=`+${diff.added} −${diff.removed}`;$('copy-diff').disabled=false;
   }else $('diff').textContent='No reproducible diff is available. '+result.reason.message;}
 }
-async function addHypothesis(statement, source='you', why='', prediction='') {
+async function addHypothesis(statement, source='you', why='', prediction='', discussionIndex=null) {
   if(state.replay)return;
   const slug=state.slug;
-  const result=await api(projectAPI('/hypotheses'),{statement,source,why,prediction});
+  const result=await api(projectAPI('/hypotheses'),{statement,source,why,prediction,...(discussionIndex===null?{}:{discussion_index:discussionIndex})});
   if(slug!==state.slug)return;
   state.data.hypotheses=result.hypotheses;renderRun();notice('Hypothesis added. Your untested hypotheses go first.');
 }
@@ -744,7 +745,7 @@ $('queue-message').onclick=async()=>{try{await addHypothesis($('message').value)
 $('conversation').onclick=async event=>{
   const prompt=event.target.closest('[data-prompt]');
   if(prompt){if(state.replay)return;$('message').value=starterPrompts()[Number(prompt.dataset.prompt)] || '';$('message').focus();return;}
-  const button=event.target.closest('[data-queue]');if(!button)return;const message=state.data.discussion[Number(button.dataset.queue)];if(!message)return;button.disabled=true;try{await addHypothesis(message.content,'discussion');}catch(e){notice(e.message);}finally{button.disabled=state.replay;}
+  const button=event.target.closest('[data-queue]');if(!button)return;const message=state.data.discussion[Number(button.dataset.queue)];if(!message)return;button.disabled=true;try{await addHypothesis(message.content,'discussion','','',Number(button.dataset.queue));}catch(e){notice(e.message);}finally{button.disabled=state.replay;}
 };
 $('composer').onsubmit=async event=>{
   event.preventDefault();const message=$('message').value.trim();if(!message || state.chatBusy || state.replay)return;
@@ -761,7 +762,7 @@ $('composer').onsubmit=async event=>{
     if(!text)throw new Error('The model returned no text. Try sending another message.');
     if(slug===state.slug && state.chatDraft===draft)state.data.discussion.push({role:'assistant',content:text,model});
   }catch(e){notice(e.message);if(text && slug===state.slug && state.chatDraft===draft)state.data.discussion.push({role:'assistant',content:text,model});}
-  finally{state.chatBusy=false;state.chatDraft=null;$('chat-state').textContent='';if(slug===state.slug)renderConversation();controls();}
+  finally{if(slug===state.slug){try{const saved=await api(projectAPI());if(slug===state.slug)state.data.discussion=saved.discussion;}catch(e){notice(e.message);}}state.chatBusy=false;state.chatDraft=null;$('chat-state').textContent='';if(slug===state.slug)renderConversation();controls();}
 };
 $('start').onclick=async()=>{if(state.replay)return;$('start').disabled=true;try{if(state.programDirty){await api(projectAPI('/program'),{program:$('program').value},'PUT');state.data.program=$('program').value;state.programDirty=false;}const run=await api(projectAPI('/runs'),{model:$('model').value,rounds:Number($('round-count').value)});state.data.runs.unshift(run);renderRunPicker();location.hash=stageURL('experiments',{run:run.id,replay:false});}catch(e){notice(e.message);controls();}};
 for(const action of ['pause','resume','stop'])$(action).onclick=async()=>{if(state.replay || !state.run?.active)return;try{await api(projectAPI(`/runs/${encodeURIComponent(state.run.id)}/${action}`),{});state.run.paused=action==='pause';controls();notice(action==='stop'?'Stop requested. The current step will finish first.':action==='pause'?'Pause requested. The current step will finish first.':'Resumed.');}catch(e){notice(e.message);}};
@@ -990,3 +991,47 @@ window.addEventListener('hashchange',route);
 window.addEventListener('resize',scheduleRender);
 window.addEventListener('beforeunload',event=>{if(state.programDirty){event.preventDefault();event.returnValue='';}});
 route();
+
+// Passages are snapshots: they remain inspectable after re-indexing/removing a file.
+function sourceMarkup(sources=[]) {
+  return sources.length ? `<div class="citation-chips">${sources.map(s=>`<details class="citation"><summary>[${esc(s.number)}] ${esc(s.file.split('/').at(-1))}${s.page?' · p. '+esc(s.page):''}</summary><p class="muted">${esc(s.file)} · ${s.page?'page '+esc(s.page):esc(s.section || 'text')} · ${esc(s.chunk_id)}</p><blockquote>${esc(s.snippet)}</blockquote></details>`).join('')}</div>` : '';
+}
+let literatureTimer;
+function renderLiterature() {
+  clearTimeout(literatureTimer);
+  if(!state.data || !state.slug)return;
+  const l=state.data.literature || {configured:false,state:'not configured',files:[],errors:{}};
+  $('literature-state').textContent=l.configured ? `${l.state} · ${l.files.length} files · ${l.passages || 0} passages${l.state==='indexing'?` · ${l.progress}/${l.total} files`:''}` : 'Not configured. Start the server with --embeddings URL to use literature.';
+  $('literature-controls').hidden=!l.configured;
+  for(const id of ['literature-files','literature-folder','literature-index'])$(id).disabled=state.replay || l.state==='indexing';
+  $('literature-list').innerHTML=[...l.files.map(f=>`<li>${esc(f.file)} · ${f.passages} passages${f.uploaded?` <button type="button" class="text-button" data-remove-literature="${esc(f.file.slice(11))}"${state.replay || l.state==='indexing'?' disabled':''}>Remove</button>`:''}</li>`),...(l.literature_dirs || []).map(p=>`<li>${esc(p)} (read-only) <button type="button" class="text-button" data-remove-folder="${esc(p)}"${state.replay || l.state==='indexing'?' disabled':''}>Detach</button></li>`)].join('');
+  $('literature-errors').innerHTML=Object.entries(l.errors || {}).map(([file,error])=>`<p>${esc(file)}: ${esc(error)}</p>`).join('');
+  if(l.state==='indexing'){
+    const slug=state.slug;
+    literatureTimer=setTimeout(async()=>{if(slug!==state.slug)return;try{const next=await api(projectAPI('/literature'));if(slug===state.slug){state.data.literature=next;renderLiterature();}}catch(e){notice(e.message);}},700);
+  }
+}
+async function literatureAction(action,data={}) {
+  if(state.replay)return;
+  const slug=state.slug;
+  const result=await api(projectAPI('/literature/'+action),data);
+  if(slug===state.slug){state.data.literature=result;renderLiterature();}
+}
+$('literature-link').onclick=()=>{location.hash=stageURL('discuss');$('literature-panel').open=true;$('literature-panel').querySelector('summary')?.focus();};
+$('literature-index').onclick=()=>literatureAction('index').catch(e=>notice(e.message));
+$('literature-folder-form').onsubmit=async e=>{e.preventDefault();try{await literatureAction('folder',{path:$('literature-folder').value});$('literature-folder').value='';}catch(e){notice(e.message);}};
+$('literature-files').onchange=async()=>{
+  // Upload one bounded file at a time; indexing is started after each upload.
+  const files=[...$('literature-files').files],slug=state.slug;
+  try{for(const file of files){
+    if(file.size>20*1024*1024)throw new Error('Files must be under 20 MiB.');
+    const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=()=>reject(new Error('Could not read file.'));reader.readAsDataURL(file);});
+    if(slug!==state.slug)return;
+    await literatureAction('upload',{name:file.name,content});
+    while(state.slug===slug && state.data.literature.state==='indexing'){
+      await new Promise(resolve=>setTimeout(resolve,700));
+      const status=await api(projectAPI('/literature'));if(state.slug!==slug)return;state.data.literature=status;renderLiterature();
+    }
+  }}catch(e){notice(e.message);}finally{$('literature-files').value='';}
+};
+$('literature-list').onclick=e=>{const file=e.target.closest('[data-remove-literature]'),folder=e.target.closest('[data-remove-folder]');if(file)literatureAction('remove',{name:file.dataset.removeLiterature}).catch(e=>notice(e.message));if(folder)literatureAction('remove-folder',{path:folder.dataset.removeFolder}).catch(e=>notice(e.message));};

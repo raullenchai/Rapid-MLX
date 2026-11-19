@@ -6,8 +6,9 @@ model, adds testable hypotheses, then starts a fixed-budget experiment loop. Res
 code, logs, and discussion stay together on the filesystem.
 
 The project has three stages: Discuss → Experiments → Results. The smaller
-five-step research strip places it within a wider research process; question,
-literature, and writing remain in the researcher's tools. Research Loop does not
+five-step research strip places it within a wider research process; question and
+writing remain in the researcher's tools. Literature is attached per project in
+Discuss and grounds discussion and experiment planning. Research Loop does not
 write papers. It supports multiple named local model endpoints.
 
 This is an Operate surface for researchers with unpublished work. Preserve the

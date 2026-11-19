@@ -1672,3 +1672,17 @@ summary:hover { color:var(--blue); }
 @media (max-width:700px) { .compare-pair { grid-template-columns:1fr; } .artifact-tabs { overflow-x:auto; } }
 .experiment-attachments { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:8px; max-height:120px; overflow:auto; }
 .experiment-attachments a { font-size:12px; }
+
+/* Literature stays beside the living goal; source snapshots need no network reads. */
+#literature-panel { margin-top:24px; }
+#literature-panel label { display:block; margin:12px 0 6px; font-size:13px; }
+#literature-panel input { width:100%; min-width:0; }
+#literature-panel button { margin:8px 0; }
+#literature-list { padding-left:18px; font-size:12px; overflow-wrap:anywhere; }
+#literature-list li { margin:8px 0; }
+.citation-chips { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+.citation { border:1px solid var(--rule); border-radius:6px; margin:0; max-width:100%; font-size:12px; }
+.citation summary { padding:5px 8px; color:var(--blue); font-size:12px; overflow-wrap:anywhere; }
+.citation[open] { width:100%; padding:0 8px 8px; }
+.citation p,.citation blockquote { white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0; font-size:12px; line-height:1.6; }
+.sources-note { font-size:12px; margin-top:10px; }

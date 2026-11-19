@@ -233,3 +233,22 @@ refreshes the snapshot after seed/result/end events. Original task labels and
 values are preserved. Missing provenance/seed results remain explicitly unknown;
 legacy comparative verdicts are preserved for display. This supports an old loop
 already running in memory while the server serves protocol-1 projections.
+
+## Literature provenance (additive protocol-1 metadata)
+
+Model message schemas, frozen experiment/result records and verdict rules are
+unchanged. `literature_context` is an optional harness journal event carrying
+`round`, `source_ids` (chunk IDs) and `sources` (provided passage snapshots);
+`phase: "implementation"` identifies retrieval for the chosen claim before the
+edit prompt. Planning retrieves three passages for the priority claim, or open
+claims/goal while selecting a new one. Empty retrieval or unavailable embeddings
+never changes typed message validation; `literature_error` records failures.
+
+Discussion rows may have `citations` and `sources_note`; hypothesis rows may
+have `sources`. A source includes `number` (S1 etc.), `file`, `page` or `section`,
+`chunk_id`, `snippet`, file `sha256`, and extracted-text character spans. The
+snapshot preserves provenance across re-indexing/removal; the local source
+number is scoped to its originating prompt. Old rows without these fields
+remain valid. These are harness provenance fields, not model assertions of
+support or a change to scientific decision rules. No message schema version
+change is required.
