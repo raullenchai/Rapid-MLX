@@ -45,7 +45,7 @@ import time
 import wave
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 def _start_parent_watchdog():
@@ -395,6 +395,12 @@ class _ActiveChatRequests:
 
 ACTIVE_CHAT_REQUESTS = _ActiveChatRequests()
 
+# Opt-in menu-card fixture. Protect deletion and snapshotting across HTTP threads.
+RESOURCE_LOCK = threading.Lock()
+RESOURCE_EVICTED = False
+RESOURCE_SECONDARY = "fake-evictable-alias"
+
+
 # The engine's own, actionable rejection reason. Kept out of the snapshot so a
 # stock persona never changes residency shape; a flow opts in with
 # ``FAKE_REJECT_IMAGE_LOAD=1`` to exercise the rejected non-404/405 load path.
@@ -685,6 +691,11 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             })
             return
+        if path == "/v1/status" and _setting("FAKE_RESOURCE_CARD") == "1":
+            active = ACTIVE_CHAT_REQUESTS.value()
+            self._json(200, {"num_running": active, "num_waiting": 0,
+                             "generation_tps": 42.5 if active else 0})
+            return
         if path == "/v1/models/residency":
             self._json(200, self._residency_snapshot())
             return
@@ -713,11 +724,54 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": "not_found"})
 
+    def do_DELETE(self):
+        global RESOURCE_EVICTED
+        path = unquote(urlsplit(self.path).path)
+        _event("model_delete", model=path.removeprefix("/v1/models/"))
+        if _setting("FAKE_RESOURCE_CARD") != "1":
+            self._json(404, {"error": "not_found"})
+            return
+        with RESOURCE_LOCK:
+            if path == "/v1/models/" + RESOURCE_SECONDARY and not RESOURCE_EVICTED:
+                RESOURCE_EVICTED = True
+                self.send_response(204)
+                self.end_headers()
+                return
+        self._json(409, {"error": "not_evictable"})
+
+    def _resource_snapshot(self):
+        with RESOURCE_LOCK:
+            evicted = RESOURCE_EVICTED
+        models = [{
+            "id": SERVED_ALIAS, "model_path": "fake-org/fake-repo",
+            "aliases": [SERVED_ALIAS], "modality": "text", "state": "resident",
+            "pinned": True, "primary": True,
+            "active_requests": ACTIVE_CHAT_REQUESTS.value(),
+            "estimated_bytes": 2_000_000_000, "measured_bytes": 2_500_000_000,
+            "idle_seconds": 0,
+        }]
+        if not evicted:
+            models.append({
+                "id": RESOURCE_SECONDARY, "model_path": "fake-org/evictable-repo",
+                "aliases": [RESOURCE_SECONDARY], "modality": "text", "state": "resident",
+                "pinned": False, "primary": False, "active_requests": 0,
+                "estimated_bytes": 1_000_000_000, "measured_bytes": 900_000_000,
+                "idle_seconds": 30,
+            })
+        used = sum(max(m["estimated_bytes"], m["measured_bytes"]) for m in models)
+        return {"models": models, "audio_lanes": [], "memory_used_bytes": used,
+                "memory_limit_bytes": 8_000_000_000,
+                "memory_available_bytes": 8_000_000_000 - used,
+                "idle_ttl_seconds": 1800, "loads_total": 2,
+                "evictions_total": int(evicted)}
+
     def _residency_snapshot(self):
         """``GET /v1/models/residency`` — the served alias as the sole
         resident model. This is what makes ``ServerManager`` take the
         in-process ``/v1/models/load`` path when the user asks for a second
         model while the sidecar is already up (#1838)."""
+        if _setting("FAKE_RESOURCE_CARD") == "1":
+            return self._resource_snapshot()
         if not SERVED_ALIAS:
             return {
                 "memory_limit_bytes": 0,

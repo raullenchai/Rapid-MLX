@@ -62,7 +62,7 @@ Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 Flows: fresh-install, cached-quickstart, cached-uncataloged-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, chat-depth, launch-integrations,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, dictation-rc2-upgrade, audio-readiness, all
+       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, menubar-resource-card, dictation, dictation-rc2-upgrade, audio-readiness, all
 
 Most named regression flows drive the app through the accessibility API alone.
 The preflight contract tests keep the exact allowlist in sync with
@@ -525,7 +525,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         fresh-install|cached-quickstart|cached-uncataloged-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|chat-depth|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
-        model-switch-active-request|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        model-switch-active-request|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected|menubar-resource-card) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -5774,6 +5774,59 @@ wait_picker_dismissed() {
     return 1
 }
 
+# Poll the open tray itself: ordinary see_main intentionally excludes extras.
+wait_resource_card() {
+    local state="$1" destination="$2" physical_bytes="$3" i
+    for ((i=0; i<80; i++)); do
+        if "$AX_DRIVER" dump-status-menu "$APP_PID" > "$destination" \
+            && python3 "$ROOT/scripts/gui-resource-card.py" "$destination" "$state" "$physical_bytes" \
+                2> "$OUT/card-assertion.txt"; then
+            # Standard normalized AX snapshot, uploaded beside the raw tree.
+            # A committed comparison can follow a reviewed GUI capture.
+            python3 "$BASELINE_TOOL" normalize --scrub "$FAKE_ALIAS" "$destination" \
+                > "$OUT/menubar-resource-card.$state.observed.txt"
+            return
+        fi
+        sleep 0.25
+    done
+    cat "$OUT/card-assertion.txt" >&2
+    die "menu resource card did not settle: $state"
+}
+
+flow_menubar_resource_card() {
+    log "flow: menubar-resource-card"
+    start_persona menubar-resource-card FAKE_RESOURCE_CARD=1 \
+        FAKE_INTER_TOKEN_SLEEP_S=0.02 FAKE_CONTENT_REPEAT=1000
+    local physical_bytes
+    physical_bytes="$(sysctl -n hw.memsize)"
+    "$AX_DRIVER" status-menu "$APP_PID" > "$OUT/menu-idle-open.json"
+    wait_resource_card idle "$OUT/card-idle.json" "$physical_bytes"
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/menu-idle-close.json"
+
+    dismiss_first_run
+    start_fixture_chat_model
+    send_prompt "Keep generating while I inspect memory" "resource-generation"
+    "$AX_DRIVER" status-menu "$APP_PID" > "$OUT/menu-active-open.json"
+    wait_resource_card two "$OUT/card-two.json" "$physical_bytes"
+    # A single action, deliberately without the generic press retry: replaying
+    # an unload would mask a duplicate DELETE. Endpoint evidence is independent
+    # of the AX row disappearing.
+    "$AX_DRIVER" press-status-menu "$APP_PID" \
+        MenuBar.Resources.Unload.fake-evictable-alias > "$OUT/card-unload.json"
+    jq -e '.success == true' "$OUT/card-unload.json" >/dev/null
+    wait_resource_card one "$OUT/card-one.json" "$physical_bytes"
+    # Observe another complete polling interval to catch duplicate actions.
+    sleep 3.2
+    wait_resource_card one "$OUT/card-one-refreshed.json" "$physical_bytes"
+    jq -e -s '[.[] | select(.event == "model_delete")] as $deletes
+        | ($deletes | length) == 1
+          and $deletes[0].model == "fake-evictable-alias"' \
+        "$OUT/fake-events.jsonl" > "$OUT/delete-once.json" \
+        || die "resource card did not send exactly one evictable-model DELETE"
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/menu-active-close.json"
+    cleanup_persona
+}
+
 flow_model_switch_active_request() {
     log "flow: model-switch-active-request"
     # The default response has 19 chunks: 100 repeats at 20 ms provide at
@@ -6171,6 +6224,7 @@ case "$FLOW" in
     browse-all-destination) run_journey browse-all-destination flow_browse_all_destination ;;
     chat-document-attachment) run_journey chat-document-attachment flow_chat_document_attachment ;;
     chat-multimodal-attachments) run_journey chat-multimodal-attachments flow_chat_multimodal_attachments ;;
+    menubar-resource-card) run_journey menubar-resource-card flow_menubar_resource_card ;;
     image-generation) run_journey image-generation flow_image_generation ;;
     dictation) run_journey dictation flow_dictation ;;
     dictation-rc2-upgrade) run_journey dictation-rc2-upgrade flow_dictation_rc2_upgrade ;;
@@ -6200,6 +6254,7 @@ case "$FLOW" in
         run_journey browse-all-destination flow_browse_all_destination
         run_journey chat-document-attachment flow_chat_document_attachment
         run_journey chat-multimodal-attachments flow_chat_multimodal_attachments
+        run_journey menubar-resource-card flow_menubar_resource_card
         run_journey image-generation flow_image_generation
         run_journey dictation flow_dictation
         run_journey audio-readiness flow_audio_readiness
