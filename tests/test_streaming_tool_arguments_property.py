@@ -974,6 +974,12 @@ CANONICAL_WIRES = {
         + _ARGS
         + "<end_of_tool_call:opensource>"
     ),
+    "hy_v4": (
+        "<tool_calls:opensource><tool_call:opensource>lookup"
+        "<arg_key:opensource>text</arg_key:opensource>"
+        "<arg_value:opensource>hello</arg_value:opensource>"
+        "</tool_call:opensource></tool_calls:opensource>"
+    ),
     "k2_horizon": (
         "<ifm|tool_calls><ifm|tool_call>lookup"
         "<ifm|arg_key>text</ifm|arg_key>"

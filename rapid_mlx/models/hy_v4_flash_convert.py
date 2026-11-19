@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..model_load_errors import typed_mlx_load_boundaries
 from .hy_v4_flash_config import checkpoint_key, dequantize_fp8, quantization_policy
 
 
@@ -89,7 +90,8 @@ def convert_fp8(source, destination, bits, group_size):
             else:
                 result[key] = value
                 mx.eval(value)
-    model.load_weights(list(result.items()), strict=True)
+    with typed_mlx_load_boundaries():
+        model.load_weights(list(result.items()), strict=True)
     model.eval()
     tokenizer = load_tokenizer(source)
     save(destination, source, model, tokenizer, config)

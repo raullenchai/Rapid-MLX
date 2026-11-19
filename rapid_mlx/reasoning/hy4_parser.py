@@ -9,7 +9,6 @@ from typing import Any, TypedDict
 
 import regex as re
 
-from ..tool_parsers.hy_v4_tool_parser import partial_tag_overlap
 from .base import DeltaMessage, ReasoningParser
 
 
@@ -270,6 +269,8 @@ class HyV4ReasoningParser(ReasoningParser):
         if not self._extractor.thinking:
             return DeltaMessage(content=delta_text) if delta_text else None
         tags = (self._extractor.start_token, self._extractor.end_token)
+        from ..tool_parsers.hy_v4_tool_parser import partial_tag_overlap
+
         hold = max(partial_tag_overlap(current_text, tag) for tag in tags)
         visible = current_text[: len(current_text) - hold] if hold else current_text
         delta = visible[len(self._visible) :]

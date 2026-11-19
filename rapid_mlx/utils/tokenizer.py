@@ -696,10 +696,14 @@ def _register_vendored_archs() -> None:
     import sys
 
     if "mlx_lm.models.hy_v4_flash" not in sys.modules:
-        from ..models import hy_v4_flash
+        try:
+            from ..models import hy_v4_flash
 
-        sys.modules["mlx_lm.models.hy_v4_flash"] = hy_v4_flash
-    _VENDORED_MODEL_TYPES.add("hy_v4_flash")
+            sys.modules.setdefault("mlx_lm.models.hy_v4_flash", hy_v4_flash)
+        except Exception as e:
+            logger.debug(f"hy_v4_flash vendored module unavailable: {e}")
+        else:
+            _VENDORED_MODEL_TYPES.add("hy_v4_flash")
 
     if "mlx_lm.models.deepseek_v4" not in sys.modules:
         try:
