@@ -329,8 +329,10 @@ def test_allocator_error_preserves_release_accounting(monkeypatch):
     sched = scheduler("trie")
     populate(sched)
     monkeypatch.setattr(
-        "rapid_mlx.scheduler.mx.clear_cache",
-        Mock(side_effect=RuntimeError("allocator failure")),
+        "rapid_mlx.scheduler.mx",
+        SimpleNamespace(
+            clear_cache=Mock(side_effect=RuntimeError("allocator failure"))
+        ),
     )
     with pytest.raises(RuntimeError, match="allocator failure"):
         sched.retain_prefix_cache(1)
