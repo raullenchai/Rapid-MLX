@@ -620,6 +620,83 @@ def test_empty_malformed_call_does_not_invent_a_function():
     assert stream_tools(text, list(text)) == ("Before.After.", [])
 
 
+@pytest.mark.parametrize(
+    "body,properties,expected",
+    [
+        pytest.param(
+            "<function=run><parameter=>ignored</parameter>"
+            "<parameter=count>2</parameter></function>",
+            # An empty property name is valid in JSON Schema, but the wire
+            # opener still requires a name. Its numeric type withholds string
+            # deltas until the malformed parameter can be rejected.
+            {**PROPERTIES, "": {"type": "integer"}},
+            [("run", {"count": 2})],
+            id="empty-parameter-name-before-declared-sibling",
+        ),
+        pytest.param(
+            "<function=run><parameter=text>before</parameter>"
+            "<parameter=undeclared>after</parameter></function>",
+            PROPERTIES,
+            [("run", {"text": "before</parameter><parameter=undeclared>after"})],
+            id="undeclared-sibling-is-literal-value-text",
+        ),
+        pytest.param(
+            "<function=><function=run></function>",
+            PROPERTIES,
+            [],
+            id="nested-header-in-empty-function-does-not-invent-a-call",
+        ),
+    ],
+)
+def test_malformed_and_literal_headers_preserve_streaming_parity(
+    body, properties, expected
+):
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "parameters": {"type": "object", "properties": properties},
+                },
+            }
+        ]
+    }
+    # A subsequent valid call verifies that rejected/literal headers do not
+    # consume the next call or leak marker text into surrounding prose.
+    text = "Before.<tool_call>" + body + "</tool_call>" + call({"count": "42"})
+    text += "After."
+    complete = RaonToolParser().extract_tool_calls(text, request)
+    assert complete.content == "Before.After."
+    assert [
+        (tc["name"], json.loads(tc["arguments"])) for tc in complete.tool_calls
+    ] == expected + [("run", {"count": 42})]
+
+    for chunks in [[text], list(text)] + [
+        [text[:offset], text[offset:]] for offset in range(len(text) + 1)
+    ]:
+        parser = RaonToolParser()
+        deltas = [
+            parser.extract_tool_calls_streaming("", "", chunk, request=request)
+            for chunk in chunks
+        ]
+        deltas.append(parser.finalize_legacy_raw_stream(text, request))
+        assert "".join((d or {}).get("content", "") for d in deltas) == (
+            complete.content
+        ), chunks
+        calls = {}
+        for delta in deltas:
+            for tc in (delta or {}).get("tool_calls", []):
+                current = calls.setdefault(tc["index"], {"name": "", "arguments": ""})
+                for key in current:
+                    current[key] += tc.get("function", {}).get(key, "")
+        assert list(calls.values()) == [
+            {"name": tc["name"], "arguments": tc["arguments"]}
+            for tc in complete.tool_calls
+        ], chunks
+        assert parser.finish_streaming() is None
+
+
 class TokenFixture:
     """Small detokenizer with real marker IDs and controllable decoded gaps."""
 
