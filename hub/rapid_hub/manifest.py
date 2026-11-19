@@ -14,6 +14,8 @@ def load(path):
                 raise ValueError(f"{key} must be nonempty text")
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value["id"]):
             raise ValueError("invalid plugin id")
+        if value["id"] == "hub":
+            raise ValueError("plugin id hub is reserved for the dashboard hostname")
         if value["hub_api"] not in ("^1", "1", "1.0"):
             raise ValueError("incompatible hub_api; supported major is 1")
         command = value["run"]["command"]
@@ -40,9 +42,10 @@ def load(path):
             for r in requires
         ):
             raise ValueError("unknown required capability")
-        permissions = value["permissions"]
-        if type(permissions["network"]) is not bool or permissions["files"] != "plugin":
-            raise ValueError("permissions requires network boolean and files=plugin")
+        if "permissions" in value:
+            raise ValueError(
+                "permissions is unsupported; plugins are trusted local code"
+            )
         return dict(value, directory=str(path.parent.resolve()))
     except (KeyError, TypeError, ValueError, OSError) as exc:
         raise ValueError(f"{path}: {exc}") from exc

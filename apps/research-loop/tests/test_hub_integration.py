@@ -32,8 +32,8 @@ def test_model_discovery(hub_env, monkeypatch):
         },
     )
     models, endpoint, model = hub_client.discover()
-    assert models == {"chat-model": "http://hub/hub/v1/engines/q35/v1"}
-    assert endpoint == "http://hub/hub/v1/engines/embed/v1" and model == "embed-model"
+    assert models == {"q35/chat-model": "http://hub/hub/v1"}
+    assert endpoint == "http://hub/hub/v1" and model == "embed/embed-model"
 
 
 def test_subprocess_inherits_scoped_token_project_and_priority(hub_env, tmp_path):
@@ -117,21 +117,188 @@ def test_job_cancel_uses_stop_button_files(hub_env, monkeypatch, tmp_path):
     monkeypatch.setattr(hub_client, "call", call)
 
     class Process:
+        def terminate(self):
+            pass
+
+        def wait(self, timeout):
+            return 0
+
         def poll(self):
             return 0 if (run / "STOP").exists() else None
 
     hub_client.watch_run(tmp_path, run, Process())
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
-        if any(body and body.get("state") == "done" for _, body, _ in updates):
+        if any(body and body.get("state") == "cancelled" for _, body, _ in updates):
             break
         time.sleep(0.02)
     assert (run / "STOP").exists() and not (run / "PAUSE").exists()
     assert updates[0][1]["state"] == "running"
-    assert any(body and body.get("state") == "done" for _, body, _ in updates)
+    assert any(body and body.get("state") == "cancelled" for _, body, _ in updates)
 
 
 def test_standalone_headers_unchanged(monkeypatch):
     monkeypatch.delenv("RAPID_HUB_URL", raising=False)
     assert hub_client.headers() == {"Content-Type": "application/json"}
     assert hub_client.subprocess_env(Path("grokking")) == dict(os.environ)
+
+
+def test_hub_ui_session_required_pages_and_api(hub_env, monkeypatch, tmp_path):
+    import threading
+
+    import httpx
+    import server
+
+    monkeypatch.setenv("RAPID_PLUGIN_ID", "research-loop")
+    redeemed = []
+
+    def call(path, body=None, method=None):
+        assert path == "ui-codes/redeem" and method == "POST"
+        if body["code"] != "valid" or redeemed:
+            raise ValueError("consumed")
+        redeemed.append(body["code"])
+        return {"authenticated": True}
+
+    monkeypatch.setattr(hub_client, "call", call)
+    app = server.App(
+        ("127.0.0.1", 0), "http://unused/v1", "m", 1, projects=tmp_path / "projects"
+    )
+    app.hub_mode, app.hub_sessions = True, set()
+    worker = threading.Thread(target=app.serve_forever, daemon=True)
+    worker.start()
+    url = f"http://127.0.0.1:{app.server_port}"
+    try:
+        with httpx.Client(
+            base_url=url,
+            trust_env=False,
+            headers={"Host": f"research-loop.localhost:{app.server_port}"},
+        ) as c:
+            assert c.get("/healthz").status_code == 200
+            assert c.get("/").status_code == 401
+            assert c.get("/api/projects").status_code == 401
+            assert c.post("/api/projects", json={}).status_code == 401
+            response = c.get("/hub-auth?code=valid")
+            assert response.status_code == 303 and response.headers["location"] == "/"
+            assert response.headers["referrer-policy"] == "no-referrer"
+            cookie = response.headers["set-cookie"]
+            assert (
+                "Domain=" not in cookie
+                and "HttpOnly" in cookie
+                and "SameSite=Strict" in cookie
+            )
+            assert (
+                c.get("/", headers={"Cookie": cookie.split(";")[0]}).status_code == 200
+            )
+            assert (
+                c.get(
+                    "/api/projects", headers={"Cookie": cookie.split(";")[0]}
+                ).status_code
+                == 200
+            )
+            assert c.get("/hub-auth?code=valid").status_code == 401
+            assert (
+                c.get(
+                    "/",
+                    headers={"Host": "hub.localhost", "Cookie": cookie.split(";")[0]},
+                ).status_code
+                == 403
+            )
+    finally:
+        app.shutdown()
+        app.server_close()
+        worker.join(3)
+
+
+def test_cancel_ack_terminates_real_long_experiment_group(
+    hub_env, monkeypatch, tmp_path
+):
+    """Run the actual loop SIGTERM handler while a seed and grandchild sleep."""
+    import signal
+
+    project = tmp_path / "long"
+    project.mkdir()
+    (project / "task.json").write_text(
+        json.dumps(
+            {
+                "title": "Long",
+                "editable": "long.py",
+                "metric": "score",
+                "direction": "max",
+                "noise": 0,
+                "seeds": [0],
+                "fixed": [],
+                "timeout_s": 120,
+            }
+        )
+    )
+    (project / "program.md").write_text("Long running cancellation fixture")
+    pid_file = tmp_path / "experiment-pids"
+    (project / "long.py").write_text(
+        "import subprocess,sys,time,os\nfrom pathlib import Path\n"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)'])\n"
+        f"Path({str(pid_file)!r}).write_text(str(os.getpid())+' '+str(p.pid))\n"
+        "time.sleep(120)\n"
+    )
+    run = project / "runs/test"
+    run.mkdir(parents=True)
+    root = Path(hub_client.__file__).parent
+    updates = []
+
+    def call(path, body=None, method=None):
+        updates.append((path, body, method))
+        return {"state": "cancel_requested"}
+
+    monkeypatch.setattr(hub_client, "call", call)
+    with (run / "loop.log").open("w") as log:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(root / "loop.py"),
+                str(project),
+                str(run),
+                "--rounds",
+                "1",
+            ],
+            stdout=log,
+            stderr=log,
+            env=hub_client.subprocess_env(project),
+        )
+    pids = []
+    try:
+        deadline = time.monotonic() + 8
+        while (
+            not pid_file.exists()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        assert pid_file.exists(), (run / "loop.log").read_text()
+        pids = [int(p) for p in pid_file.read_text().split()]
+        hub_client.watch_run(project, run, process)
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and not any(
+            b and b.get("state") == "cancelled" for _, b, _ in updates
+        ):
+            time.sleep(0.02)
+        states = [b["state"] for _, b, _ in updates if b and "state" in b]
+        assert states == ["running", "cancelling", "cancelled"]
+        assert process.poll() is not None
+        for pid in pids:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                pytest.fail(f"Experiment descendant {pid} survived cancellation")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

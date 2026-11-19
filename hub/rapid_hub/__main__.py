@@ -22,13 +22,23 @@ def main():
     up.add_argument("--data-dir", type=Path, default=Path("~/.rapid-hub"))
     up.add_argument("--plugins-dir", default="apps")
     up.add_argument("--background-concurrency", type=int, default=1)
+    up.add_argument("--journal-max-mb", type=float, default=500)
+    up.add_argument("--admission", choices=("auto", "hub", "engine"), default="auto")
+    up.add_argument("--queue-max-length", type=int, default=32)
+    up.add_argument("--queue-max-wait", type=float, default=120)
+    up.add_argument("--job-stale-seconds", type=float, default=600)
+    up.add_argument("--discovery-file", type=Path)
     status = commands.add_parser("status")
     status.add_argument("--data-dir", type=Path, default=Path("~/.rapid-hub"))
     args = parser.parse_args()
     if args.command == "status":
         directory = args.data_dir.expanduser()
         try:
-            url = json.loads((directory / "connection.json").read_text())["url"]
+            connection = json.loads((directory / "connection.json").read_text())
+            url = connection["url"]
+            instance = httpx.get(url + "/hub/v1/instance", trust_env=False).json()
+            if instance["instance_id"] != connection["instance_id"]:
+                raise ValueError("Stale discovery file")
             response = httpx.get(
                 url + "/hub/v1/status",
                 headers={
@@ -70,8 +80,17 @@ def main():
         args.host,
         args.port,
         args.background_concurrency,
+        journal_max_mb=args.journal_max_mb,
+        admission=args.admission,
+        queue_max_length=args.queue_max_length,
+        queue_max_wait=args.queue_max_wait,
+        job_stale_seconds=args.job_stale_seconds,
+        discovery_file=args.discovery_file,
     )
-    print(f"Rapid Hub login (one use): {hub.url}/login?nonce={hub.login}", flush=True)
+    print(
+        f"Rapid Hub login (one use): {hub.dashboard_url}/login?nonce={hub.login}",
+        flush=True,
+    )
     # Access logging is disabled so the login nonce never enters server logs.
     # Keep process supervision on the stdlib event loop used by the tests.
     uvicorn.run(

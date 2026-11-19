@@ -1,54 +1,187 @@
-# Rapid Hub (MVP)
+# Rapid Hub MVP
 
-Rapid Hub is a separate local process that supervises trusted apps and gives them
-an authenticated model gateway, a private model-call journal, and a small jobs
-registry. Engines remain independent OpenAI-compatible services. Hub never
-imports the inference engine or MLX and never manages engine processes.
+Rapid Hub is a local **services layer**: any language can call its HTTP APIs.
+Models, admission, journaling, jobs, discovery and events are independent of the
+minimal plugin supervisor. Engines stay separate; Hub neither imports MLX nor
+starts or stops engines. Direct engine clients continue to work.
 
 ## Run
 
-Requires Python 3.12+, FastAPI, uvicorn, and httpx. `hub/pyproject.toml` defines the
-independent `rapid-hub` distribution and console script. With dependencies already
-available, run from the repository root without installing anything:
+Requires Python 3.12+, FastAPI, uvicorn and httpx. The independent distribution
+is defined in `hub/pyproject.toml` with the `rapid-hub` console script. From this
+checkout with the supplied environment:
 
 ```sh
 PYTHONPATH=hub /private/tmp/rapid-mlx-grokdemo/env/bin/python -m rapid_hub up \
   --engine q35=http://127.0.0.1:8482/v1 \
   --engine embed=http://127.0.0.1:8483/v1 \
   --host 127.0.0.1 --port 4800 \
-  --data-dir /private/tmp/rapid-mlx-hub/data --plugins-dir apps
+  --data-dir /private/tmp/rapid-mlx-hub/data --plugins-dir apps \
+  --discovery-file discovery.json
 
 PYTHONPATH=hub /private/tmp/rapid-mlx-grokdemo/env/bin/python -m rapid_hub status \
   --data-dir /private/tmp/rapid-mlx-hub/data
 ```
 
-After installing the distribution, the equivalent command starts with
-`rapid-hub up`. The default data directory is `~/.rapid-hub`. Engine names must be
-unique; URLs end in `/v1`. The first advertised chat-capable model is the default.
-No inference requests are made to detect capabilities: `text`/`chat` map to chat,
-`embedding`/`embeddings` map to embeddings; missing capability information stays
-unknown. `/health` supplies the engine's explicit `ready` field.
+After installation use `rapid-hub up`. Binding is restricted to `127.0.0.1`.
+Default data dir: `~/.rapid-hub`. Engine URLs end in `/v1`, with no credentials.
+The admin token is written mode 0600 to `<data-dir>/admin-token`, never printed
+or placed in URLs. Use it as `Authorization: Bearer <token>` for service clients.
+There is no client registration flow yet. Common secret environment variables
+are removed from plugin environments; engine credentials are never forwarded.
 
-Use the printed single-use login link to open the admin home page. It exchanges
-a nonce for an HttpOnly, SameSite=Strict session cookie and redirects to `/`.
-The random admin bearer credential is stored in `admin-token` with mode 0600;
-it is never included in the link. Access logging is disabled. Ctrl-C/SIGTERM stops
-Hub and plugin groups. A separate plugin guardian handles abrupt Hub parent death.
-Engine processes and direct `/v1` clients are unaffected.
+## Browser sessions
 
-## Plugin manifest
+Open the printed single-use login link at **http://hub.localhost:4800**. It sets
+a host-only HttpOnly SameSite=Strict cookie, then redirects to `/`. Dashboard
+routes reject any other hostname, including `127.0.0.1`. Hub cookies are accepted
+only on `hub.localhost`, even if manually supplied to another host.
 
-Discovery reads exactly `<plugins-dir>/*/rapid-plugin.toml`. All valid manifests
-are enabled in this MVP. Invalid manifests are reported in status without taking
-down Hub. A missing required capability blocks the plugin; an optional capability
-ending in `?` does not block startup. Restart is explicit after a blocked startup.
+The dashboard's **Open** link mints a random one-time code, valid for 60 seconds,
+and redirects to `http://<plugin-id>.localhost:<port>/hub-auth?code=…`. The plugin
+redeems it server-to-server with its current plugin token at
+`POST /hub/v1/ui-codes/redeem {"code":"…"}`. Codes are bound to that token and
+plugin; wrong-plugin, reused, expired and pre-restart codes fail. The plugin sets
+its own host-only HttpOnly SameSite=Strict cookie and redirects to `/`, stripping
+the code. Responses use `Referrer-Policy: no-referrer`. Research Loop does not
+log Hub-mode access URLs. Pages and API require its session; `/healthz` is public.
+
+Browsers resolve `*.localhost` to loopback. Separate hostnames keep Hub's cookie
+out of plugin requests. Origin and Host checks reject cross-origin browser calls.
+Native clients use the loopback service URL and a bearer token.
+
+## Model and admission services
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /hub/v1/models` | Catalog rows retain engine, original model id, reported capabilities and readiness; duplicates remain separate |
+| `POST /hub/v1/chat/completions` | Route by `model` |
+| `POST /hub/v1/embeddings` | Route by `model` |
+| `POST /hub/v1/rerank` | Route by `model` |
+| `GET,POST /hub/v1/engines/{engine}/v1/{path}` | Explicit engine passthrough |
+
+Use `engine/model` to select an engine explicitly, or a unique bare model id.
+Ambiguous bare ids return **409** with qualified candidates; nothing is silently
+merged. Qualified ids are replaced with the engine's original id in the forwarded
+JSON. Unknown models return 404. Previously seen models remain visible as
+unavailable during an engine outage. Upstream status/body, `Retry-After`, and SSE
+chunks (including tool-call deltas) pass through; failed connections return 503.
+Requests are never replayed. Capabilities come only from engine reports:
+`chat`/`text`/`completions`, `embedding`/`embeddings`, and `rerank`. Unknown stays
+unknown; `/health` supplies `ready`. No inference capability probes are sent.
+
+Hub always supplies `X-Rapid-Priority`, `X-Rapid-Client`, `X-Rapid-Project`, and
+`X-Request-Id`, plus the compatibility `X-Rapid-Plugin`. Client/plugin identity
+comes from the token, request id is generated by Hub, and spoofed identity/id
+headers are overwritten. Project is the caller's bounded project namespace.
+Priority defaults to `interactive`; plugin requests may select `background`.
+Authorization and arbitrary headers are never forwarded or journaled.
+
+`--admission auto|hub|engine` defaults to `auto`: Hub queues background requests
+only when the engine does **not** advertise `admission` in `/health` or
+`/v1/models` capabilities. `hub` forces the local queue; `engine` delegates.
+`--background-concurrency` defaults to 1 per engine. FIFO queue length defaults
+to 32 (`--queue-max-length`); full returns 429 + Retry-After. Wait defaults to
+120 seconds (`--queue-max-wait`); expiry returns 503 + Retry-After. Disconnects
+remove queued calls, close streaming upstreams and release permits. Permits last
+until streams end. Interactive calls bypass the background gate; this cannot
+preempt work already running on the engine. Engine 429/503 and Retry-After are
+preserved regardless of admission mode.
+
+## Journal service and privacy
+
+**Metadata only by default**, with these fields: `ts`, `request_id`, `client`,
+`plugin`, `project`, `job_id`, `engine`, `model`, `path`, `priority`, `status`,
+`latency_ms`, `queue_wait_ms`, `usage`, `request_bytes`, `response_bytes`,
+`request_sha256`, `cancelled`. No Authorization or arbitrary header values are
+recorded. SHA-256 and byte count describe the body forwarded to the engine.
+
+Enable capture explicitly with:
+
+```http
+PUT /hub/v1/projects/grokking/capture
+Authorization: Bearer <plugin-or-admin-token>
+Content-Type: application/json
+
+{"payload":true,"ttl_hours":24}
+```
+
+Projects are namespaced by plugin/client identity. A plugin controls only its
+own namespace; it cannot set a different `plugin` in this request. Admin may
+select a `plugin`, or omit it to apply a project policy across namespaces.
+`payload:false` disables future capture. Policies persist in private
+`capture.json`. TTL defaults to 24 hours (maximum 168); payload expires per
+record, independently of the project's future policy. Captured `request` and
+`response` fields are redacted recursively for keys resembling api_key, token,
+password, secret or authorization, then bounded to **64 KiB per field**. Captured
+fields are JSON text (possibly truncated); SSE captures contain parsed data
+objects. Unparseable fragments are omitted rather than retaining unredactable
+text. Secret-looking values inside ordinary prose are not detectable: capture
+is an explicit opt-in to retaining model-visible text.
+
+Mode-0600 JSONL files live in `journal/<identity>/<UTC-date>.jsonl`. A metadata
+record is attempted before forwarding and completion appends with the same
+request id; reads fold to the latest record. A crash can leave status null.
+Metadata expires after 7 days; payload expires at its own TTL. Startup, hourly
+maintenance and reads/writes prune expired data. `--journal-max-mb` defaults to
+500; oldest daily files are evicted to enforce the total journal cap (so retention
+is a maximum, not a minimum). Oversized records are dropped. Journal write
+failures never fail a model request; admin status exposes `dropped_records` for
+the current Hub process. Persistence is synchronous, without fsync durability.
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /hub/v1/journal?plugin=&project=&limit=50` | Own entries for plugins; admin can inspect/filter all |
+| `DELETE /hub/v1/journal?project=` | Delete matching own records, or all matching identities as admin |
+| `PUT /hub/v1/projects/{project}/capture` | Configure own namespace, or admin project policy |
+
+## Jobs, discovery and events
+
+`POST /hub/v1/jobs` creates `{id,title,project,state:"running",progress}`.
+`PATCH /hub/v1/jobs/{id}` updates it; `GET /hub/v1/jobs` and
+`GET /hub/v1/jobs/{id}` return own jobs (all for admin). Admin cancellation uses
+`POST /hub/v1/jobs/{id}/cancel`. Cancellation requires acknowledgement:
+
+```text
+running → cancel_requested → cancelling → cancelled | failed | done
+```
+
+Plugins acknowledge with `state:"cancelling"`, then stop their work and report
+its outcome. A terminal update before acknowledgement returns 409. Ordinary
+running jobs may finish done/failed. Heartbeats update `updated_at`; after 10
+minutes without one (`--job-stale-seconds`, default 600), active jobs show
+`interrupted`. Active jobs from a previous Hub instance become interrupted on
+startup. Jobs persist by private atomic replacement; no automatic adoption.
+
+On startup Hub atomically writes:
+`~/Library/Application Support/Rapid Hub/connection.json`, containing only
+`{url,instance_id,pid,api_versions,capabilities,started_at}` — **no token**.
+`--discovery-file <relative-path>` instead writes under the data directory (use
+this for tests). A private data-dir `connection.json` also supports `status`.
+Clean shutdown removes files belonging to this instance. Readers **must** fetch
+`GET /hub/v1/instance` and compare instance_id before trusting a discovery file;
+a crash may leave a stale file. This endpoint is public and contains no secrets.
+
+Authenticated `GET /hub/v1/events` is SSE: `instance`, `engine_readiness`,
+`catalog`, `plugin_state`, and `job_state`. Engines are polled every 5 seconds;
+readiness/catalog diffs emit events. Job updates emit immediately; plugins emit
+startup/readiness/failure transitions and are also polled. Plugin tokens see only
+their own job events. Slow subscribers disconnect after bounded buffering.
+Events are live, with no history/replay; reconnect and fetch current snapshots.
+
+## Minimal plugin layer
+
+Discovery reads `<plugins-dir>/*/rapid-plugin.toml`. Invalid manifests are listed
+in admin status; missing mandatory capabilities block startup. Optional
+requirements end in `?`. No unenforced `permissions` field is accepted. The id `hub` is reserved for the
+dashboard hostname.
 
 ```toml
-id = "research-loop"                # lowercase slug; unique
+id = "research-loop"
 name = "Research Loop"
 version = "1.0.0"
 description = "Project research workbench"
-hub_api = "^1"                      # supported major: 1
+hub_api = "^1"
 requires = ["models.chat", "models.embeddings?"]
 
 [run]
@@ -56,115 +189,52 @@ command = ["{python}", "{plugin_dir}/server.py", "--hub"]
 
 [ui]
 kind = "web"
-health = "/healthz"                 # cheap GET returning 200
-
-[permissions]
-network = true
-files = "plugin"
+health = "/healthz"
 ```
 
-Commands are argv arrays, never shell commands. The only substitutions are
-`{python}` (Hub's interpreter) and `{plugin_dir}` (absolute plugin directory).
-Processes receive `RAPID_HUB_URL`, a scoped `RAPID_HUB_TOKEN`, `RAPID_PLUGIN_ID`,
-`RAPID_PLUGIN_HOST`, `RAPID_PLUGIN_PORT`, and `RAPID_PLUGIN_DATA_DIR`. Each plugin
-binds its own loopback port and serves its own UI origin. Hub serves no plugin JS.
-The free-port reservation has a bind race; a collision enters the restart policy.
+Commands are argv, with only `{python}` and `{plugin_dir}` substitutions.
+Each process receives `RAPID_HUB_URL`, its own `RAPID_HUB_TOKEN`, `RAPID_PLUGIN_ID`,
+`RAPID_PLUGIN_HOST`, `RAPID_PLUGIN_PORT` and `RAPID_PLUGIN_DATA_DIR`. Readiness has
+20 seconds; failures retry five times with bounded exponential backoff. Every
+launch rotates the plugin token; old credentials are rejected immediately on
+restart. Admin `POST /hub/v1/plugins/{id}/restart` resets the retry budget.
+Data/logs live under `plugins/<id>/data` and `plugins/<id>/logs`. The free-port
+reservation has a bind race; collisions enter the restart policy.
 
-Readiness is polled for up to 20 seconds. Failed processes/readiness checks have
-five restart attempts with 1, 2, 4, 8, 16 second delays, then become `failed`.
-The restart button resets the attempt budget. Status includes the supervised
-server PID, guardian PID, state, port, and last log lines. Logs live in
-`plugins/<id>/logs/{stdout,stderr}.log`; app data lives in `plugins/<id>/data`.
-
-## Shared services
-
-All `/hub/v1` endpoints require a bearer credential (the home page also uses its
-admin cookie). Plugin credentials can use models and manage their own jobs and
-journal entries. Admin credentials can inspect all plugins, restart them, and
-request job cancellation. Cross-origin browser requests and unexpected Host
-headers are rejected; credentials are never forwarded to engines.
-
-| Endpoint | Behavior |
-| --- | --- |
-| `GET /hub/v1/models` | Merged model catalog, engine readiness, default chat model |
-| `GET /hub/v1/status` | Admin engine/plugin states and discovery errors |
-| `GET,POST /hub/v1/engines/{engine}/v1/{path}` | OpenAI passthrough; preserves status, Retry-After and SSE delivery |
-| `GET /hub/v1/journal?plugin=&project=&limit=50` | Own entries for plugin tokens; admin may filter all entries |
-| `POST,PATCH /hub/v1/jobs` | Create/update own job by `id` |
-| `GET,PATCH /hub/v1/jobs/{id}` | Read/update own job |
-| `GET /hub/v1/jobs` | Own jobs, or all for admin |
-| `POST /hub/v1/jobs/{id}/cancel` | Admin sets running job to `cancel_requested` |
-| `POST /hub/v1/plugins/{id}/restart` | Admin restarts a plugin |
-
-Model calls accept `X-Rapid-Project` and `X-Rapid-Priority` (`interactive`, the
-default, or `background`). Hub forwards these and `X-Rapid-Plugin` to the engine.
-Per-engine background concurrency defaults to 1 and can be set with
-`--background-concurrency`. Excess background calls wait FIFO. Interactive calls
-bypass this admission gate. This does not preempt work already executing inside
-an engine or reserve engine GPU capacity.
-
-Journal files are mode-0600 append-only JSONL in
-`journal/<plugin>/<UTC-date>.jsonl`. Requests are recorded **before** forwarding,
-then a second row with the same `id` records completion. The read API folds those
-rows to the latest state. A hard crash leaves a `phase=started` entry. Rows include
-the full request, identity/project/engine/path/model/priority, status, latency,
-queue wait, usage when supplied, and up to 64 KiB of response bytes (raw SSE for
-streams). Requests and journals contain model-visible project text. Jobs persist
-by atomic replacement of a private `jobs.json` file. Plugins poll cancellation;
-Hub does not directly execute plugin-specific cancellation code.
+Shutdown terminates plugin process groups. A separate guardian handles abrupt
+Hub parent death; Research Loop's loop signal handler also kills its separate
+experiment groups. Engines are never signalled. Admin `/hub/v1/status` reports
+engine/plugin states, log tails, discovery errors and dropped journal records.
 
 ## Research Loop
 
-The manifest starts `server.py --hub`. This mode discovers chat/embedding models,
-routes discussion, PDF metadata, retrieval embeddings and experiment model calls
-through the gateway, and tags each call with its project slug. Discussion is
-interactive; experiment proposal/repair subprocesses inherit background priority
-and the scoped credential through environment variables, never argv. Literature
-indexing and retrieval propagate project context through their worker threads.
-The existing pure Python local-search imports remain until a Hub retrieval
-service replaces them.
+Hub mode discovers models and uses the **model-routed** service URLs for all
+chat, PDF metadata, embedding and experiment calls. Qualified model names avoid
+ambiguity. Discussions are interactive; experiment subprocesses receive background
+priority and token via environment, never argv. Existing local-search imports
+remain pending a Hub retrieval service.
 
-Hub mode puts projects under `plugins/research-loop/data/projects`; each project
-retains its existing `runs/` history layout. `--data-dir` selects another data
-root; a top-level `runs/` directory is also created for future shared run storage.
-Standalone mode retains its original flags, ports, paths and endpoint behavior.
-Experiment jobs report lifecycle/progress and poll Hub cancellation every second;
-cancel creates `STOP` and clears `PAUSE`, just like the existing stop button.
-Cancellation remains cooperative and can wait for the current experiment step.
+**Research Loop enables 24-hour payload capture for its own projects at startup
+and when creating a project, for reproducibility.** Other identities/projects
+remain metadata-only unless explicitly configured. Projects live under
+`plugins/research-loop/data/projects`; a data-dir `runs/` is also created.
+Copy projects into that directory; never move a live standalone project.
+Experiment jobs heartbeat every second. Cancel acknowledges `cancelling`, writes
+STOP/clears PAUSE, terminates the loop (whose handler kills experiment groups),
+waits for exit, then reports `cancelled`. Standalone mode keeps its original
+unauthenticated local UI and API, flags and paths.
 
-To reuse a project, copy it; never move a live standalone project:
+## Security and limits
 
-```sh
-mkdir -p /private/tmp/rapid-mlx-hub/data/plugins/research-loop/data/projects
-cp -R /private/tmp/rapid-mlx-grokdemo/wt/apps/research-loop/projects/grokking \
-  /private/tmp/rapid-mlx-hub/data/plugins/research-loop/data/projects/
-```
-
-## Security and MVP limits
-
-**Trusted plugins only. No sandbox. No per-plugin environments yet.** Manifest
-network/files permissions describe intent and are not OS-enforced. Plugins and
-experiment scripts run as the current account, can read account files, and share
-Hub's Python interpreter. Common credential environment variables are filtered
-from plugin startup; Hub provides no engine credentials. Engine URLs containing
-credentials are rejected. Engine credential configuration is not implemented.
-Plugin HTTP UIs currently retain Research Loop's local-only access model.
-
-Separate ports provide browser origin isolation, not account/process isolation.
-Browser cookies are host-scoped rather than port-scoped: a same-host trusted
-plugin can receive the admin session cookie when visited. Host/Origin checks do
-not turn localhost into a boundary against malicious native software. Bind Hub
-to loopback; there is no remote TLS/session-management product in this MVP.
-
-The background queue and current supervision state are in memory. There are no
-queue bounds, journal/log retention, filesystem quotas, per-plugin Python envs,
-distributed scheduling, automatic adoption of pre-existing orphan runs, or
-cross-process data-directory locking. Run one Hub per data directory. Manually
-detached plugin descendants can escape process-group cleanup; Research Loop
-explicitly cleans its experiment groups on Hub termination. Jobs survive restart,
-but plugins must reconcile stale job states. Journal writes are synchronous;
-there is no fsync durability guarantee against machine/power failure. SSE usage
-is available only when the engine actually emits a usage chunk.
+**Plugins are trusted local code. No sandbox. No separate Python environments.**
+Plugins and experiments run with the current account's permissions and can read
+account files. Browser hostname isolation does not protect against malicious
+native code. Bind only to loopback. No remote TLS/session-management product,
+registration flow, distributed scheduling, log retention, data-dir locking, or
+orphan-job adoption is provided. Run one Hub per data directory. A deliberately
+detached descendant can escape process-group supervision. SSE usage is available
+only when engines emit it. Engine admission is honored only when advertised or
+explicitly selected; inference engines themselves are unchanged.
 
 ## Verification
 
@@ -175,8 +245,8 @@ cd apps/research-loop
 node tests/test_web.mjs
 ```
 
-Tests cover manifest errors, import boundaries, JSON/SSE/status passthrough,
-scoped auth/journals/jobs, FIFO background admission with interactive bypass,
-incremental delivery and disconnect cleanup, readiness/restarts/process groups,
-abrupt parent death, model discovery, subprocess headers and cooperative cancel.
-They use fake upstreams and ephemeral local ports; no weights or packages needed.
+Tests use fake upstreams, ephemeral ports and a fake long experiment. They cover
+byte-identical tool-call SSE, mid-stream and queued disconnects, queue bounds and
+expiry, engine outage/recovery events, token revocation, host-only cookies/UI
+codes, metadata/capture/redaction/retention/cap/failure, discovery cleanup, stale
+and previous-instance jobs, acknowledgement and experiment-group termination.

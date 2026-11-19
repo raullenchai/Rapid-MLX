@@ -82,7 +82,11 @@ class Supervisor:
             (root / folder).mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             for attempt in range(self.retries + 1):
+                self.hub.tokens.pop(item["token"], None)
+                item["token"] = secrets.token_urlsafe(32)
+                self.hub.tokens[item["token"]] = ident
                 item.update(state="starting", restarts=attempt)
+                self.hub.emit("plugin_state", {"id": ident, "state": "starting"})
                 with socket.socket() as sock:
                     sock.bind((self.hub.plugin_host, 0))
                     port = sock.getsockname()[1]
@@ -144,6 +148,9 @@ class Supervisor:
                             )
                             if response.status_code == 200:
                                 item["state"] = "ready"
+                                self.hub.emit(
+                                    "plugin_state", {"id": ident, "state": "ready"}
+                                )
                                 break
                         except Exception:
                             pass
@@ -153,18 +160,24 @@ class Supervisor:
                 except OSError as exc:
                     item["error"] = str(exc)
                 finally:
+                    self.hub.tokens.pop(item["token"], None)
                     await self.terminate(item)
                 if attempt < self.retries:
                     item["state"] = "backoff"
+                    self.hub.emit("plugin_state", {"id": ident, "state": "backoff"})
                     await asyncio.sleep(min(self.delay * 2**attempt, 16))
             item["state"] = "failed"
+            self.hub.emit("plugin_state", {"id": ident, "state": "failed"})
         finally:
+            self.hub.tokens.pop(item["token"], None)
             await self.terminate(item)
 
     async def restart(self, ident):
+        self.hub.tokens.pop(self.items[ident]["token"], None)
         if ident in self.tasks:
             self.tasks[ident].cancel()
             await asyncio.gather(self.tasks[ident], return_exceptions=True)
+        self.items[ident]["state"] = "starting"
         self.tasks[ident] = asyncio.create_task(self.run(ident))
 
     async def stop(self):
@@ -180,9 +193,7 @@ class Supervisor:
             if task and task.done() and not task.cancelled() and task.exception():
                 row.update(state="failed", error=str(task.exception()))
             row["url"] = (
-                f"http://{self.hub.plugin_host}:{item['port']}"
-                if "port" in item
-                else None
+                f"http://{ident}.localhost:{item['port']}" if "port" in item else None
             )
             row["supervisor_pid"] = item["process"].pid if item.get("process") else None
             pid_path = self.hub.data_dir / "plugins" / ident / "data" / "plugin.pid"

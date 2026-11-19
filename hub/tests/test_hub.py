@@ -41,9 +41,8 @@ def test_import_boundaries():
     "before,after",
     [
         ("^1", "^2"),
+        ('id = "research-loop"', 'id = "hub"'),
         ('id = "research-loop"', 'id = "../bad"'),
-        ('files = "plugin"', 'files = "all"'),
-        ("network = true", 'network = "yes"'),
         ('["{python}", "{plugin_dir}/server.py", "--hub"]', '"python"'),
         ("models.chat", "models.unknown"),
     ],
@@ -81,6 +80,7 @@ def make_hub(tmp_path, handler):
         tmp_path,
         tmp_path / "empty",
         transport=httpx.MockTransport(handler),
+        discovery_file="discovery.json",
     )
     hub.tokens.update(one="one", two="two")
     return hub
@@ -89,7 +89,7 @@ def make_hub(tmp_path, handler):
 def client(hub, token="one"):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=create_app(hub, supervise=False)),
-        base_url="http://127.0.0.1:4800",
+        base_url="http://hub.localhost:4800",
         headers={"Authorization": "Bearer " + token},
     )
 
@@ -150,7 +150,7 @@ def test_gateway_auth_json_sse_journal_jobs(tmp_path):
                 and row["priority"] == "interactive"
             )
             assert (
-                row["request"]["messages"] == ["secret text"] and row["status"] == 429
+                "request" not in row and "response" not in row and row["status"] == 429
             )
             assert row["latency_ms"] >= row["queue_wait_ms"] >= 0 and row["ts"]
             assert (
@@ -177,6 +177,12 @@ def test_gateway_auth_json_sse_journal_jobs(tmp_path):
             assert (
                 await c.patch("/hub/v1/jobs", json={"id": "j", "progress": "step"})
             ).json()["state"] == "cancel_requested"
+            assert (
+                await c.patch("/hub/v1/jobs/j", json={"state": "done"})
+            ).status_code == 409
+            assert (
+                await c.patch("/hub/v1/jobs/j", json={"state": "cancelling"})
+            ).status_code == 200
             assert (await c.patch("/hub/v1/jobs/j", json={"state": "done"})).json()[
                 "state"
             ] == "done"
@@ -302,6 +308,17 @@ HTTPServer((os.environ["RAPID_PLUGIN_HOST"], int(os.environ["RAPID_PLUGIN_PORT"]
             (hub.data_dir / "plugins/research-loop/data/crash").unlink()
             await supervisor.restart("research-loop")
             await asyncio.wait_for(ready(), 5)
+            old_token = item["token"]
+            assert hub.tokens[old_token] == "research-loop"
+            await supervisor.restart("research-loop")
+            assert old_token not in hub.tokens
+            await asyncio.wait_for(ready(), 5)
+            async with client(hub, old_token) as c:
+                assert (await c.get("/hub/v1/models")).status_code == 401
+            assert (
+                item["token"] != old_token
+                and hub.tokens[item["token"]] == "research-loop"
+            )
             pid = item["process"].pid
             child = int((hub.data_dir / "plugins/research-loop/data/child").read_text())
             await supervisor.stop()
@@ -332,10 +349,14 @@ def test_sse_delivered_before_upstream_finishes_and_disconnect_releases_slot(tmp
 
         hub = make_hub(
             tmp_path,
-            lambda request: httpx.Response(
-                200,
-                stream=BlockingStream(),
-                headers={"Content-Type": "text/event-stream"},
+            lambda request: (
+                httpx.Response(200, json={"ready": True, "data": []})
+                if request.method == "GET"
+                else httpx.Response(
+                    200,
+                    stream=BlockingStream(),
+                    headers={"Content-Type": "text/event-stream"},
+                )
             ),
         )
         sock = socket.socket()
@@ -370,7 +391,7 @@ def test_sse_delivered_before_upstream_finishes_and_disconnect_releases_slot(tmp
                     break
                 await asyncio.sleep(0.01)
             assert not hub.gates["chat"].locked()
-            assert hub.journal.read()[0]["phase"] == "finished"
+            assert hub.journal.read()[0]["cancelled"] is True
         finally:
             release.set()
             server.should_exit = True
@@ -400,8 +421,8 @@ def test_catalog_does_not_guess_and_unavailable_engine_is_journaled(tmp_path):
                     "/hub/v1/engines/chat/v1/chat/completions",
                     json={"model": "unknown"},
                 )
-            ).status_code == 502
-            assert hub.journal.read()[0]["status"] == 502
+            ).status_code == 503
+            assert hub.journal.read()[0]["status"] == 503
         manifest = load(ROOT / "apps/research-loop/rapid-plugin.toml")
         hub.supervisor = Supervisor(hub, {"research-loop": manifest})
         await hub.supervisor.start()

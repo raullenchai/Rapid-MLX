@@ -468,6 +468,11 @@ class App(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def log_message(self, format, *args):
+        # UI login codes must never enter the supervised access log.
+        if not getattr(self.server, "hub_mode", False):
+            super().log_message(format, *args)
+
     def json(self, data, status=200):
         self.bytes(json.dumps(data).encode(), "application/json", status)
 
@@ -476,6 +481,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         if sandbox or mime.startswith("image/"):
             self.send_header(
                 "Content-Security-Policy",
@@ -498,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_GET(self):
+        if not hub_client.ui_authorized(self):
+            return
         parsed = urlparse(self.path)
         parts = parsed.path.strip("/").split("/")
         query = parse_qs(parsed.query)
@@ -787,6 +795,8 @@ class Handler(BaseHTTPRequestHandler):
         self.mutate("POST")
 
     def mutate(self, method):
+        if not hub_client.ui_authorized(self):
+            return
         try:
             data = self.body()
             parts = urlparse(self.path).path.strip("/").split("/")
@@ -961,6 +971,8 @@ class Handler(BaseHTTPRequestHandler):
             (project / "runs").mkdir()
             (project / "discussion.jsonl").touch()
             (project / "hypotheses.jsonl").touch()
+        if getattr(self.server, "hub_mode", False):
+            hub_client.enable_capture(project)
         return self.json(self.server.detail(project), 201)
 
     def start_run(self, project, data):
@@ -1265,6 +1277,16 @@ if __name__ == "__main__":
         embedding_model=args.embedding_model,
         projects=args.data_dir / "projects" if args.data_dir else None,
     )
+    app.hub_mode = args.hub
+    app.hub_sessions = set()
+    if args.hub:
+        for project in app.projects.iterdir():
+            if (
+                project.is_dir()
+                and not project.is_symlink()
+                and re.fullmatch(SLUG, project.name)
+            ):
+                hub_client.enable_capture(project)
     print(f"Research Loop: http://{args.host}:{args.port}", flush=True)
     try:
         app.serve_forever()

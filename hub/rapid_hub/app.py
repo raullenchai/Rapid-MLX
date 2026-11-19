@@ -1,7 +1,10 @@
 """Authenticated model gateway and local control plane."""
 
 import asyncio
+import hashlib
 import json
+import os
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -18,8 +21,76 @@ from fastapi.responses import (
 )
 
 from .manifest import discover
-from .storage import Journal, private_write
+from .storage import Journal, atomic_write, private_write
 from .supervisor import Supervisor
+
+
+def supports_admission(payload):
+    caps = payload.get("capabilities", [])
+    return payload.get("admission") is True or (
+        bool(caps.get("admission")) if isinstance(caps, dict) else "admission" in caps
+    )
+
+
+async def acquire_connected(gate, request, timeout):
+    task = asyncio.create_task(gate.acquire())
+    deadline = time.monotonic() + timeout
+    transferred = False
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {task}, timeout=min(0.05, max(0, deadline - time.monotonic()))
+            )
+            if await request.is_disconnected():
+                raise asyncio.CancelledError()
+            if done:
+                transferred = True
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError()
+    finally:
+        if not transferred:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if not task.cancelled() and task.exception() is None and task.result():
+                gate.release()
+
+
+class OriginGuard:
+    """ASGI guard preserves disconnect notifications without receive wrappers."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        host = urlsplit("http://" + request.headers.get("host", "")).hostname
+        dashboard = request.url.path in ("/", "/login") or request.url.path.endswith(
+            "/open"
+        )
+        if host not in {"hub.localhost", "localhost", "127.0.0.1"} or (
+            dashboard and host != "hub.localhost"
+        ):
+            return await Response("Host rejected", status_code=403)(
+                scope, receive, send
+            )
+        origin = request.headers.get("origin")
+        if origin and origin != str(request.base_url).rstrip("/"):
+            return await Response("Origin rejected", status_code=403)(
+                scope, receive, send
+            )
+
+        async def guarded_send(message):
+            if message["type"] == "http.response.start":
+                message["headers"] = list(message["headers"]) + [
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"x-content-type-options", b"nosniff"),
+                ]
+            await send(message)
+
+        await self.app(scope, receive, guarded_send)
 
 
 class Hub:
@@ -32,14 +103,56 @@ class Hub:
         port=4800,
         background_concurrency=1,
         transport=None,
+        journal_max_mb=500,
+        admission="auto",
+        queue_max_length=32,
+        queue_max_wait=120,
+        job_stale_seconds=600,
+        discovery_file=None,
     ):
+        if journal_max_mb <= 0 or job_stale_seconds <= 0:
+            raise ValueError("Journal cap and job stale interval must be positive")
         if background_concurrency < 1:
             raise ValueError("background concurrency must be positive")
         self.engines, self.data_dir = engines, Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if host != "127.0.0.1":
+            raise ValueError("Hub must bind to 127.0.0.1")
+        if (
+            admission not in ("auto", "hub", "engine")
+            or queue_max_length < 0
+            or queue_max_wait <= 0
+        ):
+            raise ValueError("Invalid admission configuration")
+        self.admission, self.queue_max_length, self.queue_max_wait = (
+            admission,
+            queue_max_length,
+            queue_max_wait,
+        )
+        self.waiters = {name: 0 for name in engines}
+        self.engine_admission = {name: False for name in engines}
+        self.job_stale_seconds = job_stale_seconds
+        self.ui_codes = {}
+        self.subscribers = set()
+        self.last_catalog = None
+        self.known_models = {}
         self.host, self.port = host, port
         self.plugin_host = "127.0.0.1"
         self.url = f"http://{host}:{port}"
+        self.dashboard_url = f"http://hub.localhost:{port}"
+        self.instance = dict(
+            url=self.url,
+            instance_id=secrets.token_hex(16),
+            pid=os.getpid(),
+            api_versions=["1"],
+            capabilities=["models", "journal", "jobs", "events"],
+            started_at=time.time(),
+        )
+        self.discovery_file = (
+            self.data_dir / discovery_file
+            if discovery_file
+            else Path.home() / "Library/Application Support/Rapid Hub/connection.json"
+        )
         self.admin = secrets.token_urlsafe(32)
         self.login = secrets.token_urlsafe(32)
         self.tokens = {self.admin: "admin"}
@@ -50,37 +163,48 @@ class Hub:
         self.gates = {
             name: asyncio.Semaphore(background_concurrency) for name in engines
         }
-        self.journal = Journal(self.data_dir / "journal")
+        self.journal = Journal(self.data_dir / "journal", journal_max_mb)
         self.jobs_path = self.data_dir / "jobs.json"
         self.jobs = (
             json.loads(self.jobs_path.read_text()) if self.jobs_path.exists() else {}
         )
+        for job in self.jobs.values():
+            if job["state"] in ("running", "cancel_requested", "cancelling"):
+                job["state"] = "interrupted"
+        self.save_jobs()
         private_write(self.data_dir / "admin-token", self.admin)
-        private_write(self.data_dir / "connection.json", json.dumps({"url": self.url}))
         manifests, self.errors = discover(plugins_dir)
         self.supervisor = Supervisor(self, manifests)
 
     async def catalog(self):
         data, engines = [], []
         for name, base in self.engines.items():
-            ready, models, error = False, [], None
+            ready, models, error, health_data = False, [], None, {}
+            self.engine_admission[name] = False
             try:
                 health = await self.client.get(
                     base.removesuffix("/v1") + "/health", timeout=3
                 )
-                ready = health.is_success and health.json().get("ready") is True
+                health_data = health.json() if health.is_success else {}
+                ready = health.is_success and health_data.get("ready") is True
+                self.engine_admission[name] = supports_admission(health_data)
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 error = type(exc).__name__
             try:
                 response = await self.client.get(base + "/models", timeout=3)
                 response.raise_for_status()
-                for model in response.json().get("data", []):
+                catalog_data = response.json()
+                self.engine_admission[name] |= supports_admission(catalog_data)
+                for model in catalog_data.get("data", []):
+                    self.engine_admission[name] |= supports_admission(model)
                     reported = model.get("capabilities") or []
                     if isinstance(reported, dict):
                         reported = [k for k, v in reported.items() if v]
                     capabilities = []
                     if any(c in reported for c in ("chat", "text", "completions")):
                         capabilities.append("chat")
+                    if "rerank" in reported:
+                        capabilities.append("rerank")
                     if any(c in reported for c in ("embedding", "embeddings")):
                         capabilities.append("embeddings")
                     row = dict(
@@ -90,6 +214,11 @@ class Hub:
                     data.append(row)
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 error = type(exc).__name__
+            if models:
+                self.known_models[name] = models
+            elif error and name in self.known_models:
+                models = [dict(m, ready=False) for m in self.known_models[name]]
+                data.extend(models)
             engines.append(dict(name=name, ready=ready, models=models, error=error))
         default = next((m for m in data if "chat" in m["capabilities"]), None)
         return dict(data=data, engines=engines, default=default)
@@ -97,13 +226,65 @@ class Hub:
     def identity(self, request, admin=False):
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
         identity = self.tokens.get(token)
-        if not identity and request.cookies.get("rapid_hub") in self.sessions:
+        if (
+            not identity
+            and request.url.hostname == "hub.localhost"
+            and request.cookies.get("rapid_hub") in self.sessions
+        ):
             identity = "admin"
         if not identity:
             raise HTTPException(401, "Bearer token required")
         if admin and identity != "admin":
             raise HTTPException(403, "Admin required")
         return identity
+
+    def emit(self, event, data):
+        for queue in tuple(self.subscribers):
+            if queue.full():
+                self.subscribers.discard(queue)
+                continue
+            queue.put_nowait(dict(event=event, data=data))
+
+    def stale_jobs(self):
+        for job in self.jobs.values():
+            if (
+                job["state"] in ("running", "cancel_requested", "cancelling")
+                and time.time() - job.get("updated_at", 0) > self.job_stale_seconds
+            ):
+                job["state"] = "interrupted"
+                self.emit("job_state", job.copy())
+                self.save_jobs()
+
+    async def poll(self):
+        previous_plugins = None
+        last_prune = time.monotonic()
+        while True:
+            catalog = await self.catalog()
+            if self.last_catalog != catalog:
+                old = {
+                    e["name"]: e["ready"]
+                    for e in (self.last_catalog or {}).get("engines", [])
+                }
+                for engine in catalog["engines"]:
+                    if old.get(engine["name"]) != engine["ready"]:
+                        self.emit(
+                            "engine_readiness",
+                            dict(engine=engine["name"], ready=engine["ready"]),
+                        )
+                self.emit("catalog", catalog)
+                self.last_catalog = catalog
+            plugins = [
+                {k: row.get(k) for k in ("id", "state", "port", "restarts")}
+                for row in self.supervisor.public()
+            ]
+            if plugins != previous_plugins:
+                self.emit("plugin_state", plugins)
+                previous_plugins = plugins
+            self.stale_jobs()
+            if time.monotonic() - last_prune >= 3600:
+                self.journal.prune()
+                last_prune = time.monotonic()
+            await asyncio.sleep(5)
 
     def save_jobs(self):
         temporary = self.jobs_path.with_suffix(".tmp")
@@ -114,30 +295,30 @@ class Hub:
 def create_app(hub, supervise=True):
     @asynccontextmanager
     async def lifespan(app):
+        atomic_write(hub.discovery_file, json.dumps(hub.instance))
+        atomic_write(hub.data_dir / "connection.json", json.dumps(hub.instance))
+        poller = asyncio.create_task(hub.poll())
         try:
             if supervise:
                 await hub.supervisor.start()
             yield
         finally:
+            poller.cancel()
+            await asyncio.gather(poller, return_exceptions=True)
             await hub.supervisor.stop()
+            for path in {hub.discovery_file, hub.data_dir / "connection.json"}:
+                if (
+                    path.exists()
+                    and json.loads(path.read_text()).get("instance_id")
+                    == hub.instance["instance_id"]
+                ):
+                    path.unlink()
             await hub.client.aclose()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.hub = hub
 
-    @app.middleware("http")
-    async def origin_guard(request, call_next):
-        allowed = {hub.host, "localhost", "127.0.0.1", "::1"}
-        host = urlsplit("http://" + request.headers.get("host", "")).hostname
-        origin = request.headers.get("origin")
-        if host not in allowed:
-            return Response("Host rejected", status_code=403)
-        if origin and origin != str(request.base_url).rstrip("/"):
-            return Response("Origin rejected", status_code=403)
-        response = await call_next(request)
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+    app.add_middleware(OriginGuard)
 
     @app.get("/login")
     async def login(request: Request):
@@ -152,6 +333,106 @@ def create_app(hub, supervise=True):
         response.set_cookie("rapid_hub", session, httponly=True, samesite="strict")
         return response
 
+    @app.get("/hub/v1/instance")
+    async def instance():
+        return hub.instance
+
+    @app.get("/hub/v1/events")
+    async def events(request: Request):
+        identity = hub.identity(request)
+        queue = asyncio.Queue(maxsize=256)
+        hub.subscribers.add(queue)
+
+        async def stream():
+            try:
+                yield "event: instance\ndata: " + json.dumps(hub.instance) + "\n\n"
+                while queue in hub.subscribers:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), 15)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if (
+                        identity != "admin"
+                        and event["event"] == "job_state"
+                        and event["data"].get("plugin") != identity
+                    ):
+                        continue
+                    yield (
+                        "event: "
+                        + event["event"]
+                        + "\ndata: "
+                        + json.dumps(event["data"])
+                        + "\n\n"
+                    )
+            finally:
+                hub.subscribers.discard(queue)
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.get("/hub/v1/plugins/{ident}/open")
+    async def open_ui(ident: str, request: Request):
+        hub.identity(request, admin=True)
+        item = hub.supervisor.items.get(ident)
+        if not item or item["state"] != "ready":
+            raise HTTPException(409, "Plugin is not ready")
+        hub.ui_codes = {
+            k: v for k, v in hub.ui_codes.items() if v[1] > time.monotonic()
+        }
+        code = secrets.token_urlsafe(32)
+        hub.ui_codes[code] = (ident, time.monotonic() + 60, item["token"])
+        return RedirectResponse(
+            f"http://{ident}.localhost:{item['port']}/hub-auth?code={code}",
+            status_code=303,
+        )
+
+    @app.post("/hub/v1/ui-codes/redeem")
+    async def redeem(request: Request):
+        identity = hub.identity(request)
+        code = (await request.json()).get("code", "")
+        value = hub.ui_codes.get(code)
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        if (
+            not value
+            or value[0] != identity
+            or value[1] <= time.monotonic()
+            or value[2] != token
+        ):
+            raise HTTPException(401, "Invalid or expired UI code")
+        del hub.ui_codes[code]
+        return {"plugin": identity, "authenticated": True}
+
+    @app.put("/hub/v1/projects/{project}/capture")
+    async def capture(project: str, request: Request):
+        identity = hub.identity(request)
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", project):
+            raise HTTPException(422, "Invalid project")
+        body = await request.json()
+        owner = body.get("plugin", "*" if identity == "admin" else identity)
+        if identity != "admin" and owner != identity:
+            raise HTTPException(403, "Own project namespace only")
+        ttl = body.get("ttl_hours", 24)
+        if (
+            type(body.get("payload")) is not bool
+            or type(ttl) not in (float, int)
+            or not 0 < ttl <= 168
+        ):
+            raise HTTPException(
+                422, "payload boolean and ttl_hours in (0,168] required"
+            )
+        hub.journal.configure(owner, project, body["payload"], ttl)
+        return hub.journal.policy(owner, project)
+
+    @app.delete("/hub/v1/journal")
+    async def delete_journal(request: Request, project: str | None = None):
+        identity = hub.identity(request)
+        hub.journal.prune(
+            plugin=None if identity == "admin" else identity,
+            project=project,
+            delete=True,
+        )
+        return {"ok": True}
+
     @app.get("/hub/v1/models")
     async def models(request: Request):
         hub.identity(request)
@@ -161,7 +442,10 @@ def create_app(hub, supervise=True):
     async def status(request: Request):
         hub.identity(request, admin=True)
         return dict(
-            **await hub.catalog(), plugins=hub.supervisor.public(), errors=hub.errors
+            **await hub.catalog(),
+            plugins=hub.supervisor.public(),
+            errors=hub.errors,
+            dropped_records=hub.journal.dropped_records,
         )
 
     @app.post("/hub/v1/plugins/{ident}/restart")
@@ -188,6 +472,7 @@ def create_app(hub, supervise=True):
 
     def own_job(request, ident):
         identity = hub.identity(request)
+        hub.stale_jobs()
         job = hub.jobs.get(ident)
         if not job:
             raise HTTPException(404)
@@ -198,6 +483,7 @@ def create_app(hub, supervise=True):
     @app.get("/hub/v1/jobs")
     async def jobs(request: Request):
         identity = hub.identity(request)
+        hub.stale_jobs()
         return {
             "jobs": [
                 j
@@ -225,12 +511,22 @@ def create_app(hub, supervise=True):
         job = dict(
             old or {"id": ident, "plugin": identity, "state": "running"}, **values
         )
-        if job["state"] not in ("running", "done", "failed", "cancel_requested"):
-            raise HTTPException(422, "Invalid job state")
+        transitions = {
+            "running": {"running", "cancel_requested", "done", "failed"},
+            "cancel_requested": {"cancel_requested", "cancelling"},
+            "cancelling": {"cancelling", "cancelled", "failed", "done"},
+        }
         if old and old["state"] == "cancel_requested" and job["state"] == "running":
             job["state"] = "cancel_requested"
+        allowed = transitions.get(old["state"], {old["state"]}) if old else {"running"}
+        if job["state"] not in allowed:
+            raise HTTPException(
+                409, "Invalid job transition; cancellation requires acknowledgement"
+            )
+        job["updated_at"] = time.time()
         hub.jobs[ident] = job
         hub.save_jobs()
+        hub.emit("job_state", job.copy())
         return job
 
     @app.api_route("/hub/v1/jobs", methods=["POST", "PATCH"])
@@ -251,11 +547,49 @@ def create_app(hub, supervise=True):
         job = own_job(request, ident)
         if job["state"] == "running":
             job["state"] = "cancel_requested"
+            job["updated_at"] = time.time()
             hub.save_jobs()
+        hub.emit("job_state", job.copy())
         return job
 
+    @app.post("/hub/v1/chat/completions")
+    @app.post("/hub/v1/embeddings")
+    @app.post("/hub/v1/rerank")
+    async def routed(request: Request):
+        hub.identity(request)
+        try:
+            payload = await request.json()
+            model = payload["model"]
+            if not isinstance(model, str):
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(422, "model is required")
+        catalog = await hub.catalog()
+        candidates = [
+            m for m in catalog["data"] if model == m["engine"] + "/" + m["id"]
+        ]
+        if not candidates:
+            candidates = [m for m in catalog["data"] if model == m["id"]]
+        if len(candidates) > 1:
+            raise HTTPException(
+                409, {"candidates": [m["engine"] + "/" + m["id"] for m in candidates]}
+            )
+        if not candidates:
+            raise HTTPException(404, "Unknown model")
+        chosen = candidates[0]
+        payload["model"] = chosen["id"]
+        return await gateway(
+            chosen["engine"],
+            request.url.path.removeprefix("/hub/v1/"),
+            request,
+            json.dumps(payload).encode(),
+        )
+
     @app.api_route("/hub/v1/engines/{engine}/v1/{path:path}", methods=["POST", "GET"])
-    async def gateway(engine: str, path: str, request: Request):
+    async def gateway_route(engine: str, path: str, request: Request):
+        return await gateway(engine, path, request)
+
+    async def gateway(engine, path, request, routed_body=None):
         identity = hub.identity(request)
         if engine not in hub.engines:
             raise HTTPException(404, "Unknown engine")
@@ -264,28 +598,36 @@ def create_app(hub, supervise=True):
         priority = request.headers.get("x-rapid-priority", "interactive")
         if priority not in ("interactive", "background"):
             raise HTTPException(422, "Invalid priority")
-        body = await request.body()
+        body = routed_body if routed_body is not None else await request.body()
         try:
             payload = json.loads(body) if body else {}
         except ValueError:
             payload = {}
         started = time.monotonic()
+        request_id = secrets.token_hex(16)
+        project = request.headers.get("x-rapid-project", "")[:200]
         entry = dict(
-            id=secrets.token_hex(16),
-            phase="started",
+            request_id=request_id,
+            client=identity,
             plugin=identity,
-            project=request.headers.get("x-rapid-project"),
+            project=project,
+            job_id=request.headers.get("x-rapid-job-id", "")[:200] or None,
             engine=engine,
             path=path,
             model=payload.get("model") if isinstance(payload, dict) else None,
             priority=priority,
-            request=payload if payload else body.decode(errors="replace"),
             status=499,
             latency_ms=0,
             queue_wait_ms=0,
             usage=None,
+            request_bytes=len(body),
+            response_bytes=0,
+            request_sha256=hashlib.sha256(body).hexdigest(),
+            cancelled=False,
+            request=payload,
             response="",
         )
+        capture_payload = hub.journal.policy(identity, project).get("payload", False)
         acquired, upstream = False, None
 
         async def finish():
@@ -297,17 +639,49 @@ def create_app(hub, supervise=True):
                 if acquired:
                     hub.gates[engine].release()
                     acquired = False
-                entry["phase"] = "finished"
                 entry["latency_ms"] = round((time.monotonic() - started) * 1000, 3)
                 hub.journal.append(entry)
 
         try:
-            if priority == "background":
-                await hub.gates[engine].acquire()
-                acquired = True
+            if hub.admission == "auto" and hub.last_catalog is None:
+                # Capability discovery is read-only and never retries a model call.
+                await hub.catalog()
+            queue_here = hub.admission == "hub" or (
+                hub.admission == "auto" and not hub.engine_admission[engine]
+            )
+            if priority == "background" and queue_here:
+                gate = hub.gates[engine]
+                if not gate.locked():
+                    # An available semaphore acquires synchronously, so a burst
+                    # cannot race past the waiter limit before taking a permit.
+                    await gate.acquire()
+                    acquired = True
+                else:
+                    if hub.waiters[engine] >= hub.queue_max_length:
+                        entry["status"] = 429
+                        raise HTTPException(
+                            429, "Hub queue full", headers={"Retry-After": "1"}
+                        )
+                    hub.waiters[engine] += 1
+                    try:
+                        await acquire_connected(gate, request, hub.queue_max_wait)
+                        acquired = True
+                    except TimeoutError:
+                        entry["status"] = 503
+                        raise HTTPException(
+                            503, "Hub queue wait expired", headers={"Retry-After": "1"}
+                        )
+                    finally:
+                        hub.waiters[engine] -= 1
             entry["queue_wait_ms"] = round((time.monotonic() - started) * 1000, 3)
-            headers = {"X-Rapid-Plugin": identity, "X-Rapid-Priority": priority}
-            for name in ("content-type", "accept", "x-rapid-project"):
+            headers = {
+                "X-Rapid-Plugin": identity,
+                "X-Rapid-Client": identity,
+                "X-Rapid-Priority": priority,
+                "X-Rapid-Project": project,
+                "X-Request-Id": request_id,
+            }
+            for name in ("content-type", "accept"):
                 if name in request.headers:
                     headers[name] = request.headers[name]
             url = hub.engines[engine] + "/" + path
@@ -318,8 +692,6 @@ def create_app(hub, supervise=True):
                 content=body,
                 headers=headers,
             )
-            # Persist before exposing any request text to the model. A hard crash
-            # leaves a started record; completion appends another immutable row.
             hub.journal.append(dict(entry, status=None))
             upstream = await hub.client.send(req, stream=True)
             entry["status"] = upstream.status_code
@@ -331,7 +703,8 @@ def create_app(hub, supervise=True):
             }
             if "text/event-stream" not in upstream.headers.get("content-type", ""):
                 data = await upstream.aread()
-                entry["response"] = data[:65536].decode(errors="replace")
+                entry["response_bytes"] = len(data)
+                entry["response"] = data if capture_payload else ""
                 try:
                     entry["usage"] = json.loads(data).get("usage")
                 except (ValueError, AttributeError):
@@ -344,7 +717,9 @@ def create_app(hub, supervise=True):
                 captured = bytearray()
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        captured.extend(chunk[: max(0, 65536 - len(captured))])
+                        entry["response_bytes"] += len(chunk)
+                        if capture_payload:
+                            captured.extend(chunk[: max(0, 65536 - len(captured))])
                         pending += chunk
                         while b"\n" in pending:
                             line, pending = pending.split(b"\n", 1)
@@ -359,6 +734,9 @@ def create_app(hub, supervise=True):
                         if len(pending) > 1048576:
                             pending = b""
                         yield chunk
+                except asyncio.CancelledError:
+                    entry["cancelled"] = True
+                    raise
                 finally:
                     entry["response"] = captured.decode(errors="replace")
                     await finish()
@@ -367,11 +745,14 @@ def create_app(hub, supervise=True):
                 stream(), status_code=upstream.status_code, headers=headers
             )
         except BaseException as exc:
+            entry["cancelled"] = isinstance(exc, asyncio.CancelledError)
             if isinstance(exc, httpx.HTTPError):
-                entry["status"] = 502
+                entry["status"] = 503
             await finish()
             if isinstance(exc, httpx.HTTPError):
-                raise HTTPException(502, "Engine unavailable") from exc
+                raise HTTPException(
+                    503, "Engine unavailable", headers={"Retry-After": "1"}
+                ) from exc
             raise
 
     @app.get("/", response_class=HTMLResponse)

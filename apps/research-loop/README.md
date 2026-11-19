@@ -415,3 +415,40 @@ literature directory or a currently attached directory. It rejects traversal and
 symlinks, bounds reads, uses source content types and sandboxes HTML without
 scripts or external resources. Removed or detached files remain readable as saved
 passage snapshots, but their original-file links become unavailable.
+
+## Rapid Hub mode
+
+The [Hub services guide](../../hub/README.md) documents starting Hub and its
+minimal `rapid-plugin.toml` supervisor. `server.py --hub` reads the scoped token,
+assigned port and data root from the supervisor environment. All model calls use
+Hub's model-routed `/hub/v1/chat/completions` and `/hub/v1/embeddings` endpoints,
+with engine-qualified model ids. Discussions are interactive; loop subprocesses
+inherit background priority and project identity. Standalone flags, data paths
+and unauthenticated behavior are unchanged.
+
+In Hub mode, open Research Loop with **Open** on `hub.localhost:4800`.
+The browser visits `research-loop.localhost:<assigned-port>`; a single-use,
+60-second code is redeemed server-to-server for a host-only HttpOnly
+SameSite=Strict plugin session. The code is stripped by redirect and responses
+set Referrer-Policy: no-referrer. Pages and API require this session; health stays
+public. Hub's cookie is scoped to a different hostname. Both processes bind to
+127.0.0.1; browsers resolve `*.localhost` to loopback.
+
+**For reproducibility, Research Loop enables Hub payload capture for its own
+projects at startup and when creating projects (24-hour payload retention).**
+This includes model-visible literature, prompts and responses. Other Hub projects
+remain metadata-only unless explicitly opted in. Captures redact secret-named
+fields, are bounded to 64 KiB per field and share Hub's disk cap; metadata has a
+7-day maximum retention. Capture is bounded evidence, not a full archival copy.
+The Hub journal API supports project deletion and capture opt-out; restarting
+Research Loop enables capture again for its projects.
+
+Jobs acknowledge cancellation as `cancelling`, terminate the loop and its
+experiment process groups, wait for exit, then report `cancelled`. This is more
+immediate than standalone's cooperative Stop. Jobs with no heartbeat for 10
+minutes, or active jobs surviving a Hub restart, show `interrupted`; runs are not
+automatically adopted. Local-search imports remain pending a Hub retrieval
+service.
+
+Plugins and experiments are **trusted local code, with no sandbox**. A browser
+session protects local HTTP access, not account files from installed plugin code.

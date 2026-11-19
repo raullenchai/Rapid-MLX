@@ -11,7 +11,3 @@ command = ["{python}", "{plugin_dir}/server.py", "--hub"]
 [ui]
 kind = "web"
 health = "/healthz"
-
-[permissions]
-network = true
-files = "plugin"
