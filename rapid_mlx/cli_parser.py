@@ -1489,7 +1489,10 @@ def _add_serve_parser(
         metavar="ORIGIN",
         help=(
             "Allowed CORS origins (default: cross-origin browser access disabled). "
-            "Example: --cors-origins http://localhost:3000 https://myapp.com"
+            "Supports chrome-extension://*, moz-extension://*, and "
+            "safari-web-extension://* (quote patterns in the shell). "
+            "HTTP(S) origins match literally. "
+            "Example: --cors-origins http://localhost:3000 'chrome-extension://*'"
         ),
     )
     serve_parser.add_argument(
