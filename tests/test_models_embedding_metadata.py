@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Live embedding discovery metadata, independent of optional GPU imports."""
+"""Live embedding discovery metadata for /v1/models.
+
+The fake engine borrows ``EmbeddingEngine.advertised_max_input_tokens``, whose
+module imports MLX, so this file runs on the Apple Silicon jobs only.
+"""
 
 import types
 from types import SimpleNamespace
@@ -10,8 +14,9 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.api.models import ModelInfo, ModelsResponse
 from rapid_mlx.config import get_config
-from rapid_mlx.embedding import EmbeddingEngine
 from rapid_mlx.routes import models
+
+EmbeddingEngine = pytest.importorskip("rapid_mlx.embedding").EmbeddingEngine
 
 FIELDS = {
     "embedding_dimensions",
