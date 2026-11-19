@@ -1,10 +1,11 @@
 """Gemma expert layout guards and selected affine-4 decode numerics."""
 
+import functools
 import importlib.util
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
@@ -13,8 +14,10 @@ from tests.headless_mlx.test_lattice_gate_characterization import Tensor, fake_m
 mx = fake_mx()
 # Load an isolated copy so metadata-only checks run even on hosts where
 # importing the native runtime itself requires an unavailable Metal device.
+# Keep its production name for module-filtered coverage, but do not register
+# this copy in sys.modules or replace the real module used by Metal tests.
 spec = importlib.util.spec_from_file_location(
-    "rapid_mlx.patches._gemma4_contract",
+    "rapid_mlx.patches.gemma4_affine4",
     Path(__file__).parents[1] / "rapid_mlx/patches/gemma4_affine4.py",
 )
 fused = importlib.util.module_from_spec(spec)
@@ -30,7 +33,8 @@ with patch.dict(sys.modules, {"mlx": mlx, "mlx.core": mx, "mlx.nn": mlx.nn}):
 
 @pytest.fixture(autouse=True)
 def runtime(monkeypatch):
-    monkeypatch.setattr(fused, "mx", mx)
+    monkeypatch.setattr(fused, "mx", fake_mx())
+    monkeypatch.delenv("RAPID_MLX_GEMMA4_AFFINE4", raising=False)
 
 
 class Bank(dict):
@@ -54,6 +58,12 @@ def fake_block(monkeypatch, combined):
     class Experts:
         def __call__(self, x, ids, scores):
             return "stock"
+
+    # Register installer mutations for teardown, including attributes it adds.
+    monkeypatch.setattr(Experts, "__call__", Experts.__call__)
+    for name in ("_rapid_gemma4_affine4_original", "_rapid_gemma4_affine4_patched"):
+        monkeypatch.setattr(Experts, name, None, raising=False)
+        monkeypatch.delattr(Experts, name)
 
     monkeypatch.setattr(
         fused, "_families", lambda: ((Experts, Switch, Activation, Bank),)
@@ -159,6 +169,20 @@ def test_dispatch_rechecks_layout_and_routes(monkeypatch):
     assert b(x, ids, scores) == "stock"
 
 
+def test_patch_class_is_idempotent(monkeypatch):
+    b = fake_block(monkeypatch, True)
+    fused._patch_class(type(b))
+    patched = type(b).__call__
+    fused._patch_class(type(b))
+    assert type(b).__call__ is patched
+
+
+def test_installer_skips_models_without_named_modules(monkeypatch):
+    monkeypatch.setattr(fused, "install_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(fused, "_probe", lambda _: pytest.fail("no blocks to probe"))
+    assert fused.install_gemma4_affine4(SimpleNamespace()) == 0
+
+
 @pytest.mark.parametrize("probe", [False, True, "error"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_installer_probe_policy_and_lifetime(monkeypatch, caplog, probe, enabled):
@@ -249,3 +273,210 @@ def test_shader_is_packaged_with_shared_license():
     patterns = data["tool"]["setuptools"]["package-data"]["rapid_mlx"]
     assert "patches/gemma4_affine4_*.metal" in patterns
     assert "patches/QWEN35_AFFINE4_LICENSE" in patterns
+
+
+@pytest.mark.parametrize("combined", [False, True])
+@pytest.mark.parametrize("tokens", [1, 2, 9])
+def test_kernel_build_cache_and_launch_contract(monkeypatch, combined, tokens):
+    b = fake_block(monkeypatch, combined)
+    runtime = fused.mx
+    # Give this isolated module a fresh cache without disturbing other suites.
+    monkeypatch.setattr(
+        fused, "kernels", functools.lru_cache(maxsize=1)(fused.kernels.__wrapped__)
+    )
+    gate_output = Tensor((tokens, 8, 704))
+    down_output = Tensor((1, tokens, 2816))
+    gate = Mock(return_value=[gate_output])
+    down = Mock(return_value=[down_output])
+    builder = Mock(side_effect=[gate, down])
+    monkeypatch.setattr(runtime.fast, "metal_kernel", builder)
+    gelu = Mock(return_value=Tensor((65536,)))
+    monkeypatch.setattr(fused, "nn", SimpleNamespace(gelu_approx=gelu))
+
+    x = Tensor((1, tokens, 2816))
+    ids = Tensor((1, tokens, 8), runtime.uint32)
+    scores = Tensor(ids.shape)
+    for _ in range(2):
+        assert fused.forward(b, x, ids, scores) is down_output
+
+    root = Path(fused.__file__).parent
+    header = (root / "qwen35_affine4_dot.metal").read_text()
+    assert header
+    assert builder.call_args_list == [
+        call(
+            name="rapid_gemma4_affine4_gateup",
+            input_names=[
+                "x",
+                "wg_q",
+                "g_scales",
+                "g_biases",
+                "wu_q",
+                "u_scales",
+                "u_biases",
+                "inds",
+                "gelutab",
+            ],
+            output_names=["y"],
+            header=header,
+            source=(root / "gemma4_affine4_gateup.metal").read_text(),
+        ),
+        call(
+            name="rapid_gemma4_affine4_down",
+            input_names=[
+                "act",
+                "wd_q",
+                "d_scales",
+                "d_biases",
+                "inds",
+                "scores",
+                "sdown",
+                "glog",
+            ],
+            output_names=["y"],
+            header=header,
+            source=(root / "qwen35_affine4_down.metal").read_text(),
+        ),
+    ]
+    runtime.arange.assert_called_once_with(65536, dtype=runtime.uint16)
+    runtime.arange.return_value.view.assert_called_once_with(runtime.bfloat16)
+    gelu.assert_called_once_with(runtime.arange.return_value.view.return_value)
+    runtime.eval.assert_called_once_with(gelu.return_value)
+    assert fused.kernels() == (gate, down, gelu.return_value)
+    assert fused.kernels.cache_info().misses == 1
+    assert fused.kernels.cache_info().hits == 2
+
+    sm = b.switch_glu
+    gp = sm.gate_up_proj if combined else sm.gate_proj
+    up = sm.gate_up_proj if combined else sm.up_proj
+    dp = sm.down_proj
+    gate_call = call(
+        inputs=[
+            x,
+            gp.weight,
+            gp.scales,
+            gp.biases,
+            up.weight,
+            up.scales,
+            up.biases,
+            ids,
+            gelu.return_value,
+        ],
+        template=[
+            ("T", x.dtype),
+            ("ROWS", 1),
+            ("K", 2816),
+            ("N", 704),
+            ("GS", 64),
+            ("TOPK", 8),
+            ("COMBINED", int(combined)),
+        ],
+        grid=(32, 704, 8 * tokens),
+        threadgroup=(32, 2, 1),
+        output_shapes=[(tokens, 8, 704)],
+        output_dtypes=[x.dtype],
+    )
+    down_call = call(
+        inputs=[gate_output, dp.weight, dp.scales, dp.biases, ids, scores, x, x],
+        template=[
+            ("T", x.dtype),
+            ("ROWS", 1),
+            ("I", 704),
+            ("H", 2816),
+            ("GS", 64),
+            ("TOPK", 8),
+            ("SHARED", 0),
+        ],
+        grid=(32, 2816, tokens),
+        threadgroup=(32, 2, 1),
+        output_shapes=[x.shape],
+        output_dtypes=[x.dtype],
+    )
+    assert gate.call_args_list == [gate_call, gate_call]
+    assert down.call_args_list == [down_call, down_call]
+    for launch, expected_call in ((gate, gate_call), (down, down_call)):
+        assert all(
+            actual is expected
+            for actual, expected in zip(
+                launch.call_args.kwargs["inputs"], expected_call.kwargs["inputs"]
+            )
+        )
+
+
+@pytest.mark.parametrize("patched", [False, True])
+@pytest.mark.parametrize(
+    "expected_value,actual_value,accepted",
+    [
+        (1, 1, True),
+        (1, 1.019, True),
+        (1, 1.0201, False),
+        (0, 0, True),
+        (0, 0.001, False),
+        (1, float("nan"), False),
+    ],
+)
+def test_probe_deterministic_inputs_and_relative_rms(
+    monkeypatch, patched, expected_value, actual_value, accepted
+):
+    import numpy as np
+
+    b = fake_block(monkeypatch, False)
+    runtime = fused.mx
+    # NumPy evaluates the probe's arithmetic; float32 stands in for bf16 here.
+    # Actual bf16 rounding and shader parity belong to the Metal suite.
+    for name in ("arange", "array", "sin", "sqrt", "mean", "square", "maximum"):
+        monkeypatch.setattr(runtime, name, Mock(side_effect=getattr(np, name)))
+    monkeypatch.setattr(runtime, "bfloat16", np.float32)
+    monkeypatch.setattr(runtime, "float32", np.float32)
+    monkeypatch.setattr(runtime, "uint32", np.uint32)
+    expected = np.full((1, 1, 2816), expected_value, dtype=np.float32)
+    actual = np.full_like(expected, actual_value)
+    original = Mock(return_value=expected)
+    monkeypatch.setattr(type(b), "__call__", original)
+    forward = Mock(return_value=actual)
+    monkeypatch.setattr(fused, "forward", forward)
+    if patched:
+        fused._patch_class(type(b))
+        b._rapid_gemma4_affine4 = True
+
+    assert fused._probe(b) == accepted
+    original.assert_called_once()
+    forward.assert_called_once()
+    block, x, ids, scores = original.call_args.args
+    assert block is b
+    assert all(a is e for a, e in zip(forward.call_args.args, (b, x, ids, scores)))
+    assert x.shape == (1, 1, 2816)
+    assert x.dtype == scores.dtype == np.float32
+    assert ids.dtype == np.uint32
+    np.testing.assert_array_equal(
+        x, np.sin(np.arange(2816, dtype=np.float32) * 0.731).reshape(1, 1, 2816)
+    )
+    np.testing.assert_array_equal(ids, [[[0, 17, 39, 58, 77, 92, 111, 127]]])
+    np.testing.assert_allclose(
+        scores, [[[0.07, 0.11, 0.23, 0.04, 0.13, 0.31, 0.19, 0.09]]]
+    )
+    runtime.arange.assert_called_once_with(2816, dtype=np.float32)
+    runtime.random.assert_not_called()
+    runtime.maximum.assert_called_once()
+    assert runtime.maximum.call_args.args[1] == 1e-12
+    runtime.eval.assert_called_once()
+    np.testing.assert_allclose(
+        runtime.eval.call_args.args[0], np.sqrt(runtime.sqrt.call_args.args[0])
+    )
+
+
+@pytest.mark.parametrize("reason", ["metal", "incompatible", "noncallable"])
+def test_installer_declines_without_probe(monkeypatch, reason):
+    b = fake_block(monkeypatch, True)
+    if reason == "metal":
+        monkeypatch.setattr(fused.mx.metal, "is_available", lambda: False)
+    elif reason == "incompatible":
+        b.switch_glu.down_proj.bits = 8
+    monkeypatch.setattr(fused, "install_enabled", lambda *a, **k: True)
+    probe = Mock(side_effect=AssertionError("must decline before probing"))
+    monkeypatch.setattr(fused, "_probe", probe)
+    model = SimpleNamespace(
+        named_modules=42 if reason == "noncallable" else lambda: [("experts", b)]
+    )
+    assert fused.install_gemma4_affine4(model) == 0
+    probe.assert_not_called()
+    assert "_rapid_gemma4_affine4_patched" not in type(b).__dict__
