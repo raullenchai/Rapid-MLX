@@ -549,14 +549,14 @@ def _embedding_metadata() -> dict:
     suppress its compatibility fallback when no real limit was discovered.
     """
     try:
-        engine = get_config().embedding_engine
-        if engine is None:
+        embedder = get_config().embedding_engine
+        if embedder is None:
             from ..server import _embedding_engine
 
-            engine = _embedding_engine
-        if engine is None or engine.is_loaded is not True:
+            embedder = _embedding_engine
+        if embedder is None or embedder.is_loaded is not True:
             return {}
-        model = engine._model
+        model = embedder._model
         config = getattr(model, "config", None)
         if config is None:
             config = getattr(model, "args", None)
@@ -578,13 +578,9 @@ def _embedding_metadata() -> dict:
                     break
             if "embedding_dimensions" in metadata:
                 break
-        limit = engine.effective_max_length
-        if type(limit) is int and limit > 0:
-            if (
-                engine._discover_model_max_length() is not None
-                or engine._max_length_setting != "auto"
-            ):
-                metadata["max_input_tokens"] = limit
+        limit = embedder.advertised_max_input_tokens()
+        if limit is not None:
+            metadata["max_input_tokens"] = limit
         pooling = getattr(config, "pooling_config", None)
         if isinstance(pooling, dict):
             mode = pooling.get("pooling_mode")

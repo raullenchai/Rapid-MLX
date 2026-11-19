@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Live embedding discovery metadata, independent of optional GPU imports."""
 
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.api.models import ModelInfo, ModelsResponse
 from rapid_mlx.config import get_config
+from rapid_mlx.embedding import EmbeddingEngine
 from rapid_mlx.routes import models
 
 FIELDS = {
@@ -42,13 +44,20 @@ def discovery(monkeypatch):
 
 
 def engine(config=None, *, maximum=4096, effective=1024, setting="auto", loaded=True):
-    return SimpleNamespace(
+    if setting != "auto":
+        source = "operator"
+    else:
+        source = "model" if maximum else "fallback"
+    fake = SimpleNamespace(
         is_loaded=loaded,
         _model=SimpleNamespace(config=config or SimpleNamespace(hidden_size=37)),
         effective_max_length=effective,
-        _max_length_setting=setting,
-        _discover_model_max_length=lambda: maximum,
+        _effective_max_length_source=source,
     )
+    fake.advertised_max_input_tokens = types.MethodType(
+        EmbeddingEngine.advertised_max_input_tokens, fake
+    )
+    return fake
 
 
 def cards(client):
@@ -134,7 +143,7 @@ def test_fallback_limit_is_not_model_metadata(discovery):
     cfg, client = discovery
     cfg.embedding_engine = engine(maximum=None, effective=512)
     assert "max_input_tokens" not in cards(client)
-    cfg.embedding_engine._max_length_setting = 256
+    cfg.embedding_engine._effective_max_length_source = "operator"
     cfg.embedding_engine.effective_max_length = 256
     assert cards(client)["max_input_tokens"] == 256
 
@@ -146,7 +155,7 @@ def test_failed_probe_does_not_break_discovery(discovery):
     def fail():
         raise RuntimeError("unavailable")
 
-    cfg.embedding_engine._discover_model_max_length = fail
+    cfg.embedding_engine.advertised_max_input_tokens = fail
     assert not FIELDS.intersection(cards(client))
 
 
@@ -189,3 +198,21 @@ def test_known_unnormalized_and_unknown_pooling(discovery):
     card = cards(client)
     assert card["normalized"] is False
     assert "pooling" not in card
+
+
+@pytest.mark.parametrize(
+    ("setting", "model_max", "effective", "advertised"),
+    [("auto", None, 512, None), ("auto", 2048, 2048, 2048), ("256", None, 256, 256)],
+)
+def test_resolved_limit_source_drives_advertised_limit(
+    setting, model_max, effective, advertised
+):
+    fake = SimpleNamespace(
+        _max_length_setting=setting,
+        _discover_model_max_length=lambda: model_max,
+        effective_max_length=None,
+        overflow_policy="truncate",
+    )
+    EmbeddingEngine._resolve_effective_max_length(fake)
+    assert fake.effective_max_length == effective
+    assert EmbeddingEngine.advertised_max_input_tokens(fake) == advertised
