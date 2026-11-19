@@ -23,6 +23,8 @@ def main():
     up.add_argument("--plugins-dir", default="apps")
     up.add_argument("--background-concurrency", type=int, default=1)
     up.add_argument("--journal-max-mb", type=float, default=500)
+    up.add_argument("--journal-queue-max-ops", type=int, default=256)
+    up.add_argument("--journal-queue-max-bytes", type=int, default=8 * 1024 * 1024)
     up.add_argument("--admission", choices=("auto", "hub", "engine"), default="auto")
     up.add_argument("--queue-max-length", type=int, default=32)
     up.add_argument("--queue-max-wait", type=float, default=120)
@@ -81,6 +83,8 @@ def main():
         args.port,
         args.background_concurrency,
         journal_max_mb=args.journal_max_mb,
+        journal_queue_max_ops=args.journal_queue_max_ops,
+        journal_queue_max_bytes=args.journal_queue_max_bytes,
         admission=args.admission,
         queue_max_length=args.queue_max_length,
         queue_max_wait=args.queue_max_wait,

@@ -5,8 +5,9 @@ import json
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Lock
 
 
 def private_write(path, text, append=False):
@@ -59,8 +60,21 @@ def captured(value):
     return encoded[:65536].decode(errors="ignore")
 
 
+class JournalOverloadedError(Exception):
+    """No room for a journal control operation; callers may retry."""
+
+
 class Journal:
-    def __init__(self, directory, max_mb=500):
+    def __init__(
+        self, directory, max_mb=500, queue_max_ops=256, queue_max_bytes=8 * 1024 * 1024
+    ):
+        if queue_max_ops < 1 or queue_max_bytes < 1:
+            raise ValueError("Journal queue limits must be positive")
+        self.queue_max_ops = queue_max_ops
+        self.queue_max_bytes = queue_max_bytes
+        self.pending_ops = self.pending_bytes = 0
+        self.lock = Lock()
+        self.closed = False
         self.directory = directory
         self.max_bytes = int(max_mb * 1024 * 1024)
         self.dropped_records = 0
@@ -77,26 +91,91 @@ class Journal:
         )
         self.prune()
 
+    def _submit(self, operation, *args, **kwargs):
+        """Bound running and queued work, retaining no caller-owned payloads."""
+        dropped = Future()
+        dropped.set_result(None)
+        with self.lock:
+            if self.closed or self.pending_ops >= self.queue_max_ops:
+                if operation == "append":
+                    self.dropped_records += 1
+                    return dropped
+                raise JournalOverloadedError("Journal queue full or closed")
+            if operation == "append":
+                entry = dict(args[0])
+                request = entry.pop("request", None)
+                response = entry.pop("response", None)
+                policy = self.policy(entry["plugin"], entry.get("project"))
+                try:
+                    if policy.get("payload") and (
+                        "request" in args[0] or "response" in args[0]
+                    ):
+                        entry.update(
+                            request=captured(request),
+                            response=captured(response),
+                            payload_expires_at=time.time() + policy["ttl_hours"] * 3600,
+                        )
+                    encoded = json.dumps(entry, ensure_ascii=False).encode()
+                    degraded = False
+                    if self.pending_bytes + len(encoded) > self.queue_max_bytes:
+                        degraded = True
+                        for key in ("request", "response", "payload_expires_at"):
+                            entry.pop(key, None)
+                        encoded = json.dumps(entry, ensure_ascii=False).encode()
+                    if degraded:
+                        self.dropped_records += 1
+                    if self.pending_bytes + len(encoded) > self.queue_max_bytes:
+                        if not degraded:
+                            self.dropped_records += 1
+                        return dropped
+                    # Snapshot nested metadata too; queued work must not retain
+                    # or observe later mutations of the request's entry.
+                    args = (json.loads(encoded),)
+                except (ValueError, TypeError, UnicodeError):
+                    self.dropped_records += 1
+                    return dropped
+                size = len(encoded)
+            else:
+                size = len(json.dumps([args, kwargs]).encode())
+                if self.pending_bytes + size > self.queue_max_bytes:
+                    raise JournalOverloadedError("Journal queue byte limit reached")
+            self.pending_ops += 1
+            self.pending_bytes += size
+            future = self.worker.submit(getattr(self, "_" + operation), *args, **kwargs)
+
+        def completed(_):
+            with self.lock:
+                self.pending_ops -= 1
+                self.pending_bytes -= size
+
+        future.add_done_callback(completed)
+        # Overload fallback is best-effort: enqueue metadata without making
+        # the proxied request wait for the stalled worker to persist it.
+        return dropped if operation == "append" and degraded else future
+
     def append(self, entry):
-        return self.worker.submit(self._append, entry).result()
+        return self._submit("append", entry).result()
 
     def read(self, plugin=None, project=None, limit=50):
-        return self.worker.submit(self._read, plugin, project, limit).result()
+        return self._submit("read", plugin, project, limit).result()
 
     def prune(self, **kwargs):
-        return self.worker.submit(self._prune, **kwargs).result()
+        return self._submit("prune", **kwargs).result()
 
     def configure(self, plugin, project, enabled, ttl):
-        return self.worker.submit(
-            self._configure, plugin, project, enabled, ttl
-        ).result()
+        return self._submit("configure", plugin, project, enabled, ttl).result()
 
     async def call(self, operation, *args, **kwargs):
-        """Serialize disk operations without blocking admission or SSE delivery."""
-        future = self.worker.submit(getattr(self, "_" + operation), *args, **kwargs)
-        return await asyncio.wrap_future(future)
+        """Serialize disk operations without blocking the event loop."""
+        future = self._submit(operation, *args, **kwargs)
+        del args, kwargs
+        # Cancellation must not cancel a queued executor future: its work item
+        # retains memory until drained, so keep it counted until it really runs.
+        return await asyncio.shield(asyncio.wrap_future(future))
 
     async def close(self):
+        with self.lock:
+            self.closed = True
         await asyncio.to_thread(self.worker.shutdown, wait=True)
 
     def _account(self):
@@ -123,26 +202,20 @@ class Journal:
     def _append(self, entry):
         try:
             entry = dict(entry, ts=datetime.now(timezone.utc).isoformat())
-            policy = self.policy(entry["plugin"], entry.get("project"))
-            request, response = entry.pop("request", None), entry.pop("response", None)
-            if policy.get("payload"):
-                entry.update(
-                    request=captured(request),
-                    response=captured(response),
-                    payload_expires_at=time.time() + policy["ttl_hours"] * 3600,
-                )
             path = self.directory / entry["plugin"] / (entry["ts"][:10] + ".jsonl")
             text = json.dumps(entry) + "\n"
             size = len(text.encode())
             if size > self.max_bytes:
-                self.dropped_records += 1
+                with self.lock:
+                    self.dropped_records += 1
                 return
             self._evict(size)
             private_write(path, text, append=True)
             self.sizes[path] = self.sizes.get(path, 0) + size
             self.total_bytes += size
         except (OSError, ValueError, TypeError):
-            self.dropped_records += 1
+            with self.lock:
+                self.dropped_records += 1
 
     def _prune(self, required=0, plugin=None, project=None, delete=False):
         now = time.time()
@@ -178,7 +251,8 @@ class Journal:
             self._account()
             self._evict(required)
         except OSError:
-            self.dropped_records += 1
+            with self.lock:
+                self.dropped_records += 1
 
     def _read(self, plugin=None, project=None, limit=50):
         # Read tails backwards, bounding disk I/O even with sparse project filters.

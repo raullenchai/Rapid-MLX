@@ -21,7 +21,7 @@ from fastapi.responses import (
 )
 
 from .manifest import discover
-from .storage import Journal, atomic_write, private_write
+from .storage import Journal, JournalOverloadedError, atomic_write, private_write
 from .supervisor import Supervisor
 
 
@@ -133,6 +133,8 @@ class Hub:
         queue_max_wait=120,
         job_stale_seconds=600,
         discovery_file=None,
+        journal_queue_max_ops=256,
+        journal_queue_max_bytes=8 * 1024 * 1024,
     ):
         if journal_max_mb <= 0 or job_stale_seconds <= 0:
             raise ValueError("Journal cap and job stale interval must be positive")
@@ -158,6 +160,7 @@ class Hub:
         self.job_stale_seconds = job_stale_seconds
         self.ui_codes = {}
         self.subscribers = set()
+        self.cleanup_tasks = set()
         self.last_catalog = None
         self.known_models = {}
         self.host, self.port = host, port
@@ -187,7 +190,12 @@ class Hub:
         self.gates = {
             name: asyncio.Semaphore(background_concurrency) for name in engines
         }
-        self.journal = Journal(self.data_dir / "journal", journal_max_mb)
+        self.journal = Journal(
+            self.data_dir / "journal",
+            journal_max_mb,
+            journal_queue_max_ops,
+            journal_queue_max_bytes,
+        )
         self.jobs_path = self.data_dir / "jobs.json"
         self.jobs = (
             json.loads(self.jobs_path.read_text()) if self.jobs_path.exists() else {}
@@ -308,7 +316,10 @@ class Hub:
                 previous_plugins = plugins
             self.stale_jobs()
             if time.monotonic() - last_prune >= 3600:
-                await self.journal.call("prune")
+                try:
+                    await self.journal.call("prune")
+                except JournalOverloadedError:
+                    pass
                 last_prune = time.monotonic()
             await asyncio.sleep(5)
 
@@ -339,6 +350,8 @@ def create_app(hub, supervise=True):
                     == hub.instance["instance_id"]
                 ):
                     path.unlink()
+            while hub.cleanup_tasks:
+                await asyncio.gather(*hub.cleanup_tasks)
             await hub.client.aclose()
             await hub.journal.close()
 
@@ -346,6 +359,10 @@ def create_app(hub, supervise=True):
     app.state.hub = hub
 
     app.add_middleware(OriginGuard)
+
+    @app.exception_handler(JournalOverloadedError)
+    async def journal_overloaded(request, exc):
+        return Response("Journal busy", status_code=503, headers={"Retry-After": "1"})
 
     @app.get("/login")
     async def login(request: Request):
@@ -661,6 +678,7 @@ def create_app(hub, supervise=True):
         )
         capture_payload = hub.journal.policy(identity, project).get("payload", False)
         acquired, upstream = False, None
+        cleanup_task = None
 
         async def cleanup():
             nonlocal acquired
@@ -675,11 +693,18 @@ def create_app(hub, supervise=True):
                 await hub.journal.call("append", entry)
 
         async def finish():
-            # Cleanup must outlive a cancelled ASGI streaming scope.
-            await asyncio.shield(asyncio.create_task(cleanup()))
+            nonlocal cleanup_task
+            # Repeated cancellation must reuse the same cleanup and permit release.
+            if cleanup_task is None:
+                cleanup_task = asyncio.create_task(cleanup())
+                hub.cleanup_tasks.add(cleanup_task)
+                cleanup_task.add_done_callback(hub.cleanup_tasks.discard)
+            await asyncio.shield(cleanup_task)
 
         async def send_upstream():
             nonlocal upstream
+            if await request.is_disconnected():
+                raise asyncio.CancelledError()
             upstream = await hub.client.send(req, stream=True)
 
         try:
@@ -732,7 +757,9 @@ def create_app(hub, supervise=True):
                 content=body,
                 headers=headers,
             )
-            await hub.journal.call("append", dict(entry, status=None))
+            await await_connected(
+                hub.journal.call("append", dict(entry, status=None)), request
+            )
             await await_connected(send_upstream(), request)
             entry["status"] = upstream.status_code
             headers = {

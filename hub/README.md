@@ -127,7 +127,16 @@ maintenance and reads/writes prune expired data. `--journal-max-mb` defaults to
 500; oldest daily files are evicted to enforce the total journal cap (so retention
 is a maximum, not a minimum). Oversized records are dropped. Journal write
 failures never fail a model request; admin status exposes `dropped_records` for
-the current Hub process. Persistence is synchronous, without fsync durability.
+the current Hub process. Persistence runs on one worker without fsync durability.
+Running and queued journal operations are bounded by `--journal-queue-max-ops`
+(default 256) and their serialized bytes by `--journal-queue-max-bytes` (default
+8388608). On overload, payloads are dropped first and metadata is kept if it fits;
+otherwise the record is dropped. Both payload-only losses and whole-record drops
+increment `dropped_records`. Overloaded appends return immediately, including
+when metadata is accepted for persistence, and never fail the model request.
+Journal control/read operations return 503 + Retry-After when full. Disconnects cancel persistence waits and release admission; accepted
+writes still drain in FIFO order. Shutdown awaits detached request cleanup before
+closing the upstream client and draining persistence.
 
 | Endpoint | Behavior |
 | --- | --- |
