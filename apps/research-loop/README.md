@@ -36,7 +36,8 @@ tool has no authentication. Use local endpoints to keep discussions on this Mac.
 2. **Discuss** (`#/p/<slug>`): edit and save the research goal, talk with a chosen
    model, and add your own claim or an assistant message as a hypothesis. The model sees the
    goal, metric, fixed budget, previous discussion, and a compact verdict ledger
-   from up to five recent runs (60 entries). Nothing is sent until you send a message.
+   from up to five recent runs (60 entries). Discussion context is sent when you send
+   a message; attaching PDFs can also request metadata from the configured chat model.
 3. **Experiments** (`#/p/<slug>/experiments`): choose the number of experiments and **Start
    experiments** from Discuss. The baseline runs first; untested researcher hypotheses run
    before model proposals. The main chart shows experiment number versus metric,
@@ -304,8 +305,8 @@ helpers are reused. PDF extraction needs the engine environment's `pypdf` and
 `psutil`; missing readers produce a per-file error without blocking other files.
 No new packages are installed by the workbench.
 
-Open **Literature** beside the goal in Discuss, or use **2 Literature** in the
-research strip. Upload PDF, Markdown, UTF-8 text, TeX or HTML files (20 MiB each),
+The visible **Literature** card sits directly under the goal in Discuss, and **2 Literature** in the
+research strip scrolls to and highlights it. Use **Add papers** to upload PDF, Markdown, UTF-8 text, TeX or HTML files (20 MiB each),
 or attach an absolute local folder path. Folder attachments are stored in
 `project.json` as `literature_dirs` and are read-only: **Detach** removes the
 attachment, never the original files. **Remove** deletes an uploaded copy only.
@@ -323,9 +324,9 @@ passages. Changing endpoint or embedding model requires re-indexing. Snapshots
 live under gitignored `projects/`; templates are unchanged.
 
 Discuss retrieves up to six semantic/lexical passages, removes overlapping
-chunks, and supplies them as `[S1]`…`[S6]` with instructions to cite only supporting
+chunks, and supplies numbered sources with instructions to cite only supporting
 claims and acknowledge silence. A reply saves `citations` only for supplied
-source markers actually present in its text. Expand a citation chip to read the
+source markers actually present in its text. Click an inline `[S#]` marker or expand a citation chip to read the
 saved passage, filename, page/section and chunk ID. A Sources note explains empty
 retrieval, unused sources or an unavailable endpoint. Citations are source
 snapshots, so old discussions remain inspectable after a file is removed.
@@ -341,8 +342,21 @@ context is recorded as a `literature_context` journal event with source IDs and
 passage snapshots. Typed plan/edit schemas and numerical verdict rules are
 unchanged. Direct `loop.py` use accepts the same embedding flags.
 
-**Privacy:** literature indexing and retrieval make no network calls except to
-the configured embedding endpoint; discussion and loop messages go only to the
+Paper labels use usable PDF metadata, otherwise one small strict-JSON request
+with first-page text to the configured default chat model. The index caches this
+metadata (including page count and filename fallbacks) by SHA-256, separately from
+vectors. Edit and save a paper label on the Literature card; overrides live in
+`project.json` under `literature_labels` and appear in chips, passages, hypothesis
+cards and Results. Saved passage text stays immutable. Each Discuss prompt remaps
+historical and retrieved citation markers into a shared table of source snapshots,
+so a follow-up cannot silently bind an old marker to a different paper. Legacy
+markers without saved provenance are marked unavailable in model history.
+Discuss asks for a short answer and 1–3 claim/why/prediction hypotheses, aiming
+under 250 words; the prompt cannot guarantee model compliance.
+
+**Privacy:** literature indexing and retrieval send text only to the configured
+embedding endpoint and (for PDF metadata extraction) the configured default chat
+model endpoint; discussion and loop messages go only to the
 configured model endpoints. No paper URLs are fetched, no external search service
 is used, and extraction does not follow HTML links. With localhost endpoints,
 passages, vectors, discussions and sources stay on this machine. An external
@@ -358,6 +372,7 @@ Literature APIs are relative to `/api/projects/<p>`:
 | POST | `/literature/folder` | `{path}` (absolute read-only directory); starts indexing |
 | POST | `/literature/remove-folder` | `{path}`; detaches and re-indexes |
 | POST | `/literature/remove` | `{name}`; removes uploaded copy and re-indexes |
+| POST | `/literature/label` | `{file, label}`; saves a display label without re-embedding |
 | POST | `/literature/index` | `{}`; background incremental re-index |
 | POST | `/hypotheses` | Also accepts `discussion_index` to copy a saved assistant turn's citations |
 

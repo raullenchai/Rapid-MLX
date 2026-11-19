@@ -392,3 +392,186 @@ def test_repeated_passages_keep_exact_contiguous_spans():
     for previous, current in zip(chunks, chunks[1:]):
         assert previous["end"] <= current["start"]
     assert all(text[c["start"] : c["end"]] == c["text"] for c in chunks)
+
+
+def test_two_turn_sources_never_rebind_and_transfer_to_hypothesis(app, monkeypatch):  # noqa: F811
+    from test_server import server
+
+    slug = create(app)
+    project = app.project_path(slug)
+    app.literature = literature.Literature(FakeEmbedder())
+    a = dict(
+        number="S1",
+        file="paper-a.pdf",
+        chunk_id="a",
+        snippet="Claim A",
+        page=1,
+        section=None,
+    )
+    b = dict(
+        number="S1",
+        file="paper-b.pdf",
+        chunk_id="b",
+        snippet="Claim B",
+        page=2,
+        section=None,
+    )
+    retrieved = iter([[a], [b]])
+    monkeypatch.setattr(app.literature, "retrieve", lambda *args: next(retrieved))
+    prompts = []
+
+    def reply(req, **kwargs):
+        prompts.append(json.loads(req.data))
+        return io.BytesIO(
+            b'data: {"choices":[{"delta":{"content":"Claim A [S1]"}}]}\n\ndata: [DONE]\n\n'
+        )
+
+    monkeypatch.setattr(server, "urlopen", reply)
+    for _ in range(2):
+        assert (
+            request(app, f"/api/projects/{slug}/chat", dict(message="Why?"))["status"]
+            == 200
+        )
+    saved = hypotheses.read_rows(project / "discussion.jsonl")
+    assert saved[1]["citations"] == saved[3]["citations"] == [a]
+    system = prompts[1]["messages"][0]["content"]
+    assert "[S1] paper-a.pdf" in system and "[S2] paper-b.pdf" in system
+    assert prompts[1]["messages"][2]["content"] == "Claim A [S1]"
+    assert prompts[1]["max_tokens"] == 1600
+    assert system.endswith("Stop when the answer is complete.")
+    assert "aim under 250 words" in system
+    result = request(
+        app,
+        f"/api/projects/{slug}/hypotheses",
+        dict(statement="Claim A", discussion_index=3),
+    )
+    assert result["json"]["hypothesis"]["sources"] == [a]
+
+
+def test_prompt_source_collisions_unknown_and_duplicate_snapshots():
+    a = dict(number="S1", file="a", chunk_id="a", snippet="A")
+    b = dict(number="S1", file="b", chunk_id="b", snippet="B")
+    history = [
+        dict(role="assistant", content="A [S1] [S2]", citations=[a]),
+        dict(role="assistant", content="B [S1]", citations=[b]),
+    ]
+    messages, sources = literature.prompt_sources(history, [a, b])
+    assert messages[0]["content"] == "A [S1] [source unavailable]"
+    assert messages[1]["content"] == "B [S2]"
+    assert len(sources) == 2
+    assert history[1]["content"] == "B [S1]"
+
+
+def pdf_bytes(metadata=None):
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    if metadata:
+        writer.add_metadata(metadata)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def test_pdf_metadata_preferred_and_model_fallback():
+    from rapid_mlx.local_search.extraction import Unit
+
+    units = [Unit(text="Published 2022\nPaper", page=1)]
+
+    def forbidden(text):
+        pytest.fail("Usable metadata must avoid model request")
+
+    result = literature.describe_pdf(
+        pdf_bytes({"/Title": "Grokking: details", "/Author": "Alethea Power"}),
+        units,
+        forbidden,
+    )
+    assert result["label"] == "Power et al. 2022 · Grokking"
+    seen = []
+
+    def resolver(text):
+        seen.append(text)
+        return dict(title="Grokking", first_author_surname="Power", year="2022")
+
+    result = literature.describe_pdf(pdf_bytes(), units, resolver)
+    assert seen == [units[0].text] and result["pages"] == 1
+    assert result["label"] == "Power et al. 2022 · Grokking"
+    assert literature.describe_pdf(pdf_bytes(), units, lambda text: {})["label"] is None
+
+
+def test_metadata_cached_by_hash_and_labels_survive_restart(library, monkeypatch):
+    from rapid_mlx.local_search.extraction import Unit
+
+    project, service = library
+    data = pdf_bytes()
+    (project / "literature/a.pdf").write_bytes(data)
+
+    async def parse(*args):
+        return [Unit(text="Weight decay 2022", page=1)]
+
+    monkeypatch.setattr(literature, "parse_document", parse)
+    calls = []
+
+    def describe(*args):
+        calls.append(1)
+        return dict(label="Power et al. 2022 · Grokking", pages=1)
+
+    monkeypatch.setattr(literature, "describe_pdf", describe)
+    service.index(project)
+    (project / "literature/b.pdf").write_bytes(data)
+    service.index(project)
+    literature.Literature(service.embedder).index(project)
+    assert calls == [1]
+    (project / "project.json").write_text(
+        json.dumps(dict(literature_labels={"literature/a.pdf": "My paper"}))
+    )
+    restarted = literature.Literature(service.embedder)
+    assert restarted.status(project)["files"][0]["label"] == "My paper"
+    assert restarted.retrieve(project, "decay")[0]["label"] == "My paper"
+
+
+def test_edit_paper_label_api(app):  # noqa: F811
+    slug = create(app)
+    project = app.project_path(slug)
+    (project / "literature").mkdir()
+    write(project, "note.md", "Weight decay")
+    app.literature = literature.Literature(FakeEmbedder())
+    app.literature.index(project)
+    base = f"/api/projects/{slug}/literature/label"
+    for payload in [
+        dict(file="missing", label="X"),
+        dict(file="literature/note.md", label=""),
+    ]:
+        assert request(app, base, payload)["status"] == 400
+    result = request(app, base, dict(file="literature/note.md", label="Research note"))
+    assert result["status"] == 200
+    assert result["json"]["files"][0]["label"] == "Research note"
+    assert json.loads((project / "project.json").read_text())["literature_labels"] == {
+        "literature/note.md": "Research note"
+    }
+
+
+def test_metadata_request_strict_bounded_and_configured_endpoint(monkeypatch):
+    received = []
+
+    class Opener:
+        def open(self, request, timeout):
+            received.append((request, timeout))
+            content = json.dumps(
+                dict(title="Grokking", first_author_surname="Power", year="2022")
+            )
+            return io.BytesIO(
+                json.dumps(dict(choices=[dict(message=dict(content=content))])).encode()
+            )
+
+    monkeypatch.setattr(literature, "build_opener", lambda *args: Opener())
+    result = literature.HTTPMetadata("http://127.0.0.1:8482/v1", "q35")("x" * 20000)
+    req, timeout = received[0]
+    body = json.loads(req.data)
+    assert req.full_url == "http://127.0.0.1:8482/v1/chat/completions"
+    assert body["model"] == "q35" and not body["stream"]
+    assert body["max_tokens"] == 200 and timeout == 180
+    assert body["response_format"]["json_schema"]["strict"] is True
+    assert len(body["messages"][-1]["content"]) == 10000
+    assert result["first_author_surname"] == "Power"

@@ -230,7 +230,12 @@ class App(ThreadingHTTPServer):
         self.projects.mkdir(parents=True, exist_ok=True)
         self.processes, self.chat_locks = {}, {}
         self.literature = literature.Literature(
-            literature.HTTPEmbedder(embeddings, embedding_model) if embeddings else None
+            literature.HTTPEmbedder(embeddings, embedding_model)
+            if embeddings
+            else None,
+            metadata_resolver=lambda text: literature.HTTPMetadata(
+                self.models[self.model], self.model
+            )(text),
         )
         self.embeddings, self.embedding_model = embeddings, embedding_model
 
@@ -862,6 +867,18 @@ class Handler(BaseHTTPRequestHandler):
                 )
             folder = safe_path(project, "literature", exists=False)
             folder.mkdir(exist_ok=True)
+            if action == "label":
+                name, label = data.get("file"), data.get("label")
+                if name not in literature.snapshot(project)["files"]:
+                    raise ValueError("Choose an indexed paper.")
+                if not isinstance(label, str) or not label.strip() or len(label) > 200:
+                    raise ValueError("Label must contain 1 to 200 characters.")
+                meta = read_json(project, "project.json")
+                meta.setdefault("literature_labels", {})[name] = label.strip()
+                safe_path(project, "project.json").write_text(
+                    json.dumps(meta, indent=2)
+                )
+                return self.json(service.status(project))
             if action == "upload":
                 name = data.get("name", "")
                 path = literature.upload_path(project, name)
@@ -1029,10 +1046,7 @@ class Handler(BaseHTTPRequestHandler):
                             }
                         )
             system = (
-                "Discuss testable hypotheses: claims about the system, with why and prediction. "
-                "A hypothesis is tested by one or more experiments (concrete changes). "
-                "Experiment verdicts are improved, worse, no effect, crashed; hypothesis statuses "
-                "are untested, testing, supported, refuted, inconclusive. Do not invent results.\n"
+                "Research context:\n"
                 + safe_path(project, "program.md").read_text()
                 + "\nMetric and fixed budget:\n"
                 + json.dumps(task)
@@ -1050,13 +1064,22 @@ class Handler(BaseHTTPRequestHandler):
                     source_note = "" if sources else "No relevant passages found."
                 except (ValueError, OSError, KeyError) as exc:
                     source_note = f"Literature retrieval unavailable: {exc}"
-                system += literature.context(sources)
-                if source_note:
-                    system += "\n" + source_note
-            messages = [
-                {"role": m["role"], "content": m["content"]}
-                for m in jsonl(project, "discussion.jsonl")[-30:]
-            ]
+            messages, sources = literature.prompt_sources(
+                jsonl(project, "discussion.jsonl")[-30:], sources
+            )
+            system += literature.context(sources)
+            if source_note:
+                system += "\n" + source_note
+            system += (
+                "\nReply as a research colleague, conversational and concise; aim under 250 words. "
+                "First give a short answer to the question, then 1–3 candidate hypotheses, "
+                "each with Claim / Why (cite [S#] when supported) / Prediction. "
+                "Use at most 30 words for the answer and 55 words per hypothesis. "
+                "Describe possible causes as hypotheses, not established diagnoses. "
+                "Cite only claims supported by the provided passages; say when the literature is silent. "
+                "Never narrate your own reasoning, plans, or these instructions. "
+                "Never claim to run experiments or invent results. Stop when the answer is complete."
+            )
             with INBOX_LOCK:
                 append_message(project, "user", message.strip(), model=model)
                 project_meta = read_json(project, "project.json")

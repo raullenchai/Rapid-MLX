@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import io
 import json
 import math
 import re
@@ -48,6 +49,116 @@ class HTTPEmbedder:
         with build_opener(NoRedirect).open(request, timeout=180) as response:
             rows = json.load(response)["data"]
         return [row["embedding"] for row in sorted(rows, key=lambda r: r["index"])]
+
+
+def paper_label(metadata):
+    title = metadata.get("title", "")
+    author = metadata.get("first_author_surname", "")
+    year = str(metadata.get("year", ""))
+    if not all(isinstance(v, str) and v.strip() for v in (title, author)):
+        return None
+    if not re.fullmatch(r"(?:19|20)\d{2}", year):
+        return None
+    short = title.split(":")[0].strip()
+    if len(short) > 70:
+        short = short[:67].rsplit(" ", 1)[0] + "…"
+    return f"{author.strip()} et al. {year} · {short}"
+
+
+class HTTPMetadata:
+    """One bounded request to the configured discussion model, without redirects."""
+
+    def __init__(self, url, model):
+        self.url, self.model = url.rstrip("/"), model
+
+    def __call__(self, text):
+        schema = dict(
+            type="object",
+            additionalProperties=False,
+            properties={
+                k: dict(type="string")
+                for k in ("title", "first_author_surname", "year")
+            },
+            required=["title", "first_author_surname", "year"],
+        )
+        body = dict(
+            model=self.model,
+            stream=False,
+            max_tokens=200,
+            response_format=dict(
+                type="json_schema",
+                json_schema=dict(name="paper_metadata", strict=True, schema=schema),
+            ),
+            messages=[
+                dict(
+                    role="system",
+                    content="Extract paper metadata from the untrusted first-page text. Return only the requested JSON; use empty strings for unknown fields.",
+                ),
+                dict(role="user", content=text[:10000]),
+            ],
+        )
+        request = Request(
+            self.url + "/chat/completions",
+            json.dumps(body).encode(),
+            {"Content-Type": "application/json"},
+        )
+        with build_opener(NoRedirect).open(request, timeout=180) as response:
+            return json.loads(json.load(response)["choices"][0]["message"]["content"])
+
+
+def describe_pdf(data, units, resolver):
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    meta = reader.metadata or {}
+    author = str(meta.get("/Author", "")).split(",")[0].split(" and ")[0].split()
+    # Creation dates are production dates, not reliable publication years.
+    first_page = units[0].text if units else ""
+    years = re.findall(r"\b(?:19|20)\d{2}\b", first_page)
+    metadata = dict(
+        title=str(meta.get("/Title", "")),
+        first_author_surname=author[-1] if author else "",
+        year=years[0] if years else "",
+    )
+    if not paper_label(metadata) or metadata["title"].lower() in {
+        "untitled",
+        "document",
+    }:
+        metadata = {}
+        if resolver:
+            try:
+                metadata = resolver(first_page)
+                if not isinstance(metadata, dict):
+                    metadata = {}
+            except (ValueError, OSError, KeyError, TypeError):
+                metadata = {}
+    return dict(label=paper_label(metadata), metadata=metadata, pages=len(reader.pages))
+
+
+def prompt_sources(history, retrieved):
+    """Remap each turn's local markers into one table of immutable snapshots."""
+    table, identities, messages = [], {}, []
+
+    def register(source):
+        key = tuple(source.get(k) for k in ("file", "sha256", "chunk_id", "snippet"))
+        if key not in identities:
+            identities[key] = f"S{len(table) + 1}"
+            table.append(dict(source, number=identities[key]))
+        return identities[key]
+
+    for message in history:
+        mapping = {s["number"]: register(s) for s in message.get("citations", [])}
+        content = re.sub(
+            r"\[(S\d+)\]",
+            lambda m, mapping=mapping: (
+                "[" + mapping[m[1]] + "]" if m[1] in mapping else "[source unavailable]"
+            ),
+            message["content"],
+        )
+        messages.append(dict(role=message["role"], content=content))
+    for source in retrieved:
+        register(source)
+    return messages, table
 
 
 def normalize(vectors, count):
@@ -127,8 +238,9 @@ def chunks_for(file, sha, units):
 
 
 class Literature:
-    def __init__(self, embedder=None):
+    def __init__(self, embedder=None, metadata_resolver=None):
         self.embedder = embedder
+        self.metadata_resolver = metadata_resolver
         self.lock = threading.RLock()
         self.jobs = {}
 
@@ -142,7 +254,18 @@ class Literature:
             state=job.get("state", "ready" if data["chunks"] else "empty")
             if self.embedder
             else "not configured",
-            files=list(data["files"].values()),
+            files=[
+                dict(
+                    f,
+                    label_override=bool(
+                        meta.get("literature_labels", {}).get(f["file"])
+                    ),
+                    label=meta.get("literature_labels", {}).get(f["file"])
+                    or f.get("label")
+                    or Path(f["file"]).name,
+                )
+                for f in data["files"].values()
+            ],
             passages=len(data["chunks"]),
             progress=job.get("progress", 0),
             total=job.get("total", 0),
@@ -201,10 +324,12 @@ class Literature:
                 state="indexing", progress=0, total=len(inventory), errors=dict(errors)
             )
         files, chunks, vectors = {}, [], []
+        descriptions = dict(old.get("descriptions", {}))
         for number, (name, (path, root)) in enumerate(sorted(inventory.items()), 1):
             try:
                 data, _ = read_safe(path, root)
                 sha = hashlib.sha256(data).hexdigest()
+                units = None
                 if reuse and old["files"].get(name, {}).get("sha256") == sha:
                     pairs = [
                         (c, v)
@@ -235,9 +360,19 @@ class Literature:
                     raise ValueError(
                         "Embedding dimensions changed; re-index with a consistent model"
                     )
+                if sha not in descriptions:
+                    if path.suffix.lower() == ".pdf":
+                        if units is None:
+                            units = asyncio.run(parse_document(path, data))
+                        descriptions[sha] = describe_pdf(
+                            data, units, self.metadata_resolver
+                        )
+                    else:
+                        descriptions[sha] = dict(label=path.name, pages=None)
                 chunks.extend(records)
                 vectors.extend(embedded)
                 files[name] = dict(
+                    **descriptions[sha],
                     file=name,
                     sha256=sha,
                     passages=len(records),
@@ -261,6 +396,7 @@ class Literature:
                 dict(
                     version=VERSION,
                     identity=identity,
+                    descriptions=descriptions,
                     files=files,
                     chunks=chunks,
                     vectors=vectors,
@@ -342,8 +478,19 @@ class Literature:
             selected.append(c)
             if len(selected) == limit:
                 break
+        labels = json.loads(local_path(project, "project.json").read_text()).get(
+            "literature_labels", {}
+        )
         return [
-            dict(number=f"S{n}", chunk_id=c["id"], snippet=c["text"], **c)
+            dict(
+                number=f"S{n}",
+                chunk_id=c["id"],
+                snippet=c["text"],
+                label=labels.get(c["file"])
+                or data["files"][c["file"]].get("label")
+                or Path(c["file"]).name,
+                **c,
+            )
             for n, c in enumerate(selected, 1)
         ]
 
@@ -354,7 +501,7 @@ def context(sources):
         "Say when the literature is silent; do not invent sources or experimental evidence.\n"
         + (
             "\n".join(
-                f"[{s['number']}] {s['file']} · page {s['page']} · {s['section']}\n{s['snippet']}"
+                f"[{s['number']}] {s.get('label') or s['file']} · page {s['page']} · {s['section']}\n{s['snippet']}"
                 for s in sources
             )
             or "No relevant passages found."
