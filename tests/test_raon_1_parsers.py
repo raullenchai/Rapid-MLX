@@ -2,6 +2,7 @@
 """Release-format fixtures, including the vendor's non-Qwen edge semantics."""
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -108,7 +109,16 @@ def test_complete_literal_markers_preserve_values_and_call_boundaries(value):
     ] == [("run", {"text": value}), ("run", {"count": 42})]
 
 
-@pytest.mark.parametrize("marker", ["</parameter>", "</function>"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "</parameter>",
+        "</function>",
+        "</parameter> and </parameter>",
+        "</function> and </function>",
+        "<parameter=fake> and </parameter>",
+    ],
+)
 @pytest.mark.parametrize("wrapped", [True, False])
 def test_postprocessor_literal_marker_value_parity_at_every_split(marker, wrapped):
     from rapid_mlx.service.postprocessor import StreamingPostProcessor
@@ -163,6 +173,130 @@ def test_postprocessor_literal_marker_value_parity_at_every_split(marker, wrappe
         assert [
             (tc["name"], json.loads(tc["arguments"])) for tc in calls.values()
         ] == expected, chunks
+
+
+def test_argument_prefixes_and_resolved_parameters_stream_before_function_close():
+    parser = RaonToolParser()
+    arguments = []
+
+    def feed(chunk):
+        delta = parser.extract_tool_calls_streaming("", "", chunk, request=REQUEST)
+        for item in (delta or {}).get("tool_calls", []):
+            arguments.append(item.get("function", {}).get("arguments", ""))
+        return "".join(arguments)
+
+    feed("<tool_call><function=run><parameter=text>\n")
+    assert feed("first") == '{"text": "first'
+    assert feed(" second\n") == '{"text": "first second'
+    feed("</parameter>\n<parameter=count>")
+    assert '"text": "first second"' in "".join(arguments)
+    feed("42\n</parameter>\n<parameter=enabled>")
+    assert '"count": 42' in "".join(arguments)
+    feed("1\n</parameter>\n</function></tool_call>")
+    assert json.loads("".join(arguments)) == {
+        "text": "first second",
+        "count": 42,
+        "enabled": True,
+    }
+
+
+def test_large_argument_stream_has_linear_buffering():
+    parser = RaonToolParser()
+    chunks = []
+    start = time.monotonic()
+    # Pass only deltas: constructing a cumulative input in the test would
+    # itself copy a quadratic number of bytes in this one-character workload.
+    for part in (
+        ["<tool_call><function=run><parameter=text>\n"]
+        + ["x"] * 200_000
+        + ["\n</parameter></function></tool_call>"]
+    ):
+        delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+        chunks.extend(
+            tc.get("function", {}).get("arguments", "")
+            for tc in (delta or {}).get("tool_calls", [])
+        )
+    assert time.monotonic() - start < 15
+    assert json.loads("".join(chunks)) == {"text": "x" * 200_000}
+    assert sum(bool(chunk) for chunk in chunks) > 100_000
+
+
+@pytest.mark.parametrize("marker", ["</parameter>", "</function>"])
+def test_resolved_literal_closer_releases_held_prefix(marker):
+    parser = RaonToolParser()
+    arguments = []
+    parts = [
+        "<tool_call><function=run><parameter=text>\nfirst ",
+        marker,
+        " inside\n",
+        "</parameter>",
+    ]
+    if marker == "</function>":
+        # A function closer stays ambiguous until the next function boundary.
+        parts.append("</function>")
+    for part in parts:
+        delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+        arguments.extend(
+            tc.get("function", {}).get("arguments", "")
+            for tc in (delta or {}).get("tool_calls", [])
+        )
+    assert "".join(arguments) == '{"text": "first ' + marker + " inside"
+    delta = parser.extract_tool_calls_streaming(
+        "",
+        "",
+        "</function></tool_call>" if marker == "</parameter>" else "</tool_call>",
+        request=REQUEST,
+    )
+    arguments.extend(
+        tc.get("function", {}).get("arguments", "")
+        for tc in (delta or {}).get("tool_calls", [])
+    )
+    assert json.loads("".join(arguments)) == {"text": f"first {marker} inside"}
+
+
+@pytest.mark.parametrize("step", [1, 7, 10000])
+def test_sibling_functions_in_one_wrapper_keep_separate_argument_prefixes(step):
+    first = "<function=run><parameter=text>one</parameter></function>"
+    second = "<function=run><parameter=text>two</parameter></function>"
+    text = "<tool_call>" + first + second + "</tool_call>"
+    assert stream_tools(text, [text[i : i + step] for i in range(0, len(text), step)])[
+        1
+    ] == [
+        ("run", {"text": "one"}),
+        ("run", {"text": "two"}),
+    ]
+
+
+def test_literal_parameter_opener_does_not_hold_the_following_value():
+    parser = RaonToolParser()
+    arguments = []
+    for part in [
+        "<tool_call><function=run><parameter=text>\nplain ",
+        "<parameter=",
+        "literal without a tag end",
+    ]:
+        delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+        arguments.extend(
+            tc.get("function", {}).get("arguments", "")
+            for tc in (delta or {}).get("tool_calls", [])
+        )
+    assert "".join(arguments) == '{"text": "plain <parameter=literal without a tag end'
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"</parameter>"\n</parameter>\n</parameter>',
+        "<parameter=fake> </parameter></parameter>",
+        "\n </function>\n</parameter>\n</function> ",
+    ],
+)
+def test_literal_closer_runs_and_quoted_values_match_complete_scanning(value):
+    text = call({"text": value, "count": "42"})
+    complete = RaonToolParser().extract_tool_calls(text, REQUEST)
+    assert stream_tools(text, list(text))[1] == [
+        (tc["name"], json.loads(tc["arguments"])) for tc in complete.tool_calls
+    ]
 
 
 @pytest.mark.parametrize("step", [1, 2, 7, 31, 10000])
