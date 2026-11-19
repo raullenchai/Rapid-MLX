@@ -268,9 +268,12 @@ def _strip_duplicate_parameter_closers(value: str) -> str:
     if "<parameter" in head or "</parameter" in head:
         # Marker text inside a complete JSON string is quoted payload, so the
         # closers after it are framing; raw marker text stays ambiguous.
+        stripped = head.strip()
+        if not (stripped.startswith('"') and stripped.endswith('"')):
+            return value
         try:
-            quoted = isinstance(json.loads(head.strip()), str)
-        except ValueError:
+            quoted = isinstance(json.loads(stripped), str)
+        except (ValueError, RecursionError, MemoryError):
             quoted = False
         if not quoted:
             return value

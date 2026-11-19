@@ -797,6 +797,36 @@ def test_scan_discards_trailing_duplicate_parameter_closers(extra, sibling):
 
 
 @pytest.mark.parametrize(
+    "head",
+    ["[" * 100000 + "<parameter", "[" * 100000 + '"<parameter"' + "]" * 100000],
+    ids=["malformed-array", "nested-array"],
+)
+def test_duplicate_parameter_closers_preserve_deeply_nested_json(head):
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    value = head + "</parameter></parameter>"
+    assert _strip_duplicate_parameter_closers(value) == value
+
+
+@pytest.mark.parametrize("marker", ["<parameter=example>", "</parameter>"])
+def test_duplicate_parameter_closers_strip_after_quoted_marker(marker):
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    head = " \t" + json.dumps(f"before {marker} after") + " \n"
+    assert (
+        _strip_duplicate_parameter_closers(head + "</parameter>\n</parameter>") == head
+    )
+
+
+@pytest.mark.parametrize("marker", ["<parameter=example>", "</parameter>"])
+def test_duplicate_parameter_closers_preserve_raw_marker(marker):
+    from rapid_mlx.tool_call_scan import _strip_duplicate_parameter_closers
+
+    value = f"before {marker} after</parameter></parameter>"
+    assert _strip_duplicate_parameter_closers(value) == value
+
+
+@pytest.mark.parametrize(
     "value,expected",
     [
         (
