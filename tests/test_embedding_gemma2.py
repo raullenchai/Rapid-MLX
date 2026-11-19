@@ -799,38 +799,18 @@ def test_discovery_dimension_matches_real_embedding_call(
             detail = client.get(f"/v1/models/{native_engine.model_name}")
             assert detail.status_code == 200
             assert detail.json()["embedding_dimensions"] == card["embedding_dimensions"]
-            response = client.post(
-                "/v1/embeddings",
-                json={"model": native_engine.model_name, "input": input_value},
-            )
-            assert response.status_code == 200, response.text
-            assert card["embedding_dimensions"] == len(
-                response.json()["data"][0]["embedding"]
-            )
-            assert (
-                card["embedding_dimensions"]
-                == native_engine._model.config.text_config.embedding_dim
-            )
             assert card["max_input_tokens"] == 16
-            for dimension in (1, card["embedding_dimensions"]):
-                response = client.post(
-                    "/v1/embeddings",
-                    json={
-                        "model": native_engine.model_name,
-                        "input": input_value,
-                        "dimensions": dimension,
-                    },
-                )
-                assert response.status_code == 200, response.text
-                assert len(response.json()["data"][0]["embedding"]) == dimension
-            response = client.post(
-                "/v1/embeddings",
-                json={
-                    "model": native_engine.model_name,
-                    "input": input_value,
-                    "dimensions": card["supported_dimensions"]["max"] + 1,
-                },
-            )
-            assert response.status_code == 400
+            assert card["supported_dimensions"]["max"] == card["embedding_dimensions"]
     finally:
         restore()
+    # The HTTP embeddings path runs on the MLX worker thread, which cannot use
+    # weights built on this test thread, so compare against a direct call.
+    if isinstance(input_value, str):
+        vector = native_engine.embed([input_value])[0]
+    else:
+        vector = native_engine.embed_tokens([input_value])[0]
+    assert card["embedding_dimensions"] == len(vector)
+    assert (
+        card["embedding_dimensions"]
+        == native_engine._model.config.text_config.embedding_dim
+    )
