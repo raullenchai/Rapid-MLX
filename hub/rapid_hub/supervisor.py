@@ -10,8 +10,19 @@ from pathlib import Path
 
 
 class Supervisor:
-    def __init__(self, hub, manifests, retries=5, delay=1, ready_timeout=20):
+    def __init__(
+        self, hub, manifests, retries=5, delay=1, ready_timeout=20, ports=None
+    ):
         self.hub, self.manifests = hub, manifests
+        self.ports = dict(ports or {})
+        used = {hub.port}
+        for ident, port in self.ports.items():
+            if ident not in manifests:
+                raise ValueError(f"Unknown plugin in --plugin-port: {ident}")
+            if type(port) is not int or not 1 <= port <= 65535 or port in used:
+                raise ValueError(f"Invalid or duplicate plugin port: {ident}={port}")
+            used.add(port)
+            self.check_port(ident, port)
         self.retries, self.delay, self.ready_timeout = retries, delay, ready_timeout
         self.items, self.tasks = {}, {}
         self.locks = {ident: asyncio.Lock() for ident in manifests}
@@ -26,6 +37,17 @@ class Supervisor:
                 token=token,
                 process=None,
             )
+
+    def check_port(self, ident, port):
+        try:
+            with socket.socket() as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((self.hub.plugin_host, port))
+                return sock.getsockname()[1]
+        except OSError as exc:
+            raise ValueError(
+                f"Plugin {ident} port {port} is unavailable: {exc}"
+            ) from exc
 
     async def start(self):
         catalog = await self.hub.catalog()
@@ -89,9 +111,12 @@ class Supervisor:
                 self.hub.tokens[item["token"]] = ident
                 item.update(state="starting", restarts=attempt)
                 self.hub.emit("plugin_state", {"id": ident, "state": "starting"})
-                with socket.socket() as sock:
-                    sock.bind((self.hub.plugin_host, 0))
-                    port = sock.getsockname()[1]
+                try:
+                    port = self.check_port(ident, self.ports.get(ident, 0))
+                except ValueError as exc:
+                    item.update(state="failed", error=str(exc))
+                    self.hub.emit("plugin_state", {"id": ident, "state": "failed"})
+                    return
                 item["port"] = port
                 env = {
                     k: v

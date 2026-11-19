@@ -135,6 +135,7 @@ class Hub:
         discovery_file=None,
         journal_queue_max_ops=256,
         journal_queue_max_bytes=8 * 1024 * 1024,
+        plugin_ports=None,
     ):
         if journal_max_mb <= 0 or job_stale_seconds <= 0:
             raise ValueError("Journal cap and job stale interval must be positive")
@@ -206,7 +207,7 @@ class Hub:
         self.save_jobs()
         private_write(self.data_dir / "admin-token", self.admin)
         manifests, self.errors = discover(plugins_dir)
-        self.supervisor = Supervisor(self, manifests)
+        self.supervisor = Supervisor(self, manifests, ports=plugin_ports)
 
     async def catalog(self):
         data, engines = [], []

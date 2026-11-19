@@ -41,7 +41,39 @@ class NoRedirect(HTTPRedirectHandler):
 class HTTPEmbedder:
     def __init__(self, url, model=DEFAULT_MODEL):
         self.url, self.model = url.rstrip("/"), model
-        self.identity = [self.url, model]
+        # The Hub qualifies a model with its engine; repository slashes in the
+        # underlying id must survive. Routing endpoints are not model identity.
+        self.model_id = (
+            model.split("/", 1)[1]
+            if self.url.endswith("/hub/v1") and "/" in model
+            else model
+        )
+        self.dimensions = None
+
+    @property
+    def identity(self):
+        if self.dimensions is None:
+            self(["Embedding dimension probe"])
+        return [self.model_id, self.dimensions]
+
+    def snapshot_identity(self, data):
+        identity = data.get("identity")
+        # Read pre-Hub snapshots without rebuilding or rewriting the index.
+        if (
+            isinstance(identity, list)
+            and len(identity) == 2
+            and isinstance(identity[0], str)
+            and identity[0].startswith(("http://", "https://"))
+        ):
+            url, model = identity
+            model = (
+                model.split("/", 1)[1]
+                if url.rstrip("/").endswith("/hub/v1") and "/" in model
+                else model
+            )
+            vectors = data.get("vectors", [])
+            return [model, len(vectors[0]) if vectors else None]
+        return identity
 
     def __call__(self, texts):
         request = Request(
@@ -51,7 +83,11 @@ class HTTPEmbedder:
         )
         with build_opener(NoRedirect).open(request, timeout=180) as response:
             rows = json.load(response)["data"]
-        return [row["embedding"] for row in sorted(rows, key=lambda r: r["index"])]
+        vectors = [row["embedding"] for row in sorted(rows, key=lambda r: r["index"])]
+        if not vectors or not vectors[0]:
+            raise ValueError("Embedding response has no dimensions")
+        self.dimensions = len(vectors[0])
+        return vectors
 
 
 def paper_label(metadata):
@@ -496,7 +532,12 @@ class Literature:
         """Publish one atomic snapshot; failed/removed files never keep stale passages."""
         old = snapshot(project)
         identity = getattr(self.embedder, "identity", ["test"])
-        reuse = old.get("identity") == identity and old.get("version") == VERSION
+        stored_identity = (
+            self.embedder.snapshot_identity(old)
+            if isinstance(self.embedder, HTTPEmbedder)
+            else old.get("identity")
+        )
+        reuse = stored_identity == identity and old.get("version") == VERSION
         meta = json.loads(local_path(project, "project.json").read_text())
         upload = local_path(project, "literature")
         upload.mkdir(exist_ok=True)
@@ -616,7 +657,12 @@ class Literature:
         chunks = data["chunks"]
         if not chunks:
             return []
-        if data.get("identity") != getattr(self.embedder, "identity", ["test"]):
+        stored_identity = (
+            self.embedder.snapshot_identity(data)
+            if isinstance(self.embedder, HTTPEmbedder)
+            else data.get("identity")
+        )
+        if stored_identity != getattr(self.embedder, "identity", ["test"]):
             raise ValueError("Embedding configuration changed; re-index literature.")
         vector = normalize(
             self.embedder(

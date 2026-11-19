@@ -401,3 +401,27 @@ def test_legacy_project_queue_visible_without_writes(tmp_path):
 
 def test_legacy_identity_matches_browser_utf8_contract():
     assert hypotheses.legacy_id("Stronger decay α 💡") == "legacy-04a44bf9e6cd4edc"
+
+
+@pytest.mark.parametrize("field", ["page", "page_end"])
+@pytest.mark.parametrize(
+    "value", ['1"><img src=x onerror=alert(1)>', "2", 0, -1, True, 1.5]
+)
+def test_source_pages_require_positive_integers(tmp_path, field, value):
+    source = dict(
+        number="S1", file="paper.pdf", chunk_id="c", snippet="Evidence", page=1
+    )
+    source[field] = value
+    with pytest.raises(ValueError, match="sources"):
+        hypotheses.add(tmp_path, dict(statement="Claim", sources=[source]))
+    assert not (tmp_path / "hypotheses.jsonl").exists()
+
+
+def test_source_pages_optional_or_positive(tmp_path):
+    for pages in ({}, {"page": None, "page_end": None}, {"page": 1, "page_end": 2}):
+        source = dict(
+            number="S1", file="paper.pdf", chunk_id="c", snippet="Evidence", **pages
+        )
+        assert hypotheses.add(tmp_path, dict(statement="Claim", sources=[source]))[
+            "sources"
+        ] == [source]

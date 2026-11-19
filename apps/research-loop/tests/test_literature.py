@@ -575,3 +575,121 @@ def test_metadata_request_strict_bounded_and_configured_endpoint(monkeypatch):
     assert body["response_format"]["json_schema"]["strict"] is True
     assert len(body["messages"][-1]["content"]) == 10000
     assert result["first_author_surname"] == "Power"
+
+
+@pytest.fixture
+def http_embeddings(monkeypatch):
+    config = {"dimensions": 2, "calls": []}
+
+    class Opener:
+        def open(self, request, timeout):
+            body = json.loads(request.data)
+            config["calls"].append(body)
+            return io.StringIO(
+                json.dumps(
+                    {
+                        "data": [
+                            {
+                                "index": i,
+                                "embedding": [1] + [0] * (config["dimensions"] - 1),
+                            }
+                            for i, _ in enumerate(body["input"])
+                        ]
+                    }
+                )
+            )
+
+    monkeypatch.setattr(literature, "build_opener", lambda *args: Opener())
+    return config
+
+
+def test_embedding_identity_standalone_hub_copy_reuses_index(tmp_path, http_embeddings):
+    import shutil
+
+    project = tmp_path / "standalone"
+    project.mkdir()
+    (project / "project.json").write_text("{}")
+    (project / "literature").mkdir()
+    write(project, "grokking.txt", "Weight decay improves generalization.")
+    direct = literature.HTTPEmbedder("http://standalone/v1", "org/embed-model")
+    literature.Literature(direct).index(project)
+    assert direct.identity == ["org/embed-model", 2]
+    copied = tmp_path / "hub"
+    shutil.copytree(project, copied)
+    index = copied / "literature_index/index.json"
+    original = index.read_bytes()
+    hub = literature.HTTPEmbedder("http://hub/hub/v1", "engine/org/embed-model")
+    service = literature.Literature(hub)
+    assert service.retrieve(copied, "Weight decay")
+    assert hub.identity == direct.identity
+    assert index.read_bytes() == original
+    http_embeddings["calls"].clear()
+    service.index(copied)
+    assert not http_embeddings["calls"]  # Neither re-extraction nor embedding rebuild.
+    other = literature.Literature(
+        literature.HTTPEmbedder("http://other/v1", "org/different")
+    )
+    with pytest.raises(ValueError, match="configuration changed"):
+        other.retrieve(copied, "Weight decay")
+    http_embeddings["dimensions"] = 3
+    changed = literature.Literature(
+        literature.HTTPEmbedder("http://hub/hub/v1", "engine/org/embed-model")
+    )
+    with pytest.raises(ValueError, match="configuration changed"):
+        changed.retrieve(copied, "Weight decay")
+
+
+@pytest.mark.parametrize(
+    "url,model",
+    [
+        ("http://standalone/v1", "org/embed-model"),
+        ("http://old-hub/hub/v1", "old-engine/org/embed-model"),
+    ],
+)
+def test_legacy_embedding_identity_reuses_without_rewriting(
+    library, http_embeddings, url, model
+):
+    project, _ = library
+    write(project, "note.txt", "Weight decay improves generalization.")
+    service = literature.Literature(
+        literature.HTTPEmbedder("http://new-hub/hub/v1", "new-engine/org/embed-model")
+    )
+    service.index(project)
+    path = project / "literature_index/index.json"
+    data = json.loads(path.read_text())
+    data["identity"] = [url, model]
+    path.write_text(json.dumps(data))
+    original = path.read_bytes()
+    assert service.retrieve(project, "Weight decay")
+    assert path.read_bytes() == original
+    http_embeddings["calls"].clear()
+    service.index(project)
+    assert not http_embeddings["calls"]
+    assert literature.snapshot(project)["identity"] == ["org/embed-model", 2]
+
+
+@pytest.mark.parametrize(
+    "model,dimensions", [("org/different", 2), ("org/embed-model", 3)]
+)
+def test_embedding_identity_change_rebuilds_index(
+    library, http_embeddings, model, dimensions
+):
+    project, _ = library
+    write(project, "note.txt", "Weight decay improves generalization.")
+    original = literature.Literature(
+        literature.HTTPEmbedder("http://direct/v1", "org/embed-model")
+    )
+    original.index(project)
+    http_embeddings["calls"].clear()
+    http_embeddings["dimensions"] = dimensions
+    changed = literature.Literature(
+        literature.HTTPEmbedder("http://hub/hub/v1", "engine/" + model)
+    )
+    changed.index(project)
+    data = literature.snapshot(project)
+    assert data["identity"] == [model, dimensions]
+    assert len(data["vectors"][0]) == dimensions
+    assert any(
+        "title:" in text for call in http_embeddings["calls"] for text in call["input"]
+    )
+    assert changed.retrieve(project, "Weight decay")

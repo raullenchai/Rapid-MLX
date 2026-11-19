@@ -24,6 +24,11 @@ PYTHONPATH=hub /private/tmp/rapid-mlx-grokdemo/env/bin/python -m rapid_hub statu
 ```
 
 After installation use `rapid-hub up`. Binding is restricted to `127.0.0.1`.
+Use `rapid-hub up --plugin-port research-loop=4910` to keep the plugin URL
+stable across plugin and Hub restarts. Repeat `--plugin-port ID=PORT` for
+additional plugins. Ports must be unique, in 1–65535, and different from the
+Hub port; an unknown plugin or occupied port produces an error rather than
+falling back to a random port. Plugins without an override use automatic ports.
 Default data dir: `~/.rapid-hub`. Engine URLs end in `/v1`, with no credentials.
 The admin token is written mode 0600 to `<data-dir>/admin-token`, never printed
 or placed in URLs. Use it as `Authorization: Bearer <token>` for service clients.

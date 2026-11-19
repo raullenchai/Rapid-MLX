@@ -21,6 +21,13 @@ def main():
     up.add_argument("--port", type=int, default=4800)
     up.add_argument("--data-dir", type=Path, default=Path("~/.rapid-hub"))
     up.add_argument("--plugins-dir", default="apps")
+    up.add_argument(
+        "--plugin-port",
+        action="append",
+        default=[],
+        metavar="PLUGIN=PORT",
+        help="Fixed UI plugin port (repeatable; e.g. research-loop=4910)",
+    )
     up.add_argument("--background-concurrency", type=int, default=1)
     up.add_argument("--journal-max-mb", type=float, default=500)
     up.add_argument("--journal-queue-max-ops", type=int, default=256)
@@ -75,22 +82,39 @@ def main():
         engines[name] = url.rstrip("/")
     if args.background_concurrency < 1:
         parser.error("--background-concurrency must be positive")
-    hub = Hub(
-        engines,
-        args.data_dir,
-        args.plugins_dir,
-        args.host,
-        args.port,
-        args.background_concurrency,
-        journal_max_mb=args.journal_max_mb,
-        journal_queue_max_ops=args.journal_queue_max_ops,
-        journal_queue_max_bytes=args.journal_queue_max_bytes,
-        admission=args.admission,
-        queue_max_length=args.queue_max_length,
-        queue_max_wait=args.queue_max_wait,
-        job_stale_seconds=args.job_stale_seconds,
-        discovery_file=args.discovery_file,
-    )
+    plugin_ports = {}
+    for value in args.plugin_port:
+        ident, sep, raw_port = value.partition("=")
+        if (
+            not sep
+            or not re.fullmatch(r"[a-zA-Z0-9_-]+", ident)
+            or not raw_port.isascii()
+            or not raw_port.isdecimal()
+            or not 1 <= int(raw_port) <= 65535
+            or ident in plugin_ports
+        ):
+            parser.error("--plugin-port requires unique PLUGIN=PORT with port 1–65535")
+        plugin_ports[ident] = int(raw_port)
+    try:
+        hub = Hub(
+            engines,
+            args.data_dir,
+            args.plugins_dir,
+            args.host,
+            args.port,
+            args.background_concurrency,
+            journal_max_mb=args.journal_max_mb,
+            journal_queue_max_ops=args.journal_queue_max_ops,
+            journal_queue_max_bytes=args.journal_queue_max_bytes,
+            admission=args.admission,
+            queue_max_length=args.queue_max_length,
+            queue_max_wait=args.queue_max_wait,
+            job_stale_seconds=args.job_stale_seconds,
+            discovery_file=args.discovery_file,
+            plugin_ports=plugin_ports,
+        )
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     print(
         f"Rapid Hub login (one use): {hub.dashboard_url}/login?nonce={hub.login}",
         flush=True,

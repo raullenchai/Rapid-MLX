@@ -10,7 +10,19 @@ function element(id='') {
   return node;
 }
 function get(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id);}
-const document={getElementById:get,activeElement:null,title:''};
+const encodeHTML=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// DOM construction has real text/attribute serialization; HTML sinks remain visible.
+function domNode(tag) {
+  const node=element();node.tagName=tag;node.children=[];let text='',html='';
+  Object.defineProperty(node,'textContent',{get(){return text+node.children.map(c=>c.textContent).join('');},set(v){text=String(v);html='';node.children=[];}});
+  Object.defineProperty(node,'innerHTML',{get(){return html+encodeHTML(text)+node.children.map(c=>c.outerHTML).join('');},set(v){html=String(v);text='';node.children=[];}});
+  Object.defineProperty(node,'outerHTML',{get(){return '<'+tag+['id','href','target','rel'].filter(k=>node[k]).map(k=>' '+k+'="'+encodeHTML(node[k])+'"').join('')+'>'+node.innerHTML+'</'+tag+'>';}});
+  node.append=(...children)=>{for(const child of children){child.parentElement=node;node.children.push(child);}};
+  node.replaceChildren=(...children)=>{text=html='';node.children=[];node.append(...children);};
+  return node;
+}
+const document={getElementById:get,activeElement:null,title:'',createElement:domNode,createTextNode(text){return {textContent:text,get outerHTML(){return encodeHTML(text);}};}};
+for(const id of ['source-drawer-content','source-popover'])elements.set(id,domNode('div'));
 const requests=[], streams=[], windowEvents={};
 const task={title:'A reusable study',editable:'experiment.py',metric:'score',metric_label:'Score',unit:'%',direction:'max',noise:.02,seeds:[0,1],goal:.99,curve:{x:'step',x_label:'Steps',series:[{key:'train',label:'Train'},{key:'score',label:'Test'}]}};
 let detail={project:{slug:'study',title:'A reusable study',model:'q35'},program:'# Goal',task,runs:[],discussion:[],ideas:[],models:['q35','q27'],default_model:'q35',rounds:10};
@@ -794,3 +806,46 @@ const grouped=run('citationMarkdown("Both [S8, S1].",orderedSources("Both [S8, S
 assert.match(grouped,/data-citation="S8"[^>]*>\[1\]/);
 assert.match(grouped,/data-citation="S1"[^>]*>\[2\]/);
 console.log('Grouped citation markers checked: every valid source renders individually.');
+
+// Round 5: legacy stored pages cannot introduce markup, even before validation.
+context.hostile='1"><img src=x onerror=alert(document.domain)>';
+context.hostileSource={...context.literatureSource,page:context.hostile,page_end:context.hostile,label:context.hostile,section_title:context.hostile,section_number:context.hostile,snippet:context.hostile,previous:context.hostile,following:context.hostile,file:'literature/'+context.hostile+'.pdf',chunk_id:context.hostile};
+run('openSource({dataset:{passage:JSON.stringify(hostileSource)}})');
+function assertNoInjection(html) {
+  assert.doesNotMatch(html,/<(?:img|script|svg|iframe)\b/i);
+  for(const tag of html.match(/<[^>]*>/g) || []) {
+    const attrs=tag.replace(/^<\/?[\w-]+/,'').replace(/\/?>$/,'');
+    for(const attr of attrs.matchAll(/([^\s=<>/]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g)) {
+      assert.doesNotMatch(attr[1],/^on/i);
+      if(['href','src'].includes(attr[1]))assert.doesNotMatch(attr[2] || '',/^['"]?javascript:/i);
+    }
+  }
+}
+assertNoInjection(get('source-drawer-content').innerHTML);
+assert.match(get('source-drawer-content').innerHTML,/#page=1"/);
+run('showSourcePopover({target:{closest(){return {dataset:{passage:JSON.stringify(hostileSource)},getBoundingClientRect(){return {left:0,bottom:0};}};}}})');
+assertNoInjection(get('source-popover').innerHTML);
+assertNoInjection(run('sourceMarkup([hostileSource])'));
+run('state.chatDraft=null;state.data.discussion=[{role:"assistant",model:hostile,content:hostile+" [S1]",citations:[hostileSource]}];renderConversation()');
+assertNoInjection(get('conversation').innerHTML);
+run('state.data.hypotheses=[{id:"h1",label:hostile,statement:hostile,why:hostile,prediction:hostile,sources:[hostileSource],experiments:[]}];renderQueue();renderResults()');
+for(const id of ['queue','experiment-groups','ledger'])assertNoInjection(get(id).innerHTML);
+assertNoInjection(run('pill(hostile)'));
+assertNoInjection(run('codeMarkup(hostile)'));
+assertNoInjection(run('diffMarkup("+"+hostile).html'));
+console.log('Round 5 test_stored_source_xss: drawer/popover/cards/discussion/hypotheses/code/diffs reject element and attribute injection.');
+
+// Round 5: join PDF layout only on display, preserving paragraph boundaries.
+context.pdfPassage='5.2 Generalization\nTraining accuracy saturates first.\nWeight decay promotes gen-\neralization long after training\naccuracy saturates.\n\nA second paragraph\nkeeps its boundary.';
+context.grokSource={...context.literatureSource,section_title:'Generalization',snippet:context.pdfPassage,cited_sentences:['Weight decay improves generalization after training accuracy saturates [S1].']};
+assert.equal(run('flowingPassage("gen-\\neralization.\\n\\nNext\\nparagraph.")'),'generalization.\n\nNext paragraph.');
+const marked=run('highlightedPassage(grokSource)');
+assert.match(marked,/<mark>Weight decay promotes generalization long after training accuracy saturates\.<\/mark>/);
+assert.doesNotMatch(marked,/<mark>5\.2|gen-\n/);
+assert.match(marked,/\n\nA second paragraph keeps its boundary/);
+run('openSource({dataset:{passage:JSON.stringify(grokSource)}})');
+assert.match(get('source-drawer-content').innerHTML,/<mark>Weight decay/);
+assert.equal(context.grokSource.snippet,context.pdfPassage);
+context.grokSource.cited_sentences=['No matching vocabulary whatsoever.'];
+assert.match(run('highlightedPassage(grokSource)'),/<mark>Training accuracy saturates first\.<\/mark>/);
+console.log('Round 5 test_flowing_pdf_passages / test_grokking_body_highlight: line joins, dehyphenation, paragraphs, body match and fallback.');

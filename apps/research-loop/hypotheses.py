@@ -125,6 +125,10 @@ def add(project, data, source="you"):
                 isinstance(s.get(k), str)
                 for k in ("number", "file", "chunk_id", "snippet")
             )
+            or any(
+                s.get(k) is not None and (type(s[k]) is not int or s[k] < 1)
+                for k in ("page", "page_end")
+            )
             for s in sources
         )
         or len(json.dumps(sources)) > 60000
