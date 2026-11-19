@@ -20,7 +20,7 @@ compresses selection keys rather than attention values. It does not use their
 model-specific kernels. IndexPool's normalized Hadamard transform and scaled
 E4M3 rounding are expressed numerically without requiring an FP8 array dtype.
 Engram hashing runs on the CPU using the checkpoint's frozen lookup table and
-seeded signed-int64 arithmetic. There is no table offload.
+seeded signed-int64 arithmetic. Affine Engram tables can remain on SSD.
 
 Each layer retains latent KV, raw selection keys, and original token IDs in
 three ordinary caches. Full history is retained even for sliding attention;
@@ -70,6 +70,28 @@ The regular `rapid-mlx import` command also accepts this source architecture,
 including its block-FP8 quantization metadata. Conversion can require substantial
 host memory, especially for a complete Engram table; peak memory has not been
 measured with release weights.
+
+## Engram SSD offload on 128 GB Macs
+
+Product loading (`rapid-mlx serve <local-quantized-directory>`) enables Engram
+SSD offload when affine tables and a safetensors index are available. For the
+approximately 131 GB hy4-gptq-v1 layout, keeping the four approximately 10 GB
+Engram tables on SSD targets approximately 91 GB of resident weights, leaving
+room for KV state on a 128 GB Mac. This is a memory budget target, not a measured
+peak or throughput claim; context length and concurrent requests still matter.
+
+Selected packed rows, scales and biases are read from read-only mapped shards
+and dequantized using the checkpoint's affine settings. Hashes are prefetched
+before decoder execution using each layer's current token history. A mismatched
+prefetch is discarded and the requested rows are read again. No weights are
+re-quantized. Other parameters are evaluated in bounded groups during loading
+to avoid a single cold-disk, whole-model Metal command buffer.
+
+Set `HY4_ENGRAM_SSD_OFFLOAD=0` before serving to keep tables resident. Python
+callers can use `rapid_mlx.models.hy_v4_flash_load.load(path,
+engram_ssd_offload=False)`; `True` requires a valid indexed affine layout and
+fails on missing tensors, invalid shapes/dtypes, or escaping shard paths.
+The default `None` selects supported offload automatically.
 
 ## Real-weight smoke
 

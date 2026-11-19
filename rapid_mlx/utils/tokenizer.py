@@ -2363,7 +2363,13 @@ def _load_with_tokenizer_fallback(
     # ``rapid_mlx/fp8_repack.py``).
     from ..fp8_repack import is_fp8_block_checkpoint, load_fp8_model_online
 
-    if is_fp8_block_checkpoint(model_path):
+    if (_read_model_config_json(str(model_path)) or {}).get(
+        "model_type"
+    ) == "hy_v4_flash":
+        from ..models.hy_v4_flash_load import load as load_hy4
+
+        model, _ = load_hy4(model_path)
+    elif is_fp8_block_checkpoint(model_path):
         logger.info("fp8 block checkpoint detected — online mxfp8 repack")
         model = load_fp8_model_online(model_path)
     else:

@@ -383,18 +383,19 @@ class Engram(nn.Module):
             mx.zeros((args.hidden_size,)) for _ in range(args.hc_mult)
         ]
 
+    def hashes(self, inputs, history):
+        return engram_hash(
+            np.array(inputs),
+            np.array(history),
+            np.array(self.lookup_table),
+            self._primes,
+            self._layer_id,
+            self._args,
+        )
+
     def __call__(self, hidden, inputs, history):
         a = self._args
-        hashes = mx.array(
-            engram_hash(
-                np.array(inputs),
-                np.array(history),
-                np.array(self.lookup_table),
-                self._primes,
-                self._layer_id,
-                a,
-            )
-        )
+        hashes = mx.array(self.hashes(inputs, history))
         rows = self.multi_head_embedding.embedding(mx.maximum(hashes, 0)).astype(
             mx.float32
         )
@@ -449,19 +450,21 @@ class DecoderLayer(nn.Module):
             Engram(args, idx + 1) if idx + 1 in args.engram_layer_ids else None
         )
 
+    @staticmethod
+    def engram_inputs(inputs, prior, offset):
+        # Batch padding is not an original token and resets n-gram history.
+        start = mx.array(offset).reshape(-1, 1) - prior.shape[1]
+        prior = mx.where(start + mx.arange(prior.shape[1]) < 0, -1, prior)
+        positions = mx.array(offset).reshape(-1, 1) + mx.arange(inputs.shape[1])
+        return mx.where(positions < 0, -1, inputs), prior
+
     def __call__(self, hidden, inputs, cache):
         tokens, _ = cache[2].update_and_fetch(
             inputs[:, None, :, None], inputs[:, None, :, None]
         )
         if self.engram_layer is not None:
             prior = tokens[:, 0, : -inputs.shape[1], 0]
-            # Batch padding is not an original token and resets n-gram history.
-            start = mx.array(cache[0].offset).reshape(-1, 1) - prior.shape[1]
-            prior = mx.where(start + mx.arange(prior.shape[1]) < 0, -1, prior)
-            positions = mx.array(cache[0].offset).reshape(-1, 1) + mx.arange(
-                inputs.shape[1]
-            )
-            hash_inputs = mx.where(positions < 0, -1, inputs)
+            hash_inputs, prior = self.engram_inputs(inputs, prior, cache[0].offset)
             hidden = self.engram_layer(hidden, hash_inputs, prior)
         x, post = self.hc_attn_layer.hc_pre(hidden)
         hidden = ops.hc_post(
@@ -481,6 +484,20 @@ class Backbone(nn.Module):
         self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
     def __call__(self, inputs, cache):
+        for layer, c in zip(self.layers, cache, strict=True):
+            engram = layer.engram_layer
+            if engram is not None and hasattr(
+                engram.multi_head_embedding.embedding, "prefetch"
+            ):
+                tokens = c[2]
+                prior = (
+                    tokens.state[0][:, 0, :, 0]
+                    if tokens.keys is not None
+                    else inputs[:, :0]
+                )
+                hash_inputs, prior = layer.engram_inputs(inputs, prior, c[0].offset)
+                hashes = engram.hashes(hash_inputs, prior)
+                engram.multi_head_embedding.embedding.prefetch(np.maximum(hashes, 0))
         h = self.embed_tokens(inputs)
         h = mx.broadcast_to(
             h[..., None, :], (*h.shape[:-1], self._args.hc_mult, h.shape[-1])

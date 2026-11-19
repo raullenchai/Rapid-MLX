@@ -25,7 +25,6 @@ from __future__ import annotations
 import glob
 import json
 import os
-from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -33,35 +32,10 @@ from mlx.utils import tree_flatten
 
 from ...model_load_errors import typed_mlx_load_boundaries
 from ...runtime.ubc_evict import ubc_evict
+from ..engram_offload import resolve_indexed_shard as resolve_indexed_shard
 from .config import ModelArgs
 from .convert import VISION_PREFIXES, bits_for, is_quant_target
 from .model import Model
-
-
-def resolve_indexed_shard(model_path: str, filename: str) -> str:
-    """Resolve an indexed shard without escaping its model/CAS repository."""
-    root = Path(model_path).resolve()
-    lexical = Path(os.path.abspath(os.path.join(root, filename)))
-    if os.path.commonpath((root, lexical)) != str(root):
-        raise ValueError("Engram shard must stay inside the model directory")
-    resolved = lexical.resolve(strict=True)
-    if os.path.commonpath((root, resolved)) == str(root):
-        return str(resolved)
-    # Hub snapshots legitimately symlink immutable files into the specific
-    # repository's sibling blobs directory. Recognize the repository layout,
-    # rather than trusting any parent directory merely named "snapshots".
-    repository = root.parent.parent
-    if root.parent.name == "snapshots" and repository.name.startswith("models--"):
-        lexical_blobs = repository / "blobs"
-        blobs = lexical_blobs.resolve()
-        if (
-            lexical_blobs.is_dir()
-            and not lexical_blobs.is_symlink()
-            and os.path.commonpath((repository, blobs)) == str(repository)
-            and os.path.commonpath((blobs, resolved)) == str(blobs)
-        ):
-            return str(resolved)
-    raise ValueError("Engram shard symlink escapes the model repository")
 
 
 def supports_engram_ssd_offload(path: str) -> bool:
