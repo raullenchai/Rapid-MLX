@@ -128,7 +128,18 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         if entry and entry.type == "stt":
             validate_processor_code(metadata.snapshot_dir)
         else:
-            validate_model_code(config)
+            effective_config = config
+            if config.get("model_file") and not getattr(engine, "is_mllm", False):
+                from ..utils.tokenizer import _rapid_owned_model_config
+
+                try:
+                    overlay = _rapid_owned_model_config(str(metadata.snapshot_dir))
+                except (ImportError, RuntimeError):
+                    # An unavailable owned runtime cannot suppress consent.
+                    overlay = None
+                    cache_key = None
+                effective_config = {**config, **(overlay or {})}
+            validate_model_code(effective_config)
             if getattr(engine, "is_mllm", False):
                 validate_vlm_processor_policy(
                     metadata.snapshot_dir,
