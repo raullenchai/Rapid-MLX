@@ -11,14 +11,14 @@ function element(id='') {
 }
 function get(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id);}
 const document={getElementById:get,activeElement:null,title:''};
-const requests=[], streams=[];
+const requests=[], streams=[], windowEvents={};
 const task={title:'A reusable study',editable:'experiment.py',metric:'score',metric_label:'Score',unit:'%',direction:'max',noise:.02,seeds:[0,1],goal:.99,curve:{x:'step',x_label:'Steps',series:[{key:'train',label:'Train'},{key:'score',label:'Test'}]}};
 let detail={project:{slug:'study',title:'A reusable study',model:'q35'},program:'# Goal',task,runs:[],discussion:[],ideas:[],models:['q35','q27'],default_model:'q35',rounds:10};
 let testRun={id:'r1',model:'q35',active:false,paused:false};
 let testEvents=[],testFiles=[],testProjects=[];
 const protocolResponses=new Map();
 const context=vm.createContext({document,console,URLSearchParams,URL,TextDecoder,TextEncoder,setTimeout,clearTimeout,
-  location:{hash:'#/',search:''},window:{addEventListener(){}},
+  location:{hash:'#/',search:''},window:{innerWidth:1200,innerHeight:900,addEventListener(name,fn){(windowEvents[name] ||= []).push(fn);}},
   fetch:async(path,options)=>{
     requests.push({path,options});
     const value=path==='/api/templates' ? {templates:[{slug:'generic',...task}]} : path==='/api/projects' ? {projects:testProjects} : path.endsWith('/program') ? JSON.parse(options.body) : path.endsWith('/diff/1') ? {parent:0,diff:'--- old\n+++ new\n-VALUE = 1\n+VALUE = 2\n'} : path.includes('/files/') ? null : /\/runs\/[^/]+$/.test(path) ? {run:testRun,events:testEvents,files:testFiles} : structuredClone(detail);
@@ -739,13 +739,58 @@ assert.doesNotMatch(get('conversation').innerHTML,/data-citation="S99"/);
 assert.match(get('conversation').innerHTML,/data-source="S1"/);
 assert.match(get('conversation').innerHTML,/Power et al\. 2022 · Grokking/);
 assert.doesNotMatch(run('citationMarkdown("`[S1]`",[literatureSource])'),/data-citation/);
-let opened=false,scrolled=false,focused=false;
-const passage={set open(value){opened=value;},scrollIntoView(){scrolled=true;},querySelector(){return {focus(){focused=true;}};}};
-const inline={dataset:{citation:'S1'},closest(){return {querySelector(){return passage;}};}};
+get('source-drawer').showModal=function(){this.open=true;};
+get('source-drawer').close=function(){this.open=false;};
+let focused=false;
+const inline={dataset:{citation:'S1',passage:JSON.stringify({...context.literatureSource,section_number:'5.2',section_title:'Progress measures',previous:'Previous text',following:'Next text',cited_sentences:['Evidence "prediction" [S1].']})},focus(){focused=true;},getBoundingClientRect(){return {left:100,bottom:200};}};
 await get('conversation').onclick({target:{closest(selector){return selector==='[data-citation]'?inline:null;}}});
-assert.equal(opened,true);assert.equal(scrolled,true);assert.equal(focused,true);
+assert.equal(get('source-drawer').open,true);
+assert.equal(document.activeElement,get('source-drawer-close'));
+assert.match(get('source-drawer-content').innerHTML,/§5\.2 Progress measures · p\. 2/);
+assert.match(get('source-drawer-content').innerHTML,/<mark>prediction<\/mark>/);
+assert.match(get('source-drawer-content').innerHTML,/Previous text/);
+assert.match(get('source-drawer-content').innerHTML,/Next text/);
+assert.match(get('source-drawer-content').innerHTML,/literature\/file\?file=.*#page=2/);
+assert.match(get('source-drawer-content').innerHTML,/Open PDF at p\. 2/);
+get('source-drawer').oncancel({preventDefault(){}});
+assert.equal(get('source-drawer').open,false);assert.equal(focused,true);
 run('state.data.hypotheses=[{id:"h1",statement:"Claim",sources:[literatureSource],experiments:[]}];renderQueue();renderResults()');
 assert.match(get('queue').innerHTML,/Power et al\. 2022 · Grokking/);
 assert.match(get('ledger').innerHTML,/Power et al\. 2022 · Grokking/);
 clearTimeout(run('literatureTimer'));clearTimeout(run('noticeTimer'));
 console.log('Fix1 checks passed: visible card, editable human labels on all surfaces, inline citations open and focus the matching passage, unknown/code markers remain plain.');
+
+// Each answer has consecutive display numbers, retaining immutable S mappings.
+context.sourceB={...context.literatureSource,number:'S8',chunk_id:'b'};
+assert.deepEqual(JSON.parse(run('JSON.stringify(orderedSources("B [S8]. A [S1][S8].",[literatureSource,sourceB]).map(s=>s.number))')),['S8','S1']);
+const rendered=run('citationMarkdown("B [S8]. A [S1][S8].",orderedSources("B [S8]. A [S1][S8].",[literatureSource,sourceB]))');
+assert.match(rendered,/data-citation="S8"[^>]*>\[1\]/);
+assert.match(rendered,/data-citation="S1"[^>]*>\[2\]/);
+assert.match(rendered,/<sup><button/);
+assert.doesNotMatch(run('citationMarkdown("[S99]",[literatureSource])'),/data-citation/);
+const hoverEvent={target:{closest(){return inline;}}};
+for(const fn of windowEvents.mouseover)fn(hoverEvent);
+assert.equal(get('source-popover').hidden,false);
+assert.match(get('source-popover').innerHTML,/<mark>prediction<\/mark>/);
+for(const fn of windowEvents.focusout)fn(hoverEvent);
+assert.equal(get('source-popover').hidden,true);
+for(const fn of windowEvents.focusin)fn(hoverEvent);
+assert.equal(get('source-popover').hidden,false);
+for(const fn of windowEvents.keydown)fn({key:'Escape'});
+assert.equal(get('source-popover').hidden,true);
+setup(minTask);
+run('state.chatDraft={role:"assistant",pending:true,content:"Evidence [S1]",citations:[literatureSource],retrieval:{papers:3,passages:6}};renderConversation()');
+assert.match(get('conversation').innerHTML,/Searching 3 papers · 6 passages found/);
+assert.ok(get('conversation').innerHTML.indexOf('source-row')<get('conversation').innerHTML.indexOf('message-content'));
+assert.match(index,/id="source-drawer" aria-labelledby=/);
+assert.match(index,/id="source-popover".*role="tooltip"/);
+assert.match(css,/\.source-cards[^}]*overflow-x:auto/);
+assert.match(css,/#source-drawer[^}]*inset:0 0 0 auto/);
+run('state.chatDraft=null');
+console.log('PX checks passed: consecutive per-answer source numbers, streaming counts, source-first cards, section locators, escaped highlights, hover/keyboard popovers, modal drawer/context/PDF URL, Escape and focus return.');
+
+assert.deepEqual(JSON.parse(run('JSON.stringify(orderedSources("Both [S8, S1].",[literatureSource,sourceB]).map(s=>s.number))')),['S8','S1']);
+const grouped=run('citationMarkdown("Both [S8, S1].",orderedSources("Both [S8, S1].",[literatureSource,sourceB]))');
+assert.match(grouped,/data-citation="S8"[^>]*>\[1\]/);
+assert.match(grouped,/data-citation="S1"[^>]*>\[2\]/);
+console.log('Grouped citation markers checked: every valid source renders individually.');

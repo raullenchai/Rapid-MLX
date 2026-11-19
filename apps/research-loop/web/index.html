@@ -63,5 +63,7 @@
     <div id="conversation" class="conversation scroll" aria-live="polite"></div>
     <form id="composer"><label class="sr-only" for="message">Discuss or propose a hypothesis</label><textarea id="message" rows="3" maxlength="16000" placeholder="Discuss a hypothesis or propose a change…" required></textarea><div class="actions"><button id="send">Send</button><button id="queue-message" type="button" class="secondary">Add as hypothesis</button></div><span id="chat-state" class="muted" role="status"></span></form>
   </section>
+<div id="source-popover" class="source-popover" role="tooltip" hidden></div>
+<dialog id="source-drawer" aria-labelledby="source-drawer-title"><button id="source-drawer-close" type="button" aria-label="Close source drawer">Close ×</button><div id="source-drawer-content"></div></dialog>
 </body>
 </html>

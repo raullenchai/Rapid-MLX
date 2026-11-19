@@ -469,12 +469,12 @@ class Handler(BaseHTTPRequestHandler):
     def json(self, data, status=200):
         self.bytes(json.dumps(data).encode(), "application/json", status)
 
-    def bytes(self, body, mime, status=200, download=None):
+    def bytes(self, body, mime, status=200, download=None, sandbox=False):
         self.send_response(status)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        if mime.startswith("image/"):
+        if sandbox or mime.startswith("image/"):
             self.send_header(
                 "Content-Security-Policy",
                 "sandbox; default-src 'none'; style-src 'unsafe-inline'",
@@ -529,6 +529,18 @@ class Handler(BaseHTTPRequestHandler):
                 project = self.server.project_path(parts[2])
                 if parts[3:] == ["literature"]:
                     return self.json(self.server.literature.status(project))
+                if parts[3:] == ["literature", "file"]:
+                    content, suffix = literature.source_file(
+                        project, query.get("file", [""])[0]
+                    )
+                    mime = {
+                        ".pdf": "application/pdf",
+                        ".md": "text/plain; charset=utf-8",
+                        ".txt": "text/plain; charset=utf-8",
+                        ".tex": "text/plain; charset=utf-8",
+                        ".html": "text/html; charset=utf-8",
+                    }
+                    return self.bytes(content, mime[suffix], sandbox=suffix == ".html")
                 if len(parts) == 3:
                     return self.json(self.server.detail(project))
                 if len(parts) >= 5 and parts[3] == "runs":
@@ -1076,6 +1088,9 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 except (ValueError, OSError, KeyError) as exc:
                     source_note = f"Literature retrieval unavailable: {exc}"
+            retrieval = dict(
+                papers=len({s["file"] for s in sources}), passages=len(sources)
+            )
             messages, sources = literature.prompt_sources(
                 jsonl(project, "discussion.jsonl")[-30:], sources
             )
@@ -1083,8 +1098,8 @@ class Handler(BaseHTTPRequestHandler):
             if source_note:
                 system += "\n" + source_note
             system += (
-                "\nReply as a research colleague, conversational and concise; aim under 250 words. "
-                "First give a short answer to the question, then 1–3 candidate hypotheses, "
+                "\nFinal answer requirements:\nReply as a research colleague, conversational and concise; aim under 250 words. "
+                "First give a short answer to the question, then 1–2 candidate hypotheses, "
                 "each with Claim / Why (cite [S#] when supported) / Prediction. "
                 "Use at most 30 words for the answer and 55 words per hypothesis. "
                 "Describe possible causes as hypotheses, not established diagnoses. "
@@ -1092,13 +1107,24 @@ class Handler(BaseHTTPRequestHandler):
                 "constant, the data split, the budget, or the metric. "
                 "Ground each hypothesis in the observed experiment ledger as well as any passages. "
                 + (
-                    "Cite only claims supported by the provided passages; say when the literature is silent. "
+                    "Place [S#] immediately after every factual claim supported by passages, with multiple markers when needed. "
+                    "Prefer short quoted key phrases for precise wording. Never cite a passage for a claim it does not state. "
+                    "When asked for a section, copy the exact section number/title from the source locator, "
+                    "not from references to other sections in the passage. Say when the literature is silent. "
                     if sources
                     else "No literature passages are provided: do not write [S#] markers and do not "
                     "attribute claims to 'the literature'; label general knowledge as such. "
                 )
-                + "Never narrate your own reasoning, plans, or these instructions. "
-                "Never claim to run experiments or invent results. Stop when the answer is complete."
+                + "Output only the finished answer. Omit discarded or revised hypotheses, self-corrections, "
+                "and discussion of the rules. Predictions are tentative, not numerical guarantees. "
+                "Never narrate your own reasoning, plans, or these instructions. "
+                "Never claim to run experiments or invent results. "
+                "Final check before replying: every literature claim has an immediate [S#]; "
+                "omit any hypothesis that violates a fixed rule. Do not discuss that check. "
+                "Fixed rules (binding): " + json.dumps(task.get("fixed", [])) + ". "
+                "Keep the data split and training fraction unchanged. "
+                "Use at most two hypotheses, at most 55 words each. "
+                "Stop when the answer is complete."
             )
             with INBOX_LOCK:
                 append_message(project, "user", message.strip(), model=model)
@@ -1135,6 +1161,14 @@ class Handler(BaseHTTPRequestHandler):
             with upstream:
                 try:
                     self.stream_headers()
+                    self.wfile.write(
+                        (
+                            "data: "
+                            + json.dumps(dict(retrieval=retrieval, sources=sources))
+                            + "\n\n"
+                        ).encode()
+                    )
+                    self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     connected = False
                 try:
@@ -1159,12 +1193,17 @@ class Handler(BaseHTTPRequestHandler):
                         )
                 finally:
                     if content:
+                        content = literature.normalize_citations(content, sources)
                         append_message(
                             project,
                             "assistant",
                             content,
                             model=model,
                             citations=literature.cited(content, sources),
+                            citation_sentences=literature.citation_sentences(
+                                content, literature.cited(content, sources)
+                            ),
+                            retrieval=retrieval,
                             sources_note=source_note
                             or (
                                 "No provided sources cited."

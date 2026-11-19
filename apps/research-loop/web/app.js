@@ -437,7 +437,7 @@ function renderQueue() {
 }
 function renderConversation() {
   const messages=[...(state.data?.discussion || [])]; if(state.chatDraft)messages.push(state.chatDraft);
-  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header><div class="message-content">${citationMarkdown(m.content || 'Thinking…',m.citations)}</div>${sourceMarkup(m.citations)}${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
+  $('conversation').innerHTML=messages.length ? messages.map((m,i)=>`<article class="chat ${m.role==='user'?'user':'assistant'}${m.pending?' streaming':''}"><header>${m.role==='user' ? 'You' : esc(modelName(m.model || $('model').value))}${m.role==='assistant'?'<span class="model-label">Local model</span>':''}</header>${m.role==='assistant'?sourceMarkup(orderedSources(m.content,m.citations),m.citation_sentences):''}${m.retrieval?`<p class="search-step" role="status">Searching ${m.retrieval.papers} papers · ${m.retrieval.passages} passages found</p>`:m.pending?'<p class="search-step" role="status">Searching papers…</p>':''}<div class="message-content">${citationMarkdown(m.content || 'Thinking…',orderedSources(m.content,m.citations),m.citation_sentences)}</div>${m.sources_note?`<p class="muted sources-note">Sources: ${esc(m.sources_note)}</p>`:''}${m.pending?'<span class="streaming-caret" aria-label="Responding"></span>':''}${m.role==='assistant' && !m.pending ? `<button class="secondary queue-action" type="button" data-queue="${i}">Add as hypothesis</button>` : ''}</article>`).join('') : `<div class="discussion-empty"><h3>What do you want to test?</h3><p>Explore a few approaches with your local model. Add a testable hypothesis when you’re ready to measure it.</p><div class="starter-prompts">${starterPrompts().map((p,i)=>`<button type="button" class="secondary" data-prompt="${i}">${esc(p)}</button>`).join('')}</div><p class="muted">Your discussion stays with this project.</p></div>`; renderMath($('conversation'));
   $('conversation').scrollTop=messages.length ? $('conversation').scrollHeight : 0;
   controls();
 }
@@ -745,7 +745,7 @@ $('program').oninput=()=>{state.programDirty=$('program').value!==state.data?.pr
 $('queue-message').onclick=async()=>{try{await addHypothesis($('message').value);$('message').value='';}catch(e){notice(e.message);}};
 $('conversation').onclick=async event=>{
   const citation=event.target.closest('[data-citation]');
-  if(citation){const passage=citation.closest('article').querySelector(`details[data-source="${citation.dataset.citation}"]`);if(passage){passage.open=true;passage.scrollIntoView({block:'nearest'});passage.querySelector('summary').focus();}return;}
+  if(citation){openSource(citation);return;}
   const prompt=event.target.closest('[data-prompt]');
   if(prompt){if(state.replay)return;$('message').value=starterPrompts()[Number(prompt.dataset.prompt)] || '';$('message').focus();return;}
   const button=event.target.closest('[data-queue]');if(!button)return;const message=state.data.discussion[Number(button.dataset.queue)];if(!message)return;button.disabled=true;try{await addHypothesis(message.content,'discussion','','',Number(button.dataset.queue));}catch(e){notice(e.message);}finally{button.disabled=state.replay;}
@@ -759,7 +759,7 @@ $('composer').onsubmit=async event=>{
     const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,model})});
     if(!response.ok)throw new Error((await response.json()).error);
     const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';
-    while(true){const {done,value}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split('\n');pending=lines.pop();for(const line of lines){if(!line.startsWith('data:') || line.slice(5).trim()==='[DONE]')continue;const data=JSON.parse(line.slice(5));if(data.error)throw new Error(data.error.message || 'Model error');text+=data.choices?.[0]?.delta?.content || '';}
+    while(true){const {done,value}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split('\n');pending=lines.pop();for(const line of lines){if(!line.startsWith('data:') || line.slice(5).trim()==='[DONE]')continue;const data=JSON.parse(line.slice(5));if(data.error)throw new Error(data.error.message || 'Model error');if(data.retrieval){draft.retrieval=data.retrieval;draft.citations=data.sources || [];}text+=data.choices?.[0]?.delta?.content || '';}
       if(slug===state.slug && state.chatDraft===draft){draft.content=text;renderConversation();}
     }
     if(!text)throw new Error('The model returned no text. Try sending another message.');
@@ -1000,17 +1000,77 @@ function sourceLabel(s) {
   const file=state.data?.literature?.files?.find(f=>f.file===s.file);
   return (file && (file.label_override || file.sha256===s.sha256) ? file.label : null) || s.label || s.file.split('/').at(-1);
 }
-function citationMarkdown(content,sources=[]) {
-  const numbers=new Set(sources.map(s=>s.number));
+function individualMarkers(content) {
+  return content.replace(/\[(S\d+(?:\s*,\s*S\d+)*)\]/g,(_,group)=>group.match(/S\d+/g).map(n=>'['+n+']').join(''));
+}
+function orderedSources(content='',sources=[]) {
+  content=individualMarkers(content);
+  const numbers=[...new Set([...content.matchAll(/\[(S\d+)\]/g)].map(m=>m[1]))];
+  return numbers.map(n=>sources.find(s=>s.number===n)).filter(Boolean);
+}
+function sourceLocator(s,full=false) {
+  return [s.section_number?'§'+s.section_number+(full?' '+(s.section_title || ''):''):(s.section_title || s.section || 'Section unknown'),s.page?'p. '+s.page+(s.page_end>s.page?'–'+s.page_end:''):''].filter(Boolean).join(' · ');
+}
+function sourceData(s,sentences=[]) {
+  return esc(JSON.stringify({...s,cited_sentences:sentences}));
+}
+function citationMarkdown(content,sources=[],sentences={}) {
+  content=individualMarkers(content);
   let blocked=0;
   return markdown(content,{breaks:true}).split(/(<[^>]*>)/g).map(part=>{
     if(part.startsWith('<')){if(/^<(a|code|pre)\b/i.test(part))blocked++;if(/^<\/(a|code|pre)>/i.test(part))blocked--;return part;}
-    return blocked ? part : part.replace(/\[(S\d+)\]/g,(marker,number)=>numbers.has(number)?`<button type="button" class="text-button inline-citation" data-citation="${number}" aria-label="Open source ${number}">${marker}</button>`:marker);
+    return blocked ? part : part.replace(/\[(S\d+)\]/g,(marker,number)=>{
+      const i=sources.findIndex(s=>s.number===number);if(i<0)return marker;
+      const claims=sentences[number] || content.split(/\n|(?<=[.!?])\s+(?=[A-Z])/).filter(t=>t.includes(marker));
+      return `<sup><button type="button" class="text-button inline-citation" data-citation="${number}" data-passage="${sourceData(sources[i],claims)}" aria-label="Open source ${i+1}: ${esc(sourceLabel(sources[i]))}, ${esc(sourceLocator(sources[i],true))}" aria-haspopup="dialog" aria-describedby="source-popover">[${i+1}]</button></sup>`;
+    });
   }).join('');
 }
-function sourceMarkup(sources=[]) {
-  return sources.length ? `<div class="citation-chips">${sources.map(s=>`<details class="citation" data-source="${esc(s.number)}" data-chunk="${esc(s.chunk_id)}"><summary>[${esc(s.number)}] ${esc(sourceLabel(s))}${s.page?' · p. '+esc(s.page):''}</summary><p class="muted">${esc(sourceLabel(s))} · ${s.page?'page '+esc(s.page):esc(s.section || 'text')}</p><blockquote>${esc(s.snippet)}</blockquote></details>`).join('')}</div>` : '';
+function sourceMarkup(sources=[],sentences={}) {
+  return sources.length ? `<div class="source-row" aria-label="Sources"><span class="muted">Sources</span><div class="source-cards">${sources.map((s,i)=>`<button type="button" class="source-card" data-source="${esc(s.number)}" data-chunk="${esc(s.chunk_id)}" data-passage="${sourceData(s,sentences[s.number] || [])}" aria-haspopup="dialog" aria-label="Open source ${i+1}: ${esc(sourceLabel(s))}"><span class="source-number">${i+1}</span><strong>${esc(sourceLabel(s).split(' · ')[0])}</strong><span>${esc(sourceLabel(s).split(' · ').slice(1).join(' · ') || s.file.split('/').at(-1))}</span><small>${esc(sourceLocator(s))}</small></button>`).join('')}</div></div>` : '';
 }
+function highlightedPassage(s) {
+  const passage=s.snippet || '',claims=(s.cited_sentences || []).join(' ');
+  const quotes=[...claims.matchAll(/[“"]([^”"]{3,})[”"]/g)].map(m=>m[1]);
+  const quoted=quotes.find(q=>passage.toLowerCase().includes(q.toLowerCase()));
+  let phrase=quoted;
+  if(!phrase && claims){
+    const terms=new Set(claims.toLowerCase().match(/[a-z]{4,}/g) || []);
+    const candidates=passage.split(/(?<=[.!?])\s+|\n\n/);
+    let best=0;
+    for(const candidate of candidates){const score=(candidate.toLowerCase().match(/[a-z]{4,}/g) || []).filter(t=>terms.has(t)).length;if(score>best){best=score;phrase=candidate;}}
+  }
+  if(!phrase)return esc(passage);
+  const start=passage.toLowerCase().indexOf(phrase.toLowerCase());
+  return esc(passage.slice(0,start))+'<mark>'+esc(passage.slice(start,start+phrase.length))+'</mark>'+esc(passage.slice(start+phrase.length));
+}
+let sourceReturnFocus=null;
+function openSource(button) {
+  const s=JSON.parse(button.dataset.passage);
+  sourceReturnFocus=button;
+  $('source-popover').hidden=true;
+  $('source-drawer-content').innerHTML=`<h2 id="source-drawer-title">${esc(sourceLabel(s))}</h2><p>${esc(sourceLocator(s,true))}</p>${s.previous?`<h3>Previous passage</h3><blockquote>${esc(s.previous)}</blockquote>`:''}<h3>Cited passage</h3><blockquote>${highlightedPassage(s)}</blockquote>${s.following?`<h3>Next passage</h3><blockquote>${esc(s.following)}</blockquote>`:''}<a target="_blank" rel="noopener" href="${projectAPI('/literature/file')}?file=${encodeURIComponent(s.file)}${s.page?'#page='+s.page:''}">${s.file.toLowerCase().endsWith('.pdf')?'Open PDF at p. '+(s.page || 1):'Open source file'}</a>`;
+  if(!$('source-drawer').open)$('source-drawer').showModal();
+  $('source-drawer-close').focus();
+}
+function closeSource() {$('source-drawer').close();sourceReturnFocus?.focus();}
+$('source-drawer-close').onclick=closeSource;
+$('source-drawer').oncancel=event=>{event.preventDefault();closeSource();};
+window.addEventListener('click',event=>{const button=event.target.closest('[data-passage]');if(button && !button.dataset.citation)openSource(button);});
+function showSourcePopover(event) {
+  const button=event.target.closest('[data-citation][data-passage]');
+  if(!button)return;
+  const s=JSON.parse(button.dataset.passage),popover=$('source-popover'),rect=button.getBoundingClientRect();
+  popover.innerHTML=`<strong>${esc(sourceLabel(s))}</strong><p>${esc(sourceLocator(s,true))}</p><blockquote>${highlightedPassage(s)}</blockquote>`;
+  popover.hidden=false;
+  popover.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-376))+'px';
+  popover.style.top=Math.max(8,Math.min(rect.bottom+8,window.innerHeight-popover.offsetHeight-8))+'px';
+}
+window.addEventListener('mouseover',showSourcePopover);
+window.addEventListener('focusin',showSourcePopover);
+for(const name of ['mouseout','focusout'])window.addEventListener(name,event=>{if(event.target.closest('[data-citation]'))$('source-popover').hidden=true;});
+window.addEventListener('keydown',event=>{if(event.key==='Escape')$('source-popover').hidden=true;});
+
 let literatureTimer;
 function renderLiterature() {
   clearTimeout(literatureTimer);

@@ -351,7 +351,7 @@ cards and Results. Saved passage text stays immutable. Each Discuss prompt remap
 historical and retrieved citation markers into a shared table of source snapshots,
 so a follow-up cannot silently bind an old marker to a different paper. Legacy
 markers without saved provenance are marked unavailable in model history.
-Discuss asks for a short answer and 1–3 claim/why/prediction hypotheses, aiming
+Discuss asks for a short answer and 1–2 claim/why/prediction hypotheses, aiming
 under 250 words; the prompt cannot guarantee model compliance.
 
 **Privacy:** literature indexing and retrieval send text only to the configured
@@ -374,6 +374,7 @@ Literature APIs are relative to `/api/projects/<p>`:
 | POST | `/literature/remove` | `{name}`; removes uploaded copy and re-indexes |
 | POST | `/literature/label` | `{file, label}`; saves a display label without re-embedding |
 | POST | `/literature/index` | `{}`; background incremental re-index |
+| GET | `/literature/file?file=<encoded indexed filename>` | Source bytes from a current literature root; PDF links use `#page=N` |
 | POST | `/hypotheses` | Also accepts `discussion_index` to copy a saved assistant turn's citations |
 
 Indexing currently uses one thread per active project and exhaustive in-memory
@@ -382,3 +383,35 @@ scanned PDFs or filesystem watcher. TeX is indexed as source, not compiled.
 Interrupted indexing leaves the previous complete snapshot; re-index after a
 server restart to resume. Model grounding is prompt-based and requires human
 review.
+
+Source cards appear above assistant answers; display numbers follow first use
+within that answer while saved `S#` identifiers keep their historical mapping.
+Inline superscript buttons show a passage popover on hover or keyboard focus.
+Clicking a citation or card opens a keyboard-accessible source drawer with the
+section, page, full passage and adjacent passages. Escape closes the drawer and
+returns focus. Quoted phrases are highlighted when they match the passage;
+otherwise shared words select a passage sentence for visual orientation. This
+highlight is not an entailment check. Hypotheses and Results use the same locators.
+
+Index version 2 detects numbered/appendix and standard headings in extracted PDF,
+Markdown, TeX and HTML text, including common small-cap extraction artifacts.
+Sections carry across pages, but chunks split at page and heading boundaries,
+so `page` and `page_end` currently match. Old indexes rebuild on re-index (vectors
+are re-embedded for this version change); PDF metadata caches remain reusable.
+References passages are excluded from retrieval. A named first author scopes
+retrieval to that paper; section questions favor defining heading passages.
+Heading detection remains heuristic and cannot infer headings missing from the
+extracted text. Real-PDF tests use optional read-only fixtures in the supplied
+external papers directory and skip when those files are unavailable.
+
+Discuss streaming starts with a `data:` frame containing `retrieval` counts and
+provided `sources`, followed by ordinary OpenAI content frames. Saved replies
+include `retrieval` and `citation_sentences` (source number to exact claim
+sentences). Only markers in the provided source table produce saved citations. Combined
+markers such as `[S1, S2]` become individual markers; unknown identifiers are
+discarded from saved assistant text.
+The source-file API accepts only indexed filenames still within the project's
+literature directory or a currently attached directory. It rejects traversal and
+symlinks, bounds reads, uses source content types and sandboxes HTML without
+scripts or external resources. Removed or detached files remain readable as saved
+passage snapshots, but their original-file links become unavailable.
