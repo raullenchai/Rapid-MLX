@@ -181,6 +181,29 @@ def cpu_model(monkeypatch):
     return module
 
 
+def test_engram_uint32_inputs_keep_signed_padding_and_history(cpu_model):
+    inputs, prior = cpu_model.DecoderLayer.engram_inputs(
+        np.array([[0, 3], [4, 5]], np.uint32),
+        np.array([[0, 2], [1, 2]], np.uint32),
+        np.array([-1, 2], np.int32),
+    )
+    assert inputs.dtype == prior.dtype == np.int32
+    np.testing.assert_array_equal(inputs, [[-1, 3], [4, 5]])
+    np.testing.assert_array_equal(prior, [[-1, -1], [1, 2]])
+
+
+def test_uint32_logits_match_int32_prefill_and_decode(cpu_model):
+    model = cpu_model.Model(tiny())
+    signed_cache, unsigned_cache = model.make_cache(), model.make_cache()
+    for tokens in ([[1, 2, 3]], [[4]], [[5, 6]]):
+        signed = np.array(tokens, np.int32)
+        unsigned = signed.astype(np.uint32)
+        np.testing.assert_array_equal(model(unsigned), model(signed))
+        np.testing.assert_array_equal(
+            model(unsigned, unsigned_cache), model(signed, signed_cache)
+        )
+
+
 def test_forward_dispatch_and_every_prefill_boundary(cpu_model):
     args = tiny()
     model = cpu_model.Model(args)

@@ -61,7 +61,8 @@ def checkpoint(tmp_path):
     return tmp_path
 
 
-def test_rows_prefetch_mismatch_and_logits(checkpoint, monkeypatch):
+@pytest.mark.parametrize("dtype", [mx.int32, mx.uint32])
+def test_rows_prefetch_mismatch_and_logits(checkpoint, monkeypatch, dtype):
     resident, _ = load(checkpoint, engram_ssd_offload=False)
     offloaded, _ = load(checkpoint, engram_ssd_offload=True)
     table = offloaded.layers[1].engram_layer.multi_head_embedding.embedding
@@ -79,7 +80,7 @@ def test_rows_prefetch_mismatch_and_logits(checkpoint, monkeypatch):
     # Exercise prefill, incremental history, cache trim and replay.
     rc, dc = resident.make_cache(), offloaded.make_cache()
     for tokens in ([[1, 2, 3]], [[4]], [[5, 6]]):
-        ids = mx.array(tokens)
+        ids = mx.array(tokens, dtype=dtype)
         expected, actual = resident(ids, rc), offloaded(ids, dc)
         mx.eval(expected, actual)
         np.testing.assert_array_equal(np.array(actual), np.array(expected))
@@ -87,18 +88,67 @@ def test_rows_prefetch_mismatch_and_logits(checkpoint, monkeypatch):
         for layer in caches:
             layer.trim(2)
     expected, actual = (
-        resident(mx.array([[7, 8]]), rc),
-        offloaded(mx.array([[7, 8]]), dc),
+        resident(mx.array([[7, 8]], dtype=dtype), rc),
+        offloaded(mx.array([[7, 8]], dtype=dtype), dc),
     )
     mx.eval(expected, actual)
     np.testing.assert_array_equal(np.array(actual), np.array(expected))
     # Force synchronous rows while retaining precisely the same model weights.
     monkeypatch.setattr(table, "prefetch", lambda _: None)
-    synchronous = offloaded(mx.array([[1, 2, 3]]))
-    expected = resident(mx.array([[1, 2, 3]]))
+    synchronous = offloaded(mx.array([[1, 2, 3]], dtype=dtype))
+    expected = resident(mx.array([[1, 2, 3]], dtype=dtype))
     mx.eval(synchronous, expected)
     np.testing.assert_array_equal(np.array(synchronous), np.array(expected))
     table.close()
+
+
+@pytest.mark.parametrize("offload", [False, True])
+def test_uint32_logits_and_greedy_stream_match_int32(checkpoint, offload):
+    from mlx_lm import stream_generate
+    from mlx_lm.sample_utils import make_sampler
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from transformers import PreTrainedTokenizerFast
+
+    model, _ = load(checkpoint, engram_ssd_offload=offload)
+    table = model.layers[1].engram_layer.multi_head_embedding.embedding
+    try:
+        signed_cache, unsigned_cache = model.make_cache(), model.make_cache()
+        for tokens in ([[1, 2, 3]], [[4]], [[5, 6]]):
+            signed = mx.array(tokens, dtype=mx.int32)
+            unsigned = signed.astype(mx.uint32)
+            for expected, actual in (
+                (model(signed), model(unsigned)),
+                (model(signed, signed_cache), model(unsigned, unsigned_cache)),
+            ):
+                mx.eval(expected, actual)
+                np.testing.assert_array_equal(np.array(actual), np.array(expected))
+
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel({str(i): i for i in range(128)}))
+        )
+        # Build the greedy reference with signed IDs at every decode step.
+        cache = model.make_cache()
+        ids = mx.array([[1, 2, 3]], dtype=mx.int32)
+        expected_tokens = []
+        for _ in range(3):
+            token = mx.argmax(model(ids, cache)[:, -1, :], axis=-1).item()
+            expected_tokens.append(token)
+            ids = mx.array([[token]], dtype=mx.int32)
+        for dtype in (mx.int32, mx.uint32):
+            responses = list(
+                stream_generate(
+                    model,
+                    tokenizer,
+                    mx.array([1, 2, 3], dtype=dtype),
+                    max_tokens=3,
+                    sampler=make_sampler(temp=0),
+                )
+            )
+            assert [response.token for response in responses] == expected_tokens
+    finally:
+        if offload:
+            table.close()
 
 
 def test_product_loader_routes_without_generic_model_eval(checkpoint, monkeypatch):

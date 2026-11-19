@@ -452,6 +452,8 @@ class DecoderLayer(nn.Module):
 
     @staticmethod
     def engram_inputs(inputs, prior, offset):
+        # Generation can supply uint32 IDs; padding needs a signed sentinel.
+        inputs, prior = inputs.astype(mx.int32), prior.astype(mx.int32)
         # Batch padding is not an original token and resets n-gram history.
         start = mx.array(offset).reshape(-1, 1) - prior.shape[1]
         prior = mx.where(start + mx.arange(prior.shape[1]) < 0, -1, prior)

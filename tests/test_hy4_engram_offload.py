@@ -342,7 +342,10 @@ def test_strict_tensor_validation_and_failure_cleanup(
         assert closed
 
 
-def test_prefetch_uses_current_history_before_any_decoder(cpu_model, monkeypatch):
+@pytest.mark.parametrize("dtype", [np.int32, np.uint32])
+def test_prefetch_uses_current_history_before_any_decoder(
+    cpu_model, monkeypatch, dtype
+):
     model = cpu_model.Model(
         tiny(
             engram_layer_ids=[1, 2],
@@ -377,11 +380,11 @@ def test_prefetch_uses_current_history_before_any_decoder(cpu_model, monkeypatch
     )
     for tokens in ([[1, 2, 3]], [[4]], [[5, 6]]):
         events.clear()
-        model(np.array(tokens), cache)
+        model(np.array(tokens, dtype=dtype), cache)
         assert events == [("prefetch", 0), ("prefetch", 1), ("read", 0), ("read", 1)]
     for c in cache:
         c.trim(2)
-    model(np.array([[7, 8]]), cache)
+    model(np.array([[7, 8]], dtype=dtype), cache)
 
 
 def test_prefetch_matching_consumed_once_and_mismatch_reread(
