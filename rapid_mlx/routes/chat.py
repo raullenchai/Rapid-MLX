@@ -6899,14 +6899,16 @@ async def _create_chat_completion_impl(
                                 {
                                     "type": "object",
                                     "properties": {
-                                        "name": {"const": tool.function["name"]},
-                                        "parameters": tool.function.get("parameters")
+                                        "name": {"const": fn["name"]},
+                                        "parameters": fn.get("parameters")
                                         or {"type": "object", "properties": {}},
                                     },
                                     "required": ["name", "parameters"],
                                     "additionalProperties": False,
                                 }
                                 for tool in request.tools
+                                if (fn := tool.function) is not None
+                                and isinstance(fn.get("name"), str)
                             ]
                         },
                     }
