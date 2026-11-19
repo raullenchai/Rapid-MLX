@@ -1408,3 +1408,175 @@ def test_append_tool_use_suffix_handles_all_content_shapes():
 
     # unexpected shape → coerced to text, never raises
     assert _append_tool_use_suffix(123, suffix) == "123" + suffix
+
+
+class _GuidedRetryEngine(_RecordingEngine):
+    def __init__(
+        self, retry_text='[{"name":"get_time","parameters":{"city":"Tokyo"}}]'
+    ):
+        super().__init__()
+        self.retry_text = retry_text
+        self.guided_calls = []
+
+    async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        self.guided_calls.append((messages, json_schema, kwargs))
+        if isinstance(self.retry_text, Exception):
+            raise self.retry_text
+        return GenerationOutput(
+            text=self.retry_text,
+            raw_text=self.retry_text,
+            prompt_tokens=4,
+            completion_tokens=12,
+            finished=True,
+            finish_reason="stop",
+        )
+
+
+def _required_retry_request(client, **overrides):
+    return client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Just answer in prose."}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 128,
+            "temperature": 0.2,
+            "parallel_tool_calls": False,
+            **overrides,
+        },
+    )
+
+
+def test_required_multi_tool_guided_retry(monkeypatch):
+    import json
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    engine = _GuidedRetryEngine()
+    resp = _required_retry_request(_make_client(engine))
+    assert resp.status_code == 200, resp.text
+    choice = resp.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert not choice["message"].get("content")
+    call = choice["message"]["tool_calls"][0]
+    assert call["id"].startswith("call_")
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "get_time"
+    assert json.loads(call["function"]["arguments"]) == {"city": "Tokyo"}
+    assert len(engine.guided_calls) == 1
+    messages, schema, kwargs = engine.guided_calls[0]
+    assert messages == engine.last_messages
+    assert schema["minItems"] == schema["maxItems"] == 1
+    assert len(schema["items"]["anyOf"]) == 2
+    assert kwargs["raise_on_failure"] is True
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["max_tokens"] == 128
+    assert resp.json()["usage"]["completion_tokens"] == 13
+    assert resp.json()["usage"]["prompt_tokens"] == 8
+
+
+@pytest.mark.parametrize(
+    "retry_text",
+    [
+        "[]",
+        '[{"name":"unknown","parameters":{}}]',
+        '[{"name":"get_time","parameters":{"city":7}}]',
+        '[{"name":"get_time"}]',
+        "plain text",
+        RuntimeError("schema compile failed"),
+    ],
+)
+def test_required_multi_tool_failed_retry_preserves_422(monkeypatch, retry_text):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    engine = _GuidedRetryEngine(retry_text)
+    resp = _required_retry_request(_make_client(engine))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == (
+        'tool_choice="required" but the model returned a text response '
+        "with no tool_calls. Local inference has no decoder-level "
+        "constraint; the system-prompt enforcement was insufficient "
+        "for this prompt. Retry with a more concrete user message or "
+        'use tool_choice={"type":"function","function":{"name":...}} '
+        "to pin a specific tool."
+    )
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_guided_unavailable(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: False)
+    engine = _GuidedRetryEngine()
+    resp = _required_retry_request(_make_client(engine))
+    assert resp.status_code == 422, resp.text
+    assert "Local inference has no decoder-level constraint" in resp.json()["detail"]
+    assert not engine.guided_calls
+
+
+def test_required_single_tool_skips_guided_retry(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    engine = _GuidedRetryEngine()
+    resp = _required_retry_request(_make_client(engine), tools=_TOOLS_FIXTURE[:1])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["choices"][0]["message"]["tool_calls"][0]["function"] == {
+        "name": "get_weather",
+        "arguments": "{}",
+    }
+    assert not engine.guided_calls
+
+
+def test_required_multi_tool_reasoning_retry_uses_gated_processor(monkeypatch):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.reasoning import get_parser
+
+    processor = object()
+    builds = []
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.resolve_schema_reasoning_end_id", lambda *_: 42
+    )
+
+    def build(tokenizer, schema, **kwargs):
+        builds.append((schema, kwargs))
+        return processor
+
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.build_json_schema_logits_processor", build
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._build_reasoning_budget_processor", lambda *a, **k: None
+    )
+
+    class ReasoningEngine(_GuidedRetryEngine):
+        def __init__(self):
+            super().__init__()
+            self.chat_calls = []
+
+        async def chat(self, messages, **kwargs):
+            self.chat_calls.append((messages, kwargs))
+            if kwargs.get("grammar_logits_processor") is processor:
+                return GenerationOutput(
+                    text="<think>Choose the clock.</think>" + self.retry_text,
+                    raw_text="<think>Choose the clock.</think>" + self.retry_text,
+                    prompt_tokens=4,
+                    completion_tokens=20,
+                    finished=True,
+                    finish_reason="stop",
+                )
+            return await super().chat(messages, **kwargs)
+
+    engine = ReasoningEngine()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser = get_parser("qwen3")()
+    resp = _required_retry_request(
+        client, chat_template_kwargs={"enable_thinking": True}
+    )
+    assert resp.status_code == 200, resp.text
+    choice = resp.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_time"
+    assert len(builds) == 1
+    assert builds[0][1] == {"reasoning_end_id": 42}
+    assert len(engine.chat_calls) == 2
+    assert engine.chat_calls[0][0] == engine.chat_calls[1][0]
+    assert not engine.guided_calls

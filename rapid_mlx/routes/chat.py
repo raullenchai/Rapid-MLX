@@ -6849,10 +6849,9 @@ async def _create_chat_completion_impl(
     # target tool is unambiguous — named-function form (the name is
     # the choice), or ``"required"`` with a single tool entry (the
     # name is unique). When ``"required"`` is paired with multiple
-    # tools and the parser returned nothing, we genuinely cannot pick
-    # — fall back to 422 with a message that points to the
-    # ``{type:"function",function:{name:X}}`` form as the escape
-    # hatch, matching pre-#571 wording for that diagnostic.
+    # tools and the parser returned nothing, retry once with a tool-array
+    # schema so the decoder selects the tool and its arguments together.
+    # Preserve the existing 422 diagnostic if that retry cannot satisfy it.
     # Streaming path is best-effort prompt-injection only; once SSE
     # chunks are out we can't 422 mid-flight.
     if request.tool_choice is not None and request.tools:
@@ -6884,6 +6883,165 @@ async def _create_chat_completion_impl(
                     )
                     if _synth_err:
                         raise HTTPException(status_code=422, detail=_synth_err)
+            elif len(request.tools) > 1 and not request.stream:
+                from ..api.guided import (
+                    build_json_schema_logits_processor,
+                    is_guided_available,
+                    resolve_schema_reasoning_end_id,
+                )
+
+                if is_guided_available():
+                    retry_schema = {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"const": tool.function["name"]},
+                                        "parameters": tool.function.get("parameters")
+                                        or {"type": "object", "properties": {}},
+                                    },
+                                    "required": ["name", "parameters"],
+                                    "additionalProperties": False,
+                                }
+                                for tool in request.tools
+                            ]
+                        },
+                    }
+                    if request.parallel_tool_calls is False:
+                        retry_schema["maxItems"] = 1
+                    retry_kwargs = {
+                        key: value
+                        for key, value in chat_kwargs.items()
+                        if key
+                        not in {
+                            "grammar_logits_processor",
+                            "forced_assistant_prefix",
+                            "raise_on_failure",
+                        }
+                    }
+                    # Processor cursors belong to the abandoned generation.
+                    retry_kwargs.pop("reasoning_budget_logits_processor", None)
+                    try:
+                        logger.info(
+                            "tool_choice='required': attempting single guided "
+                            "tool-array retry after no parsed tool_calls"
+                        )
+                        if _schema_reasoning:
+                            end_id = resolve_schema_reasoning_end_id(
+                                engine.tokenizer, cfg.reasoning_parser
+                            )
+                            if end_id is None:
+                                raise RuntimeError("No atomic reasoning-end marker")
+                            processor = await asyncio.to_thread(
+                                build_json_schema_logits_processor,
+                                engine.tokenizer,
+                                retry_schema,
+                                reasoning_end_id=end_id,
+                            )
+                            if processor is None:
+                                raise RuntimeError("Tool-array schema compile failed")
+                            retry_kwargs["grammar_logits_processor"] = processor
+                            budget = _build_reasoning_budget_processor(
+                                engine,
+                                request,
+                                cfg,
+                                messages,
+                                resolved_thinking,
+                                allow_tools=True,
+                            )
+                            if budget is not None:
+                                retry_kwargs["reasoning_budget_logits_processor"] = (
+                                    budget
+                                )
+                            retry_coro = engine.chat(messages=messages, **retry_kwargs)
+                        else:
+                            retry_coro = engine.generate_with_schema(
+                                messages=messages,
+                                json_schema=retry_schema,
+                                raise_on_failure=True,
+                                **retry_kwargs,
+                            )
+                        retry_output = await _wait_with_disconnect(
+                            retry_coro, raw_request, timeout=timeout
+                        )
+                        if is_cancellation_finish_reason(retry_output.finish_reason):
+                            return Response(status_code=499)
+                        retry_output, retry_channels = split_buffered(
+                            retry_output,
+                            served_model_identity(cfg),
+                            cfg=cfg,
+                            request=request,
+                        )
+                        retry_text = retry_output.text
+                        if _schema_reasoning and not retry_channels:
+                            retry_text = _line1_split_reasoning_for_tool_parse(
+                                cfg.reasoning_parser, retry_text
+                            )
+                        calls = json.loads(retry_text)
+                        from jsonschema import validate
+
+                        validate(calls, retry_schema)
+                        from ..api.models import FunctionCall, ToolCall
+
+                        retry_calls = []
+                        for call in calls:
+                            arguments = json.dumps(
+                                call["parameters"], ensure_ascii=False, allow_nan=False
+                            )
+                            error = _forced_synth_schema_error(
+                                call["name"], arguments, request.tools
+                            )
+                            if error:
+                                raise ValueError(error)
+                            retry_calls.append(
+                                ToolCall(
+                                    id=f"call_{uuid.uuid4().hex[:8]}",
+                                    type="function",
+                                    function=FunctionCall(
+                                        name=call["name"], arguments=arguments
+                                    ),
+                                )
+                            )
+                        if retry_output.finish_reason != "length":
+                            from dataclasses import replace
+
+                            output = replace(
+                                retry_output,
+                                text="",
+                                raw_text="",
+                                prompt_tokens=output.prompt_tokens
+                                + retry_output.prompt_tokens,
+                                completion_tokens=output.completion_tokens
+                                + retry_output.completion_tokens,
+                            )
+                            tool_calls = retry_calls
+                            cleaned_text = ""
+                            channels_owned = retry_channels
+                            token_logprobs_list = []
+                            logger.info(
+                                "tool_choice='required': guided tool-array retry "
+                                "succeeded (%d calls)",
+                                len(tool_calls),
+                            )
+                    except (HTTPException, asyncio.CancelledError, TimeoutError):
+                        raise
+                    except GuidedGenerationCancelledError as exc:
+                        if _consume_guided_lifecycle_cancel(engine, exc):
+                            from ..request import lifecycle_cancel_error_payload
+
+                            raise HTTPException(
+                                status_code=503,
+                                detail={"error": lifecycle_cancel_error_payload()},
+                            ) from exc
+                        raise asyncio.CancelledError() from exc
+                    except Exception:
+                        logger.warning(
+                            "tool_choice='required': guided tool-array retry failed",
+                            exc_info=True,
+                        )
             if not tool_calls:
                 raise HTTPException(
                     status_code=422,
