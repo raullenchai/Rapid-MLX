@@ -489,6 +489,19 @@ struct ServerResidencyClient {
         return try? JSONDecoder().decode(ModelResidencySnapshot.self, from: data)
     }
 
+    /// The engine enforces pinning and active-request guards atomically.
+    /// Never fall back to stopping the process for an individual row.
+    func unload(id: String, port: Int, bearer: String?) async -> Bool {
+        guard !id.isEmpty,
+              let encoded = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        else { return false }
+        var request = request(path: "/v1/models/\(encoded)", port: port, bearer: bearer)
+        request.httpMethod = "DELETE"
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse else { return false }
+        return http.statusCode == 204
+    }
+
     func load(
         alias: String,
         hfPath: String?,

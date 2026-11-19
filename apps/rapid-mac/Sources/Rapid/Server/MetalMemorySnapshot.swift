@@ -9,6 +9,7 @@ struct MetalMemorySnapshot: Decodable, Sendable, Equatable {
     var prefixCache: PrefixCacheSnapshot? = nil
     var numRunning: Int? = nil
     var numWaiting: Int? = nil
+    var generationTPS: Double? = nil
 
     enum CodingKeys: String, CodingKey {
         case active = "active_memory_gb"
@@ -52,23 +53,26 @@ struct MetalMemoryClient {
         let cache: PrefixCacheSnapshot?
         let numRunning: Int?
         let numWaiting: Int?
+        let generationTPS: Double?
 
         enum CodingKeys: String, CodingKey {
             case metal, cache
             case numRunning = "num_running"
             case numWaiting = "num_waiting"
+            case generationTPS = "generation_tps"
         }
     }
 
     /// Decode all operator signals from the same authenticated status sample.
     static func decodeStatus(_ data: Data) throws -> MetalMemorySnapshot? {
         let status = try JSONDecoder().decode(Status.self, from: data)
-        guard status.metal != nil || status.cache != nil || status.numRunning != nil || status.numWaiting != nil
+        guard status.metal != nil || status.cache != nil || status.numRunning != nil || status.numWaiting != nil || status.generationTPS != nil
         else { return nil }
         var snapshot = status.metal ?? MetalMemorySnapshot(active: nil, cache: nil, peak: nil)
         snapshot.prefixCache = status.cache
         snapshot.numRunning = status.numRunning
         snapshot.numWaiting = status.numWaiting
+        snapshot.generationTPS = MemoryOverviewFormat.valid(status.generationTPS)
         return snapshot
     }
 
