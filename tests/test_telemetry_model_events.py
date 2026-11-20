@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -1366,25 +1367,31 @@ def test_strict_false_loader_uses_typed_boundaries(tmp_path, monkeypatch):
     )
 
 
-def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model_type", ["synthetic", "hy_v4_flash"])
+def test_raw_tokenizer_fallback_uses_typed_boundaries(
+    tmp_path, monkeypatch, model_type
+):
     from rapid_mlx.utils import tokenizer
 
     (tmp_path / "config.json").write_text(
-        json.dumps({"model_type": "synthetic"}), encoding="utf-8"
+        json.dumps({"model_type": model_type}), encoding="utf-8"
     )
     (tmp_path / "tokenizer.json").write_text("{}", encoding="utf-8")
     model = object()
     loaded_tokenizer = SimpleNamespace(chat_template=None)
     utils = ModuleType("mlx_lm.utils")
-    utils.load_model = lambda _path, **_kwargs: (model, {})
+    utils.load_model = Mock(return_value=(model, {}))
     mlx_lm = ModuleType("mlx_lm")
     mlx_lm.utils = utils
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
     monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
     fp8 = ModuleType("rapid_mlx.fp8_repack")
-    fp8.is_fp8_block_checkpoint = lambda _path: False
-    fp8.load_fp8_model_online = lambda _path: None
+    fp8.is_fp8_block_checkpoint = Mock(return_value=False)
+    fp8.load_fp8_model_online = Mock()
     monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", fp8)
+    hy4 = ModuleType("rapid_mlx.models.hy_v4_flash_load")
+    hy4.load = Mock(return_value=(model, {}))
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.hy_v4_flash_load", hy4)
     tokenizers = ModuleType("tokenizers")
     tokenizers.Tokenizer = SimpleNamespace(from_file=lambda _path: object())
     monkeypatch.setitem(sys.modules, "tokenizers", tokenizers)
@@ -1415,6 +1422,15 @@ def test_raw_tokenizer_fallback_uses_typed_boundaries(tmp_path, monkeypatch):
         model,
         loaded_tokenizer,
     )
+    if model_type == "hy_v4_flash":
+        hy4.load.assert_called_once_with(tmp_path)
+        utils.load_model.assert_not_called()
+        fp8.is_fp8_block_checkpoint.assert_not_called()
+    else:
+        hy4.load.assert_not_called()
+        utils.load_model.assert_called_once()
+        fp8.is_fp8_block_checkpoint.assert_called_once_with(tmp_path)
+    fp8.load_fp8_model_online.assert_not_called()
 
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps(
