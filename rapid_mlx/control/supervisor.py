@@ -82,12 +82,16 @@ class Supervisor:
         }
 
     def stop(self, signum):
-        # Terminal job control may already have signalled the runner. Forward once;
-        # a second signal must not reset the four-second shutdown deadline.
+        # SIGINT reaches both foreground processes. Forwarding it would make
+        # Uvicorn force_exit and skip lifespan shutdown. Wait for graceful exit;
+        # a PID-only SIGINT is handled by the bounded TERM -> KILL escalation.
+        # Further terminal Ctrl-C reaches Uvicorn directly and can still force
+        # exit. Never reset the deadline or duplicate a subsequent signal.
         if self.stopping.is_set():
             return
         self.stop_started = time.monotonic()
-        self.signal_descendants(signum)
+        if signum != signal.SIGINT:
+            self.signal_descendants(signum)
         self.stop_signal = signum
         self.state = "stopping"
         self.stopping.set()
@@ -295,15 +299,15 @@ class Supervisor:
             and self.child.returncode is None
             and self.child.pid not in signalled
         ):
-            with contextlib.suppress(ProcessLookupError):
-                self.child.send_signal(signum)
+            if self.tree is not None:
+                self.tree.send_root(signum)
 
     async def wait_exit(self):
         # asyncio Process.wait can wait for inherited pipe EOF after exit.
         # The child watcher sets returncode independently of those pipes.
         while self.child.returncode is None:
             if not self.stopping.is_set():
-                self.tree.refresh()
+                self.tree.update_root_state()
             await asyncio.sleep(0.1)
         return self.child.returncode
 
@@ -342,12 +346,13 @@ class Supervisor:
                     stderr=asyncio.subprocess.PIPE,
                 )
                 self.tree = ProcessTree(self.child.pid)
-                self.tree.refresh()
+                self.tree.start_tracking()
                 self.spawn_ready.set()
                 with self.best_effort("discovery index publication"):
                     self.publish_index()
                 if self.stopping.is_set():
-                    self.signal_descendants(self.stop_signal)
+                    if self.stop_signal != signal.SIGINT:
+                        self.signal_descendants(self.stop_signal)
                 pumps = [
                     asyncio.create_task(
                         self.pump(self.child.stdout, sys.stdout.buffer)
@@ -366,13 +371,18 @@ class Supervisor:
                     # A stopped runner is alive too; only exit or the deadline
                     # ends this grace period, never a job-control stop.
                     deadline = self.stop_started + 4.0
+                    term_sent = self.stop_signal != signal.SIGINT
                     while time.monotonic() < deadline:
+                        if not term_sent and time.monotonic() >= deadline - 1.0:
+                            self.signal_descendants(signal.SIGTERM)
+                            term_sent = True
                         live = self.tree.refresh()
                         if wait.done() and not live:
                             break
                         await asyncio.sleep(
                             min(0.05, max(0, deadline - time.monotonic()))
                         )
+                self.tree.stop_tracking()
                 self.signal_descendants(signal.SIGKILL)
                 code = await asyncio.wait_for(wait, 0.2)
                 stopping.cancel()
@@ -405,6 +415,8 @@ class Supervisor:
                     self.state = "starting"
             return 128 + self.stop_signal
         finally:
+            if self.tree is not None:
+                self.tree.stop_tracking()
             if self.child is not None:
                 self.signal_descendants(signal.SIGKILL)
                 self.close_pipes()

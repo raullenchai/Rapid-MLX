@@ -50,9 +50,9 @@ rapid-mlx serve [model] [现有参数]
 - 控制面接管原本 serve 的父进程职责：
   - 若环境/参数里有 `RAPID_MLX_WATCHDOG_PPID`（或 `--watchdog-ppid`），**控制面**看守这个原始父进程；传给 runner 时改写为控制面 PID。
   - runner **不**新开 session，保持在桌面 app 的进程组里，`killpg` 仍能一次清掉全部。
-  - TERM/INT/HUP 转发给 runner 和 apps；**截止时间与现有 5 s 约定对齐**（watchdog 和桌面 app 都在 5 s 后升级为 KILL）：控制面等 runner/apps 最多 4 s，然后 KILL；全部回收（waitpid）；关闭过程中禁止重启。
-  - 信号处理幂等：桌面 app 用 `killpg` 时父子会同时收到信号，控制面收到第二次信号或发现 runner 已在退出时不重复动作。
-  - 控制面被 SIGKILL 后，runner 及其后代须在 **4 s 内退出**：监管 runner 每 0.5 s 检查父进程；退出前先记录后代 PID 和启动时间，TERM 后最多等 1 s，再按身份复核 KILL 幸存后代（包括已重新归属 launchd/init 的进程），最后 TERM runner 并在 1 s 后升级为 KILL。桌面/非监管路径的时限不变。
+  - TERM/HUP 向 runner 和 apps 转发一次；INT 不重复转发（终端前台组已收到），先等正常退出，3 s 时升级 TERM，4 s 时升级 KILL；**截止时间与现有 5 s 约定对齐**（watchdog 和桌面 app 都在 5 s 后升级为 KILL）：控制面等 runner/apps 最多 4 s，然后 KILL；直接 runner 回收（waitpid），后代按下述 best-effort 约定清理；关闭过程中禁止重启。
+  - 信号处理幂等：桌面 app 用 `killpg` 时父子会同时收到信号，控制面收到第二次信号不重复转发、不重置截止时间；用户第二次 Ctrl-C 仍直接到达 runner，保留 Uvicorn 的强制退出行为。
+  - 控制面被 SIGKILL 后，runner、直接及已跟踪后代在 **4 s 内尽力清理（best-effort）**；在被观察前就 daemonize/重新归属其它父进程的后代可能逃逸。空闲时在后台线程中最多每 5 s 记录一次后代，关闭/孤儿处理时再取快照：监管 runner 每 0.5 s 检查父进程；退出前先记录后代 PID 和启动时间，TERM 后最多等 1 s，再按身份复核 KILL 幸存后代（包括已重新归属 launchd/init 的进程），最后 TERM runner 并在 1 s 后升级为 KILL。桌面/非监管路径的时限不变。
   - runner 的 stdout/stderr 由控制面持续读取并原样写到自己的 stdout/stderr（复用 `headless_service/runtime.py` 的管道处理），桌面 app 抓日志的方式不变。
 - 崩溃重启：runner 非正常退出 → 记事件 → 指数退避重启（1 s 起，最多 60 s）。10 分钟内 5 次失败：**控制面以非零码退出**，交给 launchd（KeepAlive）或桌面 app 的现有恢复逻辑，不留一个半活的父进程。
 - 启动结果结构化上报：runner 启动后经 control.sock 报告 `bound(port)` / `bind_failed` / `startup_failed(reason)`。`bind_failed`（`cli.py:9282`）视为配置错误，不重启，原样退出码退出。

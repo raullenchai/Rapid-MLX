@@ -17394,11 +17394,15 @@ def _dispatch_serve_control(args):
         print("Control functionality is unavailable in this mode.", file=sys.stderr)
     elif os.environ.get(RUNNER_ENV) == "1":
         from rapid_mlx._parent_watchdog import install_parent_watchdog
-        from rapid_mlx.control.process_tree import supervised_on_orphan
+        from rapid_mlx.control.process_tree import (
+            start_orphan_tracking,
+            supervised_on_orphan,
+        )
         from rapid_mlx.control.protocol import install_startup_report
 
         raw_parent = os.environ.get(PARENT_ENV)
         if raw_parent is not None:
+            start_orphan_tracking()
             install_parent_watchdog(
                 int(raw_parent), interval=0.5, on_orphan=supervised_on_orphan
             )

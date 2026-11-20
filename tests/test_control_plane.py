@@ -133,6 +133,46 @@ else:
     listener = socket.socket()
     listener.bind(('127.0.0.1', a.port))
     listener.listen()
+if mode in ('uvicorn', 'uvicorn-slow'):
+    import asyncio
+    import uvicorn
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            while True:
+                event = await receive()
+                if event['type'] == 'lifespan.startup':
+                    await send({'type': 'lifespan.startup.complete'})
+                elif event['type'] == 'lifespan.shutdown':
+                    with (base / 'lifespan-shutdown').open('a') as output:
+                        output.write('shutdown\\n')
+                    await asyncio.sleep(0.25)
+                    (base / 'lifespan-complete').touch()
+                    await send({'type': 'lifespan.shutdown.complete'})
+                    return
+        elif scope['type'] == 'http':
+            (base / 'request-active').touch()
+            await asyncio.sleep(30)
+            await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b'ok'})
+    class Server(uvicorn.Server):
+        async def startup(self, sockets=None):
+            await super().startup(sockets=sockets)
+            report('bound', port=listener.getsockname()[1])
+            (base / 'armed').touch()
+        async def shutdown(self, sockets=None):
+            try:
+                await super().shutdown(sockets=sockets)
+            finally:
+                # Record before Uvicorn replays captured signals to the original
+                # handlers (SIGTERM can terminate without running Python finally).
+                (base / 'force-exit').write_text(str(self.force_exit))
+        def handle_exit(self, sig, frame):
+            super().handle_exit(sig, frame)
+            with (base / 'received-signals').open('a') as output:
+                output.write(str(sig) + '\\n')
+    server = Server(uvicorn.Config(app, loop='asyncio', lifespan='on', log_level='error'))
+    server.run(sockets=[listener])
+    sys.exit(0)
 report('bound', port=listener.getsockname()[1], ready=(mode != 'loading'))
 if mode == 'crash' and n == 1:
     sys.exit(9)
@@ -327,7 +367,10 @@ def test_signal_forward_and_reap(fake, sig):
     proc.send_signal(sig)
     proc.communicate(timeout=6)
     assert proc.returncode == 128 + sig
-    assert int((base / "signal").read_text()) == sig
+    # PID-only SIGINT cannot be distinguished from terminal SIGINT using
+    # asyncio signal callbacks; it receives TERM at the bounded escalation.
+    expected = signal.SIGTERM if sig == signal.SIGINT else sig
+    assert int((base / "signal").read_text()) == expected
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
 
@@ -1281,7 +1324,18 @@ def test_shared_service_parent_survives_runner_cleanup(fake):
     assert time.monotonic() - before < 4.5
 
 
-def test_process_tree_retains_orphans_and_rejects_recycled_pids(monkeypatch):
+@pytest.fixture
+def mock_process_info(monkeypatch):
+    from rapid_mlx.control import process_tree
+
+    monkeypatch.setattr(
+        process_tree, "process_info", lambda pid: process_tree.process_table().get(pid)
+    )
+
+
+def test_process_tree_retains_orphans_and_rejects_recycled_pids(
+    monkeypatch, mock_process_info
+):
     from rapid_mlx.control import process_tree
 
     # The ancestor/service and a sibling must never receive a cleanup signal.
@@ -1314,7 +1368,7 @@ def test_process_tree_retains_orphans_and_rejects_recycled_pids(monkeypatch):
 
 
 @pytest.mark.parametrize("state", ["T", "T+", "t"])
-def test_process_tree_stopped_counts_as_alive(monkeypatch, state):
+def test_process_tree_stopped_counts_as_alive(monkeypatch, mock_process_info, state):
     from rapid_mlx.control import process_tree
 
     monkeypatch.setattr(
@@ -1332,7 +1386,9 @@ def test_process_tree_stopped_counts_as_alive(monkeypatch, state):
     assert supervisor.status()["runner"]["state"] == "restarting"
 
 
-def test_process_tree_snapshot_failure_never_signals_stale_pids(monkeypatch):
+def test_process_tree_snapshot_failure_never_signals_stale_pids(
+    monkeypatch, mock_process_info
+):
     from rapid_mlx.control import process_tree
 
     monkeypatch.setattr(
@@ -1351,42 +1407,114 @@ def test_process_tree_snapshot_failure_never_signals_stale_pids(monkeypatch):
     assert signals == []
 
 
-def test_process_table_portable_columns_and_locale(monkeypatch):
+def test_linux_native_starttime_and_comm_parsing(monkeypatch):
     from rapid_mlx.control import process_tree
 
-    class Ps:
-        pid = 99
-        returncode = 0
+    monkeypatch.setattr(process_tree.sys, "platform", "linux")
+    stat = "20 (a tricky ) name) T 10 " + "0 " * 17 + "123456789 0"
+    monkeypatch.setattr(process_tree.Path, "read_text", lambda _: stat)
+    assert process_tree.process_info(20) == (10, "T", 123456789)
 
-        def __init__(self, argv, **kwargs):
-            assert argv == ["/bin/ps", "-Ao", "pid=,ppid=,stat=,lstart="]
-            assert kwargs["env"]["LC_ALL"] == "C"
 
-        def __enter__(self):
-            return self
+def test_macos_native_starttime_and_enumeration(monkeypatch):
+    import ctypes
 
-        def __exit__(self, *args):
-            pass
+    from rapid_mlx.control import process_tree
 
-        def communicate(self, timeout):
-            assert timeout <= 0.2
-            return (
-                "   20  10 T+   Thu Nov 19 12:30:00 2026\n"
-                " 30 20 S Mon Nov  9 01:02:03 2026\n"
-                " 99 20 R Thu Nov 19 12:31:00 2026\n",
-                "",
-            )
+    class Libproc:
+        def proc_listallpids(self, buffer, size):
+            if buffer is None:
+                return 2
+            assert size >= 8
+            buffer[0], buffer[1] = 20, 30
+            return 2
 
-    monkeypatch.setattr(process_tree.subprocess, "Popen", Ps)
+        def proc_pidinfo(self, pid, flavor, arg, buffer, size):
+            assert (flavor, arg, size) == (3, 0, 136)
+            info = buffer._obj
+            info.ppid = 10 if pid == 20 else 20
+            info.status = 4 if pid == 20 else 5
+            info.start_sec, info.start_usec = 1700000000, pid
+            return size
+
+    assert ctypes.sizeof(process_tree._ProcBsdInfo) == 136
+    monkeypatch.setattr(process_tree.sys, "platform", "darwin")
+    monkeypatch.setattr(process_tree, "_libproc", lambda: Libproc())
     assert process_tree.process_table() == {
-        20: (10, "T+", "Thu Nov 19 12:30:00 2026"),
-        30: (20, "S", "Mon Nov  9 01:02:03 2026"),
+        20: (10, "T", (1700000000, 20)),
+        30: (20, "Z", (1700000000, 30)),
     }
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_process_tree_revalidates_each_signal_same_second_reuse(monkeypatch, sig):
+    from rapid_mlx.control import process_tree
+
+    original = (1700000000, 100)
+    replacement = (1700000000, 101)
+    table = {20: (10, "S", original), 30: (20, "S", original)}
+    monkeypatch.setattr(process_tree, "process_table", lambda: table.copy())
+    monkeypatch.setattr(process_tree, "process_info", lambda pid: table.get(pid))
+    tree = process_tree.ProcessTree(20)
+    tree.refresh()
+    # Snapshot still has the old identity, but the per-signal lookup sees reuse.
+    monkeypatch.setattr(
+        process_tree, "process_info", lambda pid: (10, "S", replacement)
+    )
+    signals = []
+    monkeypatch.setattr(process_tree.os, "kill", lambda *args: signals.append(args))
+    assert tree.send(sig) == set()
+    tree.send_root(sig)
+    supervisor = Supervisor([], port=0, mode="text-vlm")
+    supervisor.tree = tree
+    supervisor.child = SimpleNamespace(pid=20, returncode=None)
+    supervisor.signal_descendants(sig)
+    assert signals == []
+
+
+def test_supervisor_sigint_waits_without_forward_or_deadline_reset(monkeypatch):
+    supervisor = Supervisor([], port=0, mode="text-vlm")
+    signals = []
+    monkeypatch.setattr(supervisor, "signal_descendants", signals.append)
+    supervisor.stop(signal.SIGINT)
+    started = supervisor.stop_started
+    supervisor.stop(signal.SIGINT)
+    supervisor.stop(signal.SIGTERM)
+    assert signals == []
+    assert supervisor.stop_started == started
+    assert supervisor.stop_signal == signal.SIGINT
+
+
+def test_tree_sampling_waits_five_seconds_off_caller_thread(monkeypatch):
+    import threading
+
+    from rapid_mlx.control import process_tree
+
+    monkeypatch.setattr(process_tree, "process_info", lambda _: (1, "S", 123))
+    tree = process_tree.ProcessTree(20)
+    calls = []
+    finished = threading.Event()
+
+    class Stop:
+        def is_set(self):
+            return False
+
+        def wait(self, interval):
+            calls.append(interval)
+            finished.set()
+            return True
+
+    tree.tracking_stop = Stop()
+    monkeypatch.setattr(tree, "refresh", lambda: calls.append(threading.get_ident()))
+    tree.start_tracking()
+    assert finished.wait(2)
+    assert calls[0] != threading.get_ident()
+    assert calls[1:] == [5.0]
 
 
 def test_supervised_runner_watchdog_poll_interval(monkeypatch):
     from rapid_mlx import _parent_watchdog, cli
-    from rapid_mlx.control import PARENT_ENV, protocol
+    from rapid_mlx.control import PARENT_ENV, process_tree, protocol
     from rapid_mlx.control.process_tree import supervised_on_orphan
 
     monkeypatch.setenv(RUNNER_ENV, "1")
@@ -1397,21 +1525,35 @@ def test_supervised_runner_watchdog_poll_interval(monkeypatch):
         "install_parent_watchdog",
         lambda *args, **kwargs: installed.append((args, kwargs)),
     )
+    tracked = []
+    monkeypatch.setattr(
+        process_tree, "start_orphan_tracking", lambda: tracked.append(True)
+    )
     monkeypatch.setattr(protocol, "install_startup_report", lambda: None)
     cli._dispatch_serve_control(SimpleNamespace())
+    assert tracked == [True]
     assert installed == [((123,), {"interval": 0.5, "on_orphan": supervised_on_orphan})]
 
 
 @pytest.mark.parametrize("recycled", [False, True])
+@pytest.mark.parametrize("pretracked", [False, True])
 def test_supervised_orphan_cleans_children_before_default_callback(
-    monkeypatch, recycled
+    monkeypatch, mock_process_info, recycled, pretracked
 ):
     from rapid_mlx import _parent_watchdog
     from rapid_mlx.control import process_tree
 
+    monkeypatch.setattr(process_tree, "_orphan_tree", None)
     runner = os.getpid()
     table = {runner: (1, "S", "runner"), 30: (runner, "S", "installer")}
     monkeypatch.setattr(process_tree, "process_table", lambda: table)
+    if pretracked:
+        tree = process_tree.ProcessTree(runner)
+        tree.refresh()
+        monkeypatch.setattr(process_tree, "_orphan_tree", tree)
+        # The installer was observed by the idle sampler, then detached
+        # BEFORE parent loss. The orphan callback must reuse that identity.
+        table[30] = (1, "S", "installer")
     clock = iter([0, 0, 2])
     monkeypatch.setattr(process_tree.time, "monotonic", lambda: next(clock))
 
@@ -1432,3 +1574,48 @@ def test_supervised_orphan_cleans_children_before_default_callback(
 
     monkeypatch.setattr(_parent_watchdog, "_default_on_orphan", default)
     process_tree.supervised_on_orphan(10, 1)
+
+
+@pytest.mark.parametrize("delivery", ["group-int", "pid-term", "pid-int"])
+def test_real_uvicorn_graceful_lifespan_shutdown(fake, delivery):
+    base, launch = fake
+    proc = launch("uvicorn")
+    eventually(lambda: (base / "armed").exists())
+    sig = signal.SIGTERM if delivery == "pid-term" else signal.SIGINT
+    if delivery == "group-int":
+        os.killpg(proc.pid, sig)
+    else:
+        proc.send_signal(sig)
+    _, stderr = proc.communicate(timeout=4.5)
+    assert proc.returncode == 128 + sig, stderr.decode(errors="replace")
+    received = signal.SIGTERM if delivery == "pid-int" else sig
+    assert (base / "received-signals").read_text().splitlines() == [str(received)]
+    assert (base / "lifespan-shutdown").read_text().splitlines() == ["shutdown"]
+    assert (base / "lifespan-complete").exists()
+    assert (base / "force-exit").read_text() == "False"
+    assert (base / "count").read_text() == "1"
+
+
+def test_real_uvicorn_second_ctrl_c_forces_during_request_drain(fake):
+    base, launch = fake
+    proc = launch("uvicorn-slow")
+    eventually(lambda: (base / "armed").exists())
+    status = eventually(live_status)
+    with socket.create_connection(("127.0.0.1", status["port"]), timeout=2) as client:
+        client.sendall(b"GET /slow HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        eventually(lambda: (base / "request-active").exists())
+        os.killpg(proc.pid, signal.SIGINT)
+        eventually(
+            lambda: (
+                (base / "received-signals").exists()
+                and len((base / "received-signals").read_text().splitlines()) == 1
+            )
+        )
+        before = time.monotonic()
+        os.killpg(proc.pid, signal.SIGINT)
+        _, stderr = proc.communicate(timeout=2)
+    assert time.monotonic() - before < 2
+    assert proc.returncode == 130, stderr.decode(errors="replace")
+    assert (base / "received-signals").read_text().splitlines() == ["2", "2"]
+    assert (base / "force-exit").read_text() == "True"
+    assert not (base / "lifespan-shutdown").exists()
