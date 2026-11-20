@@ -4571,7 +4571,7 @@ async def _create_chat_completion_impl(
 
     # Text-only continuation counting cannot account for processor-expanded
     # media tokens. Reject before admission until that path supports media.
-    if engine.is_mllm and (
+    if getattr(engine, "is_mllm", False) and (
         request.continue_final_message or not request.add_generation_prompt
     ):
         for message in request.messages:
