@@ -26,8 +26,8 @@ Each layer retains latent KV, raw selection keys, and original token IDs in
 three ordinary caches. Full history is retained even for sliding attention;
 the window is enforced by the attention mask. This favors correctness over
 memory efficiency. All three states are trimmed together. Prefix-cache reuse
-is disabled explicitly because the server's reuse stores have not been
-qualified for this layout; explicitly requesting paged reuse fails at startup.
+is disabled automatically for this model because the server's reuse stores
+have not been qualified for this layout.
 Speculative decoding is disabled in the detected model profile.
 
 The `hy_v4` parsers consume the native suffixed structural tags. Tool arguments

@@ -830,7 +830,7 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
     for value, params in quantized:
         assert params == {"group_size": 32 if value.shape[-1] == 32 else 64, "bits": 4}
     output = tmp_path / "out"
-    assert [kind for kind, _ in saved] == ["tokenizer", "card"]
+    assert [kind for kind, _ in saved] == ["card"]
     index = json.loads((output / "model.safetensors.index.json").read_text())
     assert not any("vit" in key or "scale_inv" in key for key in index["weight_map"])
     for key, filename in index["weight_map"].items():
@@ -842,7 +842,7 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
     assert (output / "generation_config.json").read_bytes() == (
         tmp_path / "generation_config.json"
     ).read_bytes()
-    assert (output / "custom.py").is_file()
+    assert not (output / "custom.py").exists()
     arrays["model.layers.1.engram_layer.lookup_table"] = (
         np.arange(16, dtype=np.int32),
         "I32",
@@ -867,6 +867,83 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
     assert converter.convert_fp8(tmp_path, tmp_path / "out5", 4, 32) is False
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "other"}))
     assert converter.convert_fp8(tmp_path, tmp_path / "out6", 4, 32) is False
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_fp8_conversion_copies_only_safe_artifacts(fp8_conversion, tmp_path, nested):
+    converter, _, _, _ = fp8_conversion
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    remote = {
+        "auto_map": {"AutoModel": "custom.Model"},
+        "trust_remote_code": True,
+        "_trust_remote_code": True,
+        "code_revision": "custom-code",
+    }
+    if nested:
+        config = {"model_type": "hy_v4_flash", "text_config": config}
+        config["text_config"].update(remote)
+    config.update(remote)
+    config_path.write_text(json.dumps(config))
+    artifacts = (
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "tokenizer.model",
+        "special_tokens_map.json",
+        "added_tokens.json",
+        "vocab.json",
+        "merges.txt",
+        "chat_template.jinja",
+        "generation_config.json",
+        "LICENSE",
+        "NOTICE",
+    )
+    for name in (*artifacts, "custom.py", "tokenizer.py", "unrelated.json"):
+        (tmp_path / name).write_text(name)
+    output = tmp_path / "out"
+    assert converter.convert_fp8(tmp_path, output, 4, 32)
+    for name in artifacts:
+        assert (output / name).read_bytes() == (tmp_path / name).read_bytes()
+    assert not list(output.glob("*.py"))
+    assert not (output / "unrelated.json").exists()
+    emitted = json.loads((output / "config.json").read_text())
+    for section in (emitted, emitted.get("text_config", {})):
+        assert not remote.keys() & section.keys()
+    assert "auto_map" in json.loads(config_path.read_text())
+
+
+@pytest.mark.parametrize("failure", ["weights", "config", "card"])
+def test_fp8_conversion_cleans_up_and_can_retry(
+    fp8_conversion, monkeypatch, tmp_path, failure
+):
+    converter, _, _, _ = fp8_conversion
+    output = tmp_path / "out"
+    before = set(tmp_path.iterdir())
+    module, attribute = {
+        "weights": (sys.modules["mlx.core"], "save_safetensors"),
+        "config": (sys.modules["mlx_lm.utils"], "save_config"),
+        "card": (sys.modules["mlx_lm.utils"], "create_model_card"),
+    }[failure]
+    original = getattr(module, attribute)
+
+    def fail(*args, **kwargs):
+        assert not output.exists()
+        staging = set(tmp_path.iterdir()) - before
+        assert len(staging) == 1
+        assert staging.pop().is_dir()
+        original(*args, **kwargs)
+        raise RuntimeError("injected conversion failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, attribute, fail)
+        with pytest.raises(RuntimeError, match="injected conversion failure"):
+            converter.convert_fp8(tmp_path, output, 4, 32)
+    assert not output.exists()
+    assert set(tmp_path.iterdir()) == before
+    assert converter.convert_fp8(tmp_path, output, 4, 32)
+    assert (output / "config.json").is_file()
+    assert (output / "model.safetensors.index.json").is_file()
+    assert set(tmp_path.iterdir()) == before | {output}
 
 
 @pytest.mark.parametrize("projection", ["gate_proj", "up_proj"])

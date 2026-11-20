@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
@@ -18,6 +19,38 @@ from .hy_v4_flash_config import (
     validate_lookup,
 )
 
+_CHECKPOINT_ARTIFACTS = (
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "tokenizer.model",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "vocab.txt",
+    "merges.txt",
+    "chat_template.jinja",
+    "chat_template.json",
+    "generation_config.json",
+    "LICENSE",
+    "LICENSE.txt",
+    "LICENSE.md",
+    "NOTICE",
+    "NOTICE.txt",
+    "NOTICE.md",
+)
+
+
+def _strip_remote_code_metadata(value):
+    if isinstance(value, dict):
+        for key in list(value):
+            if key in ("auto_map", "code_revision") or "trust_remote_code" in key:
+                del value[key]
+            else:
+                _strip_remote_code_metadata(value[key])
+    elif isinstance(value, list):
+        for item in value:
+            _strip_remote_code_metadata(item)
+
 
 class _ShardWriter:
     """Bound output residency; retain only names after each synchronous save.
@@ -29,7 +62,7 @@ class _ShardWriter:
 
     def __init__(self, destination, max_bytes=5_000_000_000):
         self.destination = Path(destination)
-        self.destination.mkdir()
+        self.destination.mkdir(exist_ok=True)
         self.max_bytes = max_bytes
         self.pending = {}
         self.size = self.total = 0
@@ -81,7 +114,7 @@ class _ShardWriter:
 def convert_fp8(source, destination, bits, group_size):
     """Return False for ordinary checkpoints; consume raw FP8 before mx.load."""
     import mlx.core as mx
-    from mlx_lm.utils import create_model_card, load_tokenizer, save_config
+    from mlx_lm.utils import create_model_card, save_config
 
     from ..fp8_repack import _open_shards, _raw_to_mx
     from .hy_v4_flash import Model
@@ -123,7 +156,7 @@ def convert_fp8(source, destination, bits, group_size):
                 policies[path] = policy
                 quantization[path] = policy
     config["quantization"] = quantization
-    writer = _ShardWriter(destination)
+    _strip_remote_code_metadata(config)
     cast_predicate = Model.cast_predicate.fget(None)
     lookup = None
     total_parameters = 0
@@ -231,22 +264,28 @@ def convert_fp8(source, destination, bits, group_size):
                 mx.eval(value)
                 writer.put(key, value)
 
-    for names in groups.values():
-        convert_group(names)
-    # Validate completeness using names only; saved tensors are never reloaded.
-    required = set(expected)
-    for path in policies:
-        required.update((path + ".scales", path + ".biases"))
-    available = writer.weight_map.keys() | writer.pending.keys()
-    if required != available:
-        raise ValueError(
-            f"Missing Hy4 checkpoint tensors: {sorted(required - available)}"
-        )
-    writer.finish(total_parameters)
-    save_config(config, config_path=destination / "config.json")
-    load_tokenizer(source).save_pretrained(destination)
-    for pattern in ("*.py", "generation_config.json"):
-        for file in source.glob(pattern):
-            shutil.copy(file, destination)
-    create_model_card(destination, None)
+    with TemporaryDirectory(
+        prefix=f".{destination.name}-", dir=destination.parent
+    ) as temporary:
+        staging = Path(temporary)
+        writer = _ShardWriter(staging)
+        for names in groups.values():
+            convert_group(names)
+        # Validate completeness using names only; saved tensors are never reloaded.
+        required = set(expected)
+        for path in policies:
+            required.update((path + ".scales", path + ".biases"))
+        available = writer.weight_map.keys() | writer.pending.keys()
+        if required != available:
+            raise ValueError(
+                f"Missing Hy4 checkpoint tensors: {sorted(required - available)}"
+            )
+        writer.finish(total_parameters)
+        save_config(config, config_path=staging / "config.json")
+        for name in _CHECKPOINT_ARTIFACTS:
+            file = source / name
+            if file.is_file():
+                shutil.copy(file, staging)
+        create_model_card(staging, None)
+        staging.rename(destination)
     return True
