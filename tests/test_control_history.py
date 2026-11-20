@@ -1426,7 +1426,9 @@ def test_table_local_time_nulls_short_model_and_follow(history, monkeypatch, cap
     assert datetime.fromtimestamp(item["ts"]).strftime("%H:%M:%S") in row
     assert "organization" not in row and "model" in row
     assert "3→2" in row and row.endswith("      2        7")
-    assert "1970-01-01" in commands.table_row(item | {"ts": 86400}, "log")
+    # Rows show local time; derive the expected date in the test's timezone.
+    old_day = datetime.fromtimestamp(86400).strftime("%Y-%m-%d")
+    assert old_day in commands.table_row(item | {"ts": 86400}, "log")
     assert commands.table_row({"ts": None}, "log").split() == ["-"] * 6 + [
         "-→-",
         "-",
