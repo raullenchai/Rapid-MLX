@@ -51,6 +51,7 @@ class Delivery:
         self.queue_dropped = 0
         self.transport_dropped = 0
         self.closed = threading.Event()
+        self.pending = threading.Event()
         self.thread = threading.Thread(
             target=self.run, daemon=True, name="rapid-call-log"
         )
@@ -64,6 +65,7 @@ class Delivery:
             self.queue.put_nowait(record)
         except queue.Full:
             self.queue_dropped += 1
+        self.pending.set()
 
     def flush(self, batch):
         try:
@@ -79,6 +81,7 @@ class Delivery:
 
     def close(self):
         self.closed.set()
+        self.pending.set()
         self.thread.join(timeout=0.2)
         if self.thread.is_alive():
             return  # A timed socket operation already owns delivery.
@@ -91,13 +94,21 @@ class Delivery:
         self.queue_dropped += self.queue.qsize()
 
     def run(self):
-        while not self.closed.wait(0.1):
+        while not self.closed.is_set():
+            # Records and shutdown wake immediately; idle drop reports must not
+            # turn into ten empty control-socket requests per second.
+            self.pending.wait(5.0)
+            self.pending.clear()
+            if self.closed.is_set():
+                break
             batch = []
             while len(batch) < 8:
                 try:
                     batch.append(self.queue.get_nowait())
                 except queue.Empty:
                     break
+            if not self.queue.empty():
+                self.pending.set()
             # Empty reports keep drops visible even when no further request arrives.
             self.flush(batch)
 

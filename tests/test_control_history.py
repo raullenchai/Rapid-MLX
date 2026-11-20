@@ -256,7 +256,8 @@ def test_delivery_full_down_batch_and_singleton(monkeypatch):
     assert sink.dropped == 2
     transport.side_effect = None
     sink.closed = Mock()
-    sink.closed.wait.side_effect = [False, False, False, True]
+    sink.closed.is_set.side_effect = [False, False, False, False, False, False, True]
+    sink.pending = Mock()
     sink.run()
     assert [len(c.args[3]["records"]) for c in transport.call_args_list[1:]] == [
         8,
@@ -267,6 +268,59 @@ def test_delivery_full_down_batch_and_singleton(monkeypatch):
     monkeypatch.setattr(observer, "_delivery", None)
     monkeypatch.setattr(observer.threading.Thread, "start", lambda _: None)
     assert observer.delivery() is observer.delivery()
+
+
+def test_idle_delivery_periodic_intervals_without_subscribers(monkeypatch):
+    """P2 must not wake the supervisor with 10 empty socket reports per second."""
+    sink = observer.Delivery()
+    intervals = []
+    flush = Mock()
+
+    def wait(event, timeout=None):
+        intervals.append(timeout)
+        if len(intervals) == 3:
+            sink.closed.set()
+            return True
+        return False  # Advance an idle reporting interval without wall-clock delay.
+
+    monkeypatch.setattr(observer.threading.Event, "wait", wait)
+    monkeypatch.setattr(sink, "flush", flush)
+    sink.run()
+    assert intervals == [5.0, 5.0, 5.0]
+    assert flush.call_args_list == [(([],),), (([],),)]
+
+
+def test_delivery_wakes_for_records_and_close(monkeypatch):
+    sink = observer.Delivery(capacity=20)
+    idle = observer.threading.Event()
+    delivered = observer.threading.Event()
+    real_wait = sink.pending.wait
+    batches = []
+
+    def wait(timeout):
+        idle.set()
+        return real_wait(timeout)
+
+    def flush(batch):
+        batches.append(batch)
+        if sum(map(len, batches)) == 20:
+            delivered.set()
+
+    monkeypatch.setattr(sink.pending, "wait", wait)
+    monkeypatch.setattr(sink, "flush", flush)
+    sink.thread.start()
+    try:
+        assert idle.wait(1)
+        assert batches == []  # No report on startup with no subscribers/requests.
+        for i in range(20):
+            sink.enqueue({"i": i})
+        assert delivered.wait(1)  # Records must not wait for the five-second timer.
+        assert [item["i"] for batch in batches for item in batch] == list(range(20))
+        assert all(len(batch) <= 8 for batch in batches)
+    finally:
+        sink.close()
+        sink.thread.join(timeout=1)
+    assert not sink.thread.is_alive()  # Closing an idle worker wakes it as well.
 
 
 async def test_sse_resume_heartbeat_gap_and_transport(monkeypatch):
