@@ -39,7 +39,9 @@ def agent_jobs():
             status=run["status"],
             created=run["created"],
             updated=run["updated"],
-            summary=" ".join(run["goal"].split())[:120],
+            summary="".join(
+                c for c in " ".join(run["goal"].split()) if c.isprintable()
+            )[:120],
         )
         for run in list_agent_runs()
     ]

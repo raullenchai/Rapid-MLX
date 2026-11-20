@@ -134,3 +134,17 @@ def test_cli(local, monkeypatch, capsys):
     args = cli.build_parser().parse_args(["jobs"])
     assert protocol.jobs_command(args) == 1
     assert "No running serve" in capsys.readouterr().err
+
+
+def test_job_summary_strips_terminal_controls(monkeypatch):
+    from rapid_mlx.routes import agents, control_status
+
+    run = dict(
+        id="r",
+        status="running",
+        goal="a\x1b[2J\x1b]52;c;x\x07\u202eb",
+        created=None,
+        updated=None,
+    )
+    monkeypatch.setattr(agents, "list_agent_runs", lambda: [run])
+    assert control_status.agent_jobs()[0]["summary"] == "a[2J]52;c;xb"
