@@ -153,7 +153,7 @@ time.sleep(60)
 """)
     processes = []
 
-    def launch(mode="wait", fd=None, fast=False, service=False):
+    def launch(mode="wait", fd=None, fast=False, service=False, injection=""):
         env = os.environ.copy()
         env["FAKE_MODE"] = mode
         env["PYTHONPATH"] = str(Path.cwd())
@@ -162,6 +162,7 @@ import sys
 from rapid_mlx.control.supervisor import supervise
 raise SystemExit(supervise([sys.executable, sys.argv[1]], port=0, mode='text-vlm', listen_fd=None))
 """
+        code = code.replace("raise SystemExit", injection + "\nraise SystemExit", 1)
         if fast:
             code = code.replace(
                 "raise SystemExit(supervise(",
@@ -799,3 +800,373 @@ def test_discovery_timeout_keeps_live_index(fake, monkeypatch):
     assert entries[0].exists()
     proc.terminate()
     proc.communicate(timeout=5)
+
+
+def test_private_discovery_directory_tightens_permissions(tmp_path, monkeypatch):
+    from rapid_mlx.control.protocol import discovery_root, private_directory
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".rapid-mlx" / "control"
+    root.mkdir(parents=True, mode=0o755)
+    root.chmod(0o755)
+    assert discovery_root() == root
+    assert private_directory(root) == root
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+
+def test_legacy_run_untouched_and_control_tightened(fake, capsys, monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.control.protocol import discovery_root
+
+    base, launch = fake
+    legacy = base / ".rapid-mlx" / "run"
+    legacy.mkdir(parents=True, mode=0o755)
+    legacy.chmod(0o755)
+    old_entry = legacy / "old.json"
+    old_entry.write_text("legacy entry must not be read or removed")
+    old_entry.chmod(0o600)
+    root = discovery_root()
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    proc = launch()
+    status = eventually(
+        lambda: (s := live_status()) and s["runner"]["state"] == "ready" and s
+    )
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert status_command(SimpleNamespace(port=status["port"])) == 0
+    assert (
+        json.loads(capsys.readouterr().out)["runner"]["pid"] == status["runner"]["pid"]
+    )
+    import psutil
+
+    process = SimpleNamespace(
+        info={
+            "pid": status["runner"]["pid"],
+            "cmdline": ["rapid-mlx", "serve", "qwen3.5-4b-4bit"],
+            "create_time": time.time(),
+        }
+    )
+    monkeypatch.setattr(psutil, "process_iter", lambda *a: [process])
+    monkeypatch.setattr(cli, "_ps_ready", lambda url: None)
+    rows = cli._scan_running_servers()
+    assert any(row[0] == status["runner"]["pid"] for row in rows)
+    assert stat.S_IMODE(legacy.stat().st_mode) == 0o755
+    assert list(legacy.iterdir()) == [old_entry]
+    assert old_entry.read_text() == "legacy entry must not be read or removed"
+    proc.terminate()
+    proc.communicate(timeout=5)
+
+
+@pytest.mark.parametrize("kind", ["foreign", "symlink", "file"])
+def test_unsafe_discovery_falls_back_and_serves(tmp_path, kind):
+    root = tmp_path / ".rapid-mlx" / "control"
+    root.parent.mkdir()
+    target = tmp_path / "target"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+    if kind == "symlink":
+        root.symlink_to(target, target_is_directory=True)
+    elif kind == "file":
+        root.write_text("untouched")
+    else:
+        root.mkdir(mode=0o755)
+        root.chmod(0o755)
+    code = """
+import os, socket, sys
+from rapid_mlx import cli
+from rapid_mlx.control import protocol
+if sys.argv[1] == 'foreign':
+    real = os.fstat
+    def foreign(fd):
+        values = list(real(fd))
+        values[4] = os.getuid() + 1
+        return os.stat_result(values)
+    protocol.os.fstat = foreign
+args = cli.build_parser().parse_args(['serve', 'qwen3.5-4b-4bit', '--port', '0'])
+cli._dispatch_serve_control(args)
+# The legacy serve continuation must still be reached in this process.
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', args.port))
+    listener.listen()
+    print(listener.getsockname()[1], flush=True)
+    listener.settimeout(5)
+    conn, _ = listener.accept()
+    with conn:
+        conn.sendall(b'served')
+"""
+    env = dict(os.environ, HOME=str(tmp_path), PYTHONPATH=str(Path.cwd()))
+    for key in (RUNNER_ENV, "RAPID_MLX_SINGLE_PROCESS", "RAPID_MLX_WATCHDOG_PPID"):
+        env.pop(key, None)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, kind],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        port = int(proc.stdout.readline())
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+            assert client.recv(32) == b"served"
+        _, stderr = proc.communicate(timeout=5)
+        assert proc.returncode == 0, stderr
+        assert len(stderr.splitlines()) == 1
+        assert b"serving in single process" in stderr
+        assert b"Traceback" not in stderr
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    if kind == "foreign":
+        assert stat.S_IMODE(root.stat().st_mode) == 0o755
+    elif kind == "symlink":
+        assert root.is_symlink()
+    else:
+        assert root.read_text() == "untouched"
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "mode",
+        "port",
+        "construct",
+        "event_loop",
+        "signal",
+        "discovery",
+        "discovery_mkdir",
+        "discovery_open",
+        "discovery_stat",
+        "discovery_chmod",
+        "runtime_root",
+        "runtime_mkdir",
+        "runtime_stat",
+        "runtime_permissions",
+        "instance_directory",
+        "socket_bind",
+        "socket_chmod",
+        "metadata_open",
+        "metadata_create",
+        "metadata_dump",
+        "environment",
+        "spawn",
+    ],
+)
+def test_setup_failure_returns_to_exact_legacy_path(fake, monkeypatch, caplog, step):
+    import asyncio
+    import builtins
+
+    from rapid_mlx import cli
+    from rapid_mlx.control import modes, protocol, supervisor
+
+    base, _ = fake
+    for key in (RUNNER_ENV, "RAPID_MLX_SINGLE_PROCESS", "RAPID_MLX_WATCHDOG_PPID"):
+        monkeypatch.delenv(key, raising=False)
+    root = protocol.discovery_root()
+    root.mkdir(parents=True, mode=0o755)
+    root.chmod(0o755)
+    handlers = {
+        sig: signal.getsignal(sig)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    }
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected setup failure\nwithout traceback")
+
+    direct = {
+        "mode": (modes, "supervised_mode"),
+        "port": (cli, "_resolve_serve_port"),
+        "construct": (supervisor.secrets, "token_urlsafe"),
+        "signal": (asyncio.unix_events._UnixSelectorEventLoop, "add_signal_handler"),
+        "discovery": (supervisor, "private_directory"),
+        "discovery_open": (protocol.os, "open"),
+        "discovery_stat": (protocol.os, "fstat"),
+        "discovery_chmod": (protocol.os, "fchmod"),
+        "runtime_root": (supervisor, "runtime_root"),
+        "instance_directory": (supervisor.tempfile, "mkdtemp"),
+        "socket_bind": (asyncio, "start_unix_server"),
+        "socket_chmod": (Path, "chmod"),
+        "metadata_open": (builtins, "open"),
+        "metadata_dump": (supervisor.json, "dump"),
+        "spawn": (asyncio, "create_subprocess_exec"),
+    }
+    if step == "discovery_mkdir":
+        real_mkdir = Path.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if path == root:
+                fail()
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+    elif step == "metadata_create":
+        real_open = os.open
+
+        def opened(path, *args, **kwargs):
+            if str(path).endswith("instance.json"):
+                fail()
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", opened)
+    elif step in ("discovery_open", "discovery_stat"):
+        real = getattr(*direct[step])
+        inode = root.stat().st_ino
+
+        def directory_only(value, *args, **kwargs):
+            if step == "discovery_open":
+                if value == root:
+                    fail()
+                return real(value, *args, **kwargs)
+            info = real(value)
+            if info.st_ino == inode:
+                fail()
+            return info
+
+        monkeypatch.setattr(*direct[step], directory_only)
+    elif step in direct:
+        monkeypatch.setattr(*direct[step], fail)
+    elif step == "event_loop":
+
+        def run(coro):
+            coro.close()
+            fail()
+
+        monkeypatch.setattr(asyncio, "run", run)
+    elif step.startswith("runtime_"):
+        name = "mkdir" if step == "runtime_mkdir" else "lstat"
+        real = getattr(Path, name)
+
+        def runtime_op(path, *args, **kwargs):
+            if path == runtime_root():
+                if step == "runtime_permissions":
+                    return SimpleNamespace(
+                        st_mode=stat.S_IFDIR | 0o755, st_uid=os.getuid()
+                    )
+                fail()
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, name, runtime_op)
+    elif step == "environment":
+        real = Supervisor.__init__
+
+        class BrokenEnv(dict):
+            update = fail
+
+        def init(self, *args, **kwargs):
+            real(self, *args, **kwargs)
+            self.env = BrokenEnv(self.env)
+
+        monkeypatch.setattr(Supervisor, "__init__", init)
+
+    def forbidden_spawn(*args, **kwargs):
+        pytest.fail("setup failure must never spawn a runner")
+
+    if step != "spawn":
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        args = build_parser().parse_args(
+            ["serve", "qwen3.5-4b-4bit", "--listen-fd", str(listener.fileno())]
+        )
+        before_args, before_env = vars(args).copy(), dict(os.environ)
+        cli._dispatch_serve_control(args)
+        if step in ("discovery_open", "discovery_stat"):
+            monkeypatch.setattr(*direct[step], real)
+        assert vars(args) == before_args
+        assert dict(os.environ) == before_env
+        # The inherited listener remains usable by the single-process path.
+        with socket.create_connection(listener.getsockname(), timeout=2) as client:
+            conn, _ = listener.accept()
+            with conn:
+                conn.sendall(b"served")
+            assert client.recv(32) == b"served"
+    assert len(caplog.records) == 1
+    assert "serving in single process" in caplog.records[0].message
+    assert caplog.records[0].exc_info is None
+    assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+    assert not list(base.glob("rmlx-cp-*/i-*"))
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "index_open",
+        "index_dump",
+        "index_replace",
+        "index_cleanup",
+        "runtime_cleanup",
+        "socket_cleanup",
+    ],
+)
+def test_post_spawn_control_failures_are_nonfatal(fake, step):
+    from rapid_mlx.control.protocol import discovery_root
+
+    base, launch = fake
+    injection = """
+import asyncio, builtins, json, shutil
+from pathlib import Path
+def fail(*a, **kw):
+    raise OSError('injected control failure')
+"""
+    if step == "index_open":
+        injection += """
+real = builtins.open
+def opened(path, *a, **kw):
+    if str(path).endswith('.tmp'):
+        fail()
+    return real(path, *a, **kw)
+builtins.open = opened
+"""
+    elif step == "index_dump":
+        injection += """
+real = json.dump
+def dump(data, output, *a, **kw):
+    if str(output.name).endswith('.tmp'):
+        fail()
+    return real(data, output, *a, **kw)
+json.dump = dump
+"""
+    elif step == "index_replace":
+        injection += "Path.replace = fail\n"
+    elif step == "index_cleanup":
+        injection += "Path.unlink = fail\n"
+    elif step == "runtime_cleanup":
+        injection += "shutil.rmtree = fail\n"
+    elif step == "socket_cleanup":
+        injection += "asyncio.Server.wait_closed = fail\n"
+    proc = launch(injection=injection)
+    eventually(lambda: (base / "armed").exists())
+    assert proc.poll() is None
+    assert (base / "count").read_text() == "1"
+    proc.terminate()
+    _, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 143, stderr
+    assert b"Traceback" not in stderr
+    assert b"Control plane" in stderr
+    assert b"failed (OSError)" in stderr
+    assert b"serving in single process" not in stderr
+    if step.startswith("index_") and step != "index_cleanup":
+        assert list(discovery_root().iterdir()) == []
+
+
+def test_pre_spawn_cleanup_failure_cannot_prevent_fallback(fake, monkeypatch, caplog):
+    from rapid_mlx import cli
+    from rapid_mlx.control import supervisor
+
+    base, _ = fake
+    for key in (RUNNER_ENV, "RAPID_MLX_SINGLE_PROCESS", "RAPID_MLX_WATCHDOG_PPID"):
+        monkeypatch.delenv(key, raising=False)
+    args = build_parser().parse_args(["serve", "qwen3.5-4b-4bit", "--port", "0"])
+
+    def fail(*args, **kwargs):
+        raise OSError("injected setup and cleanup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(supervisor.json, "dump", fail)
+        patch.setattr(supervisor.shutil, "rmtree", fail)
+        cli._dispatch_serve_control(args)
+    assert len(caplog.records) == 1
+    assert "serving in single process" in caplog.records[0].message
+    assert caplog.records[0].exc_info is None
+    assert list(base.glob("rmlx-cp-*/i-*"))

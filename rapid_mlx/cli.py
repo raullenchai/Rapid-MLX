@@ -17351,29 +17351,38 @@ def _capture_start_failures(func: Callable):
 
 def _dispatch_serve_control(args):
     """Decide before runtime setup; fallback continues in this same process."""
-    from rapid_mlx.control import PARENT_ENV, RUNNER_ENV
-    from rapid_mlx.control.modes import supervised_mode
+    try:
+        from rapid_mlx.control import PARENT_ENV, RUNNER_ENV
+        from rapid_mlx.control.modes import supervised_mode
 
-    mode = supervised_mode(args)
-    if mode is not None:
-        from rapid_mlx.control.supervisor import supervise
-        from rapid_mlx.server_exposure import normalize_bind_host
+        mode = supervised_mode(args)
+        if mode is not None:
+            from rapid_mlx.control.supervisor import supervise
+            from rapid_mlx.server_exposure import normalize_bind_host
 
-        port = _resolve_serve_port(
-            normalize_bind_host(args.host),
-            args.port,
-            model=args.model or "retrieval",
-            port_explicit=port_explicit_for(args),
-            listen_fd=getattr(args, "listen_fd", None),
-        )
-        raise SystemExit(
-            supervise(
-                [sys.executable, "-m", "rapid_mlx.cli", *sys.argv[1:]],
-                port=port,
-                mode=mode,
+            port = _resolve_serve_port(
+                normalize_bind_host(args.host),
+                args.port,
+                model=args.model or "retrieval",
+                port_explicit=port_explicit_for(args),
                 listen_fd=getattr(args, "listen_fd", None),
             )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Control plane setup failed (%s); serving in single process.",
+            type(exc).__name__,
         )
+        return
+    if mode is not None:
+        code = supervise(
+            [sys.executable, "-m", "rapid_mlx.cli", *sys.argv[1:]],
+            port=port,
+            mode=mode,
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+        if code is not None:
+            raise SystemExit(code)
+        return
     if (
         RUNNER_ENV not in os.environ
         and "RAPID_MLX_WATCHDOG_PPID" not in os.environ

@@ -76,18 +76,21 @@ def runtime_root():
 
 
 def discovery_root():
-    return Path.home() / ".rapid-mlx" / "run"
+    return Path.home() / ".rapid-mlx" / "control"
 
 
 def private_directory(path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    info = path.lstat()
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.getuid()
-        or stat.S_IMODE(info.st_mode) != 0o700
-    ):
-        raise OSError("control discovery directory must be an owned 0700 directory")
+    # Check and chmod the same real directory, never a symlink target.
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise OSError("control discovery directory must be an owned directory")
+        if stat.S_IMODE(info.st_mode) != 0o700:
+            os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
     return path
 
 

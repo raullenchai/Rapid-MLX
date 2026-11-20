@@ -5,6 +5,7 @@ import asyncio
 import collections
 import contextlib
 import json
+import logging
 import os
 import queue
 import secrets
@@ -25,6 +26,8 @@ from . import (
     SOCKET_ENV,
 )
 from .protocol import MAX_BODY, TIMEOUT, discovery_root, private_directory, runtime_root
+
+logger = logging.getLogger(__name__)
 
 
 def exit_code(code):
@@ -147,6 +150,7 @@ class Supervisor:
                 await writer.wait_closed()
 
     async def open(self):
+        index = private_directory(discovery_root())
         root = runtime_root()
         root.mkdir(mode=0o700, exist_ok=True)
         info = root.lstat()
@@ -169,12 +173,7 @@ class Supervisor:
             metadata, "x", opener=lambda p, flags: os.open(p, flags, 0o600)
         ) as output:
             json.dump({"secret": self.secret}, output)
-        index = private_directory(discovery_root())
         self.index_entry = index / (self.directory.name + ".json")
-        temporary = self.index_entry.with_suffix(".tmp")
-        with open(temporary, "x", opener=lambda p, f: os.open(p, f, 0o600)) as output:
-            json.dump({"socket": str(path), "secret": self.secret}, output)
-        temporary.replace(self.index_entry)
         self.env.update(
             {
                 RUNNER_ENV: "1",
@@ -183,6 +182,31 @@ class Supervisor:
                 PARENT_ENV: str(os.getpid()),
             }
         )
+
+    def publish_index(self):
+        temporary = self.index_entry.with_suffix(".tmp")
+        try:
+            with open(
+                temporary, "x", opener=lambda p, f: os.open(p, f, 0o600)
+            ) as output:
+                json.dump(
+                    {"socket": self.env[SOCKET_ENV], "secret": self.secret}, output
+                )
+            temporary.replace(self.index_entry)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @contextlib.contextmanager
+    def best_effort(self, operation):
+        try:
+            yield
+        except Exception as exc:
+            # Pre-spawn cleanup must not mask the original setup failure or
+            # add warnings to its single fallback diagnostic.
+            if self.child is not None:
+                logger.warning(
+                    "Control plane %s failed (%s).", operation, type(exc).__name__
+                )
 
     async def pump(self, source, sink):
         # Mirror the service's daemon pipe pumps. A stalled output consumer
@@ -301,6 +325,8 @@ class Supervisor:
                     stderr=asyncio.subprocess.PIPE,
                 )
                 self.spawn_ready.set()
+                with self.best_effort("discovery index publication"):
+                    self.publish_index()
                 if self.stopping.is_set():
                     self.signal_descendants(self.stop_signal)
                 pumps = [
@@ -364,18 +390,35 @@ class Supervisor:
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(self.wait_exit(), 0.2)
             if self.server:
-                self.server.close()
-                await self.server.wait_closed()
+                with self.best_effort("socket cleanup"):
+                    self.server.close()
+                    await self.server.wait_closed()
             if self.index_entry:
-                self.index_entry.unlink(missing_ok=True)
+                with self.best_effort("discovery index cleanup"):
+                    self.index_entry.unlink(missing_ok=True)
             if self.directory:
-                shutil.rmtree(self.directory)
-            if self.listen_fd is not None:
-                os.close(self.listen_fd)
+                with self.best_effort("runtime directory cleanup"):
+                    shutil.rmtree(self.directory)
+            if self.listen_fd is not None and self.child is not None:
+                with self.best_effort("listener cleanup"):
+                    os.close(self.listen_fd)
             for sig, handler in previous.items():
-                loop.remove_signal_handler(sig)
-                signal.signal(sig, handler)
+                with self.best_effort("signal handler cleanup"):
+                    loop.remove_signal_handler(sig)
+                    signal.signal(sig, handler)
 
 
 def supervise(argv, **kwargs):
-    return asyncio.run(Supervisor(argv, **kwargs).run())
+    """None means setup failed before spawning; continue the legacy serve path."""
+    supervisor = None
+    try:
+        supervisor = Supervisor(argv, **kwargs)
+        return asyncio.run(supervisor.run())
+    except Exception as exc:
+        if supervisor is not None and supervisor.child is not None:
+            raise
+        logger.warning(
+            "Control plane setup failed (%s); serving in single process.",
+            type(exc).__name__,
+        )
+        return None
