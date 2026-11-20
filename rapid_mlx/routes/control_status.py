@@ -28,6 +28,25 @@ async def require_loopback(request: Request):
     raise HTTPException(403, "Control API requires a loopback peer")
 
 
+def agent_jobs():
+    """Adapt public run summaries for the unified jobs view."""
+    from rapid_mlx.routes.agents import list_agent_runs
+
+    return [
+        dict(
+            id=run["id"],
+            kind="agent",
+            status=run["status"],
+            created=run["created"],
+            updated=run["updated"],
+            summary="".join(
+                c for c in " ".join(run["goal"].split()) if c.isprintable()
+            )[:120],
+        )
+        for run in list_agent_runs()
+    ]
+
+
 def mount_status(app):
     if os.environ.get(RUNNER_ENV) != "1":
         return
@@ -44,6 +63,22 @@ def mount_status(app):
     )
     async def log(limit: int = Query(50, ge=1, le=1000)):
         return {"calls": list(calls)[-limit:]}
+
+    @router.get(
+        "/rapid/v1/jobs",
+        dependencies=[Depends(require_loopback), Depends(verify_api_key)],
+    )
+    async def jobs():
+        return {"jobs": agent_jobs()}
+
+    @router.post(
+        "/rapid/v1/jobs/{job_id}/cancel",
+        dependencies=[Depends(require_loopback), Depends(verify_api_key)],
+    )
+    async def cancel_job(job_id: str):
+        from rapid_mlx.routes.agents import cancel_agent_run
+
+        return await cancel_agent_run(job_id)
 
     @router.get(
         "/rapid/v1/status",

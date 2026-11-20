@@ -2909,6 +2909,23 @@ class AgentServerService:
     async def get(self, run_id: str) -> AgentRunView:
         return await self._view(self._entry(run_id))
 
+    def list_runs(self) -> list[dict[str, Any]]:
+        """Snapshot lightweight summaries of unexpired runs without pruning."""
+        with self._store_lock:
+            now = self._monotonic()
+            return [
+                dict(
+                    id=item.run.id,
+                    status=item.run.status.value,
+                    goal=item.run.goal,
+                    created=item.run.events[0].created_at if item.run.events else None,
+                    updated=item.run.events[-1].created_at if item.run.events else None,
+                )
+                for item in self._runs.values()
+                if item.terminal_mono is None
+                or now - item.terminal_mono < self._terminal_ttl_seconds
+            ]
+
     async def events(self, run_id: str, *, after: int = 0) -> AgentEventsView:
         entry = self._entry(run_id)
         async with entry.lock:
