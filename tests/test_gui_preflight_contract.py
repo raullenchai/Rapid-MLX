@@ -947,6 +947,7 @@ def test_peekaboo_requirement_is_default_deny():
         "audio-readiness",
         "window-close-prompt",
         "resident-load-rejected",
+        "menubar-resource-card",
     }
     named = {
         flow

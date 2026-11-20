@@ -647,6 +647,12 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/low-memory-choice
 
+      - name: 'Golden flow: menubar-resource-card'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow menubar-resource-card
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/menubar-resource-card
+
       - name: 'Golden flow: image-generation'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow image-generation
@@ -820,6 +826,15 @@ jobs:
       # the committed one. The harness writes `<name>.observed.txt` next to the
       # raw AX dump it came from, which is what someone re-generating a
       # baseline needs to review the diff.
+      - name: Upload menu bar resource evidence
+        if: success() && contains(fromJSON(matrix.gui_flows), 'menubar-resource-card')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: menubar-resource-card-evidence-${{ matrix.group }}
+          path: ${{ runner.temp }}/golden/menubar-resource-card
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload AX evidence
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
