@@ -17368,14 +17368,28 @@ def _dispatch_serve_control(args):
                 listen_fd=getattr(args, "listen_fd", None),
             )
     except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "Control plane setup failed (%s); serving in single process.",
-            type(exc).__name__,
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(
+            args,
+            f"Control plane setup failed ({type(exc).__name__}); "
+            "serving in single process.",
         )
         return
     if mode is not None:
+        import subprocess
+
+        # Preserve interpreter flags such as -u, -X, -W for the runner,
+        # the same way multiprocessing does for its children.
+        interpreter_flags = subprocess._args_from_interpreter_flags()
         code = supervise(
-            [sys.executable, "-m", "rapid_mlx.cli", *sys.argv[1:]],
+            [
+                sys.executable,
+                *interpreter_flags,
+                "-m",
+                "rapid_mlx.cli",
+                *sys.argv[1:],
+            ],
             port=port,
             mode=mode,
             listen_fd=getattr(args, "listen_fd", None),

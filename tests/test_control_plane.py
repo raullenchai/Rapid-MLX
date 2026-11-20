@@ -657,6 +657,9 @@ def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
         calls.append(("spawn", kw["port"]))
         assert argv == [
             sys.executable,
+            "-u",
+            "-X",
+            "utf8",
             "-m",
             "rapid_mlx.cli",
             "serve",
@@ -664,6 +667,12 @@ def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
         ]
         return 13
 
+    import subprocess
+
+    # Interpreter flags (e.g. ``python -u``) must reach the runner.
+    monkeypatch.setattr(
+        subprocess, "_args_from_interpreter_flags", lambda: ["-u", "-X", "utf8"]
+    )
     monkeypatch.setattr(cli, "_resolve_serve_port", resolve)
     monkeypatch.setattr(supervisor, "supervise", spawn)
     with pytest.raises(SystemExit) as exited:
@@ -1235,7 +1244,9 @@ with socket.socket() as listener:
         "spawn",
     ],
 )
-def test_setup_failure_returns_to_exact_legacy_path(fake, monkeypatch, caplog, step):
+def test_setup_failure_returns_to_exact_legacy_path(
+    fake, monkeypatch, caplog, capsys, step
+):
     import asyncio
     import builtins
 
@@ -1364,9 +1375,15 @@ def test_setup_failure_returns_to_exact_legacy_path(fake, monkeypatch, caplog, s
             with conn:
                 conn.sendall(b"served")
             assert client.recv(32) == b"served"
-    assert len(caplog.records) == 1
-    assert "serving in single process" in caplog.records[0].message
-    assert caplog.records[0].exc_info is None
+    if step in ("mode", "port"):
+        # CLI-side setup failures use the buffered serve startup note so
+        # ``--log-file`` captures the reason supervision was disabled.
+        assert not caplog.records
+        assert "serving in single process" in capsys.readouterr().err
+    else:
+        assert len(caplog.records) == 1
+        assert "serving in single process" in caplog.records[0].message
+        assert caplog.records[0].exc_info is None
     assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
     assert not list(base.glob("rmlx-cp-*/i-*"))
 
