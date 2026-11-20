@@ -157,34 +157,34 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
             readers.append(reader)
             embedding.embedding = reader
         weights = {}
-        shards = (
-            sorted(path.glob("*.safetensors"))
-            if mapping is None
-            else sorted({path / name for name in mapping.values()})
-        )
-        if not shards:
+        if mapping is None:
+            shard_keys = {shard: None for shard in sorted(path.glob("*.safetensors"))}
+        else:
+            # Resolve each indexed filename once and use that resolved path for
+            # validation and loading, so a swapped symlink cannot redirect a
+            # later open outside the model directory.
+            resolved = {
+                name: Path(resolve_indexed_shard(str(path), name))
+                for name in set(mapping.values())
+            }
+            grouped: dict[Path, set[str]] = {}
+            for key, name in mapping.items():
+                grouped.setdefault(resolved[name], set()).add(key)
+            shard_keys = dict(sorted(grouped.items()))
+        if not shard_keys:
             raise ValueError("No Hy4 safetensors found")
-        for shard in shards:
-            if mapping is not None:
-                indexed_keys = {
-                    key for key, name in mapping.items() if path / name == shard
-                }
+        for shard, indexed_keys in shard_keys.items():
+            if indexed_keys is not None:
                 with safe_open(str(shard), framework="np") as file:
                     if set(file.keys()) != indexed_keys:
                         raise ValueError(
                             "Checkpoint tensors do not match safetensors index"
                         )
-            if mapping is not None and all(
-                key in disk_keys
-                for key, name in mapping.items()
-                if path / name == shard
-            ):
-                continue
+                if indexed_keys <= disk_keys:
+                    continue
             loaded = cast(dict[str, mx.array], mx.load(str(shard), stream=mx.cpu))
             for key, value in loaded.items():
-                if mapping is not None and mapping.get(key) != str(
-                    shard.relative_to(path)
-                ):
+                if indexed_keys is not None and key not in indexed_keys:
                     raise ValueError(f"Tensor does not match safetensors index: {key}")
                 if key in disk_keys:
                     continue
@@ -220,7 +220,7 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
             model.load_weights(list(weights.items()), strict=True)
             evaluate_weights(tree_flatten(model.parameters()))
         del weights
-        for shard in shards:
+        for shard in shard_keys:
             ubc_evict(str(shard))
         model.eval()
         return model, config
