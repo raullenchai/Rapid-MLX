@@ -52,6 +52,7 @@ rapid-mlx serve [model] [现有参数]
   - runner **不**新开 session，保持在桌面 app 的进程组里，`killpg` 仍能一次清掉全部。
   - TERM/INT/HUP 转发给 runner 和 apps；**截止时间与现有 5 s 约定对齐**（watchdog 和桌面 app 都在 5 s 后升级为 KILL）：控制面等 runner/apps 最多 4 s，然后 KILL；全部回收（waitpid）；关闭过程中禁止重启。
   - 信号处理幂等：桌面 app 用 `killpg` 时父子会同时收到信号，控制面收到第二次信号或发现 runner 已在退出时不重复动作。
+  - 控制面被 SIGKILL 后，runner 及其后代须在 **4 s 内退出**：监管 runner 每 0.5 s 检查父进程；退出前先记录后代 PID 和启动时间，TERM 后最多等 1 s，再按身份复核 KILL 幸存后代（包括已重新归属 launchd/init 的进程），最后 TERM runner 并在 1 s 后升级为 KILL。桌面/非监管路径的时限不变。
   - runner 的 stdout/stderr 由控制面持续读取并原样写到自己的 stdout/stderr（复用 `headless_service/runtime.py` 的管道处理），桌面 app 抓日志的方式不变。
 - 崩溃重启：runner 非正常退出 → 记事件 → 指数退避重启（1 s 起，最多 60 s）。10 分钟内 5 次失败：**控制面以非零码退出**，交给 launchd（KeepAlive）或桌面 app 的现有恢复逻辑，不留一个半活的父进程。
 - 启动结果结构化上报：runner 启动后经 control.sock 报告 `bound(port)` / `bind_failed` / `startup_failed(reason)`。`bind_failed`（`cli.py:9282`）视为配置错误，不重启，原样退出码退出。

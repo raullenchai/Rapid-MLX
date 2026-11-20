@@ -1247,16 +1247,18 @@ def test_sigkill_supervisor_cleans_grandchild(fake, mode):
     runner = json.loads((base / "argv1").read_text())["pid"]
     grandchild = int((base / "grandchild").read_text())
     try:
+        deadline = time.monotonic() + 4.0
         proc.kill()
-        proc.communicate(timeout=9)
-        for pid in (runner, grandchild):
-            eventually(
-                lambda pid=pid: (
-                    not psutil.pid_exists(pid)
-                    or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-                ),
-                timeout=1,
-            )
+        proc.wait(timeout=1)
+        eventually(
+            lambda: all(
+                not psutil.pid_exists(pid)
+                or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+                for pid in (runner, grandchild)
+            ),
+            timeout=max(0, deadline - time.monotonic()),
+        )
+        proc.communicate(timeout=0.5)
     finally:
         for pid in (runner, grandchild):
             try:
@@ -1382,7 +1384,28 @@ def test_process_table_portable_columns_and_locale(monkeypatch):
     }
 
 
-def test_supervised_orphan_cleans_children_before_default_callback(monkeypatch):
+def test_supervised_runner_watchdog_poll_interval(monkeypatch):
+    from rapid_mlx import _parent_watchdog, cli
+    from rapid_mlx.control import PARENT_ENV, protocol
+    from rapid_mlx.control.process_tree import supervised_on_orphan
+
+    monkeypatch.setenv(RUNNER_ENV, "1")
+    monkeypatch.setenv(PARENT_ENV, "123")
+    installed = []
+    monkeypatch.setattr(
+        _parent_watchdog,
+        "install_parent_watchdog",
+        lambda *args, **kwargs: installed.append((args, kwargs)),
+    )
+    monkeypatch.setattr(protocol, "install_startup_report", lambda: None)
+    cli._dispatch_serve_control(SimpleNamespace())
+    assert installed == [((123,), {"interval": 0.5, "on_orphan": supervised_on_orphan})]
+
+
+@pytest.mark.parametrize("recycled", [False, True])
+def test_supervised_orphan_cleans_children_before_default_callback(
+    monkeypatch, recycled
+):
     from rapid_mlx import _parent_watchdog
     from rapid_mlx.control import process_tree
 
@@ -1391,13 +1414,21 @@ def test_supervised_orphan_cleans_children_before_default_callback(monkeypatch):
     monkeypatch.setattr(process_tree, "process_table", lambda: table)
     clock = iter([0, 0, 2])
     monkeypatch.setattr(process_tree.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(process_tree.time, "sleep", lambda _: None)
+
+    def reparent(_):
+        table[30] = (1, "S", "replacement" if recycled else "installer")
+
+    monkeypatch.setattr(process_tree.time, "sleep", reparent)
     signals = []
     monkeypatch.setattr(process_tree.os, "kill", lambda *args: signals.append(args))
 
-    def default(expected, observed):
+    def default(expected, observed, *, grace):
         assert (expected, observed) == (10, 1)
-        assert signals == [(30, signal.SIGTERM), (30, signal.SIGKILL)]
+        assert grace == 1.0
+        expected_signals = [(30, signal.SIGTERM)]
+        if not recycled:
+            expected_signals.append((30, signal.SIGKILL))
+        assert signals == expected_signals
 
     monkeypatch.setattr(_parent_watchdog, "_default_on_orphan", default)
     process_tree.supervised_on_orphan(10, 1)

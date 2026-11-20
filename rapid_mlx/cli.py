@@ -17399,7 +17399,9 @@ def _dispatch_serve_control(args):
 
         raw_parent = os.environ.get(PARENT_ENV)
         if raw_parent is not None:
-            install_parent_watchdog(int(raw_parent), on_orphan=supervised_on_orphan)
+            install_parent_watchdog(
+                int(raw_parent), interval=0.5, on_orphan=supervised_on_orphan
+            )
         install_startup_report()
 
 

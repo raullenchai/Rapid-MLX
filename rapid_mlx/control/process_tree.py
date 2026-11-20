@@ -104,6 +104,9 @@ def supervised_on_orphan(expected_ppid, observed_ppid):
     """
     from rapid_mlx._parent_watchdog import _default_on_orphan
 
+    # Snapshot before signalling self: TERM may immediately exit the runner,
+    # killing this daemon thread and reparenting children that still hold pipes.
+    # ProcessTree retains start times and rechecks identity before escalation.
     tree = ProcessTree(os.getpid())
     tree.send(signal.SIGTERM, include_root=False)
     deadline = time.monotonic() + 1.0
@@ -113,4 +116,6 @@ def supervised_on_orphan(expected_ppid, observed_ppid):
             break
         time.sleep(0.05)
     tree.send(signal.SIGKILL, include_root=False)
-    _default_on_orphan(expected_ppid, observed_ppid)
+    # The supervised contract is four seconds including the 0.5 s poll and
+    # process-table reads. Do not inherit the desktop's five-second self grace.
+    _default_on_orphan(expected_ppid, observed_ppid, grace=1.0)
