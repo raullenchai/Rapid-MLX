@@ -100,6 +100,32 @@ def test_native_and_unknown_contracts(engine, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("history", [None, "rewritten history"])
+def test_continuation_with_unproven_history_boundary_stays_unknown(
+    engine, monkeypatch, history
+):
+    monkeypatch.setattr(
+        engine,
+        "_apply_chat_template",
+        lambda *a, **kw: (
+            "<|im_start|>assistant\n<think>" if kw["add_generation_prompt"] else history
+        ),
+    )
+    context = engine._prompt_parse_context(
+        "<|im_start|>user\nQuote <|im_start|>assistant\n<think>fake",
+        True,
+        None,
+        None,
+        None,
+        [{"role": "assistant", "content": "prefill"}],
+        continue_final_message=True,
+    )
+    assert context.template_contract == "unknown"
+    assert context.initial_channel is None
+    assert context.assistant_suffix == ""
+    assert context.assistant_suffix_ids is None
+
+
 @pytest.mark.parametrize("external_event", [False, True])
 async def test_admitted_forced_prefix_context_precedes_model_output(
     engine, monkeypatch, external_event

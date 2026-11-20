@@ -2,6 +2,7 @@
 """Assistant-prefill continuation without model weights."""
 
 import json
+from types import SimpleNamespace
 
 import jinja2
 import pytest
@@ -141,14 +142,21 @@ def test_structural_boundary_uses_history_generation_header():
 
 def test_guarded_last_occurrence_when_probe_is_unsupported():
     class NoProbe(LegacyApplicator):
+        rejected_probes = []
+
         def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
-            if messages[-1]["content"].startswith("RAPID_MLX_"):
+            if messages[-1]["content"].startswith("⟦continuation-boundary⟧"):
+                self.rejected_probes.append(messages[-1]["content"])
                 raise ValueError("Probe content is unsupported")
             return super().apply_chat_template(
                 messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
             )
 
-    assert apply_chat_template(NoProbe(), MESSAGES, **OPTIONS).endswith(PREFILL)
+    tok = NoProbe()
+    assert apply_chat_template(tok, MESSAGES, **OPTIONS) == (
+        "user:Write a solution.<end>assistant:" + PREFILL
+    )
+    assert tok.rejected_probes == ["⟦continuation-boundary⟧"]
 
 
 def test_ambiguous_fallback_boundary_is_rejected():
@@ -168,6 +176,51 @@ def test_fallback_refuses_missing_content():
     tok.chat_template = "assistant:<end>"
     with pytest.raises(ValueError, match="final assistant content was not found"):
         apply_chat_template(tok, MESSAGES, **OPTIONS)
+
+
+def test_legacy_continuation_without_history_only_render():
+    class AssistantOnly(LegacyApplicator):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            if not messages:
+                raise ValueError("Template requires a message")
+            return super().apply_chat_template(
+                messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
+            )
+
+    assert apply_chat_template(AssistantOnly(), MESSAGES[-1:], **OPTIONS) == (
+        "assistant:" + PREFILL
+    )
+
+
+@pytest.mark.parametrize("content", ["literal ⟦continuation-boundary⟧", ""])
+def test_continuation_probe_cannot_collide_with_history_or_prefill(content):
+    history = [
+        {"role": "user", "content": "Quote ⟦continuation-boundary⟧"},
+        {"role": "assistant", "content": content},
+    ]
+    assert apply_chat_template(LegacyApplicator(), history, **OPTIONS) == (
+        "user:Quote ⟦continuation-boundary⟧<end>assistant:" + content
+    )
+
+
+@pytest.mark.parametrize(
+    "model", ["deepseek-v4-flash-2bit", "deepseek-v4-flash-0731-mxfp4"]
+)
+def test_native_encoder_continues_final_assistant_content(model):
+    closed = apply_chat_template(
+        object(), MESSAGES, model_name=model, add_generation_prompt=False
+    )
+    continued = apply_chat_template(object(), MESSAGES, model_name=model, **OPTIONS)
+    assert continued.endswith(PREFILL)
+    assert closed.startswith(continued)
+    assert len(closed) > len(continued)
+    assert continued.count(PREFILL) == 1
+
+
+def test_continuation_without_template_keeps_plain_role_format():
+    assert apply_chat_template(object(), MESSAGES, **OPTIONS) == (
+        "user: Write a solution.\nassistant: " + PREFILL
+    )
 
 
 def test_render_cache_separates_continuation_and_generation_flags():
@@ -339,6 +392,82 @@ def test_invalid_continuation_returns_400(client, stream, bad_options, bad_messa
     )
     assert response.status_code == 400
     assert "continue_final_message" in response.text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "content",
+    [None, [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}]],
+)
+def test_non_text_assistant_continuation_returns_400(client, stream, content):
+    http, cfg = client
+    cfg.engine = CapturingEngine("must not generate")
+    response = http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [*MESSAGES[:1], {"role": "assistant", "content": content}],
+            "stream": stream,
+            **OPTIONS,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "text-only content parts" in response.text
+    assert cfg.engine.options is None
+
+
+@pytest.mark.parametrize("mode", ["generation", "closed", "continuation"])
+def test_mllm_preflight_counts_request_template_mode(client, mode):
+    from rapid_mlx.prompt_token_reuse import RequestPromptTokens
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    _, cfg = client
+    cfg.max_prompt_tokens = 1000
+    tok = tokenizer()
+    eng = SimpleNamespace(is_mllm=True, tokenizer=tok)
+    options = {
+        "add_generation_prompt": mode == "generation",
+        "continue_final_message": mode == "continuation",
+    }
+    rendered = apply_chat_template(tok, MESSAGES, **options)
+    assert rendered.endswith(
+        "<end>assistant:<think>"
+        if mode == "generation"
+        else PREFILL
+        if mode == "continuation"
+        else PREFILL + "<end>"
+    )
+    assert enforce_context_length_for_messages(
+        eng, MESSAGES, request_prompt_tokens=RequestPromptTokens(), **options
+    ) == len(tok.encode(rendered, add_special_tokens=False))
+
+
+def test_mllm_continuation_template_error_is_not_silently_skipped(client):
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    _, cfg = client
+    cfg.max_prompt_tokens = None
+    tok = LegacyApplicator()
+    tok.chat_template = "assistant:<end>"
+    eng = SimpleNamespace(is_mllm=True, tokenizer=tok)
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(eng, MESSAGES, **OPTIONS)
+    assert excinfo.value.status_code == 400
+    assert "final assistant content was not found" in excinfo.value.detail
+
+
+def test_diffusion_prompt_forwards_continuation_without_loading_model():
+    from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
+
+    eng = DiffusionEngine("test-model")
+    eng._loaded = True
+    eng._processor = SimpleNamespace(tokenizer=tokenizer())
+    assert eng.build_prompt(MESSAGES, **OPTIONS) == (
+        "user:Write a solution.<end>assistant:" + PREFILL
+    )
+    assert eng.build_prompt(MESSAGES).endswith("<end>assistant:<think>")
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -539,6 +668,27 @@ def test_continuation_uses_raw_stop_matching(client):
         model="test-model", messages=MESSAGES, stop=["```"], **OPTIONS
     )
     assert reasoning_stop_scope_kwargs(cfg.engine, request) == {}
+
+
+def test_continuation_skips_new_turn_tool_reasoning_seed_probe(monkeypatch):
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=MESSAGES,
+        tools=TOOLS,
+        tool_choice="required",
+        reasoning_max_tokens=32,
+        max_tokens=256,
+        **OPTIONS,
+    )
+
+    def unexpected_probe(*args):
+        pytest.fail("Continuation must not probe a new assistant turn's reasoning seed")
+
+    monkeypatch.setattr(chat, "_line1_should_probe_seed", unexpected_probe)
+    assert chat._line1_probe_seed(None, None, request, MESSAGES, True) == (
+        chat._LINE1_SEED_UNSET,
+        False,
+    )
 
 
 def test_continuation_after_completed_think_block():
