@@ -3585,6 +3585,7 @@ class BatchedEngine(BaseEngine):
             )
 
         continue_final_message = kwargs.pop("_continue_final_message", False)
+        initial_channel = kwargs.pop("_output_router_initial_channel", None)
         request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
 
         if self._select_mllm_request_path(images, videos, admission_token):
@@ -3659,8 +3660,17 @@ class BatchedEngine(BaseEngine):
             if mllm_assistant_text_prefix:
                 mllm_full_text = mllm_assistant_text_prefix + mllm_full_text
 
+            reasoning, content, tool_calls = self._route_tokens_for_channels(
+                output.output_token_ids,
+                fallback_text=clean_output_text(mllm_full_text),
+                initial_channel=(initial_channel or "content")
+                if continue_final_message
+                else None,
+            )
             return GenerationOutput(
-                text=clean_output_text(mllm_full_text),
+                text=content,
+                reasoning_text=reasoning,
+                tool_calls=tool_calls,
                 raw_text=mllm_full_text,
                 tokens=output.output_token_ids,
                 prompt_tokens=output.prompt_tokens,
@@ -3794,9 +3804,12 @@ class BatchedEngine(BaseEngine):
         # terminators so it also recovers reasoning from truncated
         # output (``finish_reason=length`` mid-thinking).
         reasoning_text, text, structured_tool_calls = self._route_tokens_for_channels(
-            [] if continue_final_message else output.output_token_ids,
+            output.output_token_ids,
             fallback_text=text,
             seed_token_ids=output_router_seed,
+            initial_channel=(initial_channel or "content")
+            if continue_final_message
+            else None,
         )
 
         return GenerationOutput(
@@ -4375,6 +4388,10 @@ class BatchedEngine(BaseEngine):
         if context is not None and context.template_contract != "unknown":
             kwargs["_on_prompt_prepared"] = capture
         self._align_owned_stop_scope(kwargs, context)
+        if continue_final_message:
+            kwargs["_output_router_initial_channel"] = (
+                getattr(context, "initial_channel", None) or "content"
+            )
 
         if request_prompt_tokens is not None and not all_images and not all_videos:
             if getattr(self, "_mllm_dense_singleton_fastpath", False):
@@ -4785,6 +4802,7 @@ class BatchedEngine(BaseEngine):
         *,
         fallback_text: str,
         seed_token_ids: tuple[int, ...] | None = None,
+        initial_channel: str | None = None,
     ) -> tuple[str, str, list[dict] | None]:
         """Run ``OutputRouter.feed_sequence`` on a completed token list.
 
@@ -4824,6 +4842,8 @@ class BatchedEngine(BaseEngine):
             return "", fallback_text, None
         try:
             router.reset()
+            if initial_channel is not None:
+                router.seed_channel(initial_channel)
             for token_id in seed_token_ids or ():
                 router.feed(token_id)
             routed = router.feed_sequence(token_ids)
@@ -5346,9 +5366,9 @@ class BatchedEngine(BaseEngine):
         if requires_prompt_integrity:
             kwargs["requires_prompt_integrity"] = True
 
-        # Continuations already occupy content; new-turn channel detection
-        # would misclassify literal channel words at the start of this suffix.
-        router = None if continue_final_message else self._create_output_router()
+        # Keep routing channel/tool transitions during continuations. The
+        # verified prompt context below seeds the already-open body channel.
+        router = self._create_output_router()
         if router is not None and output_router_seed is not None:
             try:
                 router.reset()
@@ -5379,6 +5399,8 @@ class BatchedEngine(BaseEngine):
         if context is not None and context.template_contract != "unknown":
             kwargs["_on_prompt_prepared"] = capture
         self._align_owned_stop_scope(kwargs, context)
+        if continue_final_message and router is not None:
+            router.seed_channel(getattr(context, "initial_channel", None) or "content")
 
         if request_prompt_tokens is not None and not all_images and not all_videos:
             if getattr(self, "_mllm_dense_singleton_fastpath", False):

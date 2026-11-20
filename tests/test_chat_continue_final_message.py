@@ -843,10 +843,7 @@ async def test_batched_generation_receives_continuation_prompt(stream):
     eng.generate = generate
     eng.stream_generate = stream_generate
 
-    def unexpected_router():
-        pytest.fail("A content continuation must not enter new-turn token routing")
-
-    eng._create_output_router = unexpected_router
+    eng._create_output_router = lambda: None
     if stream:
         outputs = [output async for output in eng.stream_chat(MESSAGES, **OPTIONS)]
         assert outputs[-1].text == "new content"
@@ -1037,14 +1034,9 @@ async def test_generate_keeps_channel_words_as_continuation_content():
             finish_reason="stop",
         )
 
-    def unexpected_router():
-        pytest.fail(
-            "Continuation token IDs must remain outside new-turn channel detection"
-        )
-
     eng._engine = SimpleNamespace(generate=generate)
     eng._ensure_generation_admission = lambda: (None, False)
-    eng._create_output_router = unexpected_router
+    eng._create_output_router = lambda: None
     output = await eng.generate("assistant:prefill", _continue_final_message=True)
     assert output.text == text
     assert not output.reasoning_text
@@ -1075,13 +1067,10 @@ async def test_schema_continuation_preserves_mode_on_guided_fallback(
             finish_reason="stop",
         )
 
-    def unexpected_router():
-        pytest.fail("Schema continuation must not enter new-turn channel routing")
-
     eng._run_guided_generation = guided
     eng._engine = SimpleNamespace(generate=generate)
     eng._ensure_generation_admission = lambda: (None, False)
-    eng._create_output_router = unexpected_router
+    eng._create_output_router = lambda: None
     output = await eng.generate_with_schema(
         MESSAGES,
         json_schema={"type": "object", "properties": {"answer": {"type": "string"}}},
@@ -1587,3 +1576,130 @@ def test_continuation_context_maps_only_template_errors_to_400(client, error, ex
         with pytest.raises(HTTPException) as excinfo:
             chat._continuation_prompt_context(request, cfg, rows)
         assert excinfo.value.status_code == expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("reasoning", [False, True])
+@pytest.mark.parametrize("tool", [False, True])
+@pytest.mark.parametrize("mllm", [False, True])
+async def test_continuation_keeps_token_router(
+    monkeypatch, stream, reasoning, tool, mllm
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx.output_router import Channel, OutputRouter, RouterEvent, TokenMap
+
+    class RoutedTokenizer:
+        def decode(self, ids):
+            return "".join({1: "thought", 2: "\nnew text"}.get(i, "") for i in ids)
+
+    class StructuredRouter(OutputRouter):
+        def feed(self, token_id):
+            if token_id == 99:
+                return RouterEvent(
+                    Channel.TOOL_CALL,
+                    token_id,
+                    "",
+                    tool_call={"name": "lookup", "arguments": "{}"},
+                )
+            return super().feed(token_id)
+
+        def feed_sequence(self, ids):
+            if 99 in ids:
+                return {"tool_calls": [{"name": "lookup", "arguments": "{}"}]}
+            return super().feed_sequence(ids)
+
+    eng = engine(tokenizer())
+    monkeypatch.setattr(
+        eng,
+        "_create_output_router",
+        lambda: StructuredRouter(
+            TokenMap(channel_start=100, thought_word=1), RoutedTokenizer()
+        ),
+    )
+    context = SimpleNamespace(
+        initial_channel="reasoning" if reasoning else "content",
+        template_contract="unknown",
+    )
+    monkeypatch.setattr(eng, "_prompt_parse_context", lambda *a, **kw: context)
+    monkeypatch.setattr(eng, "_align_owned_stop_scope", lambda *a: None)
+    ids = [99] if tool else [1, 2]
+    text = "wire tool" if tool else "thought\nnew text"
+
+    async def generate(**kwargs):
+        return SimpleNamespace(
+            output_text=text,
+            output_token_ids=ids,
+            prompt_tokens=4,
+            completion_tokens=len(ids),
+            cached_tokens=0,
+            finish_reason="stop",
+        )
+
+    async def stream_generate(**kwargs):
+        yield GenerationOutput(
+            text=text, new_text=text, tokens=ids, finished=True, finish_reason="stop"
+        )
+
+    eng._engine = SimpleNamespace(generate=generate)
+    eng._ensure_generation_admission = lambda: (None, False)
+    if mllm and not stream:
+        eng._mllm_scheduler = SimpleNamespace(generate=generate)
+        monkeypatch.setattr(eng, "_select_mllm_request_path", lambda *a: True)
+    monkeypatch.setattr(eng, "stream_generate", stream_generate)
+    options = {
+        **OPTIONS,
+        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+    }
+    if stream:
+        outputs = [out async for out in eng.stream_chat(MESSAGES, **options)]
+        calls = [call for out in outputs for call in out.tool_calls or []]
+        if not tool:
+            assert "".join(out.new_text for out in outputs) == text
+            assert all(
+                out.channel == ("reasoning" if reasoning else "content")
+                for out in outputs
+                if out.new_text
+            )
+    else:
+        out = await eng.chat(MESSAGES, **options)
+        calls = out.tool_calls
+        if not tool:
+            assert (out.reasoning_text if reasoning else out.text) == text
+            if reasoning:
+                assert out.text == ""
+    if tool:
+        assert calls == [{"name": "lookup", "arguments": "{}"}]
+
+
+async def test_seeded_router_keeps_normal_turn_routing(monkeypatch):
+    from rapid_mlx.output_router import OutputRouter, TokenMap
+
+    eng = engine(tokenizer())
+    router = OutputRouter(TokenMap(think_end=2), SimpleDecode())
+    monkeypatch.setattr(eng, "_create_output_router", lambda: router)
+    monkeypatch.setattr(
+        eng, "_prepare_harmony_no_thinking_prompt", lambda prompt, **kw: (prompt, (2,))
+    )
+
+    async def stream_generate(**kwargs):
+        yield GenerationOutput(text="new", new_text="new", tokens=[3], finished=True)
+
+    monkeypatch.setattr(eng, "stream_generate", stream_generate)
+    outputs = [out async for out in eng.stream_chat(MESSAGES[:1])]
+    assert any(out.new_text == "new" for out in outputs)
+
+
+class SimpleDecode:
+    def decode(self, ids):
+        return "new"
+
+
+async def test_guided_failure_without_retained_identity(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.engine.batched.HAS_GUIDED", True)
+    eng = engine(tokenizer())
+    eng._run_guided_generation = lambda **kwargs: None
+    with pytest.raises(RuntimeError, match="produced no result"):
+        await eng.generate_with_schema(
+            MESSAGES, json_schema={"type": "object"}, raise_on_failure=True
+        )

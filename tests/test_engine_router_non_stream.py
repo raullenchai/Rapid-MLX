@@ -236,7 +236,7 @@ async def test_generate_recovers_router_seed_from_build_prompt(engine, monkeypat
 
     captured = {}
 
-    def _route(token_ids, *, fallback_text, seed_token_ids=None):
+    def _route(token_ids, *, fallback_text, seed_token_ids=None, initial_channel=None):
         captured["token_ids"] = token_ids
         captured["fallback_text"] = fallback_text
         captured["seed_token_ids"] = seed_token_ids

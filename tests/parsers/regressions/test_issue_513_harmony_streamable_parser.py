@@ -1018,3 +1018,16 @@ def test_finalize_does_not_drain_post_eos_buffered_delta(router, encoding):
     router.reset()
     router._parser = _StubParser("analysis", "")
     assert router.finalize() is None
+
+
+@pytest.mark.parametrize("channel", ["content", "reasoning"])
+def test_seeded_continuation_routes_new_tool_calls(router, encoding, channel):
+    router.seed_channel(channel)
+    result = router.feed_sequence(
+        _encode(
+            encoding,
+            "new text<|end|><|start|>assistant to=functions.lookup<|channel|>commentary<|message|>{}<|call|>",
+        )
+    )
+    assert result[channel] == "new text"
+    assert result["tool_calls"] == [{"name": "lookup", "arguments": "{}"}]
