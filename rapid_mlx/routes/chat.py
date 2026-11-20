@@ -4135,14 +4135,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
 def _continuation_reasoning_prefix(request) -> str:
     """Only the assistant prefill can seed continuation reasoning state."""
-    content = request.messages[-1].content
-    if isinstance(content, str):
-        return content
-    return "".join(
-        part.get("text", "")
-        for part in content or []
-        if isinstance(part, dict) and part.get("type") == "text"
-    )
+    from ..utils.chat_template import normalize_assistant_content
+
+    return normalize_assistant_content(request.messages[-1].content)
 
 
 def _continuation_starts_in_thinking(request, cfg) -> bool:
@@ -4519,6 +4514,14 @@ async def _create_chat_completion_impl(
             status_code=400,
             detail="messages must not be empty",
         )
+
+    if request.continue_final_message:
+        try:
+            # Normalize before multimodal extraction can insert separators
+            # between text parts: rendering and reasoning must see one prefill.
+            request.messages[-1].content = _continuation_reasoning_prefix(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Validate message roles
     _valid_roles = {"system", "user", "assistant", "tool", "developer"}

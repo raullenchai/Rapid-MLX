@@ -12,7 +12,7 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from transformers import PreTrainedTokenizerFast
 
-from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.api.models import ChatCompletionRequest, ContentPart
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.engine.batched import BatchedEngine
@@ -20,7 +20,10 @@ from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 from rapid_mlx.prompt_host_cache import PromptHostCache
 from rapid_mlx.reasoning import get_parser
 from rapid_mlx.routes import chat
-from rapid_mlx.utils.chat_template import apply_chat_template
+from rapid_mlx.utils.chat_template import (
+    apply_chat_template,
+    normalize_assistant_content,
+)
 from tests.test_rejected_tool_diagnostics import TOOLS, Engine
 
 TEMPLATE = (
@@ -93,6 +96,71 @@ def test_fallback_uses_last_occurrence_and_normalized_text_parts():
     ]
     prompt = apply_chat_template(LegacyApplicator(), history, **OPTIONS)
     assert prompt == "user:" + PREFILL + "<end>assistant:" + PREFILL
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("content", ["end", "<", "<end>", "", []])
+def test_continuation_boundary_excludes_terminator(legacy, content):
+    tok = LegacyApplicator() if legacy else tokenizer()
+    history = [*MESSAGES[:1], {"role": "assistant", "content": content}]
+    assert apply_chat_template(tok, history, **OPTIONS) == (
+        "user:Write a solution.<end>assistant:" + (content if content else "")
+    )
+
+
+@pytest.mark.parametrize("part_class", [dict, ContentPart])
+def test_continuation_normalizes_multiple_text_parts(part_class):
+    content = [
+        part_class(type="text", text="<think>"),
+        part_class(type="text", text="Start"),
+    ]
+    assert normalize_assistant_content(content) == "<think>Start"
+    history = [*MESSAGES[:1], {"role": "assistant", "content": content}]
+    assert apply_chat_template(LegacyApplicator(), history, **OPTIONS) == (
+        "user:Write a solution.<end>assistant:<think>Start"
+    )
+
+
+def test_structural_boundary_uses_history_generation_header():
+    class MatchingHeader(LegacyApplicator):
+        chat_template = TEMPLATE.replace("assistant:<think>", "assistant:")
+
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            assert all(
+                m["content"] in {"Write a solution.", "end", ""} for m in messages
+            )
+            return super().apply_chat_template(
+                messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
+            )
+
+    history = [*MESSAGES[:1], {"role": "assistant", "content": "end"}]
+    assert apply_chat_template(MatchingHeader(), history, **OPTIONS) == (
+        "user:Write a solution.<end>assistant:end"
+    )
+
+
+def test_guarded_last_occurrence_when_probe_is_unsupported():
+    class NoProbe(LegacyApplicator):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            if messages[-1]["content"].startswith("RAPID_MLX_"):
+                raise ValueError("Probe content is unsupported")
+            return super().apply_chat_template(
+                messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
+            )
+
+    assert apply_chat_template(NoProbe(), MESSAGES, **OPTIONS).endswith(PREFILL)
+
+
+def test_ambiguous_fallback_boundary_is_rejected():
+    tok = LegacyApplicator()
+    tok.chat_template = (
+        "{% for m in messages %}{{ m.role }}:"
+        "{% if m.content != 'RAPID_MLX_CONTINUATION_BOUNDARY' %}"
+        "{{ m.content }}{% endif %}end{% endfor %}"
+    )
+    history = [*MESSAGES[:1], {"role": "assistant", "content": "end"}]
+    with pytest.raises(ValueError, match="verifiable boundary"):
+        apply_chat_template(tok, history, **OPTIONS)
 
 
 def test_fallback_refuses_missing_content():
@@ -274,7 +342,30 @@ def test_invalid_continuation_returns_400(client, stream, bad_options, bad_messa
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_missing_prefill_in_legacy_template_returns_400(client, stream):
+@pytest.mark.parametrize("prefill", ["", [], "end", [{"type": "text", "text": "end"}]])
+def test_legacy_continuation_http_boundary(client, stream, prefill):
+    http, cfg = client
+    cfg.engine = CapturingEngine("42")
+    cfg.engine.tokenizer = LegacyApplicator()
+    response = http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [*MESSAGES[:1], {"role": "assistant", "content": prefill}],
+            **OPTIONS,
+            "stream": stream,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert cfg.engine.prompt == (
+        "user:Write a solution.<end>assistant:"
+        + ("end" if prefill in ("end", [{"type": "text", "text": "end"}]) else "")
+    )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("prefill", [PREFILL, "end", ""])
+def test_missing_prefill_in_legacy_template_returns_400(client, stream, prefill):
     http, cfg = client
     cfg.engine = CapturingEngine("unused")
     cfg.engine.tokenizer = LegacyApplicator()
@@ -283,7 +374,7 @@ def test_missing_prefill_in_legacy_template_returns_400(client, stream):
         "/v1/chat/completions",
         json={
             "model": "test-model",
-            "messages": MESSAGES,
+            "messages": [*MESSAGES[:1], {"role": "assistant", "content": prefill}],
             **OPTIONS,
             "stream": stream,
         },
@@ -587,6 +678,7 @@ def test_open_prefill_keeps_posthoc_reasoning_budget(client, stream):
 
 
 @pytest.mark.parametrize("enable_thinking", [None, False, True])
+@pytest.mark.parametrize("structured", [False, True])
 @pytest.mark.parametrize(
     "prefill,seeded",
     [
@@ -596,7 +688,7 @@ def test_open_prefill_keeps_posthoc_reasoning_budget(client, stream):
     ],
 )
 def test_continuation_decode_budget_seed(
-    client, monkeypatch, enable_thinking, prefill, seeded
+    client, monkeypatch, enable_thinking, structured, prefill, seeded
 ):
     from rapid_mlx.api import reasoning_budget
 
@@ -606,10 +698,21 @@ def test_continuation_decode_budget_seed(
     _, cfg = client
     request = ChatCompletionRequest(
         model="test-model",
-        messages=[*MESSAGES[:1], {"role": "assistant", "content": prefill}],
+        messages=[
+            *MESSAGES[:1],
+            {
+                "role": "assistant",
+                "content": [ContentPart(type="text", text=prefill)]
+                if structured
+                else prefill,
+            },
+        ],
         **OPTIONS,
         reasoning_max_tokens=1,
     )
+    if structured:
+        assert isinstance(request.messages[-1].content[0], ContentPart)
+    assert chat._continuation_reasoning_prefix(request) == prefill
     processor = chat._build_reasoning_budget_processor(
         CapturingEngine("unused"), request, cfg, [], enable_thinking
     )
@@ -631,8 +734,9 @@ def test_continuation_decode_budget_seed(
 @pytest.mark.parametrize("parser_name", ["deepseek_r1_distill", "qwen3"])
 @pytest.mark.parametrize("chunk_size", [1, 7])
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("structured", [False, True])
 def test_open_prefill_streaming_matches_non_streaming(
-    client, parser_name, chunk_size, stream
+    client, parser_name, chunk_size, stream, structured
 ):
     http, cfg = client
     reasoning = "x" * 80
@@ -673,7 +777,15 @@ def test_open_prefill_streaming_matches_non_streaming(
             "model": "test-model",
             "messages": [
                 *MESSAGES[:1],
-                {"role": "assistant", "content": "<think>Start"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "<think>"},
+                        {"type": "text", "text": "Start"},
+                    ]
+                    if structured
+                    else "<think>Start",
+                },
             ],
             **OPTIONS,
             "stream": stream,

@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +324,7 @@ def _part_type_and_text(part) -> tuple[str | None, str | None]:
     instance (request-validation hand-off), or as something else (we
     treat that as "unknown" so the caller can decide what to do).
     """
-    if isinstance(part, dict):
+    if isinstance(part, Mapping):
         t = part.get("type")
         x = part.get("text")
     else:
@@ -365,6 +366,24 @@ def _join_text_parts(content: list) -> str:
     expectations.
     """
     return "".join((_part_type_and_text(part)[1] or "") for part in content)
+
+
+def normalize_assistant_content(content) -> str:
+    """Render a text prefill identically for templates and reasoning seeds.
+
+    Empty strings and empty text arrays continue from an empty assistant turn.
+    Non-text parts cannot define a text continuation boundary.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and (
+        not content or _is_text_only_content_array(content)
+    ):
+        return _join_text_parts(content)
+    raise ValueError(
+        "continue_final_message requires assistant content to be a string "
+        "or text-only content parts"
+    )
 
 
 def _normalize_text_only_content_arrays(messages: list[dict]) -> list[dict]:
@@ -2454,14 +2473,59 @@ def sanitize_template_inputs(
     return messages, tools
 
 
-def _truncate_for_continuation(prompt: str, messages: list[dict]) -> str:
-    content = messages[-1].get("content") if messages else None
-    if not isinstance(content, str) or not content or content not in prompt:
-        raise ValueError(
-            "Chat template cannot continue_final_message: final assistant content "
-            "was not found in the rendered prompt"
-        )
-    return prompt[: prompt.rfind(content) + len(content)]
+def _truncate_for_continuation(prompt: str, messages: list[dict], render) -> str:
+    """Locate the final assistant span with paired renders, failing closed.
+
+    ``render`` uses the same template/options as ``prompt``, without native
+    continuation. A history-only generation render supplies the open assistant
+    header. An empty-final render verifies the exact suffix to remove.
+    """
+    content = normalize_assistant_content(messages[-1].get("content"))
+    empty_messages = [*messages[:-1], {**messages[-1], "content": ""}]
+    empty = render(empty_messages, False)
+    try:
+        prefix = render(messages[:-1], True)
+    except Exception:
+        # Some templates cannot render history alone (e.g. assistant-only
+        # requests). Probe the final content slot below instead.
+        prefix = None
+    if content and isinstance(prefix, str) and prompt.startswith(prefix + content):
+        end = len(prefix) + len(content)
+        if empty == prefix + prompt[end:]:
+            return prompt[:end]
+
+    # A generation header may include implicit reasoning absent from a supplied
+    # assistant row. Locate that row by replacing only its content with a unique
+    # probe, then require the original and empty renders to agree on both sides.
+    marker = "RAPID_MLX_CONTINUATION_BOUNDARY"
+    while marker in prompt or marker in content:
+        marker += "_"
+    try:
+        probe = render([*messages[:-1], {**messages[-1], "content": marker}], False)
+    except Exception:
+        probe = ""
+    if probe.count(marker) == 1:
+        prefix, suffix = probe.split(marker)
+        if empty == prefix + suffix and prompt == prefix + content + suffix:
+            return prefix + content
+
+    # Legacy templates may reject probe text. Keep last-occurrence compatibility
+    # only when deleting that exact span reproduces the empty-final render and
+    # no other occurrence does; suffix collisions must never choose a boundary.
+    if content:
+        matches = []
+        start = prompt.find(content)
+        while start >= 0:
+            end = start + len(content)
+            if prompt[:start] + prompt[end:] == empty:
+                matches.append(start)
+            start = prompt.find(content, start + 1)
+        if len(matches) == 1 and matches[0] == prompt.rfind(content):
+            return prompt[: matches[0] + len(content)]
+    raise ValueError(
+        "Chat template cannot continue_final_message: final assistant content "
+        "was not found at a verifiable boundary in the rendered prompt"
+    )
 
 
 def apply_chat_template(
@@ -2556,6 +2620,14 @@ def _render_chat_template(
     # the same "tool content missing" footgun (Qwen3 rendered an empty
     # ``<tool_response>``, Hermes3 ``TypeError``-d).
     messages = _normalize_text_only_content_arrays(messages)
+    if continue_final_message:
+        messages = [
+            *messages[:-1],
+            {
+                **messages[-1],
+                "content": normalize_assistant_content(messages[-1].get("content")),
+            },
+        ]
 
     # GH-973: enforce the assistant tool_call.arguments = dict invariant
     # BEFORE any Jinja rendering. Every mainstream HF chat template
@@ -2628,6 +2700,17 @@ def _render_chat_template(
     # DeepSeek-V4-Flash-0731 intentionally ships a Python encoder instead of
     # a Jinja template.  Route by model identity before the generic tokenizer
     # fallback (which would otherwise silently apply ChatML).
+    def _render_without_continuation(candidate_messages, generation):
+        return _render_chat_template(
+            template_applicator,
+            candidate_messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            model_name=model_name,
+            add_generation_prompt=generation,
+            chat_template_kwargs=chat_template_kwargs,
+        )
+
     if is_deepseek_v4:
         prompt = encode_messages(
             messages,
@@ -2636,7 +2719,7 @@ def _render_chat_template(
             add_generation_prompt=add_generation_prompt,
         )
         return (
-            _truncate_for_continuation(prompt, messages)
+            _truncate_for_continuation(prompt, messages, _render_without_continuation)
             if continue_final_message
             else prompt
         )
@@ -2687,7 +2770,7 @@ def _render_chat_template(
             if prompt.endswith(suffix):
                 prompt = prompt[: -len(suffix)]
         return (
-            _truncate_for_continuation(prompt, messages)
+            _truncate_for_continuation(prompt, messages, _render_without_continuation)
             if continue_final_message
             else prompt
         )
@@ -2803,7 +2886,14 @@ def _render_chat_template(
             rendered = template_applicator.apply_chat_template(
                 candidate_messages, **legacy_kwargs
             )
-            return _truncate_for_continuation(rendered, candidate_messages)
+            return _truncate_for_continuation(
+                rendered,
+                candidate_messages,
+                lambda rows, generation: template_applicator.apply_chat_template(
+                    rows,
+                    **{**legacy_kwargs, "add_generation_prompt": generation},
+                ),
+            )
 
     def _apply_with_alternating_fallback(
         candidate_messages: list[dict], candidate_kwargs: dict
