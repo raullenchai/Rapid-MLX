@@ -2687,11 +2687,21 @@ def _add_alias_parser(
         "--port", type=_port_arg, help="Select a supervised instance by port"
     )
     for command in ("log", "events"):
-        history = subparsers.add_parser(command, help=f"Show local serve {command}")
+        history = subparsers.add_parser(
+            command, help=f"Show per-user serve {command}, including offline history"
+        )
         history.add_argument("--port", type=_port_arg, help="Select instance by port")
-        history.add_argument("--follow", action="store_true", help="Follow new records")
+        history.add_argument(
+            "--follow",
+            action="store_true",
+            help="Follow new rows (once per second); --json emits full records",
+        )
         history.add_argument("--limit", type=int, default=100)
-        history.add_argument("--json", action="store_true", help="Print JSON")
+        history.add_argument(
+            "--json",
+            action="store_true",
+            help="Print full metadata records as JSON lines",
+        )
         if command == "log":
             history.add_argument("action", nargs="?", choices=["clear"])
     ps_parser = subparsers.add_parser("ps", help="List running rapid-mlx servers")

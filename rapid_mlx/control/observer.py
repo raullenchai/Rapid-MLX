@@ -50,6 +50,7 @@ class Delivery:
         self.queue = queue.Queue(maxsize=capacity)
         self.queue_dropped = 0
         self.transport_dropped = 0
+        self.skipped = 0
         self.closed = threading.Event()
         self.pending = threading.Event()
         self.thread = threading.Thread(
@@ -80,6 +81,7 @@ class Delivery:
                     "records": records,
                     "events": events,
                     "dropped": self.dropped,
+                    "skipped": self.skipped,
                 },
                 target="/records",
             )
@@ -174,7 +176,13 @@ class CallObserver:
             outcome = "error"
             raise
         finally:
-            if not emitted:
+            route = getattr(scope.get("route"), "path", None)
+            eligible = (
+                route and route.startswith("/v1/") and route.rstrip("/") != "/v1/models"
+            )
+            if not eligible:
+                self.sink.skipped += 1
+            if not emitted and eligible:
                 emitted = True
                 peer = scope.get("_rapid_mlx_transport_peer", scope.get("client"))
                 headers = dict(scope.get("headers", ()))

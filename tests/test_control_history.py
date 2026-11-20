@@ -43,7 +43,7 @@ def test_storage_privacy_filters_rotation_and_settings(history):
         [record(prompt="SECRET PROMPT", Authorization="Bearer secret"), record()], 1, 2
     )
     assert history.status() == dict(
-        enabled=True, records=1, bytes=history.logs.stat().st_size, dropped=2
+        enabled=True, records=1, bytes=history.logs.stat().st_size, dropped=2, skipped=0
     )
     text = history.logs.read_text()
     assert all(
@@ -208,6 +208,7 @@ async def test_outcomes(failure, expected, status):
     sink = observer.Delivery()
 
     async def app(scope, receive, send):
+        scope["route"] = SimpleNamespace(path="/v1/chat/completions")
         if failure == "preheader":
             raise ValueError("before start")
         await send({"type": "http.response.start", "status": status})
@@ -407,8 +408,11 @@ async def test_parent_record_and_model_reports(history):
         await supervisor.handle(reader, writer)
         return writer.write.call_args.args[0]
 
-    assert b"200" in await call("/records", {"records": [record()], "dropped": 2})
+    assert b"200" in await call(
+        "/records", {"records": [record()], "dropped": 2, "skipped": 4}
+    )
     assert supervisor.status()["log"]["records"] == 1
+    assert supervisor.status()["log"]["skipped"] == 4
     assert b"200" in await call(
         "/records",
         {
@@ -569,7 +573,8 @@ def test_runner_observer_is_outermost(monkeypatch):
             AsyncMock(),
         )
     )
-    assert sink.queue.get_nowait()["http_status"] == 404
+    assert sink.queue.empty()
+    assert sink.skipped == 1
 
 
 @pytest.mark.parametrize("route", ["chat", "completions", "anthropic", "responses"])
@@ -1056,10 +1061,11 @@ def test_shrink_enforces_each_file_even_below_total_cap(tmp_path):
     history.call_sequence = 26 * 1024
     assert history.status()["bytes"] == 26 * mib
     history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 30 * mib})
-    assert history.old.stat().st_size == 15 * mib
+    bound = (30 * mib - 512) * 3 // 8
+    assert history.old.stat().st_size == bound // 1024 * 1024
     assert history.logs.stat().st_size == mib
     retained = list(history.records())
-    assert retained[0]["seq"] == 10 * 1024
+    assert retained[0]["seq"] == 25 * 1024 - bound // 1024
     assert retained[-1]["seq"] == 26 * 1024 - 1
     # Growth up to the active-file bound cannot exceed the new total cap.
     for i in range(40000, 40100):
@@ -1264,3 +1270,249 @@ def test_audio_rejected_capability_retains_resolved_model(monkeypatch, alignment
     assert result.status_code == 400, result.text
     item = sink.queue.get_nowait()
     assert item["model"] == model and item["outcome"] == "error"
+
+
+def test_user_history_concurrent_writers_restart_and_global_cap(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    root = tmp_path / "history"
+    a = History(root, instance="first", port=8000, cap=8192)
+    b = History(root, instance="second", port=8001, cap=8192)
+
+    def write(store, prefix):
+        for i in range(25):
+            store.append([record(f"{prefix}{i}")], 1)
+            store.event("runner_ready")
+
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(write, a, "a"), pool.submit(write, b, "b")]
+        for future in futures:
+            future.result()
+    rows = list(a.records())
+    assert len({r["seq"] for r in rows}) == len(rows)
+    assert [r["seq"] for r in rows] == sorted(r["seq"] for r in rows)
+    assert {r["port"] for r in rows} <= {8000, 8001}
+    assert all(r["instance"] in {"first", "second"} for r in rows)
+    assert json.loads(a.cursor_path.read_text()) == 50
+    assert json.loads(a.event_cursor.read_text()) == 50
+    assert sum(p.stat().st_size for p in root.rglob("*") if p.is_file()) <= 8192
+    resumed = History(root, instance="third", port=8002)
+    resumed.append([record("restart")], 2)
+    assert list(resumed.records())[-1]["seq"] == 51
+    assert resumed.event("runner_ready")["id"] == 51
+    assert (
+        resumed.api("GET", "/rapid/v1/log?port=8002", {})[1][0]["instance"] == "third"
+    )
+    assert resumed.api("GET", "/rapid/v1/log?port=8003", {})[1] == []
+    # Settings are per user, including servers already running.
+    a.api("PUT", "/rapid/v1/log/settings", {"enabled": False, "max_bytes": 4096})
+    b.append([record("disabled-on-other-server")], 1)
+    assert all(r["request_id"] != "disabled-on-other-server" for r in b.records())
+    assert sum(p.stat().st_size for p in root.rglob("*") if p.is_file()) <= 4096
+
+
+def test_legacy_cleanup_only_recognized_private_owned_directories(history):
+    import os
+
+    valid = history.root / "i-abcd1234"
+    valid.mkdir(mode=0o700)
+    (valid / "calls.jsonl").write_text("old")
+    retained = []
+    for name, mode, filename in [
+        ("i-abcdefgh", 0o755, "calls.jsonl"),
+        ("i-12345678", 0o700, "other"),
+        ("i-short", 0o700, "calls.jsonl"),
+        ("i-symlink1", 0o700, "calls.jsonl"),
+    ]:
+        path = history.root / name
+        path.mkdir(mode=mode)
+        os.chmod(path, mode)
+        if name == "i-symlink1":
+            (path / filename).symlink_to(history.root / "outside")
+        else:
+            (path / filename).touch()
+        retained.append(path)
+    (history.root / "i-link0000").symlink_to(valid, target_is_directory=True)
+    history.cleanup_legacy()
+    assert not valid.exists()
+    assert all(p.exists() for p in retained)
+    assert (history.root / "i-link0000").is_symlink()
+
+
+def test_offline_log_read_clear_and_empty_without_creating_files(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(commands, "connection", Mock(side_effect=OSError("offline")))
+    monkeypatch.setattr(commands, "discovery_root", lambda: tmp_path / "control")
+    args = SimpleNamespace(command="log", port=None, limit=100, json=True, follow=False)
+    assert commands.history_command(args) == 0
+    assert not (tmp_path / "history").exists()
+    store = History(tmp_path / "history", instance="a", port=8080)
+    store.append([record("before")], 1)
+    before = {
+        p: (p.stat().st_mtime_ns, p.read_bytes())
+        for p in store.root.rglob("*")
+        if p.is_file()
+    }
+    assert commands.history_command(args) == 0
+    assert json.loads(capsys.readouterr().out)["request_id"] == "before"
+    assert before == {
+        p: (p.stat().st_mtime_ns, p.read_bytes())
+        for p in store.root.rglob("*")
+        if p.is_file()
+    }
+    args.action = "clear"
+    assert commands.history_command(args) == 0
+    assert list(store.records()) == []
+    store.append([record("after")], 1)
+    assert list(store.records())[0]["seq"] == 2
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/healthz",
+        "/ready",
+        "/startup",
+        "/rapid/v1/status",
+        "/rapid/v1/log",
+        "/rapid/v1/events",
+        "/v1/models",
+        "/v1/models/",
+        "/v1/scanner",
+        "/.env",
+    ],
+)
+def test_noise_is_not_recorded(path):
+    app = FastAPI()
+    for known in [
+        "/healthz",
+        "/ready",
+        "/startup",
+        "/rapid/v1/status",
+        "/rapid/v1/log",
+        "/rapid/v1/events",
+        "/v1/models",
+        "/v1/models/",
+    ]:
+        app.get(known)(lambda: {})
+    sink = observer.Delivery()
+    with TestClient(observer.CallObserver(app, sink)) as client:
+        client.get(path)
+    assert sink.queue.empty()
+    assert sink.skipped == 1
+
+
+def test_table_local_time_nulls_short_model_and_follow(history, monkeypatch, capsys):
+    import time
+    from datetime import datetime
+
+    item = record() | {
+        "ts": time.time(),
+        "model": "organization/model",
+        "ttft_ms": 2.9,
+        "duration_ms": 7.8,
+    }
+    row = commands.table_row(item, "log")
+    assert datetime.fromtimestamp(item["ts"]).strftime("%H:%M:%S") in row
+    assert "organization" not in row and "model" in row
+    assert "3→2" in row and row.endswith("      2        7")
+    assert "1970-01-01" in commands.table_row(item | {"ts": 86400}, "log")
+    assert commands.table_row({"ts": None}, "log").split() == ["-"] * 6 + [
+        "-→-",
+        "-",
+        "-",
+    ]
+    assert "runner_ready" in commands.table_row(
+        {"ts": time.time(), "event": "runner_ready", "port": 8000}, "events"
+    )
+    history.append([item | {"request_id": "a"}, item | {"request_id": "b"}], 1)
+    monkeypatch.setattr(
+        commands, "connection", lambda _: {"socket": "s", "secret": "x"}
+    )
+    monkeypatch.setattr(
+        commands, "request", lambda *a, target: history.api("GET", target, {})[1]
+    )
+    monkeypatch.setattr(commands.time, "sleep", Mock(side_effect=KeyboardInterrupt))
+    args = SimpleNamespace(command="log", port=8000, json=False, follow=True, limit=1)
+    # Explicit port filters; matching records follow in persisted sequence order.
+    args.port = None
+    assert commands.history_command(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("TIME") and len(lines) == 3
+    assert all("3→2" in line for line in lines[1:])
+
+
+def test_history_rejects_symlinks_and_foreign_files(tmp_path, monkeypatch):
+    import os
+
+    from rapid_mlx.control.history import read_private
+
+    outside = tmp_path / "outside"
+    outside.write_text("secret")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    with pytest.raises(OSError):
+        read_private(link)
+    root = tmp_path / "history"
+    root.mkdir(mode=0o755)
+    with pytest.raises(OSError, match="0700"):
+        History(root, readonly=True)
+    root.chmod(0o700)
+    (root / "history.lock").symlink_to(outside)
+    with pytest.raises(OSError):
+        History(root)
+    (root / "history.lock").unlink()
+    monkeypatch.setattr(os, "getuid", lambda: -1)
+    with pytest.raises(OSError):
+        read_private(outside)
+    with pytest.raises(OSError):
+        History(root, readonly=True)
+
+
+def test_oversized_event_tail_and_restart_cursor(history):
+    first = history.event("x" * 10000)
+    assert not history.events
+    resumed = History(history.root, cap=4096)
+    assert resumed.event("runner_ready")["id"] == first["id"] + 1
+
+
+def test_existing_store_rejects_foreign_lock(history, monkeypatch):
+    import os
+
+    monkeypatch.setattr(os, "getuid", lambda: -1)
+    with pytest.raises(OSError, match="lock"), history.locked():
+        pass
+
+
+async def test_supervisor_open_uses_shared_user_history(tmp_path, monkeypatch):
+    from rapid_mlx.control import supervisor as module
+
+    runtime = tmp_path / "runtime"
+    index = tmp_path / "user" / "control"
+    monkeypatch.setattr(module, "runtime_root", lambda: runtime)
+    monkeypatch.setattr(module, "discovery_root", lambda: index)
+
+    async def listen(handler, *, path, limit):
+        from pathlib import Path
+
+        Path(path).touch()
+        return SimpleNamespace(close=Mock(), wait_closed=AsyncMock())
+
+    monkeypatch.setattr(module.asyncio, "start_unix_server", listen)
+    stores = []
+    for port in (8000, 8001):
+        supervisor = Supervisor([], port=port, mode="lazy")
+        await supervisor.open()
+        try:
+            assert supervisor.history is not None
+            assert supervisor.history.root == index.parent / "history"
+            supervisor.history.append([record(str(port))], 1)
+            stores.append(supervisor.history)
+        finally:
+            supervisor.server.close()
+            await supervisor.server.wait_closed()
+    rows = list(stores[-1].records())
+    assert [r["port"] for r in rows] == [8000, 8001]
+    assert len({r["instance"] for r in rows}) == 2
+    assert not list(stores[-1].root.glob("i-*"))

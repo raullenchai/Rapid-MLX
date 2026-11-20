@@ -92,13 +92,15 @@ runner 停着或模型加载中（启动探测返回 503，`_startup_probe.py:46
 
 ### P2 实现约定（CLI / engine）
 
-- 监管 runner 的 Uvicorn `Config.load()` 完成后安装最外层观察器；桌面、单进程不安装。观察器不包装 `receive`，只观察 `send` 的状态、首个非空 body、完成，并在 `finally` 中投递一次。内部重入复用 scope 标记。路由保存模板（无法匹配时为 `<unmatched>`），不保存原始 URL、查询串或请求头集合。
-- 记录字段：`ts`（Unix 秒）、服务端生成的 `request_id`、`client`（真实 peer + 最多 128 字节的 X-Rapid-Client / User-Agent）、`app`、`model`、`route`、`http_status`、`outcome`、`prompt_tokens`、`completion_tokens`、`ttft_ms`、`duration_ms`。`app` 恒为 null；客户端 app 头不可信。适配器通过 `scope["state"]["rapid_call"]` 的共享字典写标量，ContextVar 仅传递该字典给现有异步生成器/子任务；复用已有计数。音频无 token 计数时为 null。首 body 的时间可被引擎已有 TTFT 指标覆盖。
+- 监管 runner 的 Uvicorn `Config.load()` 完成后安装最外层观察器；桌面、单进程不安装。观察器不包装 `receive`，只观察 `send` 的状态、首个非空 body、完成，并在 `finally` 中投递一次。内部重入复用 scope 标记。路由保存已匹配模板；仅记录 `/v1/*` API，排除 `/v1/models`、health/startup/readiness、`/rapid/v1/*` 及未匹配请求；status.log.skipped 显示本实例跳过数，不保存原始 URL、查询串或请求头集合。
+- 记录字段：`ts`（Unix 秒）、服务端生成的 `request_id`、`client`（真实 peer + 最多 128 字节的 X-Rapid-Client / User-Agent）、`app`、`model`、`route`、`http_status`、`outcome`、`prompt_tokens`、`completion_tokens`、`ttft_ms`、`duration_ms`、`instance`、`port`。`app` 恒为 null；客户端 app 头不可信。适配器通过 `scope["state"]["rapid_call"]` 的共享字典写标量，ContextVar 仅传递该字典给现有异步生成器/子任务；复用已有计数。音频无 token 计数时为 null。首 body 的时间可被引擎已有 TTFT 指标覆盖。
 - runner 热路径仅构建小字典、`put_nowait`，无 JSON/磁盘/socket I/O。1024 条有界队列，后台线程每批最多 8 条通过带启动密钥的 `/records` 投递；满队列或投递失败丢弃，累计数随下一次后台报告送达。SIGKILL 前尚未报告的记录和 drop 数不能保证保留。
-- 控制进程独占 `~/.rapid-mlx/history/<instance>/calls.jsonl` 和一个轮转文件。目录 0700、文件 0600；总上限默认 50 MiB，settings 的 `max_bytes` 可设 4096 至 52428800；缩小立即重新限额。保留窗口内按 request_id 去重（含重读落盘文件）。DELETE 清空保留窗口及其去重集合。
-- GET log 返回最新优先数组，默认 100、最大 1000；`since` 为排他的 Unix 秒时间戳，client/model/route/outcome 精确匹配。GET/PUT settings 支持 `enabled` 和 `max_bytes`；设置落在用户控制目录，供后续实例沿用。`--no-call-log` 对本次实例强制关闭。status 的 `log` 返回 enabled / records / bytes / dropped（runner 累计 + 控制侧拒绝）。
+- 用户共享 `~/.rapid-mlx/history/calls.jsonl`、`calls.1.jsonl`、`events.json`；每条记录带 supervisor 赋值的 instance/port。目录 0700、文件 0600，打开文件使用 O_NOFOLLOW。一个持久 `history.lock` 的 `fcntl.flock` 串行化每批追加、序列分配、轮转、settings 更新和清空；离线读取只读打开文件并持有共享锁，在线读取与写入同样锁定，避免并发服务器轮转/清空导致损坏或重复序号。锁只在控制进程/CLI 使用，runner 热路径不做文件 I/O。
+- 全用户总预算默认 50 MiB，`max_bytes` 可设 4096 至 52428800；预留 512 字节给序列/settings 元数据，剩余预算 3/4 给两个等额调用文件，1/4 给 events 尾部（同时最多 1000 条）；缩小立即裁剪。预算约束所有本实现管理的保留文件；原子替换时短暂存在的临时副本除外。`calls.sequence.json` 和 `events.sequence.json` 持久保存单调游标，清空/轮转/重启不重置。保留窗口按 request_id 去重，DELETE 清空全用户调用窗口及去重集合。
+- 启动时丢弃旧实例历史，仅删除 owned、0700、名称匹配 `i-[a-z0-9_]{8}`、内容仅含旧四个历史文件名且均为 owned regular file 的目录；symlink、其他权限/名称/内容全部保留且忽略，不递归删除。旧窗口不会迁移到新日志。
+- GET log 返回最新优先数组，默认 100、最大 1000；`since` 为排他的 Unix 秒时间戳，client/model/route/outcome 精确匹配。GET/PUT settings 支持 `enabled` 和 `max_bytes`；设置落在用户控制目录，供后续实例沿用。`--no-call-log` 对本次实例强制关闭。status 的 `log` 返回 enabled / records / bytes / dropped / skipped（runner 累计 + 控制侧拒绝）。
 - 事件包括 runner_starting / runner_ready / runner_exited / runner_crashed / runner_restarting / runner_stopped、model_loaded / model_unloaded 和 log_settings_changed。模型事件挂在 residency 索引增删路径，覆盖加载、替换、TTL/LRU 和卸载；不把 app/job 事件提前加入 P2。事件最多保留 1000 条，最近 N 条和递增 id 一起落盘，runner 重启后延续。
-- SSE 尊重 Last-Event-ID，每秒 heartbeat comment；每个客户端最多持有一个有界事件快照，没有增长队列。发送阻塞超过 5 秒或客户端游标落后于保留窗口时断开。客户端重连可续读仍保留的 id。CLI `rapid-mlx log [--follow] [--limit N] [--json]`、`log clear`、`events [--follow]` 直接连私有 socket（follow 轮询），不依赖 runner 的公开端口；可用 `--port` 选实例。
+- SSE 尊重 Last-Event-ID，每秒 heartbeat comment；每个客户端最多持有一个有界事件快照，没有增长队列。发送阻塞超过 5 秒或客户端游标落后于保留窗口时断开。客户端重连可续读仍保留的 id。CLI `rapid-mlx log [--follow] [--limit N] [--json]`、`log clear`、`events [--follow]` 优先连私有 socket，无监管进程时直接只读打开共享文件（不创建目录/锁/settings）；`log clear` 离线也可用，同样加写锁。`--port` 选择控制连接并过滤调用记录；clear 始终清空全用户调用历史。人类输出为对齐表、旧→新顺序：TIME（本地 HH:MM:SS，非今天含日期）、CLIENT、MODEL（短名）、ROUTE、STATUS、OUTCOME、TOKENS（in→out）、TTFT ms、TOTAL ms；null 用 `-`，毫秒取整数。events 为 TIME EVENT DETAILS；`--json` 保留完整元数据。follow 使用相同格式，每秒轮询，无亚秒空闲定时器，调用记录用 seq 分页，满页立即继续读。
 - P2 不支持内容采集、可信 app 归属、统一 jobs、优先级、Desktop 展示。P5 才能增加经验证的 app token 和内容作用域；当前不得根据任意客户端头开启内容记录。
 
 ## 6. 认证与安全（astra P1 #2）

@@ -137,6 +137,9 @@ class Supervisor:
                             self.history.append(
                                 data["records"], data["pid"], data["dropped"]
                             )
+                            self.history.runner_skipped[data["pid"]] = int(
+                                data.get("skipped", 0)
+                            )
                             for event in data.get("events", []):
                                 if event.get("event") in (
                                     "model_loaded",
@@ -163,6 +166,8 @@ class Supervisor:
                             if not 1 <= port <= 65535:
                                 raise ValueError("invalid port")
                             self.port = port
+                            if self.history is not None:
+                                self.history.port = port
                             if not self.stopping.is_set() and data.get("ready", True):
                                 self.state = "ready"
                                 self.emit("runner_ready")
@@ -219,9 +224,12 @@ class Supervisor:
         with self.best_effort("history setup"):
             history_root = private_directory(index.parent / "history")
             self.history = History(
-                private_directory(history_root / self.directory.name),
+                history_root,
+                instance=self.directory.name,
+                port=self.port,
                 disabled="--no-call-log" in self.argv,
             )
+            self.history.cleanup_legacy()
         path = self.directory / "control.sock"
         self.server = await asyncio.start_unix_server(
             self.handle, path=str(path), limit=MAX_BODY
