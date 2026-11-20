@@ -409,6 +409,19 @@ async def test_parent_record_and_model_reports(history):
 
     assert b"200" in await call("/records", {"records": [record()], "dropped": 2})
     assert supervisor.status()["log"]["records"] == 1
+    assert b"200" in await call(
+        "/records",
+        {
+            "records": [],
+            "dropped": 2,
+            "events": [
+                {"event": "model_loaded", "model": "tiny"},
+                {"event": "forged", "model": "ignored"},
+                {"event": "model_unloaded", "model": "tiny"},
+            ],
+        },
+    )
+    assert [e["event"] for e in history.events] == ["model_loaded", "model_unloaded"]
     assert b"409" in await call("/records", {"records": [], "dropped": 0}, pid=43)
     for event in ("model_loaded", "model_unloaded", "bound"):
         assert b"200" in await call(
@@ -804,10 +817,10 @@ def test_event_disk_failure_is_best_effort(history, monkeypatch):
     assert history.dropped == 1
 
 
-@pytest.mark.parametrize("route", ["chat", "completions"])
+@pytest.mark.parametrize("route", ["chat", "completions", "anthropic", "responses"])
 def test_real_stream_explicit_cancellation(route):
     from rapid_mlx.config import reset_config
-    from rapid_mlx.routes import chat, completions
+    from rapid_mlx.routes import anthropic, chat, completions, responses
     from tests.test_cancellation_protocol import (
         _CancelledChatEngine,
         _CancelledCompletionEngine,
@@ -816,7 +829,7 @@ def test_real_stream_explicit_cancellation(route):
     cfg = reset_config()
     cfg.engine = (
         _CancelledChatEngine(before_first_token=False)
-        if route == "chat"
+        if route != "completions"
         else _CancelledCompletionEngine()
     )
     cfg.engine.build_prompt = lambda *a, **kw: "prompt"
@@ -824,16 +837,30 @@ def test_real_stream_explicit_cancellation(route):
     cfg.model_registry = None
     cfg.no_thinking = True
     app = FastAPI()
-    app.include_router(chat.router if route == "chat" else completions.router)
+    app.include_router(
+        {
+            "chat": chat,
+            "completions": completions,
+            "anthropic": anthropic,
+            "responses": responses,
+        }[route].router
+    )
     sink = observer.Delivery()
-    payload = {"model": "test-model", "stream": True}
-    if route == "chat":
+    payload = {"model": "test-model", "stream": True, "max_tokens": 32}
+    if route in ("chat", "anthropic"):
         payload["messages"] = [{"role": "user", "content": "hi"}]
+    elif route == "responses":
+        payload["input"] = "hi"
     else:
         payload["prompt"] = "hi"
     with TestClient(observer.CallObserver(app, sink)) as client:
         result = client.post(
-            "/v1/chat/completions" if route == "chat" else "/v1/completions",
+            {
+                "chat": "/v1/chat/completions",
+                "anthropic": "/v1/messages",
+                "responses": "/v1/responses",
+                "completions": "/v1/completions",
+            }[route],
             json=payload,
         )
     assert result.status_code == 200
@@ -943,3 +970,297 @@ async def test_history_setup_failure_does_not_prevent_control_startup(
     )
     await supervisor.handle(reader, writer)
     assert writer.write.call_args.args[0].startswith(b"HTTP/1.1 503")
+
+
+async def test_residency_does_not_wait_for_blocked_control_socket(monkeypatch):
+    import threading
+    import time
+
+    from rapid_mlx.control import protocol
+    from tests.test_resident_models import manager_fixture
+
+    entered = threading.Event()
+    release = threading.Event()
+    payloads = []
+
+    class BlockedSocket:
+        def __init__(self, path):
+            pass
+
+        def request(self, method, target, *, body, headers):
+            payloads.append(json.loads(body))
+            entered.set()
+            assert release.wait(2)
+
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda _: b"{}")
+
+        def close(self):
+            pass
+
+    sink = observer.Delivery(capacity=2)
+    monkeypatch.setattr(observer, "delivery", lambda: sink)
+    monkeypatch.setattr(protocol, "UnixConnection", BlockedSocket)
+    monkeypatch.setenv(RUNNER_ENV, "1")
+    monkeypatch.setenv(SOCKET_ENV, "/fake/control.sock")
+    monkeypatch.setenv(SECRET_ENV, "private")
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
+    sink.thread.start()
+    try:
+        manager, _, _, _ = manager_fixture()
+        assert await asyncio.to_thread(entered.wait, 1)
+        # The first report is now stuck inside the fake socket. Neither the
+        # residency lock nor the event loop may depend on that thread.
+        beats = []
+        loop = asyncio.get_running_loop()
+        loop.call_soon(lambda: beats.append(time.monotonic()))
+        started = time.monotonic()
+        await manager.load("secondary", estimated_bytes=1)
+        await manager.unload("secondary")
+        await asyncio.sleep(0)
+        assert beats and beats[0] - started < 0.1
+        assert time.monotonic() - started < 0.1
+        # A saturated control plane drops and counts rather than waiting.
+        observer.residency_event("model_loaded", model="overflow")
+        assert sink.queue.qsize() == 2 and sink.dropped == 1
+    finally:
+        release.set()
+        sink.close()
+        sink.thread.join(1)
+    events = [event for payload in payloads for event in payload["events"]]
+    assert [e["event"] for e in events] == [
+        "model_loaded",
+        "model_loaded",
+        "model_unloaded",
+    ]
+    assert all(payload["records"] == [] for payload in payloads)
+    monkeypatch.delenv(RUNNER_ENV)
+    observer.residency_event("model_loaded", model="standalone")
+    assert sink.queue.empty()
+
+
+def test_shrink_enforces_each_file_even_below_total_cap(tmp_path):
+    mib = 1024 * 1024
+    history = History(tmp_path / "instance")
+
+    # Valid metadata rows with exactly the reviewed 25 MiB + 1 MiB sizes.
+    def row(seq):
+        item = record(str(seq)) | {"seq": seq}
+        encoded = json.dumps(item)
+        return encoded + " " * (1024 - len(encoded) - 1) + "\n"
+
+    history.old.write_text("".join(row(i) for i in range(25 * 1024)))
+    history.logs.write_text("".join(row(i) for i in range(25 * 1024, 26 * 1024)))
+    history.call_sequence = 26 * 1024
+    assert history.status()["bytes"] == 26 * mib
+    history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 30 * mib})
+    assert history.old.stat().st_size == 15 * mib
+    assert history.logs.stat().st_size == mib
+    retained = list(history.records())
+    assert retained[0]["seq"] == 10 * 1024
+    assert retained[-1]["seq"] == 26 * 1024 - 1
+    # Growth up to the active-file bound cannot exceed the new total cap.
+    for i in range(40000, 40100):
+        history.append([record(str(i))], 1)
+    assert history.status()["bytes"] <= 30 * mib
+
+
+def test_sequence_pagination_survives_ties_rollback_clear_and_restart(history):
+    history.settings["max_bytes"] = 50000
+    for i, ts in enumerate([3, 3, 2, 1, 4, 0, 0]):
+        history.append([record(str(i)) | {"ts": ts, "seq": 999999}], 1)
+    cursor = 0
+    seen = []
+    for _ in range(5):
+        status, page = history.api("GET", f"/rapid/v1/log?after={cursor}&limit=2", {})
+        assert status == 200
+        seen.extend(item["request_id"] for item in page)
+        if page:
+            cursor = page[-1]["seq"]
+    assert seen == [str(i) for i in range(7)]
+    assert cursor == 7
+    restarted = History(history.root)
+    assert [r["seq"] for r in restarted.records()] == list(range(1, 8))
+    restarted.api("DELETE", "/rapid/v1/log", {})
+    restarted = History(history.root)
+    restarted.append([record("next")], 1)
+    assert restarted.api("GET", "/rapid/v1/log?after=7", {})[1][0]["seq"] == 8
+
+
+def test_legacy_records_receive_stable_cursors(history):
+    history.old.write_text(json.dumps(record("old")) + "\n")
+    history.logs.write_text(json.dumps(record("active")) + "\n")
+    migrated = History(history.root)
+    assert [r["seq"] for r in migrated.records()] == [1, 2]
+    assert [r["seq"] for r in History(history.root).records()] == [1, 2]
+
+
+def test_follow_drains_pages_before_polling(history, monkeypatch, capsys):
+    history.settings["max_bytes"] = 50000
+
+    def append(start, stop):
+        for i in range(start, stop):
+            history.append([record(str(i)) | {"ts": 7 - i}], 1)
+
+    append(0, 7)
+    monkeypatch.setattr(
+        commands, "connection", lambda _: {"socket": "fake", "secret": "s"}
+    )
+    targets = []
+
+    def request(*args, target):
+        targets.append(target)
+        return history.api("GET", target, {})[1]
+
+    sleeps = []
+
+    def sleep(_):
+        sleeps.append(len(targets))
+        if len(sleeps) == 1:
+            append(7, 14)  # More than a page arrives between polls, with older times.
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(commands, "request", request)
+    monkeypatch.setattr(commands.time, "sleep", sleep)
+    args = SimpleNamespace(command="log", port=None, limit=3, json=True, follow=True)
+    assert commands.history_command(args) == 0
+    assert [
+        json.loads(line)["request_id"] for line in capsys.readouterr().out.splitlines()
+    ] == [str(i) for i in range(14)]
+    assert sleeps == [3, 6]
+    assert all("after=" in target for target in targets)
+
+
+@pytest.mark.parametrize("route", ["chat", "anthropic", "responses"])
+@pytest.mark.parametrize("failure", ["window", "forced_tool", "tool_schema"])
+def test_wire_errors_mark_call_failed(route, failure):
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.routes import anthropic, chat, responses
+    from tests.test_stream_include_usage_honored import _PlainChatEngine
+
+    class Engine(_PlainChatEngine):
+        supports_tool_calls = True
+
+        async def stream_chat(self, *args, **kwargs):
+            text = (
+                '<tool_call>{"name":"lookup","arguments":{"value":"bad"}}</tool_call>'
+                if failure == "tool_schema"
+                else "answer"
+            )
+            yield GenerationOutput(
+                text=text,
+                raw_text=text,
+                new_text=text,
+                prompt_tokens=70,
+                completion_tokens=10,
+                finished=True,
+                finish_reason="length" if failure == "window" else "stop",
+            )
+
+    cfg = reset_config()
+    cfg.engine = Engine()
+    cfg.model_name = "test-model"
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.context_length = 80 if failure == "window" else None
+    if failure == "window":
+        from tests.test_context_overflow_400 import _StubTokenizer
+
+        cfg.engine.tokenizer = _StubTokenizer()
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+    }
+    function = {"name": "lookup", "parameters": schema}
+    payload = {"model": "test-model", "stream": True, "max_tokens": 10}
+    if route == "responses":
+        payload["input"] = "hi"
+        path = "/v1/responses"
+    else:
+        payload["messages"] = [{"role": "user", "content": "hi"}]
+        path = "/v1/messages" if route == "anthropic" else "/v1/chat/completions"
+    if failure != "window":
+        if route == "anthropic":
+            payload["tools"] = [{"name": "lookup", "input_schema": schema}]
+            payload["tool_choice"] = {"type": "tool", "name": "lookup"}
+        else:
+            payload["tools"] = [{"type": "function", "function": function}]
+            payload["tool_choice"] = {
+                "type": "function",
+                "function": {"name": "lookup"},
+            }
+    app = FastAPI()
+    app.include_router(
+        {"chat": chat, "anthropic": anthropic, "responses": responses}[route].router
+    )
+    sink = observer.Delivery()
+    with TestClient(observer.CallObserver(app, sink)) as client:
+        result = client.post(path, json=payload)
+    assert result.status_code == 200, result.text
+    assert (
+        "event: response.failed"
+        if route == "responses"
+        else "event: error"
+        if route == "anthropic"
+        else '"error"'
+    ) in result.text
+    item = sink.queue.get_nowait()
+    assert (item["http_status"], item["outcome"]) == (200, "error"), result.text
+    assert sink.queue.empty()
+
+
+def test_strict_stream_buffer_overflow_logs_error(monkeypatch):
+    from tests.test_response_format_json_schema_strict import (
+        _Engine,
+        _make_client,
+        _payload,
+    )
+
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "8")
+    app = _make_client(
+        _Engine(supports_guided=False, chat_text='{"value":42}' * 50)
+    ).app
+    sink = observer.Delivery()
+    with TestClient(observer.CallObserver(app, sink)) as client:
+        result = client.post(
+            "/v1/chat/completions", json=_payload(strict=True, stream=True)
+        )
+    assert result.status_code == 200, result.text
+    assert "buffer_overflow" in result.text
+    item = sink.queue.get_nowait()
+    assert item["http_status"] == 200 and item["outcome"] == "error"
+
+
+@pytest.mark.parametrize("alignment", [False, True])
+def test_audio_rejected_capability_retains_resolved_model(monkeypatch, alignment):
+    from rapid_mlx.audio import probe
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import audio
+
+    reset_config()
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    model = (
+        "mlx-community/whisper-tiny"
+        if alignment
+        else "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+    )
+    app = FastAPI()
+    app.include_router(audio.router)
+    sink = observer.Delivery()
+    data = {"model": model}
+    if alignment:
+        data["text"] = "hi"
+    with TestClient(observer.CallObserver(app, sink)) as client:
+        result = client.post(
+            "/v1/audio/transcriptions",
+            data=data,
+            files={"file": ("sample.wav", b"invalid", "audio/wav")},
+        )
+    assert result.status_code == 400, result.text
+    item = sink.queue.get_nowait()
+    assert item["model"] == model and item["outcome"] == "error"

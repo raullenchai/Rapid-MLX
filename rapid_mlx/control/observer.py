@@ -68,12 +68,19 @@ class Delivery:
         self.pending.set()
 
     def flush(self, batch):
+        events = [item for item in batch if "event" in item]
+        records = [item for item in batch if "event" not in item]
         try:
             request(
                 os.environ[SOCKET_ENV],
                 os.environ[SECRET_ENV],
                 "POST",
-                {"pid": os.getpid(), "records": batch, "dropped": self.dropped},
+                {
+                    "pid": os.getpid(),
+                    "records": records,
+                    "events": events,
+                    "dropped": self.dropped,
+                },
                 target="/records",
             )
         except (OSError, ValueError, TypeError, KeyError, http.client.HTTPException):
@@ -120,6 +127,12 @@ def delivery():
         _delivery.thread.start()
         atexit.register(_delivery.close)
     return _delivery
+
+
+def residency_event(event, *, model):
+    """Bounded, nonblocking delivery from residency's lock-held mutations."""
+    if os.environ.get(RUNNER_ENV) == "1":
+        delivery().enqueue({"event": event, "model": model})
 
 
 class CallObserver:

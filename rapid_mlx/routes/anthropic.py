@@ -3017,6 +3017,7 @@ async def _stream_anthropic_messages(
                 ),
             },
         }
+        call_metadata(outcome="error")
         yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
         return
 
@@ -3114,6 +3115,7 @@ async def _stream_anthropic_messages(
                 "message": tool_validation_error,
             },
         }
+        call_metadata(outcome="error")
         yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
     if tool_calls:
         for i, tc in enumerate(tool_calls):

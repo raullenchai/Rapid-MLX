@@ -137,6 +137,14 @@ class Supervisor:
                             self.history.append(
                                 data["records"], data["pid"], data["dropped"]
                             )
+                            for event in data.get("events", []):
+                                if event.get("event") in (
+                                    "model_loaded",
+                                    "model_unloaded",
+                                ):
+                                    self.emit(
+                                        event["event"], model=str(event["model"])[:256]
+                                    )
                             code, result = 200, {}
                 elif target.startswith("/rapid/v1/") and self.history:
                     data = (

@@ -54,6 +54,27 @@ class History:
         if self.event_path.exists():
             self.events.extend(json.loads(self.event_path.read_text()))
         self.sequence = self.events[-1]["id"] if self.events else 0
+        self.cursor_path = root / "calls.sequence.json"
+        self.call_sequence = (
+            json.loads(self.cursor_path.read_text()) if self.cursor_path.exists() else 0
+        )
+        # Upgrade retained records once; cursors belong to the parent, never the runner.
+        for path in (self.old, self.logs):
+            if path.exists():
+                items = [json.loads(line) for line in path.read_text().splitlines()]
+                upgraded = False
+                for item in items:
+                    if "seq" not in item:
+                        self.call_sequence += 1
+                        item["seq"] = self.call_sequence
+                        upgraded = True
+                    else:
+                        self.call_sequence = max(self.call_sequence, item["seq"])
+                if upgraded:
+                    write_private(self.cursor_path, json.dumps(self.call_sequence))
+                    write_private(
+                        path, "".join(json.dumps(item) + "\n" for item in items)
+                    )
         self.seen = {r["request_id"] for r in self.records()}
         self.dropped = 0
         self.runner_dropped = {}
@@ -104,6 +125,7 @@ class History:
             ):
                 if type(item[key]) not in (int, float):
                     item[key] = None
+            item["seq"] = self.call_sequence + 1
             line = json.dumps(item, allow_nan=False) + "\n"
             half = self.settings["max_bytes"] // 2
             if len(line.encode()) > half:
@@ -115,6 +137,8 @@ class History:
             ):
                 self.logs.replace(self.old)
                 self.seen = {r["request_id"] for r in self.records()}
+            self.call_sequence = item["seq"]
+            write_private(self.cursor_path, json.dumps(self.call_sequence))
             fd = os.open(
                 self.logs, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600
             )
@@ -150,10 +174,19 @@ class History:
                     raise ValueError("invalid size cap")
                 self.settings.update(data)
                 write_private(self.settings_path, json.dumps(self.settings))
-                if self.status()["bytes"] > self.settings["max_bytes"]:
-                    retained = list(self.records())
-                    self.api("DELETE", "/rapid/v1/log", {})
-                    self.append(retained, 0, retain=True)
+                half = self.settings["max_bytes"] // 2
+                for path in (self.old, self.logs):
+                    if path.exists() and path.stat().st_size > half:
+                        retained = collections.deque()
+                        size = 0
+                        with path.open() as stream:
+                            for line in stream:
+                                retained.append(line)
+                                size += len(line.encode())
+                                while size > half:
+                                    size -= len(retained.popleft().encode())
+                        write_private(path, "".join(retained))
+                self.seen = {r["request_id"] for r in self.records()}
                 self.event("log_settings_changed", **self.settings)
             elif method != "GET":
                 return 404, {}
@@ -166,8 +199,11 @@ class History:
                 return 200, {}
             if method == "GET":
                 limit = max(1, min(1000, int(query.get("limit", ["100"])[0])))
+                after = int(query["after"][0]) if "after" in query else None
                 result = collections.deque(maxlen=limit)
                 for record in self.records():
+                    if after is not None and record["seq"] <= after:
+                        continue
                     if "since" in query and record["ts"] <= float(query["since"][0]):
                         continue
                     if all(
@@ -176,7 +212,11 @@ class History:
                         if k in query
                     ):
                         result.append(record)
-                return 200, list(reversed(result))
+                        if after is not None and len(result) == limit:
+                            break
+                return 200, list(result) if after is not None else list(
+                    reversed(result)
+                )
         if url.path == CONTROL_PREFIX + "/events" and method == "GET":
             since = int(query.get("since", ["0"])[0])
             return 200, [e for e in self.events if e["id"] > since]

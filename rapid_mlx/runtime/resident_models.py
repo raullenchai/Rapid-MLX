@@ -917,9 +917,9 @@ class ResidentModelManager:
     def _index_record(self, record: ResidencyRecord) -> None:
         canonical = record.model_id
         self._records[canonical] = record
-        from rapid_mlx.control.protocol import report
+        from rapid_mlx.control.observer import residency_event
 
-        report("model_loaded", model=canonical)
+        residency_event("model_loaded", model=canonical)
         self._index[canonical] = canonical
         self._index[record.entry.model_path] = canonical
         for alias in record.entry.aliases:
@@ -929,9 +929,9 @@ class ResidentModelManager:
         record = self._records.pop(canonical, None)
         if record is None:
             return None
-        from rapid_mlx.control.protocol import report
+        from rapid_mlx.control.observer import residency_event
 
-        report("model_unloaded", model=canonical)
+        residency_event("model_unloaded", model=canonical)
         for key in [key for key, value in self._index.items() if value == canonical]:
             self._index.pop(key, None)
         return record

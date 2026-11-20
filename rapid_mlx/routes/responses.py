@@ -1634,6 +1634,7 @@ _RESPONSES_INPUT_400_MARKERS = (
 
 def _record_nonstream_failure(engine, request: Request, error_class: str) -> None:
     """Count one failed non-streaming /v1/responses request under a class."""
+    call_metadata(outcome="error")
     from rapid_mlx.telemetry import inference as _telemetry_inference
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
@@ -2641,6 +2642,7 @@ def _responses_context_failure_event(
     initial_response: dict, error: ContextLengthExceeded
 ) -> dict:
     """Build the terminal context-overflow event for Responses streams."""
+    call_metadata(outcome="error")
     return {
         "type": "response.failed",
         "response": {
@@ -3079,6 +3081,12 @@ def _responses_resequence_event(event: str, sequence: list[int]) -> str:
         event_type = data.get("type")
         if not isinstance(event_type, str):
             return event
+        if event_type == "response.failed":
+            call_metadata(
+                outcome="cancelled"
+                if data["response"]["error"]["code"] == "request_cancelled"
+                else "error"
+            )
         data["sequence_number"] = sequence[0]
         sequence[0] += 1
         return _sse(event_type, data)
@@ -3189,6 +3197,12 @@ async def _stream_responses(
         heartbeat_state["sequence_number"] = _seq
 
     def _emit(event: str, data: dict) -> str:
+        if event == "response.failed" and deferred_failure is None:
+            call_metadata(
+                outcome="cancelled"
+                if data["response"]["error"]["code"] == "request_cancelled"
+                else "error"
+            )
         data["sequence_number"] = _seq[0]
         _seq[0] += 1
         return _sse(event, data)

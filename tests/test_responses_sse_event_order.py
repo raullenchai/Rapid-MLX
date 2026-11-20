@@ -13,6 +13,7 @@ event, and consumers (Codex CLI, openai-agents, etc.) rely on the
 ordering to drive their own UI / control-flow state machines.
 """
 
+import contextvars
 import json
 import sys
 import types
@@ -84,6 +85,7 @@ _IMPORTED = (
     "rapid_mlx.config.server_config",
     "rapid_mlx.engine",
     "rapid_mlx.engine.base",
+    "rapid_mlx.engine.batched",
     "rapid_mlx.middleware.auth",
     "rapid_mlx.service.helpers",
     "rapid_mlx.routes.responses",
@@ -93,6 +95,7 @@ _PARENT_ATTRS = (
     ("rapid_mlx", "engine"),
     ("rapid_mlx.config", "server_config"),
     ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.engine", "batched"),
     ("rapid_mlx.middleware", "auth"),
     ("rapid_mlx.service", "helpers"),
     ("rapid_mlx.routes", "responses"),
@@ -111,6 +114,13 @@ def _install_lightweight_engine_modules(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
     monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
+    # Stream preflight binds a task to the current admission owner. The fake
+    # engine has no owner, but must expose the same context import boundary.
+    batched_mod = types.ModuleType("rapid_mlx.engine.batched")
+    batched_mod._admission_engine_context = contextvars.ContextVar(
+        "admission", default=None
+    )
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", batched_mod)
 
 
 @pytest.fixture

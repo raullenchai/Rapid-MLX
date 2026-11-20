@@ -77,7 +77,7 @@ rapid-mlx serve [model] [现有参数]
 | 组 | 接口 | 说明 |
 |---|---|---|
 | 状态 | `GET /rapid/v1/status` | 控制面版本、runner（pid、启动时间、重启次数、状态）、apps、日志设置 |
-| 调用日志 | `GET /rapid/v1/log?since=&client=&model=&route=&outcome=&limit=`、`DELETE /rapid/v1/log`、`GET/PUT /rapid/v1/log/settings` | 一条记录：时间、request id、客户端、应用、模型、路由、状态码、prompt/completion token（runner 内部计数，取不到就记 null）、TTFT、总耗时、是否被取消。**P2 只记元数据，不记内容**；内容采集全部推迟到 P5 应用作用域，P2 没有内容开关。默认开启，可持久关闭；本地 JSONL，有大小上限、可清空 |
+| 调用日志 | `GET /rapid/v1/log?after=&since=&client=&model=&route=&outcome=&limit=`、`DELETE /rapid/v1/log`、`GET/PUT /rapid/v1/log/settings` | 一条记录：时间、request id、客户端、应用、模型、路由、状态码、prompt/completion token（runner 内部计数，取不到就记 null）、TTFT、总耗时、是否被取消。**P2 只记元数据，不记内容**；内容采集全部推迟到 P5 应用作用域，P2 没有内容开关。默认开启，可持久关闭；本地 JSONL，有大小上限、可清空 |
 | 任务 | `GET /rapid/v1/jobs`、`GET /rapid/v1/jobs/{id}`、`POST /rapid/v1/jobs/{id}/cancel`；`POST /rapid/v1/jobs` 仅供应用登记自己的长任务 | 统一视图：聚合现有 agent/cua/video runs（复用它们的取消接口，不另造），加上应用登记的任务。持久记录；runner 重启后未完成的任务标为 `interrupted`，不自动重放 |
 | 事件 | `GET /rapid/v1/events`（SSE，`Last-Event-ID` 续传，环形缓冲 + 落盘最近 N 条） | runner 启停/崩溃/重启、模型加载/卸载、任务状态、应用状态 |
 | 应用 | `GET /rapid/v1/apps`、`POST /rapid/v1/apps/{id}/start|stop|restart`、`GET /rapid/v1/apps/{id}/open` | 从 `~/.rapid-mlx/apps/` 或 `--apps-dir` 发现；`open` 走一次性码登录 |
@@ -145,3 +145,20 @@ M5 Max + 一台小 Mac，单进程（今天）vs 控制面+runner（调用日志
 2. 调用日志默认开（只元数据）还是默认关？（倾向默认开、可关）
 3. 应用目录 `~/.rapid-mlx/apps/`？
 4. 单进程退路做成内部环境变量 `RAPID_MLX_SINGLE_PROCESS=1`（不写进用户文档）是否可以？
+
+### Call-log cursors
+
+`GET /rapid/v1/log` returns the newest records first by default. Each retained
+record has a parent-assigned `seq`, which increases across rotation, cap changes,
+clearing, and reopens of the same history directory. Runner-supplied sequence values are ignored.
+`after=<seq>` returns records in ascending sequence order, up to `limit` (1–1000).
+Continue with the last returned `seq` until a page is shorter than `limit`.
+`rapid-mlx log --follow` drains these pages before polling, so bursts, timestamp
+ties, and clock rollback do not skip retained records. Retention can still remove
+records before a reader consumes them; cursors do not reserve history.
+
+Each JSONL file is bounded by half the configured byte cap. Lowering the cap
+immediately trims the oldest whole records from each oversized file. Residency
+events share the bounded, event-driven runner delivery queue with call metadata;
+a stalled control socket cannot block model load/unload. Overflow and transport
+failures count as dropped deliveries.

@@ -8169,6 +8169,7 @@ async def stream_chat_completion(
                 getattr(output, "finish_reason", None),
             )
             if _window_error is not None:
+                call_metadata(outcome="error")
                 yield (
                     "event: chat.completion.error\ndata: "
                     + json.dumps(_window_error.detail, separators=(",", ":"))
@@ -8677,6 +8678,7 @@ async def stream_chat_completion(
                     "code": "tool_choice_violation",
                 }
             }
+            call_metadata(outcome="error")
             yield f"data: {json.dumps(error)}\n\n"
             yield "data: [DONE]\n\n"
             from rapid_mlx.telemetry import inference as _telemetry_inference
@@ -9280,6 +9282,7 @@ async def stream_chat_completion_guided(
             )
 
         def _model_replacement_terminal_events() -> tuple[str, str]:
+            call_metadata(outcome="error")
             error_data = json.dumps(
                 {
                     "error": {
@@ -9411,6 +9414,7 @@ async def stream_chat_completion_guided(
                 or context_overflow_from_client_error(guided_err)
             ) or context_overflow_from_guided_limit(engine, guided_err)
             if _context_error is not None:
+                call_metadata(outcome="error")
                 yield (
                     "event: chat.completion.error\ndata: "
                     + json.dumps(_context_error.detail, separators=(",", ":"))
@@ -9483,6 +9487,7 @@ async def stream_chat_completion_guided(
                     result="failed",
                     error_class="strict_schema_violation",
                 )
+                call_metadata(outcome="error")
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -9563,6 +9568,7 @@ async def stream_chat_completion_guided(
             output.finish_reason,
         )
         if _window_error is not None:
+            call_metadata(outcome="error")
             yield (
                 "event: chat.completion.error\ndata: "
                 + json.dumps(_window_error.detail, separators=(",", ":"))
@@ -9621,6 +9627,7 @@ async def stream_chat_completion_guided(
                     result="failed",
                     error_class="strict_schema_violation",
                 )
+                call_metadata(outcome="error")
                 yield f"data: {json.dumps(_err_envelope)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -10142,6 +10149,7 @@ async def stream_chat_completion_strict_postgen(
                 **overflow_envelope,
             }
             error_payload = json.dumps(error_event, separators=(",", ":"))
+            call_metadata(outcome="error")
             yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
             if held_usage_chunk is not None:
                 yield held_usage_chunk
@@ -10225,6 +10233,7 @@ async def stream_chat_completion_strict_postgen(
             # Compact JSON encoding (no spaces) matches the SSE chunk
             # encoding used elsewhere in this module.
             error_payload = json.dumps(error_event, separators=(",", ":"))
+            call_metadata(outcome="error")
             yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
             # Codex r6 #2: preserve usage accounting on a failed
             # strict generation. Requests with
@@ -10349,6 +10358,7 @@ async def stream_chat_completion_strict_postgen(
                 }
                 try:
                     err_payload = json.dumps(err_obj, separators=(",", ":"))
+                    call_metadata(outcome="error")
                     yield (
                         "event: chat.completion.error\n"
                         + "data: "
