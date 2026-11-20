@@ -30,7 +30,12 @@ class Recipe:
     gate_up_3bit_layers: tuple[int, ...] = ()
 
     def __post_init__(self):
-        if self.name not in ("hy4-gptq-v1", "hy4-gptq-lowbit", "hy4-gptq-engram8"):
+        if self.name not in (
+            "hy4-gptq-v1",
+            "hy4-gptq-lowbit",
+            "hy4-gptq-engram8",
+            "hy4-gptq-v2",
+        ):
             raise ValueError("unknown Hy4 recipe")
         if type(self.keep_embeddings_bf16) is not bool or any(
             type(i) is not int or i < 0 for i in self.gate_up_3bit_layers
@@ -57,6 +62,10 @@ class Recipe:
                     or layer in self.gate_up_3bit_layers
                     else 2
                 )
+            if self.name == "hy4-gptq-v2":
+                from scripts.hy4_gptq_v2 import default_bits
+
+                bits = default_bits(int(name.split(".")[2]), name.split(".")[-2])
             return bits, 64, "gptq"
         if name.endswith(".multi_head_embedding.embedding.weight"):
             return (8, 32, "rtn") if self.name == "hy4-gptq-engram8" else (4, 32, "rtn")
@@ -93,6 +102,11 @@ class Hy4Adapter:
         self.recipe = recipe
         if any(i >= self.args.num_hidden_layers for i in recipe.gate_up_3bit_layers):
             raise ValueError("promoted layer outside model")
+        if any(
+            i >= self.args.num_hidden_layers or self.args.mlp_layer_types[i] != "sparse"
+            for i, _, _ in getattr(recipe, "bits_map", ())
+        ):
+            raise ValueError("bits map layer must be an existing sparse layer")
         self.reader = TensorReader(source)
         self.names = {}
         for original in self.reader.index.tensors:

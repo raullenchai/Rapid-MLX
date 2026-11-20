@@ -120,3 +120,87 @@ for passing all original builder tests:
   tests/test_deepseek_v41_gptq_fullrun.py \
   -k 'not remote_reservation_and_standalone_cli_share_lock' -q
 ```
+
+## Opt-in v2 diagnosis recipe
+
+`hy4-gptq-v2` addresses sparse expert calibration with a larger offline token
+budget, squared routing weights in the Hessian, and a width-relative low-token
+policy. It is unqualified: no full-model quality or resident-memory measurement
+is implied. The legacy v1 and Engram8 recipe fields, specifications, weighting,
+and damping policies are unchanged. Existing receipt and quality identity checks
+remain strict; modified tool hashes still invalidate an older build epoch.
+
+```bash
+"$PYTHON" -m scripts.hy4_gptq build --source "$SRC" \
+  --destination "$OUT" --slices "$TRAIN" --recipe hy4-gptq-v2 \
+  --tokens 512 --memory-limit-gb 55
+```
+
+Calibration first takes the normal high/no_think windows from all manifest
+records, then round-robins through successive contiguous windows from the same
+rendered offline records. The default budget is four times the actual v1 token
+count for this manifest and window size. `--calibration-token-budget 131072`
+sets an explicit hard budget; the final window is trimmed to fit it. Sources
+are never repeated to fill a budget. Insufficient text produces an explicit
+`source_exhausted` report. The CLI reports each manifest path's existence before
+calibration; missing sources still fail rather than silently changing the mix.
+For the local `calib-train.json`, all 26 files exist: English 9, Chinese 6,
+code 2, tools 1, multilingual 8. No sources or weights are downloaded.
+
+Router-aware adaptive top-up is not implemented. The layer-major streamer
+commits residual boundaries for a fixed window set at every layer. A new
+sequence introduced at layer N needs replay through the entire already-quantized
+prefix; replacing that window set would also invalidate committed boundary
+receipts and resume checks. V2 therefore uses the permitted fixed larger budget
+and prints layer coverage (fraction of all routed expert IDs with at least
+`--min-tokens`, default 1024), including unseen experts and whether the 98% goal
+was met. Expert counts persist in the existing layer receipts. Coverage is a
+diagnostic, not a guarantee or an adaptive stopping condition.
+
+Routing weights contribute as `w² * x xᵀ` by default, including the fitted
+intermediate activations used for down projections. Use
+`--no-routing-weight-squared` to retain linear weighting for diagnosis. Raw
+routed-token counts determine the low-token policy independently of weight mass:
+GPTQ relative damping is 0.1 at or above the input width, increases linearly to
+0.2 at half the width, and switches to RTN below half the width. Unseen experts
+also use RTN. The coverage threshold does not change this width-relative policy.
+
+The default map uses routed down Q6/g64 in every sparse layer, and gate/up
+Q6/g64 in zero-based layers 20–26. Remaining tensors follow v1, including Q4/g32
+Engram tables. `--bits-map '{"20":{"gate_proj":4,"up_proj":4}}'` or
+`--bits-map /path/to/map.json` replaces selected layer/projection entries; omitted
+entries keep the v2 defaults. Values may be 2, 3, 4, 6 or 8, with group 64.
+Overrides must name existing sparse layers. Each bank has one specification for
+all experts; separate banks and layers may differ. Use the same recipe options
+for the quality command; held-out calibration windows retain v1 truncation.
+All v2 options are serialized into its recipe identity.
+
+Mixed-bank loading uses the existing Hy4 load predicate, which returns
+`config["quantization"][module_prefix]` to `nn.quantize`. Output entries use
+`{"bits":6,"group_size":64,"mode":"affine"}` under the canonical module path
+without `.weight`. `QuantizedSwitchLinear` stores bits/group per module and
+passes them to `gather_qmm` on each call. MLX's affine quantization supports
+[6-bit weights](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.quantize.html);
+its [gather_qmm API](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.gather_qmm.html)
+accepts the specification per call. No loader change is needed. CPU synthetic
+checks cover config entries, Hessians, fallback dispatch and six-bit packing;
+native kernel execution remains unverified by these checks.
+
+These estimates count stored tensor payloads. File headers, loader precision
+promotions, SSD row caches, KV state and runtime workspace add overhead.
+
+Metadata-only payload estimates for the cached 42-layer source snapshot
+`003107fa248f5892064ab1c43af0a7003dd68c9b` are:
+
+| Recipe | On disk (decimal GB) | Resident weights with Engram offloaded (GB) |
+| --- | ---: | ---: |
+| v1 | 130.79 | 91.19 |
+| v2 default | 147.40 | 107.80 |
+| Delta | +16.61 | +16.61 |
+
+These include packed weights and BF16 scales/biases, exclude safetensors headers,
+build-state residuals, KV cache, runtime workspace and SSD row caches, and are
+not measured RSS. The requested default map exceeds the approximately 100 GB
+resident target even before runtime overhead. The CLI prints estimates for the
+chosen source, map and layer prefix before starting inference and records them
+in `size-report.json`. Use a reduced promotion map if 100 GB is a hard limit.

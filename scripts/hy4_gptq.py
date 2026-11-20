@@ -46,7 +46,7 @@ def layers_prefix(value, count):
     return layers
 
 
-def calibration(adapter, manifest, tokens):
+def calibration(adapter, manifest, tokens, *, token_budget=None):
     """Render local conversation records with the frozen chat template, offline."""
     from transformers import AutoTokenizer
 
@@ -60,6 +60,7 @@ def calibration(adapter, manifest, tokens):
         adapter.source, local_files_only=True, trust_remote_code=False
     )
     windows = []
+    v2 = adapter.recipe.name == "hy4-gptq-v2" if hasattr(adapter, "recipe") else False
     for files in paths.values():
         for path in files:
             raw = path.read_text()
@@ -84,7 +85,14 @@ def calibration(adapter, manifest, tokens):
                 ids = tokenizer.encode(text, add_special_tokens=False)
                 if not ids:
                     raise ValueError("chat template produced no tokens")
-                windows.append(np.asarray(ids[:tokens], np.int32))
+                windows.append(np.asarray(ids if v2 else ids[:tokens], np.int32))
+    if v2:
+        from scripts.hy4_gptq_v2 import budget_windows
+
+        if token_budget is None:
+            token_budget = getattr(adapter.recipe, "calibration_token_budget", None)
+        windows, report = budget_windows(windows, tokens, token_budget)
+        print(json.dumps(dict(calibration=report)), flush=True)
     return windows, evidence
 
 
@@ -256,6 +264,11 @@ def expert_chunks(paths, expert, adapter=None, fitted=None):
 
 
 def quantize_experts(store, layer, paths, check):
+    if store.adapter.recipe.name == "hy4-gptq-v2":
+        from scripts.hy4_gptq_v2 import quantize_experts as quantize_v2
+
+        return quantize_v2(store, layer, paths, check)
+
     from scripts.streamed_gptq_quant import QuantConfig, gptq, gram
 
     mx = mx_module()
@@ -320,6 +333,7 @@ def tool_identity():
         for n in (
             "hy4_gptq",
             "hy4_gptq_adapter",
+            "hy4_gptq_v2",
             "streamed_gptq_io",
             "streamed_gptq_quant",
             "streamed_gptq_memory",
@@ -559,11 +573,29 @@ def main():
     parser.add_argument("--slices", type=Path, required=True)
     parser.add_argument(
         "--recipe",
-        choices=("hy4-gptq-v1", "hy4-gptq-lowbit", "hy4-gptq-engram8"),
+        choices=("hy4-gptq-v1", "hy4-gptq-lowbit", "hy4-gptq-engram8", "hy4-gptq-v2"),
         default="hy4-gptq-v1",
     )
     parser.add_argument("--keep-embeddings-bf16", action="store_true")
     parser.add_argument("--gate-up-3bit-layers", default="")
+    parser.add_argument(
+        "--calibration-token-budget",
+        type=int,
+        help="v2 build tokens; default 4x v1, limited by available offline text",
+    )
+    parser.add_argument(
+        "--bits-map",
+        help="v2 JSON object or file: {layer: {projection: bits}}; group 64",
+    )
+    parser.add_argument(
+        "--routing-weight-squared",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="v2 only; default on",
+    )
+    parser.add_argument(
+        "--min-tokens", type=int, help="v2 coverage diagnostic threshold; default 1024"
+    )
     parser.add_argument("--only-layers")
     parser.add_argument("--tokens", type=int, default=512)
     parser.add_argument("--memory-limit-gb", type=float, default=55)
@@ -575,15 +607,70 @@ def main():
         args.work is None or args.only_layers is not None
     ):
         parser.error("quality needs --work and uses the build layer count")
-    adapter = Hy4Adapter(
-        args.source,
-        Recipe(
-            args.recipe,
-            args.keep_embeddings_bf16,
-            tuple(int(i) for i in args.gate_up_3bit_layers.split(",") if i),
+    options = dict(
+        name=args.recipe,
+        keep_embeddings_bf16=args.keep_embeddings_bf16,
+        gate_up_3bit_layers=tuple(
+            int(i) for i in args.gate_up_3bit_layers.split(",") if i
         ),
     )
-    windows, evidence = calibration(adapter, args.slices, args.tokens)
+    v2 = args.recipe == "hy4-gptq-v2"
+    if not v2 and any(
+        v is not None
+        for v in (
+            args.bits_map,
+            args.routing_weight_squared,
+            args.min_tokens,
+            args.calibration_token_budget,
+        )
+    ):
+        parser.error(
+            "calibration budget, bits map, weighting and min-tokens require v2"
+        )
+    if v2:
+        from scripts.deepseek_v41_rd_common import read_slices
+        from scripts.hy4_gptq_v2 import V2Recipe, estimate_sizes, parse_bits_map
+
+        recipe = V2Recipe(
+            **options,
+            bits_map=parse_bits_map(args.bits_map) if args.bits_map is not None else (),
+            routing_weight_squared=args.routing_weight_squared is not False,
+            min_tokens=1024 if args.min_tokens is None else args.min_tokens,
+            calibration_token_budget=args.calibration_token_budget,
+        )
+        sources = read_slices(args.slices, [])
+        print(
+            json.dumps(
+                dict(
+                    offline_sources={
+                        key: {str(p): p.is_file() for p in paths}
+                        for key, paths in sources.items()
+                    }
+                )
+            ),
+            flush=True,
+        )
+    else:
+        recipe = Recipe(**options)
+    adapter = Hy4Adapter(args.source, recipe)
+    if v2:
+        size_estimate = estimate_sizes(
+            adapter, layers_prefix(args.only_layers, adapter.args.num_hidden_layers)
+        )
+        print(json.dumps(dict(estimated_sizes=size_estimate)), flush=True)
+    # Held-out windows retain the existing truncation semantics for all recipes.
+    if v2 and args.command == "quality":
+        from types import SimpleNamespace
+
+        calibration_adapter = SimpleNamespace(source=adapter.source)
+    else:
+        calibration_adapter = adapter
+    windows, evidence = calibration(
+        calibration_adapter,
+        args.slices,
+        args.tokens,
+        token_budget=args.calibration_token_budget,
+    )
     from scripts.streamed_gptq_memory import MemoryGuard
 
     with MemoryGuard(
@@ -601,6 +688,8 @@ def main():
                 adapter, args.destination, windows, evidence, args.work, guard.check
             )
         report.update(guard.report())
+    if v2 and args.command == "build":
+        report["estimated_sizes"] = size_estimate
     atomic_json(
         (args.destination / "size-report.json")
         if args.command == "build"

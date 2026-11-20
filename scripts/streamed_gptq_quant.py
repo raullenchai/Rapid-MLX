@@ -143,8 +143,8 @@ def gptq(
     grids and discards the error compensation. Only packing runs on the host.
     Scales/biases use the final BF16 storage precision during rounding itself.
     """
-    if bits not in (2, 3, 4, 8):
-        raise ValueError("GPTQ supports 2/3/4/8 bits")
+    if bits not in (2, 3, 4, 6, 8):
+        raise ValueError("GPTQ supports 2/3/4/6/8 bits")
     rows, cols = weight.shape
     if cols % config.group_size or h.shape != (cols, cols):
         raise ValueError("weight/Hessian shape or group mismatch")
@@ -208,8 +208,8 @@ def gptq_batched(
     Only the block error propagation is a batched matrix multiply. Group grids
     and column rounding follow ``gptq`` including BF16 scale/bias precision.
     """
-    if bits not in (2, 3, 4, 8):
-        raise ValueError("GPTQ supports 2/3/4/8 bits")
+    if bits not in (2, 3, 4, 6, 8):
+        raise ValueError("GPTQ supports 2/3/4/6/8 bits")
     if weights.ndim != 3 or weights.shape[0] < 1:
         raise ValueError("weights must have shape [experts, rows, cols]")
     experts, rows, cols = weights.shape
