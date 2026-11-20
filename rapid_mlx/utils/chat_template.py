@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -2473,7 +2473,9 @@ def sanitize_template_inputs(
     return messages, tools
 
 
-def _truncate_for_continuation(prompt: str, messages: list[dict], render) -> str:
+def _truncate_for_continuation(
+    prompt: str, messages: list[dict], render: Callable[[list[dict], bool], str]
+) -> str:
     """Locate the final assistant span with paired renders, failing closed.
 
     ``render`` uses the same template/options as ``prompt``, without native

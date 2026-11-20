@@ -847,6 +847,7 @@ class DiffusionEngine(BaseEngine):
         tools: list[dict] | None = None,
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
         chat_template_kwargs: dict | None = None,
     ) -> str:
         self._ensure_loaded()
@@ -854,6 +855,8 @@ class DiffusionEngine(BaseEngine):
             "tokenize": False,
             "add_generation_prompt": add_generation_prompt,
         }
+        if continue_final_message:
+            template_kwargs["continue_final_message"] = True
         # Only forward ``tools`` to the chat template when the active
         # alias declares a tool parser this engine can actually surface
         # (codex r1 BLOCKING #1). Tokenizers whose ``apply_chat_template``

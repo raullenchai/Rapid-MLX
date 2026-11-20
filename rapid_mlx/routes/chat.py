@@ -5409,8 +5409,12 @@ async def _create_chat_completion_impl(
     # taxonomy. SKIPPED when a grammar processor is active (see above) —
     # the grammar is the stronger, self-sufficient lever.
     _forced_prefix = None
-    if _glp is None and not request.continue_final_message:
-        _forced_prefix = _compute_forced_tool_prefix(cfg, request, engine)
+    if _glp is None:
+        _forced_prefix = (
+            None
+            if request.continue_final_message
+            else _compute_forced_tool_prefix(cfg, request, engine)
+        )
     if _forced_prefix:
         chat_kwargs["forced_assistant_prefix"] = _forced_prefix
 

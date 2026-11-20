@@ -6152,7 +6152,7 @@ def enforce_context_length_for_messages(
                 engine, "_tokenizer", None
             )
             apply_template = getattr(tokenizer, "apply_chat_template", None)
-            if not callable(apply_template):
+            if tokenizer is None or not callable(apply_template):
                 if require_text_preflight:
                     _raise_prompt_count_unavailable(
                         code="prompt_token_count_unavailable"
