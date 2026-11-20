@@ -398,7 +398,8 @@ class TestDefaultOnOrphan:
         # terminationGrace contract).
         assert mock_kill.call_count >= 1
 
-    def test_sigkill_after_grace_window(self):
+    @pytest.mark.parametrize("grace", [None, 1.0])
+    def test_sigkill_after_grace_window(self, grace):
         """Defense against a lifespan drain that hangs: the second kill
         is the un-catchable SIGKILL, sent after the same 5 s grace the
         desktop side waits on its own terminateChild path."""
@@ -415,7 +416,8 @@ class TestDefaultOnOrphan:
             patch.object(pwd.os, "_exit", side_effect=SystemExit(0)),
             pytest.raises(SystemExit),
         ):
-            pwd._default_on_orphan(expected_ppid=9999, observed_ppid=1)
+            kwargs = {} if grace is None else {"grace": grace}
+            pwd._default_on_orphan(expected_ppid=9999, observed_ppid=1, **kwargs)
         assert kills == [_signal.SIGTERM, _signal.SIGKILL]
-        # Exactly 5 s of sleep between SIGTERM and SIGKILL.
-        assert any(args[0] == 5.0 for args, _ in mock_sleep.call_args_list)
+        # Desktop retains five seconds; supervised runners get one second.
+        mock_sleep.assert_called_once_with(5.0 if grace is None else grace)

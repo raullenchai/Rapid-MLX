@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+"""The sole P1 control forwarder, inside the existing browser/LAN boundary."""
+
+import asyncio
+import http.client
+import ipaddress
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from rapid_mlx.control import RUNNER_ENV, SECRET_ENV, SOCKET_ENV
+from rapid_mlx.control.protocol import MAX_BODY, TIMEOUT
+from rapid_mlx.control.protocol import request as control_request
+from rapid_mlx.middleware.auth import verify_api_key
+
+
+async def require_loopback(request: Request):
+    peer = request.scope.get("_rapid_mlx_transport_peer", request.scope.get("client"))
+    try:
+        address = ipaddress.ip_address(peer[0]) if peer else None
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        if address is not None and address.is_loopback:
+            return
+    except ValueError:
+        pass
+    raise HTTPException(403, "Control API requires a loopback peer")
+
+
+def mount_status(app):
+    if os.environ.get(RUNNER_ENV) != "1":
+        return
+    path, secret = os.environ[SOCKET_ENV], os.environ[SECRET_ENV]
+    router = APIRouter()
+
+    @router.get(
+        "/rapid/v1/status",
+        dependencies=[Depends(require_loopback), Depends(verify_api_key)],
+    )
+    async def status(request: Request):
+        # Never buffer an arbitrary GET body. Even chunked clients have a bound.
+        size = 0
+        try:
+            async with asyncio.timeout(TIMEOUT):
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_BODY:
+                        raise HTTPException(413, "Control request too large")
+                # No client headers are copied. The private secret always wins.
+                return await asyncio.to_thread(control_request, path, secret)
+        except (TimeoutError, OSError, ValueError, http.client.HTTPException):
+            raise HTTPException(503, "Control plane unavailable") from None
+
+    app.include_router(router)

@@ -2675,6 +2675,12 @@ def _add_alias_parser(
     alias_remove = alias_subparsers.add_parser("remove", help="Remove an alias mapping")
     alias_remove.add_argument("name", help="Private alias name")
     alias_subparsers.add_parser("list", help="List user alias mappings")
+    status_parser = subparsers.add_parser(
+        "status", help="Show local serve control status"
+    )
+    status_parser.add_argument(
+        "--port", type=_port_arg, help="Select a supervised instance by port"
+    )
     ps_parser = subparsers.add_parser("ps", help="List running rapid-mlx servers")
     ps_parser.add_argument(
         "--json",

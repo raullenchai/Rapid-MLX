@@ -393,8 +393,10 @@ def _exit_for_port_collision(
 ) -> NoReturn:
     """Emit the established preflight failure and terminate with rc 1."""
 
+    from rapid_mlx.control.protocol import report
     from rapid_mlx.telemetry.server_start import failed
 
+    report("bind_failed")
     failed("bind", port_explicit=port_explicit, exit_reason="port_in_use")
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
@@ -418,6 +420,9 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
 def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
     """Turn an invalid/unavailable bind address into a CLI diagnostic."""
 
+    from rapid_mlx.control.protocol import report
+
+    report("bind_failed")
     display_host = host or "0.0.0.0"
     print(
         f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
@@ -6634,7 +6639,7 @@ def _serve_cua_only_mode(args) -> None:
 
 def _validate_local_search_exposure_or_exit(args) -> None:
     from .local_search_runtime import validate_exposure
-    from .server import _resolve_api_key
+    from .server_exposure import _resolve_api_key
 
     try:
         validate_exposure(
@@ -13591,6 +13596,11 @@ def _scan_running_servers(
 
     import psutil
 
+    from rapid_mlx.control.protocol import discover
+
+    instances = discover()
+    supervisors = {item.get("supervisor_pid") for item in instances}
+    runners = {item["runner"]["pid"]: item for item in instances}
     rows: list[tuple[int, str, str, str]] = []
     for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
         try:
@@ -13600,6 +13610,9 @@ def _scan_running_servers(
         serve_index = serve_subcommand_index(cmd)
         if serve_index is None:
             continue
+        if proc.info["pid"] in supervisors:
+            continue
+        instance = runners.get(proc.info["pid"])
 
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
@@ -13643,6 +13656,11 @@ def _scan_running_servers(
             model = _ps_redact(options.get("--model") or model, credentials)
             served = _ps_redact(options.get("--served-model-name"), credentials)
             port = str(8000 if options["--port"] is None else options["--port"])
+
+        if instance is not None:
+            port = str(instance["port"])
+            if options is not None:
+                options["--port"] = instance["port"]
 
         if states is not None:
             states.append(
@@ -17316,6 +17334,9 @@ def _capture_start_failures(func: Callable):
         try:
             return func(*args, **kwargs)
         except BaseException as exc:
+            from rapid_mlx.control.protocol import report_startup_failure
+
+            report_startup_failure(type(exc).__name__)
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
@@ -17328,8 +17349,94 @@ def _capture_start_failures(func: Callable):
     return wrapped
 
 
+def _dispatch_serve_control(args):
+    """Decide before runtime setup; fallback continues in this same process."""
+    try:
+        from rapid_mlx.control import PARENT_ENV, RUNNER_ENV
+        from rapid_mlx.control.modes import supervised_mode
+
+        mode = supervised_mode(args)
+        if mode is not None:
+            from rapid_mlx.control.supervisor import supervise
+            from rapid_mlx.server_exposure import normalize_bind_host
+
+            # The runner owns explicit-port validation after its telemetry
+            # lifecycle begins. The parent only selects automatic ports once
+            # so restarts keep the same listener address.
+            port = args.port
+            if port is None or getattr(args, "listen_fd", None) is not None:
+                port = _resolve_serve_port(
+                    normalize_bind_host(args.host),
+                    args.port,
+                    model=args.model or "retrieval",
+                    port_explicit=port_explicit_for(args),
+                    listen_fd=getattr(args, "listen_fd", None),
+                )
+    except Exception as exc:
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(
+            args,
+            f"Control plane setup failed ({type(exc).__name__}); "
+            "serving in single process.",
+        )
+        return
+    if mode is not None:
+        import subprocess
+
+        # Preserve interpreter flags such as -u, -X, -W for the runner,
+        # the same way multiprocessing does for its children.
+        interpreter_flags = subprocess._args_from_interpreter_flags()
+        code = supervise(
+            [
+                sys.executable,
+                *interpreter_flags,
+                # ``-m rapid_mlx`` imports rapid_mlx.cli and calls the console
+                # entry point; running cli itself as __main__ would create a
+                # second module and bypass its startup instrumentation. Process
+                # discovery (``rapid-mlx ps``) recognises this form.
+                "-m",
+                "rapid_mlx",
+                *sys.argv[1:],
+            ],
+            port=port,
+            mode=mode,
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+        if code is not None:
+            raise SystemExit(code)
+        return
+    if (
+        RUNNER_ENV not in os.environ
+        and "RAPID_MLX_WATCHDOG_PPID" not in os.environ
+        and getattr(args, "watchdog_ppid", None) is None
+        and os.environ.get("RAPID_MLX_SINGLE_PROCESS") != "1"
+    ):
+        # Continue directly into the exact legacy path, preserving argv,
+        # environment, watchdog ownership and inherited descriptors.
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(args, "Control functionality is unavailable in this mode.")
+    elif os.environ.get(RUNNER_ENV) == "1":
+        from rapid_mlx._parent_watchdog import install_parent_watchdog
+        from rapid_mlx.control.process_tree import (
+            start_orphan_tracking,
+            supervised_on_orphan,
+        )
+        from rapid_mlx.control.protocol import install_startup_report
+
+        raw_parent = os.environ.get(PARENT_ENV)
+        if raw_parent is not None:
+            start_orphan_tracking()
+            install_parent_watchdog(
+                int(raw_parent), interval=0.5, on_orphan=supervised_on_orphan
+            )
+        install_startup_report()
+
+
 @_capture_start_failures
-def main():
+def main(*, _supervise=False):
+    """Dispatch in process; only the console entry point owns supervision."""
     from ._hf_logging import (
         quiet_hf_progress_bars_off_terminal,
         quiet_transport_loggers,
@@ -17419,6 +17526,15 @@ def main():
             ):
                 _print_next_step()
         raise
+    if args.command == "status":
+        from rapid_mlx.control.protocol import status_command
+
+        raise SystemExit(status_command(args))
+    if args.command == "serve":
+        if getattr(args, "enable_local_search", False):
+            _validate_local_search_exposure_or_exit(args)
+        if _supervise:
+            _dispatch_serve_control(args)
     if args.command == "top":
         from rapid_mlx.top import top_command
 
@@ -17460,10 +17576,6 @@ def main():
         if hasattr(args, "log_level")
         else "INFO"
     )
-    if getattr(args, "command", None) == "serve" and getattr(
-        args, "enable_local_search", False
-    ):
-        _validate_local_search_exposure_or_exit(args)
     from rapid_mlx import model_downloads
 
     model_downloads.configure(getattr(args, "disable_model_downloads", False))
@@ -17772,6 +17884,9 @@ def main():
                 except log_file.LogFileError as log_exc:
                     print(f"error: {log_exc}", file=sys.stderr)
                     _serve_usage_exit(cause=log_exc)
+                from rapid_mlx.local_models import flush_serve_startup_notes
+
+                flush_serve_startup_notes(args)
                 if isinstance(exc, InvalidModelConfig):
                     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
@@ -18260,7 +18375,7 @@ def _run_front_door(parser, args, version: str) -> int:
 def cli_entrypoint() -> None:
     """Console entry point with normal Unix broken-pipe semantics."""
     try:
-        main()
+        main(_supervise=True)
     except BrokenPipeError:
         # Unix consumers commonly stop reading early (for example,
         # ``rapid-mlx models | head``).  Treat EPIPE as normal completion

@@ -98,7 +98,9 @@ def resolve_expected_ppid(cli_value: int | None) -> int | None:
     return parsed if parsed > 1 else None
 
 
-def _default_on_orphan(expected_ppid: int, observed_ppid: int) -> None:
+def _default_on_orphan(
+    expected_ppid: int, observed_ppid: int, *, grace: float = 5.0
+) -> None:
     """Default orphan reaction: log + SIGTERM self + SIGKILL after grace.
 
     The lifespan ``shutdown`` hook in ``server.py`` runs on SIGTERM and
@@ -107,7 +109,8 @@ def _default_on_orphan(expected_ppid: int, observed_ppid: int) -> None:
     it the same ~5 s wall-clock window the rapid-desktop side hands its
     ``terminateChild`` SIGTERM grace before escalating to SIGKILL —
     keeps the two halves of the kill protocol symmetric (see
-    ``ServerManager.swift`` ``terminationGrace``).
+    ``ServerManager.swift`` ``terminationGrace``). Supervised runners supply
+    a shorter grace after cleaning up their descendants.
     """
     # Single-line marker so log scrapers / dogfood postmortems can grep
     # one consistent string. Print AND log: the logger may not be set up
@@ -136,10 +139,8 @@ def _default_on_orphan(expected_ppid: int, observed_ppid: int) -> None:
     except OSError:  # pragma: no cover — defensive
         os._exit(0)
 
-    # Give lifespan shutdown ~5 s, then escalate. The desktop side
-    # waits the same window before SIGKILL on ``terminateChild``, so
-    # this mirrors the contract from both directions.
-    time.sleep(5.0)
+    # Bound shutdown even when the runner ignores TERM or drain hangs.
+    time.sleep(grace)
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:  # pragma: no cover

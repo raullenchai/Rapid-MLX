@@ -1478,8 +1478,9 @@ def test_gated_serve_posts_one_resolve_and_serve_failure_to_loopback(
     assert pull_failures[0]["properties"]["error_class"] == "gated"
 
 
+@pytest.mark.parametrize("single_process", [False, True])
 def test_simultaneous_missing_extra_serve_failures_emit_once(
-    tmp_path, official_entrypoint_layout
+    tmp_path, official_entrypoint_layout, single_process
 ):
     root, hooks_dir, site_dir, console = official_entrypoint_layout
     home = tmp_path / "home"
@@ -1510,6 +1511,7 @@ def test_simultaneous_missing_extra_serve_failures_emit_once(
         RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         TEL_DEDUPE_BARRIER_DIR=str(barrier_dir),
+        RAPID_MLX_SINGLE_PROCESS="1" if single_process else "0",
     )
     for name in (*state.CI_ENV_VARS, state.ENV_VAR, state.DO_NOT_TRACK_ENV):
         env.pop(name, None)
@@ -1575,6 +1577,7 @@ def test_simultaneous_missing_extra_serve_failures_emit_once(
     )
 
 
+@pytest.mark.parametrize("single_process", [False, True])
 @pytest.mark.parametrize(
     ("extra_args", "expected_policy", "disabled"),
     [([], "eager", False), (["--lazy-load"], "lazy", False), ([], None, True)],
@@ -1585,6 +1588,7 @@ def test_server_start_ready_wire_order_and_opt_out(
     extra_args,
     expected_policy,
     disabled,
+    single_process,
 ):
     root, hooks_dir, site_dir, console = official_entrypoint_layout
     home = tmp_path / "home"
@@ -1613,6 +1617,7 @@ def test_server_start_ready_wire_order_and_opt_out(
         RAPID_MLX_POSTHOG_URL=f"http://127.0.0.1:{sink.server_port}/batch/",
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         RAPID_MLX_TEST_READY="1",
+        RAPID_MLX_SINGLE_PROCESS="1" if single_process else "0",
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
     )
