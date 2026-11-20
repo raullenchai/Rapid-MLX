@@ -2499,7 +2499,7 @@ def _truncate_for_continuation(
     # A generation header may include implicit reasoning absent from a supplied
     # assistant row. Locate that row by replacing only its content with a unique
     # probe, then require the original and empty renders to agree on both sides.
-    marker = "RAPID_MLX_CONTINUATION_BOUNDARY"
+    marker = "\u27e6continuation-boundary\u27e7"
     while marker in prompt or marker in content:
         marker += "_"
     try:
