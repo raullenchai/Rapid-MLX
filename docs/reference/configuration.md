@@ -17,6 +17,18 @@ Use `rapid-mlx serve --help` for the flags and defaults in your installed versio
 - **Memory and cache:** Inspect the current `--kv-cache-*`, `--prefix-cache-*`, and `--disable-disk-caches` flags with `rapid-mlx serve --help` before tuning them.
 - **Multimodal:** The [image and video guide](../guides/multimodal.md) shows model selection and request formats.
 
+## OpenAI-compatible API parameters
+
+Chat requests accept `chat_template_kwargs` for template variables. To continue
+an assistant prefill, set `continue_final_message: true` and
+`add_generation_prompt: false`; the final message must have role `assistant`.
+Defaults are `false` and `true`, respectively. Responses contain only newly
+generated text, in streaming and non-streaming modes.
+For multimodal models, continuation and `add_generation_prompt: false` currently
+support text-only inputs. Requests containing image, video, or audio content
+parts return HTTP 400 before admission because media token counting is not yet
+supported in these modes.
+
 ## Speculative decoding options
 
 Speculative modes depend on the model and its matching draft checkpoint. Check the alias profile with `rapid-mlx info <alias>` and the current `--speculative-*` options with `rapid-mlx serve --help` before enabling one.

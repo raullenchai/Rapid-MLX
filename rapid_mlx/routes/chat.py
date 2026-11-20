@@ -63,6 +63,7 @@ from ..api.tool_calling import (
     validate_output_against_schema,
 )
 from ..api.utils import (
+    MEDIA_CONTENT_TYPES,
     UnsupportedContentBlockError,
     clean_output_text,
     decode_inline_tool_call_arguments,
@@ -1750,7 +1751,9 @@ def _line1_probe_seed(engine, cfg, request, messages, resolved_thinking):
     ``build_prompt``); line① then declines to the forced-prefix fallback
     (non-regressive).
     """
-    if not _line1_should_probe_seed(request, resolved_thinking):
+    if getattr(
+        request, "continue_final_message", False
+    ) or not _line1_should_probe_seed(request, resolved_thinking):
         return _LINE1_SEED_UNSET, False
 
     from ..api.reasoning_budget import reasoning_seed_state
@@ -4131,6 +4134,76 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             _release_primary_request_unless_committed(engine, _commit_state[0])
 
 
+def _continuation_content(request) -> str:
+    """Normalize the assistant content before rendering it."""
+    from ..utils.chat_template import normalize_assistant_content
+
+    return normalize_assistant_content(request.messages[-1].content)
+
+
+def _continuation_prompt_context(request, cfg, messages=None, engine=None):
+    from ..prompt_parse_context import continuation_prompt_parse_context
+    from ..service.helpers import _build_prompt_with_thinking_compat
+    from ..utils.chat_template import is_flint_chat_template
+
+    context = getattr(request, "_continuation_prompt_parse_context", None)
+    if context is not None and messages is None:
+        return context
+    previous_context = context
+    engine = engine or cfg.engine
+    rows = messages or [m.model_dump(exclude_none=True) for m in request.messages]
+    thinking = _resolve_enable_thinking(request)
+    tools = convert_tools_for_template(request.tools) if request.tools else None
+
+    def render(rows, generation, continuing=False):
+        return _build_prompt_with_thinking_compat(
+            engine.build_prompt,
+            rows,
+            tools=tools,
+            enable_thinking=thinking,
+            chat_template_kwargs=request.chat_template_kwargs,
+            add_generation_prompt=generation,
+            continue_final_message=continuing,
+        )
+
+    try:
+        prompt = render(rows, False, True)
+        context = continuation_prompt_parse_context(
+            prompt,
+            rows,
+            render,
+            thinking=thinking,
+            flint=is_flint_chat_template(
+                engine.tokenizer,
+                tools=tools,
+                chat_template_kwargs=request.chat_template_kwargs,
+            ),
+        )
+        if previous_context is not None and (
+            previous_context.initial_channel != context.initial_channel
+        ):
+            raise ValueError(
+                "Chat template continuation reasoning state changed during prompt preparation"
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        if not is_chat_template_error(exc):
+            raise
+        raise HTTPException(
+            status_code=400, detail=f"Chat template error: {exc}"
+        ) from exc
+    request._continuation_prompt_parse_context = context
+    return context
+
+
+def _continuation_starts_in_thinking(request, cfg) -> bool:
+    return (
+        getattr(request, "continue_final_message", False)
+        and _continuation_prompt_context(request, cfg).initial_channel == "reasoning"
+    )
+
+
 def _effective_posthoc_reasoning_cap(sampling_kwargs: dict, request) -> int | None:
     """Return the post-hoc reasoning-token cap for the postprocessor, or
     ``None`` when the generation-time thinking-budget processor owns this
@@ -4169,7 +4242,9 @@ def _inference_aborted_http_exception(exc: BaseException) -> HTTPException:
     return inference_aborted_http_exception(exc)
 
 
-def _template_generation_prefix(engine, messages, tools, enable_thinking) -> str | None:
+def _template_generation_prefix(
+    engine, messages, tools, enable_thinking, *, continue_final_message=False
+) -> str | None:
     """Return the TEMPLATE-added generation-prefix delta for ``messages``.
 
     The seed decision (does the budget start already inside a ``<think>`` span?)
@@ -4201,6 +4276,8 @@ def _template_generation_prefix(engine, messages, tools, enable_thinking) -> str
     template that restructures when the generation prompt toggles — the prefix
     can't be isolated cleanly, so be safe), or the delta is empty.
     """
+    if continue_final_message:
+        return ""
     if not messages:
         # Nothing was rendered — a prefill template must NOT be mistaken for an
         # emit one (which would install a never-starting processor that still
@@ -4398,14 +4475,24 @@ def _build_reasoning_budget_processor(
 
     Whether the span is SEEDED (template prefills ``<think>``) vs EMITTED (the
     model generates it) is derived from the TEMPLATE'S generation-prefix delta
-    (``_template_generation_prefix``), never from raw conversation content.
+    (``_template_generation_prefix``). For an assistant continuation, classify
+    only the verified rendered assistant suffix; history
+    and user content cannot seed the budget.
     """
+    if getattr(request, "continue_final_message", False):
+        _continuation_prompt_context(request, cfg, messages, engine)
+    continuing_reasoning = _continuation_starts_in_thinking(request, cfg)
+    if getattr(request, "continue_final_message", False):
+        if not continuing_reasoning:
+            return None
+        seed_prefix = _continuation_prompt_context(request, cfg).assistant_suffix
+
     from ..api.reasoning_budget import (
         build_budget_from_render,
         reasoning_stop_conflicts,
     )
 
-    if (
+    if not continuing_reasoning and (
         _effective_enable_thinking(resolved_thinking, cfg.model_path or cfg.model_name)
         is not True
     ):
@@ -4481,6 +4568,30 @@ async def _create_chat_completion_impl(
             status_code=400,
             detail="messages must not be empty",
         )
+
+    # Text-only continuation counting cannot account for processor-expanded
+    # media tokens. Reject before admission until that path supports media.
+    if getattr(engine, "is_mllm", False) and (
+        request.continue_final_message or not request.add_generation_prompt
+    ):
+        for message in request.messages:
+            if isinstance(message.content, list) and any(
+                (part.get("type") if isinstance(part, dict) else part.type)
+                in MEDIA_CONTENT_TYPES
+                for part in message.content
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Continuation / add_generation_prompt=false is not supported with media inputs yet.",
+                )
+
+    if request.continue_final_message:
+        try:
+            # Normalize before multimodal extraction can insert separators
+            # between text parts: rendering and reasoning must see one prefill.
+            request.messages[-1].content = _continuation_content(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Validate message roles
     _valid_roles = {"system", "user", "assistant", "tool", "developer"}
@@ -5158,6 +5269,18 @@ async def _create_chat_completion_impl(
     # chat_template kwarg below. (#387)
     resolved_thinking = _resolve_enable_thinking(request)
 
+    if request.continue_final_message:
+        _continuation_prompt_context(request, cfg, messages, engine)
+    if request.continue_final_message and not _continuation_starts_in_thinking(
+        request, cfg
+    ):
+        import copy
+
+        cfg = copy.copy(cfg)
+        # Content continuations must not inherit a new turn's implicit thinking.
+        cfg.reasoning_parser = None
+        cfg.reasoning_parser_name = None
+
     # Select the constraint before augmenting messages or counting prompt tokens.
     # The legacy model-owning decode loop masks token zero; reasoning requests
     # instead use the scheduler's existing reasoning-gated grammar processor.
@@ -5360,7 +5483,11 @@ async def _create_chat_completion_impl(
     # the grammar is the stronger, self-sufficient lever.
     _forced_prefix = None
     if _glp is None:
-        _forced_prefix = _compute_forced_tool_prefix(cfg, request, engine)
+        _forced_prefix = (
+            None
+            if request.continue_final_message
+            else _compute_forced_tool_prefix(cfg, request, engine)
+        )
     if _forced_prefix:
         chat_kwargs["forced_assistant_prefix"] = _forced_prefix
 
@@ -5387,6 +5514,14 @@ async def _create_chat_completion_impl(
     # reach ``apply_chat_template`` (#2474). ``enable_thinking`` is already
     # resolved above; the engine-side merge never overwrites server-resolved
     # keys.
+    prompt_options = {}
+    if not request.add_generation_prompt or request.continue_final_message:
+        prompt_options = {
+            "add_generation_prompt": request.add_generation_prompt,
+            "continue_final_message": request.continue_final_message,
+        }
+        chat_kwargs.update(prompt_options)
+
     ctk = getattr(request, "chat_template_kwargs", None)
     if isinstance(ctk, dict) and ctk:
         chat_kwargs["chat_template_kwargs"] = ctk
@@ -5422,6 +5557,7 @@ async def _create_chat_completion_impl(
         max_tokens=chat_kwargs.get("max_tokens"),
         enable_thinking=resolved_thinking,
         chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+        **prompt_options,
         telemetry_model=served_telemetry_id,
         caller_agent=_caller_agent,
         caller_client=_caller_client,
@@ -5951,6 +6087,7 @@ async def _create_chat_completion_impl(
                     tools=chat_kwargs.get("tools"),
                     enable_thinking=chat_kwargs.get("enable_thinking"),
                     chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+                    **prompt_options,
                 )
             except Exception as e:
                 if is_chat_template_error(e):
@@ -6328,6 +6465,7 @@ async def _create_chat_completion_impl(
                         max_tokens=chat_kwargs.get("max_tokens"),
                         enable_thinking=chat_kwargs.get("enable_thinking"),
                         chat_template_kwargs=chat_kwargs.get("chat_template_kwargs"),
+                        **prompt_options,
                     )
                 # Fallback runs under the outer admission reservation
                 # still held by the wrapper's ``finally`` — no
@@ -7302,16 +7440,26 @@ async def _create_chat_completion_impl(
         # which can be overridden by ``--served-model-name`` and
         # would diverge from the prompt-render path's coder check
         # (codex R2 BLOCKING).
-        enable_thinking=_effective_enable_thinking(
-            resolved_thinking, cfg.model_path or cfg.model_name
+        enable_thinking=(
+            True
+            if _continuation_starts_in_thinking(request, cfg)
+            else _effective_enable_thinking(
+                resolved_thinking, cfg.model_path or cfg.model_name
+            )
         ),
-        prompt_thinking_active=_should_start_in_thinking(
-            getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
-            resolved_thinking,
-            unconditional=bool(
-                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
-            ),
-            tools_requested=bool(request.tools),
+        prompt_thinking_active=(
+            _continuation_starts_in_thinking(request, cfg)
+            if request.continue_final_message
+            else _should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+                unconditional=bool(
+                    getattr(
+                        cfg.reasoning_parser, "implicit_reasoning_until_close", False
+                    )
+                ),
+                tools_requested=bool(request.tools),
+            )
         ),
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # None → back-compat no-op. Suppressed when the generation-time
@@ -7446,13 +7594,19 @@ async def _create_chat_completion_impl(
         _tok = getattr(engine, "tokenizer", None)
         if _tok and hasattr(_tok, "chat_template"):
             _chat_template_str = _tok.chat_template or ""
-        prompt_thinking_active = _should_start_in_thinking(
-            _chat_template_str,
-            resolved_thinking,
-            unconditional=bool(
-                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
-            ),
-            tools_requested=bool(request.tools),
+        prompt_thinking_active = (
+            _continuation_starts_in_thinking(request, cfg)
+            if request.continue_final_message
+            else _should_start_in_thinking(
+                _chat_template_str,
+                resolved_thinking,
+                unconditional=bool(
+                    getattr(
+                        cfg.reasoning_parser, "implicit_reasoning_until_close", False
+                    )
+                ),
+                tools_requested=bool(request.tools),
+            )
         )
         deepseek_v4_mid_think = bool(
             _uses_deepseek_v4_reasoning(cfg)
@@ -7754,6 +7908,16 @@ async def stream_chat_completion(
     from ..service.postprocessor import StreamingPostProcessor
 
     cfg = get_config()
+    if request.continue_final_message and not _continuation_starts_in_thinking(
+        request, cfg
+    ):
+        import copy
+
+        cfg = copy.copy(cfg)
+        # Content continuations must not inherit a new turn's implicit thinking.
+        cfg.reasoning_parser = None
+        cfg.reasoning_parser_name = None
+
     gc_was_enabled = gc.isenabled()
     first_engine_output_task: asyncio.Task | None = None
     admission_task: asyncio.Task | None = None
@@ -7972,6 +8136,11 @@ async def stream_chat_completion(
         )
         processor = StreamingPostProcessor(
             cfg,
+            prompt_thinking_active=(
+                _continuation_starts_in_thinking(request, cfg)
+                if request.continue_final_message
+                else None
+            ),
             tools_requested=bool(request.tools),
             # `kwargs` is the **kwargs from this function's signature; the
             # route handler unpacks chat_kwargs (which sets
@@ -7980,7 +8149,11 @@ async def stream_chat_completion(
             # StreamingPostProcessor can short-circuit the reasoning
             # parser when the client explicitly disabled thinking
             # (closes the empty-content streaming bug from PR #208).
-            enable_thinking=kwargs.get("enable_thinking"),
+            enable_thinking=(
+                True
+                if _continuation_starts_in_thinking(request, cfg)
+                else kwargs.get("enable_thinking")
+            ),
             json_mode=bool(
                 request.response_format
                 and getattr(request.response_format, "type", "text") != "text"
@@ -8935,13 +9108,17 @@ async def stream_chat_completion(
                 _tok_stream = getattr(engine, "tokenizer", None)
                 if _tok_stream and hasattr(_tok_stream, "chat_template"):
                     _chat_template_str_stream = _tok_stream.chat_template or ""
-                prompt_thinking_active_stream = _should_start_in_thinking(
-                    _chat_template_str_stream,
-                    _stream_resolved_thinking,
-                    unconditional=bool(
-                        getattr(rp, "implicit_reasoning_until_close", False)
-                    ),
-                    tools_requested=bool(request.tools),
+                prompt_thinking_active_stream = (
+                    _continuation_starts_in_thinking(request, cfg)
+                    if request.continue_final_message
+                    else _should_start_in_thinking(
+                        _chat_template_str_stream,
+                        _stream_resolved_thinking,
+                        unconditional=bool(
+                            getattr(rp, "implicit_reasoning_until_close", False)
+                        ),
+                        tools_requested=bool(request.tools),
+                    )
                 )
                 # D-STOP-THINK codex round-6 BLOCKING (PR #799):
                 # prefer the per-chunk accumulator over

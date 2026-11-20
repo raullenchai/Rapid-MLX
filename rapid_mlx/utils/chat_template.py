@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +324,7 @@ def _part_type_and_text(part) -> tuple[str | None, str | None]:
     instance (request-validation hand-off), or as something else (we
     treat that as "unknown" so the caller can decide what to do).
     """
-    if isinstance(part, dict):
+    if isinstance(part, Mapping):
         t = part.get("type")
         x = part.get("text")
     else:
@@ -365,6 +366,24 @@ def _join_text_parts(content: list) -> str:
     expectations.
     """
     return "".join((_part_type_and_text(part)[1] or "") for part in content)
+
+
+def normalize_assistant_content(content) -> str:
+    """Render a text prefill identically for templates and reasoning seeds.
+
+    Empty strings and empty text arrays continue from an empty assistant turn.
+    Non-text parts cannot define a text continuation boundary.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and (
+        not content or _is_text_only_content_array(content)
+    ):
+        return _join_text_parts(content)
+    raise ValueError(
+        "continue_final_message requires assistant content to be a string "
+        "or text-only content parts"
+    )
 
 
 def _normalize_text_only_content_arrays(messages: list[dict]) -> list[dict]:
@@ -2454,6 +2473,78 @@ def sanitize_template_inputs(
     return messages, tools
 
 
+def _continuation_span(
+    prompt: str, messages: list[dict], render: Callable[[list[dict], bool], str]
+) -> tuple[str, str]:
+    """Locate the final assistant span with paired renders, failing closed.
+
+    ``render`` uses the same template/options as ``prompt``, without native
+    continuation. A history-only generation render supplies the open assistant
+    header. An empty-final render verifies the exact suffix to remove.
+    """
+    content = normalize_assistant_content(messages[-1].get("content"))
+    empty_messages = [*messages[:-1], {**messages[-1], "content": ""}]
+    empty = render(empty_messages, False)
+    try:
+        prefix = render(messages[:-1], True)
+    except Exception:
+        # Some templates cannot render history alone (e.g. assistant-only
+        # requests). Probe the final content slot below instead.
+        prefix = None
+    if content and isinstance(prefix, str) and prompt.startswith(prefix + content):
+        end = len(prefix) + len(content)
+        if empty == prefix + prompt[end:]:
+            return prefix, content
+
+    # A generation header may include implicit reasoning absent from a supplied
+    # assistant row. Locate that row by replacing only its content with a unique
+    # probe, then require the original and empty renders to agree on both sides.
+    marker = "\u27e6continuation-boundary\u27e7"
+    while marker in prompt or marker in content:
+        marker += "_"
+    try:
+        probe = render([*messages[:-1], {**messages[-1], "content": marker}], False)
+    except Exception:
+        probe = ""
+    if probe.count(marker) == 1:
+        prefix, suffix = probe.split(marker)
+        if (
+            empty == prefix + suffix
+            and prompt.startswith(prefix)
+            and prompt.endswith(suffix)
+            and len(prompt) >= len(prefix) + len(suffix)
+        ):
+            end = len(prompt) - len(suffix)
+            rendered_content = prompt[len(prefix) : end]
+            if rendered_content or not content:
+                return prefix, rendered_content
+
+    # Legacy templates may reject probe text. Keep last-occurrence compatibility
+    # only when deleting that exact span reproduces the empty-final render and
+    # no other occurrence does; suffix collisions must never choose a boundary.
+    if content:
+        matches = []
+        start = prompt.find(content)
+        while start >= 0:
+            end = start + len(content)
+            if prompt[:start] + prompt[end:] == empty:
+                matches.append(start)
+            start = prompt.find(content, start + 1)
+        if len(matches) == 1 and matches[0] == prompt.rfind(content):
+            return prompt[: matches[0]], content
+    raise ValueError(
+        "Chat template cannot continue_final_message: final assistant content "
+        "was not found at a verifiable boundary in the rendered prompt"
+    )
+
+
+def _truncate_for_continuation(
+    prompt: str, messages: list[dict], render: Callable[[list[dict], bool], str]
+) -> str:
+    prefix, content = _continuation_span(prompt, messages, render)
+    return prefix + content
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -2462,6 +2553,7 @@ def apply_chat_template(
     model_name: str = "",
     add_generation_prompt: bool = True,
     chat_template_kwargs: dict | None = None,
+    continue_final_message: bool = False,
 ) -> str:
     """Apply a chat template to messages with consistent fallback behavior.
 
@@ -2477,6 +2569,7 @@ def apply_chat_template(
         model_name=model_name,
         add_generation_prompt=add_generation_prompt,
         chat_template_kwargs=chat_template_kwargs,
+        continue_final_message=continue_final_message,
     )
     if isinstance(prompt, str) and _template_drops_think_from_tool_loop_history(
         template_applicator, tools=tools
@@ -2493,6 +2586,7 @@ def _render_chat_template(
     model_name: str = "",
     add_generation_prompt: bool = True,
     chat_template_kwargs: dict | None = None,
+    continue_final_message: bool = False,
 ) -> str:
     """Apply a chat template to messages with consistent fallback behavior.
 
@@ -2510,11 +2604,13 @@ def _render_chat_template(
         model_name: Model name string, used for auto-detection of
             ``enable_thinking`` when set to None.
         add_generation_prompt: Whether the template should append the
-            assistant generation prefix (default True — every serving path).
-            Passed False only by the reasoning-budget seed probe
+            assistant generation prefix (default True).
+            Also passed False by the reasoning-budget seed probe
             (``routes/chat.py::_template_generation_prefix``), which renders the
             SAME conversation with and without the generation prompt and takes
             the delta to isolate the template-added prefix exactly.
+        continue_final_message: Continue the final assistant content, omitting
+            turn terminators. Requires add_generation_prompt=False.
 
     Returns:
         The formatted prompt string.  Falls back to a plain
@@ -2541,6 +2637,14 @@ def _render_chat_template(
     # the same "tool content missing" footgun (Qwen3 rendered an empty
     # ``<tool_response>``, Hermes3 ``TypeError``-d).
     messages = _normalize_text_only_content_arrays(messages)
+    if continue_final_message:
+        messages = [
+            *messages[:-1],
+            {
+                **messages[-1],
+                "content": normalize_assistant_content(messages[-1].get("content")),
+            },
+        ]
 
     # GH-973: enforce the assistant tool_call.arguments = dict invariant
     # BEFORE any Jinja rendering. Every mainstream HF chat template
@@ -2613,12 +2717,28 @@ def _render_chat_template(
     # DeepSeek-V4-Flash-0731 intentionally ships a Python encoder instead of
     # a Jinja template.  Route by model identity before the generic tokenizer
     # fallback (which would otherwise silently apply ChatML).
+    def _render_without_continuation(candidate_messages, generation):
+        return _render_chat_template(
+            template_applicator,
+            candidate_messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            model_name=model_name,
+            add_generation_prompt=generation,
+            chat_template_kwargs=chat_template_kwargs,
+        )
+
     if is_deepseek_v4:
-        return encode_messages(
+        prompt = encode_messages(
             messages,
             tools=tools,
             enable_thinking=enable_thinking is not False,
             add_generation_prompt=add_generation_prompt,
+        )
+        return (
+            _truncate_for_continuation(prompt, messages, _render_without_continuation)
+            if continue_final_message
+            else prompt
         )
 
     if is_original_v4:
@@ -2666,7 +2786,11 @@ def _render_chat_template(
             )
             if prompt.endswith(suffix):
                 prompt = prompt[: -len(suffix)]
-        return prompt
+        return (
+            _truncate_for_continuation(prompt, messages, _render_without_continuation)
+            if continue_final_message
+            else prompt
+        )
 
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
@@ -2676,7 +2800,7 @@ def _render_chat_template(
         if tools:
             messages = _inject_tools_into_messages(messages, tools)
         prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-        return prompt + "\nassistant:"
+        return prompt + "\nassistant:" if add_generation_prompt else prompt
 
     if enable_thinking is None:
         enable_thinking = "coder" not in model_name.lower()
@@ -2686,6 +2810,8 @@ def _render_chat_template(
         "add_generation_prompt": add_generation_prompt,
         "enable_thinking": enable_thinking,
     }
+    if continue_final_message:
+        template_kwargs["continue_final_message"] = True
     if tools:
         template_kwargs["tools"] = tools
 
@@ -2704,7 +2830,13 @@ def _render_chat_template(
     # below (and the ``reasoning_effort`` pop in the second retry) handles
     # that exactly as it does today.
     for key, value in supplied_template_kwargs.items():
-        if key in ("tokenize", "add_generation_prompt", "enable_thinking", "tools"):
+        if key in (
+            "tokenize",
+            "add_generation_prompt",
+            "continue_final_message",
+            "enable_thinking",
+            "tools",
+        ):
             continue
         if key not in template_kwargs:
             template_kwargs[key] = value
@@ -2770,13 +2902,30 @@ def _render_chat_template(
     if _looks_like_hy3(model_name) and enable_thinking is not False:
         template_kwargs.setdefault("reasoning_effort", "low")
 
+    def _apply_native(candidate_messages, **candidate_kwargs):
+        if not candidate_kwargs.get("continue_final_message"):
+            return template_applicator.apply_chat_template(
+                candidate_messages, **candidate_kwargs
+            )
+        legacy_kwargs = dict(candidate_kwargs)
+        legacy_kwargs.pop("continue_final_message")
+
+        def render(rows, generation):
+            return template_applicator.apply_chat_template(
+                rows, **{**legacy_kwargs, "add_generation_prompt": generation}
+            )
+
+        # Accepting the native flag is not proof that an applicator honors it.
+        # Construct every continuation from the paired closed/empty/probe proof.
+        closed = render(candidate_messages, False)
+        proven = _truncate_for_continuation(closed, candidate_messages, render)
+        return proven
+
     def _apply_with_alternating_fallback(
         candidate_messages: list[dict], candidate_kwargs: dict
     ) -> str:
         try:
-            return template_applicator.apply_chat_template(
-                candidate_messages, **candidate_kwargs
-            )
+            return _apply_native(candidate_messages, **candidate_kwargs)
         except Exception as exc:
             if "conversation roles must alternate" not in str(exc).lower():
                 raise
@@ -2796,9 +2945,7 @@ def _render_chat_template(
                 if fallback_tools:
                     flattened = _inject_tools_into_messages(flattened, fallback_tools)
             try:
-                return template_applicator.apply_chat_template(
-                    flattened, **alternating_kwargs
-                )
+                return _apply_native(flattened, **alternating_kwargs)
             except Exception:
                 raise exc
 
