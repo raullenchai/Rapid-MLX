@@ -4187,6 +4187,12 @@ def _continuation_prompt_context(request, cfg, messages=None, engine=None):
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        if not is_chat_template_error(exc):
+            raise
+        raise HTTPException(
+            status_code=400, detail=f"Chat template error: {exc}"
+        ) from exc
     request._continuation_prompt_parse_context = context
     return context
 

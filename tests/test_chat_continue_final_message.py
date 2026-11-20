@@ -1558,3 +1558,32 @@ def test_unavailable_generation_render_retains_posthoc_budget(client):
     )
     assert processor is None
     assert chat._effective_posthoc_reasoning_cap({}, request) == 8
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [(TypeError("template filter failed"), 400), (RuntimeError("engine down"), None)],
+)
+def test_continuation_context_maps_only_template_errors_to_400(client, error, expected):
+    from fastapi import HTTPException
+
+    _, cfg = client
+    cfg.engine = CapturingEngine("unused")
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[*MESSAGES[:1], {"role": "assistant", "content": "Start"}],
+        **OPTIONS,
+    )
+
+    def broken(*args, **kwargs):
+        raise error
+
+    cfg.engine.tokenizer.apply_chat_template = broken
+    rows = [m.model_dump(exclude_none=True) for m in request.messages]
+    if expected is None:
+        with pytest.raises(type(error)):
+            chat._continuation_prompt_context(request, cfg, rows)
+    else:
+        with pytest.raises(HTTPException) as excinfo:
+            chat._continuation_prompt_context(request, cfg, rows)
+        assert excinfo.value.status_code == expected
