@@ -181,6 +181,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-audio",
         # Local folder search is a feature opt-in, not engine routing.
         "--enable-local-search",
+        # Serve control plane: disables the metadata call log only; it
+        # never changes engine, model, or route selection.
+        "--no-call-log",
         # Hidden deprecated speculative-decoding compatibility aliases.
         # They normalize into --speculative-config and are intentionally not
         # auto-routing profile overrides.
