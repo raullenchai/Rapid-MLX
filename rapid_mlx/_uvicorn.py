@@ -191,6 +191,15 @@ class AcceptingConnectionsServer(uvicorn.Server):
         try:
             await self._startup_with_progress(sockets)
         except SystemExit as exc:
+            from rapid_mlx.control.protocol import report, report_startup_failure
+
+            if (
+                getattr(self, "lifespan", None) is not None
+                and self.lifespan.should_exit
+            ):
+                report_startup_failure("lifespan startup failed")
+            else:
+                report("bind_failed")
             if (
                 getattr(self, "lifespan", None) is not None
                 and self.lifespan.should_exit
@@ -225,8 +234,10 @@ class AcceptingConnectionsServer(uvicorn.Server):
             # Uvicorn releases that return here leave ``Server.serve()`` with a
             # successful process status. Preserve a deterministic non-zero
             # startup result for supervisors and the Desktop sidecar.
+            from rapid_mlx.control.protocol import report_startup_failure
             from rapid_mlx.telemetry.server_start import failed
 
+            report_startup_failure("lifespan startup failed")
             failed("engine_start")
             raise SystemExit(STARTUP_FAILURE)
 
@@ -235,6 +246,10 @@ class AcceptingConnectionsServer(uvicorn.Server):
             getattr(server, "sockets", None) for server in listeners
         )
         if self.started and listener_created and not self._accepting_callback_ran:
+            from rapid_mlx.control.protocol import report
+
+            if os.environ.get("RAPID_MLX_CONTROL_RUNNER") == "1":
+                report("bound", port=listeners[0].sockets[0].getsockname()[1])
             self._accepting_callback_ran = True
             from rapid_mlx._signal_observability import ensure_crash_sink
             from rapid_mlx.telemetry.server_start import ready
@@ -307,6 +322,9 @@ class AcceptingConnectionsServer(uvicorn.Server):
             except OSError as exc:
                 logger.error(exc)
                 raise SystemExit(STARTUP_FAILURE) from exc
+            from rapid_mlx.control.protocol import report
+
+            report("bound", port=listener.getsockname()[1], ready=False)
             if os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") != "1":
                 probe = StartupProbe(listener)
 
@@ -346,6 +364,24 @@ def _run_server(
         # The LAN boundary must see the socket peer, regardless of proxy env.
         config_kwargs["proxy_headers"] = False
     config = uvicorn.Config(app, **config_kwargs)
+    if os.environ.get("RAPID_MLX_CONTROL_RUNNER") == "1" and config.proxy_headers:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+        # Preserve existing proxy behavior on every existing route. Only the
+        # local control endpoint must see the unmodified transport peer.
+        original_app = config.app
+        proxied_app = ProxyHeadersMiddleware(
+            original_app, trusted_hosts=config.forwarded_allow_ips
+        )
+
+        async def transport_peer_status(scope, receive, send):
+            target = (
+                original_app if scope.get("path") == "/rapid/v1/status" else proxied_app
+            )
+            await target(scope, receive, send)
+
+        config.app = transport_peer_status
+        config.proxy_headers = False
     server = AcceptingConnectionsServer(config, on_server_accepting=on_server_accepting)
     if (config.reload or config.workers > 1) and not isinstance(app, str):
         logger.warning(

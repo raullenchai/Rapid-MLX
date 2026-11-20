@@ -3963,6 +3963,7 @@ from .routes.anthropic import router as _anthropic_router
 from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
+from .routes.control_status import mount_status as _mount_control_status
 from .routes.cua import router as _cua_router
 from .routes.embeddings import router as _embeddings_router
 from .routes.health import admin_router as _health_admin_router
@@ -3980,6 +3981,7 @@ from .routes.responses import router as _responses_router
 from .routes.runtime_config import router as _runtime_config_router
 from .routes.video import router as _video_router
 
+_mount_control_status(app)
 app.include_router(_probe_router)
 app.include_router(_health_router)
 # Destructive control-plane routes (F-150 / F-151). Distinct router so the

@@ -393,8 +393,10 @@ def _exit_for_port_collision(
 ) -> NoReturn:
     """Emit the established preflight failure and terminate with rc 1."""
 
+    from rapid_mlx.control.protocol import report
     from rapid_mlx.telemetry.server_start import failed
 
+    report("bind_failed")
     failed("bind", port_explicit=port_explicit, exit_reason="port_in_use")
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
@@ -418,6 +420,9 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
 def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
     """Turn an invalid/unavailable bind address into a CLI diagnostic."""
 
+    from rapid_mlx.control.protocol import report
+
+    report("bind_failed")
     display_host = host or "0.0.0.0"
     print(
         f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
@@ -17316,6 +17321,9 @@ def _capture_start_failures(func: Callable):
         try:
             return func(*args, **kwargs)
         except BaseException as exc:
+            from rapid_mlx.control.protocol import report_startup_failure
+
+            report_startup_failure(type(exc).__name__)
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
@@ -17326,6 +17334,46 @@ def _capture_start_failures(func: Callable):
             raise
 
     return wrapped
+
+
+def _dispatch_serve_control(args):
+    """Decide before runtime setup; fallback continues in this same process."""
+    from rapid_mlx.control import RUNNER_ENV
+    from rapid_mlx.control.modes import supervised_mode
+
+    mode = supervised_mode(args)
+    if mode is not None:
+        from rapid_mlx.control.supervisor import supervise
+        from rapid_mlx.server_exposure import normalize_bind_host
+
+        port = _resolve_serve_port(
+            normalize_bind_host(args.host),
+            args.port,
+            model=args.model or "retrieval",
+            port_explicit=port_explicit_for(args),
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+        raise SystemExit(
+            supervise(
+                [sys.executable, "-m", "rapid_mlx.cli", *sys.argv[1:]],
+                port=port,
+                mode=mode,
+                listen_fd=getattr(args, "listen_fd", None),
+            )
+        )
+    if (
+        RUNNER_ENV not in os.environ
+        and "RAPID_MLX_WATCHDOG_PPID" not in os.environ
+        and getattr(args, "watchdog_ppid", None) is None
+        and os.environ.get("RAPID_MLX_SINGLE_PROCESS") != "1"
+    ):
+        # Continue directly into the exact legacy path, preserving argv,
+        # environment, watchdog ownership and inherited descriptors.
+        print("Control functionality is unavailable in this mode.", file=sys.stderr)
+    elif os.environ.get(RUNNER_ENV) == "1":
+        from rapid_mlx.control.protocol import install_startup_report
+
+        install_startup_report()
 
 
 @_capture_start_failures
@@ -17419,6 +17467,12 @@ def main():
             ):
                 _print_next_step()
         raise
+    if args.command == "status":
+        from rapid_mlx.control.protocol import status_command
+
+        raise SystemExit(status_command(args))
+    if args.command == "serve":
+        _dispatch_serve_control(args)
     if args.command == "top":
         from rapid_mlx.top import top_command
 
