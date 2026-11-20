@@ -334,7 +334,7 @@ def test_catalog():
         assert p.is_moe and p.is_text_only and p.modality == "text"
         assert p.is_hybrid and p.is_hybrid_explicit
         assert not p.supports_spec_decode and not p.mtp_default_enabled
-        assert p.tool_call_parser is None and p.reasoning_parser is None
+        assert p.tool_call_parser == "inkling" and p.reasoning_parser == "inkling"
         assert detect_model_config(name) == p
 
 
@@ -347,7 +347,7 @@ def test_local_metadata(tmp_path, directory):
     p = detect_model_config(str(tmp_path))
     assert p.is_moe and p.is_text_only and p.is_hybrid and p.is_hybrid_explicit
     assert not p.supports_spec_decode
-    assert p.tool_call_parser is None and p.reasoning_parser is None
+    assert p.tool_call_parser == "inkling" and p.reasoning_parser == "inkling"
 
 
 def test_preflight():

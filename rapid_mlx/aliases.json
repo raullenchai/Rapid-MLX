@@ -10,8 +10,8 @@
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
-    "tool_call_parser": null,
-    "reasoning_parser": null
+    "tool_call_parser": "inkling",
+    "reasoning_parser": "inkling"
   },
   "raon-1-nano": {
     "hf_path": "KRAFTON/Raon-1-nano-mlx",
