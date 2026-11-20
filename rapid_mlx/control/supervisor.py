@@ -7,14 +7,11 @@ import contextlib
 import json
 import logging
 import os
-import queue
 import secrets
 import shutil
 import signal
 import stat
-import sys
 import tempfile
-import threading
 import time
 
 from . import (
@@ -225,66 +222,6 @@ class Supervisor:
                     "Control plane %s failed (%s).", operation, type(exc).__name__
                 )
 
-    async def pump(self, source, sink):
-        # Mirror the service's daemon pipe pumps. A stalled output consumer
-        # must not make asyncio's executor join exceed the shutdown deadline.
-        loop = asyncio.get_running_loop()
-        inbox = queue.Queue()
-
-        def copy():
-            while (item := inbox.get()) is not None:
-                chunk, completed = item
-                error = None
-                try:
-                    self.write(sink, chunk)
-                except (OSError, ValueError) as exc:
-                    error = exc
-
-                def finish(future=completed, result=error):
-                    if not future.done():
-                        future.set_result(result)
-
-                with contextlib.suppress(RuntimeError):
-                    loop.call_soon_threadsafe(finish)
-
-        threading.Thread(target=copy, daemon=True).start()
-        broken = False
-        stopping = asyncio.create_task(self.stopping.wait())
-        try:
-            while chunk := await source.read(65536):
-                if not broken:
-                    completed = loop.create_future()
-                    # Only one chunk can be outstanding: await its completion
-                    # before reading again, keeping memory and queue bounded.
-                    inbox.put_nowait((chunk, completed))
-                    await asyncio.wait(
-                        (completed, stopping), return_when=asyncio.FIRST_COMPLETED
-                    )
-                    if not completed.done():
-                        try:
-                            await asyncio.wait_for(asyncio.shield(completed), 0.1)
-                        except TimeoutError:
-                            # Continue draining the child so Process.wait() can
-                            # finish even when its pipe transport was paused.
-                            broken = True
-                            continue
-                    if completed.result() is not None:
-                        broken = True
-                        self.stop(signal.SIGTERM)
-        finally:
-            inbox.put_nowait(None)
-            stopping.cancel()
-            await asyncio.gather(stopping, return_exceptions=True)
-
-    @staticmethod
-    def write(sink, chunk):
-        data = memoryview(chunk)
-        while data:
-            written = os.write(sink.fileno(), data)
-            if written <= 0:
-                raise OSError("control log pipe stopped accepting bytes")
-            data = data[written:]
-
     def spawn_argv(self):
         if self.listen_fd is not None:
             return self.argv
@@ -305,19 +242,13 @@ class Supervisor:
                 self.tree.send_root(signum)
 
     async def wait_exit(self):
-        # asyncio Process.wait can wait for inherited pipe EOF after exit.
-        # The child watcher sets returncode independently of those pipes.
+        # Poll the child watcher so shutdown stays bounded independently of
+        # descendants or stalled consumers of the inherited output descriptors.
         while self.child.returncode is None:
             if not self.stopping.is_set():
                 self.tree.update_root_state()
             await asyncio.sleep(0.1)
         return self.child.returncode
-
-    def close_pipes(self):
-        for fd in (1, 2):
-            transport = self.child._transport.get_pipe_transport(fd)
-            if transport is not None:
-                transport.close()
 
     def restart_delay(self):
         return min(60, 2 ** min(self.restarts, 6))
@@ -345,8 +276,10 @@ class Supervisor:
                     *self.spawn_argv(),
                     env=self.env,
                     pass_fds=(() if self.listen_fd is None else (self.listen_fd,)),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                    # Inherit terminal/file/service descriptors directly: no
+                    # relay buffer to lose on exit or hold shutdown open.
+                    stdout=None,
+                    stderr=None,
                 )
                 self.tree = ProcessTree(self.child.pid)
                 self.tree.start_tracking()
@@ -356,14 +289,6 @@ class Supervisor:
                 if self.stopping.is_set():
                     if self.stop_signal != signal.SIGINT:
                         self.signal_descendants(self.stop_signal)
-                pumps = [
-                    asyncio.create_task(
-                        self.pump(self.child.stdout, sys.stdout.buffer)
-                    ),
-                    asyncio.create_task(
-                        self.pump(self.child.stderr, sys.stderr.buffer)
-                    ),
-                ]
                 wait = asyncio.create_task(self.wait_exit())
                 stopping = asyncio.create_task(self.stopping.wait())
                 await asyncio.wait(
@@ -388,29 +313,8 @@ class Supervisor:
                 self.tree.stop_tracking()
                 self.signal_descendants(signal.SIGKILL)
                 code = await asyncio.wait_for(wait, 0.2)
-                # Drain normal exits to EOF, allowing buffered output to reach
-                # a healthy consumer. Bound inherited pipes/stalled consumers,
-                # and honor shutdown even if it starts during this drain.
-                drain_deadline = time.monotonic() + 5.0
-                pending = set(pumps)
-                while pending:
-                    if self.stop_started is not None:
-                        drain_deadline = min(drain_deadline, self.stop_started + 4.3)
-                    watched = pending if stopping.done() else pending | {stopping}
-                    done, _ = await asyncio.wait(
-                        watched,
-                        timeout=max(0, drain_deadline - time.monotonic()),
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    pending.difference_update(done)
-                    if not done:
-                        break
                 stopping.cancel()
                 await asyncio.gather(stopping, return_exceptions=True)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pumps, return_exceptions=True)
-                self.close_pipes()
                 if self.stopping.is_set():
                     return 128 + self.stop_signal
                 # Retrying the same invalid invocation cannot repair startup.
@@ -434,7 +338,6 @@ class Supervisor:
                 self.tree.stop_tracking()
             if self.child is not None:
                 self.signal_descendants(signal.SIGKILL)
-                self.close_pipes()
                 if self.child.returncode is None:
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(self.wait_exit(), 0.2)

@@ -127,6 +127,8 @@ if mode == 'usage':
     sys.exit(2)
 if mode == 'crash-before-report':
     os._exit(7)
+if mode == 'unflushed':
+    print('small unflushed startup line')
 if mode == 'logs':
     os.write(1, b'x' * 262144 + b'\\x00\\xff')
     os.write(2, b'y' * 262144 + b'\\x00\\xff')
@@ -363,43 +365,48 @@ def test_binary_logs_are_drained_verbatim(fake):
     assert stderr == b"y" * 262144 + b"\x00\xff"
 
 
-async def test_exit_burst_drains_to_eof_without_processes(monkeypatch):
+def test_runner_inherits_log_file_redirection(fake):
+    base, launch = fake
+    proc = launch(
+        "logs",
+        injection="""
+import os
+from pathlib import Path
+log = open(Path(os.environ['TMPDIR']) / 'redirected.log', 'wb', buffering=0)
+os.dup2(log.fileno(), 1)
+os.dup2(log.fileno(), 2)
+""",
+    )
+    stdout, stderr = proc.communicate(timeout=10)
+    assert proc.returncode == 0
+    assert stdout == stderr == b""
+    assert (base / "redirected.log").read_bytes() == (
+        b"x" * 262144 + b"\x00\xff" + b"y" * 262144 + b"\x00\xff"
+    )
+
+
+async def test_runner_inherits_output_descriptors_without_processes(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock, Mock
 
     from rapid_mlx.control import supervisor as module
 
     instance = Supervisor([], port=8000, mode="text-vlm")
-    stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
-    payloads = (b"x" * 1048576 + b"\x00\xff", b"y" * 1048576 + b"\x00\xff")
-    for source, payload in zip((stdout, stderr), payloads):
-        # Model the buffered final burst from an already-exited runner.
-        source.feed_data(payload)
-        source.feed_eof()
-    child = SimpleNamespace(pid=123, returncode=0, stdout=stdout, stderr=stderr)
-    output = {sys.stdout.buffer: bytearray(), sys.stderr.buffer: bytearray()}
-
-    def write(sink, chunk):
-        # A healthy but slower consumer takes longer than the old 0.3s grace.
-        time.sleep(0.04)
-        output[sink].extend(chunk)
-
+    child = SimpleNamespace(pid=123, returncode=0, stdout=None, stderr=None)
+    create = AsyncMock(return_value=child)
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(loop, "add_signal_handler", Mock())
     monkeypatch.setattr(loop, "remove_signal_handler", Mock())
     monkeypatch.setattr(module.signal, "signal", Mock())
-    monkeypatch.setattr(
-        module.asyncio, "create_subprocess_exec", AsyncMock(return_value=child)
-    )
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create)
     monkeypatch.setattr(module, "ProcessTree", Mock())
     monkeypatch.setattr(instance, "open", AsyncMock())
     monkeypatch.setattr(instance, "publish_index", Mock())
-    monkeypatch.setattr(instance, "close_pipes", Mock())
     monkeypatch.setattr(instance, "signal_descendants", Mock())
-    monkeypatch.setattr(instance, "write", write)
 
     assert await instance.run() == 0
-    assert tuple(bytes(data) for data in output.values()) == payloads
+    assert create.await_args.kwargs["stdout"] is None
+    assert create.await_args.kwargs["stderr"] is None
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
@@ -624,8 +631,6 @@ async def test_startup_errors_are_terminal_without_processes(
     monkeypatch.setattr(module, "ProcessTree", Mock())
     monkeypatch.setattr(instance, "open", AsyncMock())
     monkeypatch.setattr(instance, "publish_index", Mock())
-    monkeypatch.setattr(instance, "pump", AsyncMock())
-    monkeypatch.setattr(instance, "close_pipes", Mock())
     monkeypatch.setattr(instance, "signal_descendants", Mock())
     monkeypatch.setattr(instance, "restart_delay", lambda: 0)
 
@@ -753,11 +758,12 @@ def test_control_fallback_notice_waits_for_log_redirection(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("root_path", ["", "/prefix"])
+@pytest.mark.parametrize("app_path", ["object", "string", "factory", "object-factory"])
 @pytest.mark.parametrize(
     "transport_peer,expected", [("192.168.1.2", 403), ("127.0.0.1", 200)]
 )
 def test_forwarder_preserves_transport_peer_with_proxy_headers(
-    monkeypatch, root_path, transport_peer, expected
+    monkeypatch, root_path, app_path, transport_peer, expected
 ):
     from fastapi import Request
 
@@ -778,20 +784,42 @@ def test_forwarder_preserves_transport_peer_with_proxy_headers(
         return {"peer": request.client.host}
 
     captured = []
+    factory_calls = []
+
+    def factory():
+        factory_calls.append(True)
+        return app
+
+    monkeypatch.setitem(
+        sys.modules, "control_test_app", SimpleNamespace(app=app, factory=factory)
+    )
+    target = {
+        "object": app,
+        "string": "control_test_app:app",
+        "factory": "control_test_app:factory",
+        "object-factory": factory,
+    }[app_path]
 
     class Server:
         started = True
 
         def __init__(self, config, **kwargs):
-            captured.append(config.app)
+            self.config = config
+            assert not config.loaded
 
         def run(self):
-            pass
+            self.config.load()
+            captured.append(self.config.loaded_app)
 
     monkeypatch.setattr(_uvicorn, "AcceptingConnectionsServer", Server)
     _uvicorn._run_server(
-        app, forwarded_allow_ips="*", proxy_headers=True, root_path=root_path
+        target,
+        factory="factory" in app_path,
+        forwarded_allow_ips="*",
+        proxy_headers=True,
+        root_path=root_path,
     )
+    assert len(factory_calls) == int("factory" in app_path)
     with TestClient(
         captured[0], client=(transport_peer, 1234), root_path=root_path
     ) as client:
@@ -1425,6 +1453,26 @@ def test_pre_spawn_cleanup_failure_cannot_prevent_fallback(fake, monkeypatch, ca
     assert "serving in single process" in caplog.records[0].message
     assert caplog.records[0].exc_info is None
     assert list(base.glob("rmlx-cp-*/i-*"))
+
+
+def test_unflushed_runner_line_reaches_terminal_while_alive(fake, monkeypatch):
+    # No -u or explicit flush: inheriting the TTY must retain line buffering.
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
+    base, launch = fake
+    proc = launch("unflushed", terminal=True)
+    eventually(lambda: (base / "armed").exists())
+    output = bytearray()
+
+    def printed():
+        readable, _, _ = select.select([proc.terminal], [], [], 0.05)
+        if readable:
+            output.extend(os.read(proc.terminal, 65536))
+        return b"small unflushed startup line" in output
+
+    eventually(printed, timeout=2)
+    assert proc.poll() is None
+    proc.terminate()
+    assert proc.wait(timeout=6) == 143
 
 
 def test_foreground_prompt_and_ctrl_c(fake):

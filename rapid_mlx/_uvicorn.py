@@ -367,6 +367,25 @@ class AcceptingConnectionsServer(uvicorn.Server):
                 listener.close()
 
 
+class _TransportPeerConfig(uvicorn.Config):
+    loaded_app: Any
+
+    def load(self) -> None:
+        super().load()
+        if os.environ.get("RAPID_MLX_CONTROL_RUNNER") != "1" or not self.proxy_headers:
+            return
+        # Uvicorn has resolved imports/factories and installed proxy middleware.
+        # Capture the socket peer outside that middleware, before it rewrites
+        # scope['client'], without changing app resolution or interface detection.
+        loaded_app: Any = self.loaded_app
+
+        async def transport_peer_status(scope, receive, send):
+            scope["_rapid_mlx_transport_peer"] = scope.get("client")
+            await loaded_app(scope, receive, send)
+
+        self.loaded_app = transport_peer_status
+
+
 def _run_server(
     app: Any,
     *,
@@ -381,23 +400,7 @@ def _run_server(
     if os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") == "1":
         # The LAN boundary must see the socket peer, regardless of proxy env.
         config_kwargs["proxy_headers"] = False
-    config = uvicorn.Config(app, **config_kwargs)
-    if os.environ.get("RAPID_MLX_CONTROL_RUNNER") == "1" and config.proxy_headers:
-        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-
-        # Preserve the socket peer before proxy headers rewrite scope['client'].
-        # Control authorization must not depend on path/root_path matching here.
-        original_app = config.app
-        proxied_app = ProxyHeadersMiddleware(
-            original_app, trusted_hosts=config.forwarded_allow_ips
-        )
-
-        async def transport_peer_status(scope, receive, send):
-            scope["_rapid_mlx_transport_peer"] = scope.get("client")
-            await proxied_app(scope, receive, send)
-
-        config.app = transport_peer_status
-        config.proxy_headers = False
+    config = _TransportPeerConfig(app, **config_kwargs)
     server = AcceptingConnectionsServer(config, on_server_accepting=on_server_accepting)
     if (config.reload or config.workers > 1) and not isinstance(app, str):
         logger.warning(
