@@ -701,6 +701,28 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
     assert convert_fp8(tmp_path, tmp_path / "out2", 4, 64)
     with pytest.raises(ValueError, match="already exists"):
         convert_fp8(tmp_path, tmp_path, 4, 64)
+    # Per-expert layouts reach sanitize() as one complete bank per projection.
+    experts = config["n_routed_experts"]
+    for e in range(experts):
+        arrays[f"model.layers.1.mlp.experts.{e}.down_proj.weight"] = (
+            np.full((8, 4), e, np.float32),
+            "F32",
+        )
+    base = "model.layers.1.mlp.switch_mlp.down_proj"
+    expected.update(
+        {base + "." + leaf: np.zeros(1) for leaf in ("weight", "scales", "biases")}
+    )
+    quantized.clear()
+    assert convert_fp8(tmp_path, tmp_path / "out5", 4, 64)
+    stacked = [value for value, _ in quantized if value.shape == (experts, 8, 4)]
+    assert len(stacked) == 1
+    for e in range(experts):
+        np.testing.assert_array_equal(stacked[0][e], np.full((8, 4), e))
+    arrays.pop(f"model.layers.1.mlp.experts.{experts - 1}.down_proj.weight")
+    with pytest.raises(ValueError, match="incomplete routed-expert banks"):
+        convert_fp8(tmp_path, tmp_path / "out6", 4, 64)
+    for e in range(experts - 1):
+        arrays.pop(f"model.layers.1.mlp.experts.{e}.down_proj.weight")
     arrays.pop("model.layers.1.mlp.experts.gate_up_proj")
     assert convert_fp8(tmp_path, tmp_path / "out3", 4, 64) is False
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "other"}))

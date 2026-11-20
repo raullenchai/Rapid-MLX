@@ -3,6 +3,7 @@
 
 import json
 import logging
+import re
 from functools import partial
 from pathlib import Path
 
@@ -62,6 +63,12 @@ def convert_fp8(source, destination, bits, group_size):
         logging.getLogger(__name__).info(
             "Hy4 Flash text-only: skipping vision tower and dfly_layers weights"
         )
+    # Per-expert checkpoints must reach sanitize() as a complete bank, because
+    # sanitize() stacks all routed experts of a projection at once. Banked
+    # checkpoints (one tensor per projection) pass straight through.
+    per_expert = re.compile(r"(.*\.switch_mlp\.)(\d+)(\..*)")
+    experts = model.args.n_routed_experts
+    pending = {}
     for name in weight_map:
         target = checkpoint_key(name)
         if target is None or name.endswith("_scale_inv"):
@@ -72,8 +79,17 @@ def convert_fp8(source, destination, bits, group_size):
             value = mx.array(dequantize_fp8(raw.reshape(shape), scale, block))
         else:
             value = read(name)
+        match = per_expert.fullmatch(target)
+        if match is None:
+            group = {name: value}
+        else:
+            bank = pending.setdefault(match.group(1) + match.group(3), {})
+            bank[name] = value
+            if len(bank) < experts:
+                continue
+            group = pending.pop(match.group(1) + match.group(3))
         # Sanitize before quantization, including the packed expert gate/up split.
-        mapped = model.sanitize({name: value})
+        mapped = model.sanitize(group)
         for key, value in mapped.items():
             path = key.removesuffix(".weight")
             if key.endswith(".weight") and path + ".scales" in expected:
@@ -90,6 +106,11 @@ def convert_fp8(source, destination, bits, group_size):
             else:
                 result[key] = value
                 mx.eval(value)
+    if pending:
+        raise ValueError(
+            "Hy4 checkpoint has incomplete routed-expert banks: "
+            + ", ".join(sorted(pending))
+        )
     with typed_mlx_load_boundaries():
         model.load_weights(list(result.items()), strict=True)
     model.eval()
