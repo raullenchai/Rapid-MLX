@@ -2685,6 +2685,12 @@ def _add_alias_parser(
     log_parser.add_argument("--port", type=_port_arg, help="Select a serve by port")
     log_parser.add_argument("--limit", type=int, default=50, help="Calls (max 1000)")
     log_parser.add_argument("--json", action="store_true", help="Print calls as JSON")
+    jobs = subparsers.add_parser("jobs", help="Show serve jobs")
+    jobs.add_argument("--port", type=_port_arg, help="Select a serve by port")
+    jobs.add_argument("--json", action="store_true", help="Print jobs as JSON")
+    cancel = jobs.add_subparsers(dest="jobs_action").add_parser("cancel")
+    cancel.add_argument("id", help="Job ID")
+    cancel.add_argument("--port", type=_port_arg, default=argparse.SUPPRESS)
     ps_parser = subparsers.add_parser("ps", help="List running rapid-mlx servers")
     ps_parser.add_argument(
         "--json",
