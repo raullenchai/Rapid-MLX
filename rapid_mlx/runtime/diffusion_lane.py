@@ -887,10 +887,25 @@ class DiffusionEngine(BaseEngine):
         )
         if "tools" in template_kwargs:
             template_kwargs["tools"] = sanitized_tools
-        return self._processor.tokenizer.apply_chat_template(
-            messages,
-            **template_kwargs,
-        )
+
+        def render(rows, generation):
+            return self._processor.tokenizer.apply_chat_template(
+                rows,
+                **{
+                    **{
+                        k: v
+                        for k, v in template_kwargs.items()
+                        if k != "continue_final_message"
+                    },
+                    "add_generation_prompt": generation,
+                },
+            )
+
+        if continue_final_message:
+            from rapid_mlx.utils.chat_template import _truncate_for_continuation
+
+            return _truncate_for_continuation(render(messages, False), messages, render)
+        return render(messages, add_generation_prompt)
 
     def _build_skip_special_token_ids(
         self, tokenizer: Any, *, has_tools: bool = False

@@ -4134,22 +4134,67 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             _release_primary_request_unless_committed(engine, _commit_state[0])
 
 
-def _continuation_reasoning_prefix(request) -> str:
-    """Only the assistant prefill can seed continuation reasoning state."""
+def _continuation_content(request) -> str:
+    """Normalize the assistant content before rendering it."""
     from ..utils.chat_template import normalize_assistant_content
 
     return normalize_assistant_content(request.messages[-1].content)
 
 
-def _continuation_starts_in_thinking(request, cfg) -> bool:
-    from ..api.reasoning_budget import reasoning_seed_state
+def _continuation_prompt_context(request, cfg, messages=None, engine=None):
+    from ..prompt_parse_context import continuation_prompt_parse_context
+    from ..service.helpers import _build_prompt_with_thinking_compat
+    from ..utils.chat_template import is_flint_chat_template
 
+    context = getattr(request, "_continuation_prompt_parse_context", None)
+    if context is not None and messages is None:
+        return context
+    previous_context = context
+    engine = engine or cfg.engine
+    rows = messages or [m.model_dump(exclude_none=True) for m in request.messages]
+    thinking = _resolve_enable_thinking(request)
+    tools = convert_tools_for_template(request.tools) if request.tools else None
+
+    def render(rows, generation, continuing=False):
+        return _build_prompt_with_thinking_compat(
+            engine.build_prompt,
+            rows,
+            tools=tools,
+            enable_thinking=thinking,
+            chat_template_kwargs=request.chat_template_kwargs,
+            add_generation_prompt=generation,
+            continue_final_message=continuing,
+        )
+
+    try:
+        prompt = render(rows, False, True)
+        context = continuation_prompt_parse_context(
+            prompt,
+            rows,
+            render,
+            thinking=thinking,
+            flint=is_flint_chat_template(
+                engine.tokenizer,
+                tools=tools,
+                chat_template_kwargs=request.chat_template_kwargs,
+            ),
+        )
+        if previous_context is not None and (
+            previous_context.initial_channel != context.initial_channel
+        ):
+            raise ValueError(
+                "Chat template continuation reasoning state changed during prompt preparation"
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request._continuation_prompt_parse_context = context
+    return context
+
+
+def _continuation_starts_in_thinking(request, cfg) -> bool:
     return (
         getattr(request, "continue_final_message", False)
-        and reasoning_seed_state(
-            _continuation_reasoning_prefix(request), cfg.reasoning_parser_name
-        )
-        == "open"
+        and _continuation_prompt_context(request, cfg).initial_channel == "reasoning"
     )
 
 
@@ -4425,14 +4470,16 @@ def _build_reasoning_budget_processor(
     Whether the span is SEEDED (template prefills ``<think>``) vs EMITTED (the
     model generates it) is derived from the TEMPLATE'S generation-prefix delta
     (``_template_generation_prefix``). For an assistant continuation, classify
-    only that assistant's prefill with the same seed-state mechanism; history
+    only the verified rendered assistant suffix; history
     and user content cannot seed the budget.
     """
+    if getattr(request, "continue_final_message", False):
+        _continuation_prompt_context(request, cfg, messages, engine)
     continuing_reasoning = _continuation_starts_in_thinking(request, cfg)
     if getattr(request, "continue_final_message", False):
         if not continuing_reasoning:
             return None
-        seed_prefix = _continuation_reasoning_prefix(request)
+        seed_prefix = _continuation_prompt_context(request, cfg).assistant_suffix
 
     from ..api.reasoning_budget import (
         build_budget_from_render,
@@ -4536,7 +4583,7 @@ async def _create_chat_completion_impl(
         try:
             # Normalize before multimodal extraction can insert separators
             # between text parts: rendering and reasoning must see one prefill.
-            request.messages[-1].content = _continuation_reasoning_prefix(request)
+            request.messages[-1].content = _continuation_content(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4853,15 +4900,6 @@ async def _create_chat_completion_impl(
     logger.debug(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
     cfg = get_config()
-    if request.continue_final_message and not _continuation_starts_in_thinking(
-        request, cfg
-    ):
-        import copy
-
-        cfg = copy.copy(cfg)
-        # Content continuations must not inherit a new turn's implicit thinking.
-        cfg.reasoning_parser = None
-        cfg.reasoning_parser_name = None
 
     # Authorization uses the caller's declarations before prompt-time narrowing.
     request._tool_authorization_names = {
@@ -5224,6 +5262,18 @@ async def _create_chat_completion_impl(
     # max_tokens default (thinking models need more headroom) and the
     # chat_template kwarg below. (#387)
     resolved_thinking = _resolve_enable_thinking(request)
+
+    if request.continue_final_message:
+        _continuation_prompt_context(request, cfg, messages, engine)
+    if request.continue_final_message and not _continuation_starts_in_thinking(
+        request, cfg
+    ):
+        import copy
+
+        cfg = copy.copy(cfg)
+        # Content continuations must not inherit a new turn's implicit thinking.
+        cfg.reasoning_parser = None
+        cfg.reasoning_parser_name = None
 
     # Select the constraint before augmenting messages or counting prompt tokens.
     # The legacy model-owning decode loop masks token zero; reasoning requests

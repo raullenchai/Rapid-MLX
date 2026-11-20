@@ -1051,8 +1051,9 @@ async def test_generate_keeps_channel_words_as_continuation_content():
 
 
 @pytest.mark.parametrize("guided_result", [None, '{"answer":"thought\\n42"}'])
+@pytest.mark.parametrize("request_id_holder", [None, []])
 async def test_schema_continuation_preserves_mode_on_guided_fallback(
-    monkeypatch, guided_result
+    monkeypatch, guided_result, request_id_holder
 ):
     eng = engine(tokenizer())
     text = '{"answer":"thought\\n42"}'
@@ -1084,6 +1085,7 @@ async def test_schema_continuation_preserves_mode_on_guided_fallback(
     output = await eng.generate_with_schema(
         MESSAGES,
         json_schema={"type": "object", "properties": {"answer": {"type": "string"}}},
+        request_id_holder=request_id_holder,
         **OPTIONS,
     )
     assert output.text == text
@@ -1275,7 +1277,7 @@ def test_continuation_decode_budget_seed(
     )
     if structured:
         assert isinstance(request.messages[-1].content[0], ContentPart)
-    assert chat._continuation_reasoning_prefix(request) == prefill
+    assert chat._continuation_content(request) == prefill
     processor = chat._build_reasoning_budget_processor(
         CapturingEngine("unused"), request, cfg, [], enable_thinking
     )
@@ -1413,3 +1415,146 @@ def test_streaming_prefill_override_survives_reset(client, chunk_size):
             "x" * 80
         )
         assert "".join(e.content or "" for e in events if e.type == "content") == "42"
+
+
+class IgnoringApplicator(LegacyApplicator):
+    def apply_chat_template(self, messages, **kwargs):
+        return super().apply_chat_template(
+            messages,
+            tokenize=kwargs.get("tokenize", False),
+            add_generation_prompt=kwargs.get("add_generation_prompt", True),
+        )
+
+
+@pytest.mark.parametrize("diffusion", [False, True])
+@pytest.mark.parametrize("content", ["end", "", "<think>unfinished"])
+def test_ignored_native_flag_uses_proven_boundary(diffusion, content):
+    tok = IgnoringApplicator()
+    rows = [*MESSAGES[:1], {"role": "assistant", "content": content}]
+    if diffusion:
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        eng = DiffusionEngine("test-model")
+        eng._loaded = True
+        eng._processor = SimpleNamespace(tokenizer=tok)
+        prompt = eng.build_prompt(rows, **OPTIONS)
+    else:
+        prompt = apply_chat_template(tok, rows, **OPTIONS)
+    assert prompt == "user:Write a solution.<end>assistant:" + content
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_ignored_flag_unprovable_boundary_returns_400(client, stream):
+    http, cfg = client
+    cfg.engine = CapturingEngine("should not generate")
+    cfg.engine.tokenizer = IgnoringApplicator()
+    cfg.engine.tokenizer.chat_template = "assistant:<end>"
+    response = http.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": MESSAGES, **OPTIONS, "stream": stream},
+    )
+    assert response.status_code == 400, response.text
+    assert "verifiable boundary" in response.text
+    assert cfg.engine.options is None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("transform", ["escape", "insert", "close"])
+def test_rendered_prefill_controls_reasoning_and_budget(
+    client, monkeypatch, stream, transform
+):
+    from rapid_mlx.api import reasoning_budget
+
+    monkeypatch.setattr(reasoning_budget, "resolve_think_token_ids", lambda *_: (1, 2))
+    monkeypatch.setattr(chat, "_engine_output_vocab_size", lambda _: 10)
+    http, cfg = client
+    cfg.engine = CapturingEngine(
+        "new thought</think>answer" if transform == "insert" else "new answer"
+    )
+    tok = IgnoringApplicator()
+    expression = {
+        "escape": "m.content | e",
+        "insert": "'<think>' ~ m.content",
+        "close": "m.content | replace('<think>', '<think>Done</think>')",
+    }[transform]
+    tok.chat_template = (
+        "{% for m in messages %}{{ m.role }}:"
+        "{% if m.role == 'assistant' %}{{ " + expression + " }}"
+        "{% else %}{{ m.content }}{% endif %}<end>{% endfor %}"
+        "{% if add_generation_prompt %}assistant:<think>{% endif %}"
+    )
+    cfg.engine.tokenizer = tok
+    prefill = "Start" if transform == "insert" else "<think>Start"
+    response = http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [*MESSAGES[:1], {"role": "assistant", "content": prefill}],
+            **OPTIONS,
+            "stream": stream,
+            "enable_thinking": True,
+            "reasoning_max_tokens": 32,
+        },
+    )
+    assert response.status_code == 200, response.text
+    packets = (
+        [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        if stream
+        else [response.json()]
+    )
+    deltas = [
+        c.get("delta", c.get("message", {}))
+        for p in packets
+        for c in p.get("choices", [])
+    ]
+    in_reasoning = transform == "insert"
+    assert "".join(d.get("reasoning_content") or "" for d in deltas) == (
+        "new thought" if in_reasoning else ""
+    )
+    assert "".join(d.get("content") or "" for d in deltas) == (
+        "answer" if in_reasoning else "new answer"
+    )
+    assert ("reasoning_budget_logits_processor" in cfg.engine.options) is in_reasoning
+
+
+def test_prompt_preparation_cannot_change_continuation_channel(client):
+    _, cfg = client
+    cfg.engine = CapturingEngine("unused")
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[*MESSAGES[:1], {"role": "assistant", "content": "<think>Start"}],
+        **OPTIONS,
+    )
+    assert chat._continuation_starts_in_thinking(request, cfg)
+    # A content-dependent template can change its rendering after prompt
+    # augmentation. Do not keep a budget/parser selected for the old channel.
+    cfg.engine.tokenizer.chat_template = TEMPLATE.replace("m.content", "m.content | e")
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        chat._continuation_prompt_context(
+            request, cfg, [m.model_dump(exclude_none=True) for m in request.messages]
+        )
+    assert excinfo.value.status_code == 400
+    assert "reasoning state changed" in excinfo.value.detail
+
+
+def test_unavailable_generation_render_retains_posthoc_budget(client):
+    _, cfg = client
+
+    class BrokenRender(CapturingEngine):
+        def build_prompt(self, messages, **kwargs):
+            raise ValueError("unsupported template")
+
+    request = ChatCompletionRequest(
+        model="test-model", messages=MESSAGES[:1], reasoning_max_tokens=8
+    )
+    processor = chat._build_reasoning_budget_processor(
+        BrokenRender("unused"), request, cfg, MESSAGES[:1], True
+    )
+    assert processor is None
+    assert chat._effective_posthoc_reasoning_cap({}, request) == 8

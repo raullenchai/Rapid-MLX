@@ -300,7 +300,7 @@ class StreamingPostProcessor:
         # leaving content empty. Track the explicit signal so process_chunk
         # can skip the reasoning path in that case.
         self.enable_thinking = enable_thinking
-        # Continuations derive this state from the assistant prefill rather
+        # Continuations derive this state from the verified rendered prefill rather
         # than the new-turn template. Preserve the override across reset().
         self._prompt_thinking_active = prompt_thinking_active
         self._prompt_owner = self._new_prompt_owner()

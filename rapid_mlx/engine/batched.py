@@ -3037,7 +3037,10 @@ class BatchedEngine(BaseEngine):
         num_images=0,
         continue_final_message=False,
     ):
-        from ..prompt_parse_context import _initial_channel, prompt_parse_context
+        from ..prompt_parse_context import (
+            continuation_prompt_parse_context,
+            prompt_parse_context,
+        )
         from ..utils.chat_template import is_flint_chat_template
 
         # Native token-routed families keep their existing ownership contract.
@@ -3057,10 +3060,25 @@ class BatchedEngine(BaseEngine):
             return prompt_parse_context(
                 prompt, thinking=thinking, flint_template=flint, forced_prefix=prefix
             )
+        if continue_final_message:
+            return continuation_prompt_parse_context(
+                prompt,
+                messages,
+                lambda rows, generation: self._apply_chat_template(
+                    rows,
+                    tools,
+                    num_images=num_images,
+                    enable_thinking=thinking,
+                    add_generation_prompt=generation,
+                    chat_template_kwargs=template_kwargs,
+                ),
+                thinking=thinking,
+                flint=flint,
+            )
         assistant_start = None
         try:
             history = self._apply_chat_template(
-                messages[:-1] if continue_final_message else messages,
+                messages,
                 tools,
                 num_images=num_images,
                 enable_thinking=thinking,
@@ -3068,52 +3086,6 @@ class BatchedEngine(BaseEngine):
                 chat_template_kwargs=template_kwargs,
             )
             rendered = prompt[: -len(prefix)] if prefix else prompt
-            if continue_final_message:
-                # A completed final assistant row includes its terminator and
-                # cannot prefix a continuation. Locate the assistant header on
-                # the preceding history instead. Keep the entire rendered
-                # prefill, including any open/closed reasoning block, as suffix.
-                generation = self._apply_chat_template(
-                    messages[:-1],
-                    tools,
-                    num_images=num_images,
-                    enable_thinking=thinking,
-                    add_generation_prompt=True,
-                    chat_template_kwargs=template_kwargs,
-                )
-                if not isinstance(history, str) or not generation.startswith(history):
-                    return prompt_parse_context(
-                        prompt,
-                        thinking=thinking,
-                        flint_template=flint,
-                        forced_prefix=prefix or "",
-                    )
-                generation_context = prompt_parse_context(
-                    generation,
-                    thinking=thinking,
-                    assistant_start=len(history),
-                    flint_template=flint,
-                )
-                # Templates can inject <think> in a new-turn generation prompt
-                # even when a continuation's prefill is already plain content.
-                # Compare only the proven assistant header in that case.
-                header = generation[
-                    : len(generation) - len(generation_context.assistant_suffix)
-                ]
-                if not rendered.startswith(header):
-                    return prompt_parse_context(
-                        prompt,
-                        thinking=thinking,
-                        flint_template=flint,
-                        forced_prefix=prefix or "",
-                    )
-                suffix = prompt[len(header) :]
-                return replace(
-                    generation_context,
-                    assistant_suffix=suffix,
-                    initial_channel=_initial_channel(suffix, flint=flint),
-                    forced_assistant_prefix=prefix or "",
-                )
             if (
                 isinstance(history, str)
                 and rendered.startswith(history)

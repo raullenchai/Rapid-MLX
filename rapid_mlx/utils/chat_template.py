@@ -2473,9 +2473,9 @@ def sanitize_template_inputs(
     return messages, tools
 
 
-def _truncate_for_continuation(
+def _continuation_span(
     prompt: str, messages: list[dict], render: Callable[[list[dict], bool], str]
-) -> str:
+) -> tuple[str, str]:
     """Locate the final assistant span with paired renders, failing closed.
 
     ``render`` uses the same template/options as ``prompt``, without native
@@ -2494,7 +2494,7 @@ def _truncate_for_continuation(
     if content and isinstance(prefix, str) and prompt.startswith(prefix + content):
         end = len(prefix) + len(content)
         if empty == prefix + prompt[end:]:
-            return prompt[:end]
+            return prefix, content
 
     # A generation header may include implicit reasoning absent from a supplied
     # assistant row. Locate that row by replacing only its content with a unique
@@ -2508,8 +2508,16 @@ def _truncate_for_continuation(
         probe = ""
     if probe.count(marker) == 1:
         prefix, suffix = probe.split(marker)
-        if empty == prefix + suffix and prompt == prefix + content + suffix:
-            return prefix + content
+        if (
+            empty == prefix + suffix
+            and prompt.startswith(prefix)
+            and prompt.endswith(suffix)
+            and len(prompt) >= len(prefix) + len(suffix)
+        ):
+            end = len(prompt) - len(suffix)
+            rendered_content = prompt[len(prefix) : end]
+            if rendered_content or not content:
+                return prefix, rendered_content
 
     # Legacy templates may reject probe text. Keep last-occurrence compatibility
     # only when deleting that exact span reproduces the empty-final render and
@@ -2523,11 +2531,18 @@ def _truncate_for_continuation(
                 matches.append(start)
             start = prompt.find(content, start + 1)
         if len(matches) == 1 and matches[0] == prompt.rfind(content):
-            return prompt[: matches[0] + len(content)]
+            return prompt[: matches[0]], content
     raise ValueError(
         "Chat template cannot continue_final_message: final assistant content "
         "was not found at a verifiable boundary in the rendered prompt"
     )
+
+
+def _truncate_for_continuation(
+    prompt: str, messages: list[dict], render: Callable[[list[dict], bool], str]
+) -> str:
+    prefix, content = _continuation_span(prompt, messages, render)
+    return prefix + content
 
 
 def apply_chat_template(
@@ -2876,26 +2891,23 @@ def _render_chat_template(
         template_kwargs.setdefault("reasoning_effort", "low")
 
     def _apply_native(candidate_messages, **candidate_kwargs):
-        try:
+        if not candidate_kwargs.get("continue_final_message"):
             return template_applicator.apply_chat_template(
                 candidate_messages, **candidate_kwargs
             )
-        except TypeError:
-            if not candidate_kwargs.get("continue_final_message"):
-                raise
-            legacy_kwargs = dict(candidate_kwargs)
-            legacy_kwargs.pop("continue_final_message")
-            rendered = template_applicator.apply_chat_template(
-                candidate_messages, **legacy_kwargs
+        legacy_kwargs = dict(candidate_kwargs)
+        legacy_kwargs.pop("continue_final_message")
+
+        def render(rows, generation):
+            return template_applicator.apply_chat_template(
+                rows, **{**legacy_kwargs, "add_generation_prompt": generation}
             )
-            return _truncate_for_continuation(
-                rendered,
-                candidate_messages,
-                lambda rows, generation: template_applicator.apply_chat_template(
-                    rows,
-                    **{**legacy_kwargs, "add_generation_prompt": generation},
-                ),
-            )
+
+        # Accepting the native flag is not proof that an applicator honors it.
+        # Construct every continuation from the paired closed/empty/probe proof.
+        closed = render(candidate_messages, False)
+        proven = _truncate_for_continuation(closed, candidate_messages, render)
+        return proven
 
     def _apply_with_alternating_fallback(
         candidate_messages: list[dict], candidate_kwargs: dict
