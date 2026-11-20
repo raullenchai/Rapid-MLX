@@ -2698,3 +2698,13 @@ def test_wrapped_pull_preflight_keeps_existing_class(reason, link):
     failure = RuntimeError("private")
     setattr(failure, link, PreflightRejectedError(reason))
     assert model_events.pull_error_class(failure) == reason
+
+
+def test_pull_exception_chain_stops_when_cause_access_raises():
+    class HostileCause(Exception):
+        @property
+        def __cause__(self):  # type: ignore[override]
+            raise RuntimeError("hostile")
+
+    failure = HostileCause()
+    assert list(model_events._pull_exception_chain(failure)) == [failure]
