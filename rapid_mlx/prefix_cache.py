@@ -665,6 +665,13 @@ class BlockAwarePrefixCache:
 
         # Commit: counters reflect a hit only now that usable KV state
         # exists for the caller.
+        # Refresh stored owners too: fetch-held tables are separate from
+        # the reusable entries considered by the scheduler's LRU evictor.
+        accessed_at = time.time()
+        for entry in self._request_tables.values():
+            ids = entry.block_table.block_ids
+            if ids and block_table.block_ids[: len(ids)] == ids:
+                entry.last_access = accessed_at
         self._hits += 1
         self._tokens_saved += block_table.num_tokens
         self.paged_cache.stats.cache_hits += len(block_table.block_ids)

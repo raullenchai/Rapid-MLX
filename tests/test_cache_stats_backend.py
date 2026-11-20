@@ -91,6 +91,7 @@ def test_cache_stats_do_not_infer_model_type_from_installed_packages(
     assert result == {
         "message": result["message"],
         "model_type": model_type,
+        **({"prefix_cache": None} if engine is not None else {}),
         "multimodal_kv_cache": None,
         "pixel_values_cache": None,
         "pil_image_cache": None,

@@ -237,6 +237,36 @@ image failures still return HTTP 500 with `type: "image_generation_error"` and
 `code: "image_generation_failed"`. Cancellation returns HTTP 200 with
 `cancelled: true` and any images already completed.
 
+### Partial prefix cache release
+
+To release older reusable text prefixes while keeping the most recently used
+conversation warm, send an optional JSON body to the existing cache-clear control:
+
+```bash
+curl -X POST http://localhost:8000/v1/cache/clear \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -d '{"keep_recent": 1}'
+```
+
+`keep_recent` must be a nonnegative integer. Zero releases all eligible entries;
+a value at least as large as the current entry count releases nothing. Omitting
+the body preserves full-clear behavior. The route uses the same authentication
+as other admin controls and runs eviction on the model worker. Memory-aware,
+legacy trie, and paged text prefix caches use their existing LRU eviction paths.
+Pinned trie entries and active paged request tables can keep the count above the
+requested value. Shared or pinned paged blocks remain resident while referenced.
+Backends without partial-release support return HTTP 409.
+
+The response contains `entries_freed`, `bytes_freed`, `entries_kept`, and
+`bytes_kept`. `GET /v1/cache/stats` exposes text scheduler diagnostics under
+`prefix_cache`, including the most recent partial-release result as `last_release`
+(`null` before the first call). Byte counts describe logical resident KV storage,
+including shared/pinned paged blocks that survive entry eviction; they exclude
+weights, allocator caches, and request-owned copies, and do not promise an equal
+drop in process or Metal memory. Existing cache hit/miss counters are preserved.
+An automatic byte ceiling is a separate follow-up.
+
 ### User image LoRAs (next release)
 
 Place compatible `.safetensors` adapters directly in `~/.rapid-mlx/loras/`,

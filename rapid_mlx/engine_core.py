@@ -1820,6 +1820,12 @@ class EngineCore:
             self._clear_prefix_cache_on_worker, reset_stats=reset_stats
         )
 
+    def retain_prefix_cache(self, keep_recent: int) -> dict[str, int]:
+        """Release old reusable prefixes on their owning worker."""
+        return dict(
+            self._run_on_step_thread(self.scheduler.retain_prefix_cache, keep_recent)
+        )
+
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk.
 
@@ -2082,6 +2088,10 @@ class AsyncEngineCore:
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Clear reusable prefix KV state while keeping model weights loaded."""
         return self.engine.clear_prefix_cache(reset_stats=reset_stats)
+
+    def retain_prefix_cache(self, keep_recent: int) -> dict[str, int]:
+        """Forward partial prefix release to the model worker."""
+        return self.engine.retain_prefix_cache(keep_recent)
 
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk."""
