@@ -158,7 +158,10 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
             embedding.embedding = reader
         weights = {}
         if mapping is None:
-            shard_keys = {shard: None for shard in sorted(path.glob("*.safetensors"))}
+            shard_keys = {
+                Path(resolve_indexed_shard(str(path), shard.name)): None
+                for shard in sorted(path.glob("*.safetensors"))
+            }
         else:
             # Resolve each indexed filename once and use that resolved path for
             # validation and loading, so a swapped symlink cannot redirect a
@@ -182,6 +185,10 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
                         )
                 if indexed_keys <= disk_keys:
                     continue
+            # mx.load is lazy: each array reads its bytes only when evaluated.
+            # SSD-offloaded Engram tables are dropped below without evaluation,
+            # so a mixed shard never materializes them (a 2 GiB unused tensor
+            # leaves peak RSS near 30 MB).
             loaded = cast(dict[str, mx.array], mx.load(str(shard), stream=mx.cpu))
             for key, value in loaded.items():
                 if indexed_keys is not None and key not in indexed_keys:

@@ -464,12 +464,26 @@ def _try_parse_wildcard_number(value: str) -> int | float | None:
 
 def _deserialize(value: str) -> Any:
     """Deserialize a string value using json.loads then ast.literal_eval."""
+
+    def is_json_value(parsed):
+        if isinstance(parsed, dict):
+            return all(
+                isinstance(key, str) and is_json_value(item)
+                for key, item in parsed.items()
+            )
+        if isinstance(parsed, list):
+            return all(is_json_value(item) for item in parsed)
+        return parsed is None or isinstance(parsed, (str, int, float, bool))
+
     try:
         return json.loads(value)
     except Exception:
         pass
     try:
-        return ast.literal_eval(value)
+        parsed = ast.literal_eval(value)
+        if is_json_value(parsed):
+            json.dumps(parsed, allow_nan=False)
+            return parsed
     except Exception:
         pass
     return value

@@ -116,14 +116,28 @@ def convert_fp8(source, destination, bits, group_size):
     import mlx.core as mx
     from mlx_lm.utils import create_model_card, save_config
 
-    from ..fp8_repack import _open_shards, _raw_to_mx
+    from ..fp8_repack import _raw_to_mx, _ShardReader
+    from .engram_offload import resolve_indexed_shard
     from .hy_v4_flash import Model
 
     source, destination = Path(source), Path(destination)
     config = json.loads((source / "config.json").read_text())
     if config.get("model_type") != "hy_v4_flash":
         return False
-    weight_map, shards = _open_shards(source)
+    index = source / "model.safetensors.index.json"
+    if index.exists():
+        weight_map = json.loads(index.read_text())["weight_map"]
+        resolved = {
+            name: Path(resolve_indexed_shard(str(source), name))
+            for name in set(weight_map.values())
+        }
+        shards = {name: _ShardReader(path) for name, path in resolved.items()}
+    else:
+        shard = _ShardReader(
+            Path(resolve_indexed_shard(str(source), "model.safetensors"))
+        )
+        shards = {"model.safetensors": shard}
+        weight_map = dict.fromkeys(shard.header, "model.safetensors")
     if not any(
         entry["dtype"] == "F8_E4M3"
         for shard in shards.values()

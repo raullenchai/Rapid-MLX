@@ -492,3 +492,53 @@ def test_mixed_shard_and_indexed_read_omission(loader, checkpoint, monkeypatch):
     monkeypatch.setattr(loader.mx, "load", lambda *a, **k: {}, raising=False)
     with pytest.raises(ValueError, match="do not match"):
         loader.load(path)
+
+
+def test_mixed_shard_load_does_not_read_offloaded_tensors(tmp_path):
+    """Unused arrays from mx.load are never read, so offloaded tables stay on disk."""
+    import subprocess
+    import sys
+
+    mx = pytest.importorskip("mlx.core")
+    path = tmp_path / "mixed.safetensors"
+    mx.save_safetensors(
+        str(path),
+        {"engram": mx.zeros((256, 1024, 1024), dtype=mx.float32), "w": mx.ones((4,))},
+    )
+    code = (
+        "import resource, sys, mlx.core as mx\n"
+        "mx.set_default_device(mx.cpu)\n"
+        "d = mx.load(sys.argv[1], stream=mx.cpu)\n"
+        "w = d.pop('w'); d.clear(); mx.eval(w)\n"
+        "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    maxrss = int(out.stdout.strip())
+    # macOS reports bytes, Linux kilobytes; either way far below the 1 GiB table.
+    assert maxrss < 512 * 2**20
+
+
+@pytest.mark.parametrize("offload", [False, None])
+def test_resident_load_rejects_external_shard_symlink(
+    loader, checkpoint, monkeypatch, offload
+):
+    path, _, _, _ = checkpoint
+    model_dir = path / "checkpoint"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text((path / "config.json").read_text())
+    (model_dir / "model.safetensors").symlink_to(path / "model.safetensors")
+    fake_model(loader, monkeypatch)
+    monkeypatch.setattr(
+        loader.mx,
+        "load",
+        lambda *a, **k: pytest.fail("External shard opened"),
+        raising=False,
+    )
+    assert not loader.supports_engram_ssd_offload(model_dir)
+    with pytest.raises(ValueError, match="escapes"):
+        loader.load(model_dir, engram_ssd_offload=offload)

@@ -716,9 +716,28 @@ def test_conversion_shapes_match_model_without_allocating_weights(cpu_model, ove
 
     args = tiny(**overrides)
     actual = cpu_parameters(cpu_model.Model(args))
-    if args.tie_word_embeddings:
-        actual.pop("lm_head.weight")
     assert parameter_shapes(args) == {k: v.shape for k, v in actual.items()}
+
+
+@pytest.mark.parametrize("tied", [False, True])
+def test_sanitized_checkpoint_matches_strict_model_parameters(cpu_model, tied):
+    from rapid_mlx.models.hy_v4_flash_config import parameter_shapes
+
+    args = tiny(tie_word_embeddings=tied)
+    model = cpu_model.Model(args)
+    weights = {
+        k: np.zeros(shape, np.float32) for k, shape in parameter_shapes(args).items()
+    }
+    for key in weights:
+        if key.endswith(".lookup_table"):
+            weights[key] = np.arange(args.vocab_size, dtype=np.int64)
+    sanitized = model.sanitize(weights)
+    actual = cpu_parameters(model)
+    assert set(sanitized) == set(actual)
+    assert {k: v.shape for k, v in sanitized.items()} == {
+        k: v.shape for k, v in actual.items()
+    }
+    assert hasattr(model, "lm_head") is not tied
 
 
 @pytest.fixture
@@ -761,6 +780,9 @@ def fp8_conversion(cpu_model, monkeypatch, tmp_path):
     )
 
     class Shard:
+        def __init__(self, path):
+            assert path == (tmp_path / "model.safetensors").resolve()
+
         @property
         def header(self):
             return {k: {"dtype": t} for k, (v, t) in arrays.items()}
@@ -770,7 +792,8 @@ def fp8_conversion(cpu_model, monkeypatch, tmp_path):
             return np.frombuffer(v.tobytes(), dtype=np.uint8), t, list(v.shape)
 
     fp8 = ModuleType("rapid_mlx.fp8_repack")
-    fp8._open_shards = lambda _: ({k: "shard" for k in arrays}, {"shard": Shard()})
+    (tmp_path / "model.safetensors").touch()
+    fp8._ShardReader = Shard
     fp8._raw_to_mx = lambda raw, dtype, shape: raw.view(np.float32).reshape(shape)
     monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", fp8)
     monkeypatch.setitem(sys.modules, "rapid_mlx.models.hy_v4_flash", cpu_model)
@@ -1299,3 +1322,32 @@ def test_checkpoint_metadata_outranks_parent_family_names(tmp_path):
     (path / "config.json").write_text(json.dumps({"model_type": "unknown-control"}))
     profile = detect_model_config(str(path))
     assert profile is None or profile.tool_call_parser != "hy_v4"
+
+
+@pytest.mark.parametrize("kind", ["traversal", "symlink", "single_symlink"])
+def test_fp8_conversion_rejects_external_shards_before_open(
+    fp8_conversion, tmp_path, monkeypatch, kind
+):
+    converter, _, _, _ = fp8_conversion
+    source = tmp_path / "checkpoint"
+    source.mkdir()
+    (source / "config.json").write_text((tmp_path / "config.json").read_text())
+    outside = tmp_path / "outside.safetensors"
+    outside.write_bytes(b"must not be read")
+    filename = "../outside.safetensors"
+    if kind != "traversal":
+        filename = "model.safetensors"
+        (source / filename).symlink_to(outside)
+    if kind != "single_symlink":
+        (source / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"model.embed_tokens.weight": filename}})
+        )
+    fp8 = sys.modules["rapid_mlx.fp8_repack"]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("External shard opened")
+
+    monkeypatch.setattr(fp8, "_ShardReader", forbidden, raising=False)
+    monkeypatch.setattr(fp8, "_open_shards", forbidden, raising=False)
+    with pytest.raises(ValueError, match="inside|escapes"):
+        converter.convert_fp8(source, tmp_path / "out", 4, 32)

@@ -530,7 +530,8 @@ class Model(nn.Module):
         self.args, self.model_type = args, args.model_type
         self._loaded_lookup = None
         self.model = Backbone(args)
-        self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+        if not args.tie_word_embeddings:
+            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
 
     @property
     def layers(self):

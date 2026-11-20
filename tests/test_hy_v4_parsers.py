@@ -710,3 +710,39 @@ def test_boolean_schema_branches_do_not_break_type_inference():
     assert _get_types(schema) == {"string", "integer"}
     assert _allows_null(schema)
     assert _get_schema_options(True) == [{"type": "string"}]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("{1, 2}", "{1, 2}"),
+        ("{'nested': [set()]}", "{'nested': [set()]}"),
+        ("{'nested': b'bytes'}", "{'nested': b'bytes'}"),
+        ("(1, 2)", "(1, 2)"),
+        ("{(1, 2): 'value'}", "{(1, 2): 'value'}"),
+        ("{'nested': [True, None, 2, 1.5]}", {"nested": [True, None, 2, 1.5]}),
+    ],
+)
+def test_literal_fallback_keeps_non_json_values_as_raw_text(raw, expected):
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "record",
+                    "parameters": {"properties": {"x": {"type": "object"}}},
+                },
+            }
+        ]
+    }
+    wire = "<tool_calls>" + call([("x", raw)], "") + "</tool_calls>"
+    result = HyV4ToolParser(Tokenizer("")).extract_tool_calls(wire, request)
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"x": expected}
+    for split in range(len(wire) + 1):
+        assert stream(
+            HyV4ToolParser(Tokenizer("")), [wire[:split], wire[split:]], request
+        )[1] == [{"x": expected}]
+    assert stream(HyV4ToolParser(Tokenizer("")), list(wire), request)[1] == [
+        {"x": expected}
+    ]
