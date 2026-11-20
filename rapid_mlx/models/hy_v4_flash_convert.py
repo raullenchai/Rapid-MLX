@@ -13,6 +13,7 @@ import numpy as np
 from .hy_v4_flash_config import (
     ModelArgs,
     checkpoint_key,
+    checkpoint_quantization,
     dequantize_fp8,
     parameter_shapes,
     quantization_policy,
@@ -148,12 +149,7 @@ def convert_fp8(source, destination, bits, group_size):
         raise ValueError("Conversion destination already exists")
     args = ModelArgs.from_dict(config)
     expected = parameter_shapes(args)
-    block = tuple(
-        config.get(
-            "quantization_config",
-            config.get("text_config", {}).get("quantization_config", {}),
-        ).get("weight_block_size", [128, 128])
-    )
+    block = tuple(checkpoint_quantization(config).get("weight_block_size", [128, 128]))
     config.pop("quantization_config", None)
     config.get("text_config", {}).pop("quantization_config", None)
     # Match quantize_model's default metadata and per-module policy, without

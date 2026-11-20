@@ -8,6 +8,18 @@ from dataclasses import dataclass, field, fields
 import numpy as np
 
 
+def checkpoint_quantization(config):
+    """Read outer quantization metadata first, then nested text metadata."""
+    text = config.get("text_config") or {}
+    return (
+        config.get("quantization")
+        or config.get("quantization_config")
+        or text.get("quantization")
+        or text.get("quantization_config")
+        or {}
+    )
+
+
 @dataclass
 class ModelArgs:
     model_type: str = "hy_v4_flash"

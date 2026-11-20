@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from rapid_mlx.byom import preflight as pf
+from rapid_mlx.models.hy_v4_flash_config import checkpoint_quantization
 
 MANIFEST = "rapid-mlx-import.json"
 GROUP_SIZE = 64
@@ -231,7 +232,7 @@ def plan_import(
             error_class="unsupported_format",
         )
     config = inspection.config
-    quant = config.get("quantization") or config.get("quantization_config")
+    quant = checkpoint_quantization(config)
     hy4_fp8 = (
         config.get("model_type") == "hy_v4_flash"
         and isinstance(quant, dict)

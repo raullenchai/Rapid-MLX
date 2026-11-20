@@ -1214,13 +1214,15 @@ def test_phase_one_text_lane_wins_over_vision_metadata(tmp_path):
 @pytest.mark.parametrize(
     "quant", [None, {"quant_method": "fp8", "weight_block_size": [128, 128]}]
 )
-def test_import_preflight_accepts_hy4_sources_and_sizes_hash_tables(quant):
+@pytest.mark.parametrize("nested", [False, True])
+def test_import_preflight_accepts_hy4_sources_and_sizes_hash_tables(quant, nested):
     from rapid_mlx.byom import imports as im
     from rapid_mlx.byom import preflight as pf
 
     config = {"model_type": "hy_v4_flash"}
+    metadata = config.setdefault("text_config", {}) if nested else config
     if quant:
-        config["quantization_config"] = quant
+        metadata["quantization_config"] = quant
     inspection = pf.Inspection(
         ref="org/Hy4-flash",
         is_local=False,
@@ -1240,7 +1242,7 @@ def test_import_preflight_accepts_hy4_sources_and_sizes_hash_tables(quant):
     )
     assert plan.output_bytes == 640
     assert plan.download_bytes == 0
-    config["quantization_config"] = {
+    metadata["quantization_config"] = {
         "quant_method": "fp8",
         "weight_block_size": [64, 64],
     }
@@ -1351,3 +1353,67 @@ def test_fp8_conversion_rejects_external_shards_before_open(
     monkeypatch.setattr(fp8, "_open_shards", forbidden, raising=False)
     with pytest.raises(ValueError, match="inside|escapes"):
         converter.convert_fp8(source, tmp_path / "out", 4, 32)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("fp8", [False, True])
+def test_tokenizer_hy4_fp8_requires_conversion(
+    cpu_model, monkeypatch, tmp_path, nested, fp8
+):
+    from rapid_mlx.utils import tokenizer
+
+    config = {"model_type": "hy_v4_flash"}
+    metadata = config.setdefault("text_config", {}) if nested else config
+    metadata["quantization_config" if fp8 else "quantization"] = (
+        {"quant_method": "fp8", "weight_block_size": [128, 128]}
+        if fp8
+        else {"bits": 4, "group_size": 32}
+    )
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    monkeypatch.setattr(
+        tokenizer, "_deepseek_v4_quantization_override", lambda *a, **k: None
+    )
+    monkeypatch.setattr(tokenizer, "_uses_rapid_owned_runtime", lambda *a: True)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Hy4 must not enter generic model/FP8 loading")
+
+    repack = ModuleType("rapid_mlx.fp8_repack")
+    repack.is_fp8_block_checkpoint = forbidden
+    repack.load_fp8_model_online = forbidden
+    monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", repack)
+    utils = ModuleType("mlx_lm.utils")
+    utils.load_model = forbidden
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", utils)
+    loader = ModuleType("rapid_mlx.models.hy_v4_flash_load")
+
+    class LoadedHy4Error(Exception):
+        pass
+
+    def load(path):
+        assert path == tmp_path
+        if fp8:
+            pytest.fail("Raw FP8 reached the Hy4 weight loader")
+        raise LoadedHy4Error
+
+    loader.load = load
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.hy_v4_flash_load", loader)
+    if fp8:
+        with pytest.raises(tokenizer.IncompatibleWeights, match="rapid-mlx import"):
+            tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+    else:
+        with pytest.raises(LoadedHy4Error):
+            tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+
+
+@pytest.mark.parametrize("key", ["quantization", "quantization_config"])
+def test_checkpoint_quantization_prefers_top_level(key):
+    from rapid_mlx.models.hy_v4_flash_config import checkpoint_quantization
+
+    outer = {"bits": 4, "group_size": 32}
+    nested = {"quant_method": "fp8", "weight_block_size": [128, 128]}
+    config = {key: outer, "text_config": {"quantization_config": nested}}
+    assert checkpoint_quantization(config) is outer
+    del config[key]
+    assert checkpoint_quantization(config) is nested

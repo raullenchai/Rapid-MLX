@@ -2372,6 +2372,16 @@ def _load_with_tokenizer_fallback(
     if (_read_model_config_json(str(model_path)) or {}).get(
         "model_type"
     ) == "hy_v4_flash":
+        from ..models.hy_v4_flash_config import checkpoint_quantization
+
+        quant = checkpoint_quantization(_read_model_config_json(str(model_path)) or {})
+        if quant.get("quant_method") == "fp8":
+            raise IncompatibleWeights(
+                "Hy4 Flash FP8 weights require offline conversion before serving. "
+                f"Run: rapid-mlx import {model_path} --quantize 4 --name hy4-4bit; "
+                "then rapid-mlx serve hy4-4bit. "
+                "See docs/development/hy4-flash.md."
+            )
         from ..models.hy_v4_flash_load import load as load_hy4
 
         model, _ = load_hy4(model_path)
