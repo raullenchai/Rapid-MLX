@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from rapid_mlx.cli_parser import build_parser
@@ -1938,3 +1938,733 @@ def test_real_uvicorn_second_ctrl_c_forces_during_request_drain(fake):
     assert (base / "force-exit").read_text() == "True", diagnostic
     assert not (base / "lifespan-shutdown").exists(), diagnostic
     assert (base / "count").read_text() == "1", diagnostic
+
+
+def test_module_entrypoint_and_status_dispatch(monkeypatch):
+    import runpy
+    from unittest.mock import Mock
+
+    from rapid_mlx import cli
+    from rapid_mlx.control import protocol
+
+    entry = Mock()
+    with monkeypatch.context() as patch:
+        patch.setattr(cli, "cli_entrypoint", entry)
+        runpy.run_module("rapid_mlx", run_name="__main__")
+    entry.assert_called_once_with()
+    status = Mock(return_value=7)
+    monkeypatch.setattr(protocol, "status_command", status)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "status", "--port", "8123"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 7
+    assert status.call_args.args[0].port == 8123
+
+
+def test_native_mtp_profile_stays_single_process(monkeypatch):
+    from rapid_mlx.control import modes
+
+    monkeypatch.setattr(
+        modes.json, "loads", lambda _: {"model": {"mtp_draft_model": "draft"}}
+    )
+    assert modes.supervised_mode(SimpleNamespace(model="model"), {}) is None
+    assert (
+        modes.supervised_mode(SimpleNamespace(model="model", no_spec_decode=True), {})
+        == "text-vlm"
+    )
+
+
+@pytest.mark.parametrize(
+    "method,target,data,headers,code,state",
+    [
+        ("GET", "/rapid/v1/status", None, {}, 200, "starting"),
+        ("GET", "/other", None, {}, 404, "starting"),
+        ("GET", "/rapid/v1/status", None, {SECRET_HEADER: "wrong"}, 403, "starting"),
+        ("POST", "/startup", {"pid": 99}, {}, 409, "starting"),
+        (
+            "POST",
+            "/startup",
+            {"pid": 123, "event": "bound", "port": 8123},
+            {},
+            200,
+            "ready",
+        ),
+        (
+            "POST",
+            "/startup",
+            {"pid": 123, "event": "bound", "port": 8123, "ready": False},
+            {},
+            200,
+            "starting",
+        ),
+        ("POST", "/startup", {"pid": 123, "event": "bind_failed"}, {}, 200, "starting"),
+        (
+            "POST",
+            "/startup",
+            {"pid": 123, "event": "startup_failed"},
+            {},
+            200,
+            "failed",
+        ),
+        ("POST", "/startup", {"pid": 123, "event": "unknown"}, {}, None, "starting"),
+        (
+            "POST",
+            "/startup",
+            {"pid": 123, "event": "bound", "port": 0},
+            {},
+            None,
+            "starting",
+        ),
+        ("GET", "/rapid/v1/status", None, {"Content-Length": "-1"}, None, "starting"),
+        (
+            "GET",
+            "/rapid/v1/status",
+            None,
+            {"Transfer-Encoding": "chunked"},
+            None,
+            "starting",
+        ),
+    ],
+)
+async def test_control_handler_in_process(method, target, data, headers, code, state):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    instance = Supervisor([], port=8000, mode="text-vlm")
+    instance.child = SimpleNamespace(pid=123, returncode=None)
+    instance.spawn_ready.set()
+    body = json.dumps(data).encode() if data else b""
+    fields = {
+        SECRET_HEADER: instance.secret,
+        "Content-Length": str(len(body)),
+        **headers,
+    }
+    head = (
+        f"{method} {target} HTTP/1.1\r\n"
+        + "".join(f"{k}: {v}\r\n" for k, v in fields.items())
+        + "\r\n"
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(head.encode() + body)
+    reader.feed_eof()
+    writer = Mock(drain=AsyncMock(), wait_closed=AsyncMock(side_effect=OSError))
+    await instance.handle(reader, writer)
+    assert instance.state == state
+    assert instance.bind_failed == (
+        data is not None and data.get("event") == "bind_failed"
+    )
+    assert instance.startup_failed == (state == "failed")
+    if code is None:
+        writer.write.assert_not_called()
+    else:
+        response = writer.write.call_args.args[0]
+        assert response.startswith(f"HTTP/1.1 {code} ".encode())
+        result = json.loads(response.split(b"\r\n\r\n")[1])
+        if code == 200 and method == "GET":
+            assert result["runner"]["pid"] == 123
+            assert result["port"] == 8000
+        else:
+            assert result == {}
+    if state == "ready":
+        assert instance.port == 8123
+    writer.close.assert_called_once_with()
+    writer.wait_closed.assert_awaited_once_with()
+
+
+async def test_control_handler_duplicate_headers_and_transport_error():
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    instance = Supervisor([], port=8000, mode="text-vlm")
+    for head in (b"GET / HTTP/1.1\r\nX: 1\r\nx: 2\r\n\r\n", b"partial"):
+        reader = asyncio.StreamReader()
+        reader.feed_data(head)
+        reader.feed_eof()
+        writer = Mock(drain=AsyncMock(), wait_closed=AsyncMock())
+        await instance.handle(reader, writer)
+        writer.write.assert_not_called()
+        writer.close.assert_called_once_with()
+
+
+async def test_supervisor_open_publish_and_cleanup_in_process(
+    monkeypatch, tmp_path, short_control_root
+):
+    from rapid_mlx.control import supervisor as module
+
+    monkeypatch.setattr(module, "runtime_root", lambda: short_control_root / "runtime")
+    monkeypatch.setattr(module, "discovery_root", lambda: tmp_path / "index")
+    instance = Supervisor([], port=0, mode="lazy")
+    await instance.open()
+    try:
+        instance.publish_index()
+        metadata = json.loads(instance.index_entry.read_text())
+        assert metadata == {
+            "socket": instance.env[SOCKET_ENV],
+            "secret": instance.secret,
+        }
+        assert stat.S_IMODE(instance.index_entry.stat().st_mode) == 0o600
+        assert not instance.index_entry.with_suffix(".tmp").exists()
+        assert stat.S_ISSOCK(Path(metadata["socket"]).stat().st_mode)
+        assert json.loads((instance.directory / "instance.json").read_text()) == {
+            "secret": instance.secret
+        }
+    finally:
+        instance.server.close()
+        await instance.server.wait_closed()
+    (short_control_root / "runtime").chmod(0o755)
+    with pytest.raises(OSError, match="owned 0700"):
+        await Supervisor([], port=0, mode="lazy").open()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "crashes",
+        "backoff_stop",
+        "term_during_spawn",
+        "int_escalate",
+        "graceful",
+        "pre_stopped",
+        "spawn_error",
+        "wait_error",
+    ],
+)
+async def test_supervisor_lifecycle_in_process(monkeypatch, tmp_path, caplog, scenario):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from rapid_mlx.control import supervisor as module
+
+    instance = Supervisor(["runner"], port=8123, mode="text-vlm")
+    child = SimpleNamespace(pid=123, returncode=None)
+    tree = Mock()
+    tree.send.return_value = set()
+    tree.refresh.return_value = {123} if scenario == "int_escalate" else set()
+    loop = asyncio.get_running_loop()
+    handlers = {}
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda sig, fn, arg: handlers.update({sig: (fn, arg)}),
+    )
+    remove = Mock()
+    restore = Mock()
+    monkeypatch.setattr(loop, "remove_signal_handler", remove)
+    monkeypatch.setattr(module.signal, "signal", restore)
+    monkeypatch.setattr(module, "ProcessTree", Mock(return_value=tree))
+    server = Mock(wait_closed=AsyncMock())
+    listener = os.open(tmp_path / "listener", os.O_CREAT | os.O_RDWR, 0o600)
+    instance.listen_fd = listener
+    directory = tmp_path / "runtime"
+    directory.mkdir()
+    instance.directory = directory
+    instance.index_entry = tmp_path / "entry.json"
+    instance.index_entry.write_text("{}")
+    instance.server = server
+
+    async def setup():
+        if scenario == "pre_stopped":
+            handlers[signal.SIGTERM][0](signal.SIGTERM)
+
+    monkeypatch.setattr(instance, "open", setup)
+    publish = Mock(side_effect=OSError("index unavailable"))
+    monkeypatch.setattr(instance, "publish_index", publish)
+
+    async def spawn(*argv, **kwargs):
+        assert kwargs["pass_fds"] == (listener,)
+        if scenario == "spawn_error":
+            raise OSError("spawn failed")
+        child.returncode = None
+        if scenario == "term_during_spawn":
+            handlers[signal.SIGTERM][0](signal.SIGTERM)
+        return child
+
+    create = AsyncMock(side_effect=spawn)
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create)
+    real_sleep = asyncio.sleep
+    tick = [0]
+
+    async def sleep(delay):
+        tick[0] += 1
+        if scenario in ("int_escalate", "graceful"):
+            if not instance.stopping.is_set():
+                handlers[signal.SIGINT][0](signal.SIGINT)
+                # Age only the supervisor's deadline, not the event loop clock.
+                instance.stop_started -= 3.1
+            if scenario == "graceful":
+                child.returncode = 0
+                tree.refresh.return_value = set()
+            elif delay != 0.1:
+                instance.stop_started -= 2
+                child.returncode = -signal.SIGKILL
+        else:
+            child.returncode = 7 if scenario in ("crashes", "backoff_stop") else 0
+        await real_sleep(0)
+
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(instance, "restart_delay", lambda: 0)
+    if scenario == "backoff_stop":
+
+        def backoff():
+            instance.stop(signal.SIGTERM)
+            return 1
+
+        monkeypatch.setattr(instance, "restart_delay", backoff)
+    if scenario == "wait_error":
+        calls = [0]
+
+        async def broken_wait():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError("watcher failed")
+            child.returncode = 0
+            return 0
+
+        monkeypatch.setattr(instance, "wait_exit", broken_wait)
+    try:
+        if scenario in ("spawn_error", "wait_error"):
+            with pytest.raises((OSError, RuntimeError)):
+                await instance.run()
+        else:
+            result = await instance.run()
+            if scenario == "crashes":
+                assert result == 7
+                assert create.await_count == 5
+                assert instance.restarts == 4
+                assert instance.state == "failed"
+            else:
+                expected_signal = (
+                    signal.SIGINT
+                    if scenario in ("int_escalate", "graceful")
+                    else signal.SIGTERM
+                )
+                assert result == 128 + expected_signal
+        assert not directory.exists()
+        assert not instance.index_entry.exists()
+        server.close.assert_called_once_with()
+        server.wait_closed.assert_awaited_once_with()
+        assert remove.call_count == restore.call_count == 3
+        if instance.child is not None:
+            tree.stop_tracking.assert_called()
+            assert signal.SIGKILL in [call.args[0] for call in tree.send.call_args_list]
+            with pytest.raises(OSError):
+                os.fstat(listener)
+            assert "discovery index publication failed (OSError)" in caplog.text
+        if scenario == "int_escalate":
+            assert signal.SIGTERM in [call.args[0] for call in tree.send.call_args_list]
+            assert signal.SIGINT not in [
+                call.args[0] for call in tree.send.call_args_list
+            ]
+    finally:
+        if instance.child is None:
+            os.close(listener)
+
+
+def test_supervise_fallback_and_post_spawn_propagation(monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+
+    from rapid_mlx.control import supervisor as module
+
+    instance = Supervisor([], port=0, mode="lazy")
+    monkeypatch.setattr(module, "Supervisor", lambda *a, **kw: instance)
+    monkeypatch.setattr(instance, "run", AsyncMock(side_effect=OSError("setup")))
+    assert module.supervise([]) is None
+    assert "serving in single process" in caplog.text
+    assert "setup" not in caplog.text.split("(OSError)")[-1]
+    instance.child = SimpleNamespace(pid=123, returncode=0)
+    with pytest.raises(OSError, match="setup"):
+        module.supervise([])
+
+
+def test_native_process_lookup_failures_and_libproc_signatures(monkeypatch):
+    import ctypes
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import process_tree as module
+
+    lib = SimpleNamespace(
+        proc_pidinfo=Mock(return_value=0), proc_listallpids=Mock(return_value=0)
+    )
+    loader = Mock(return_value=lib)
+    module._libproc.cache_clear()
+    monkeypatch.setattr(module.ctypes, "CDLL", loader)
+    try:
+        assert module._libproc() is lib
+        assert module._libproc() is lib
+        loader.assert_called_once_with("/usr/lib/libproc.dylib", use_errno=True)
+        assert lib.proc_pidinfo.restype is ctypes.c_int
+        assert len(lib.proc_pidinfo.argtypes) == 5
+        assert lib.proc_listallpids.argtypes == [ctypes.c_void_p, ctypes.c_int]
+        monkeypatch.setattr(module.sys, "platform", "darwin")
+        assert module.process_info(123) is None
+        for counts in ([0], [2, 0]):
+            lib.proc_listallpids.side_effect = counts
+            with pytest.raises(OSError, match="Cannot enumerate"):
+                module.process_table()
+        monkeypatch.setattr(module.sys, "platform", "linux")
+        monkeypatch.setattr(module.Path, "read_text", Mock(side_effect=OSError))
+        assert module.process_info(123) is None
+        monkeypatch.setattr(module.Path, "read_text", lambda _: "broken stat")
+        assert module.process_info(123) is None
+        monkeypatch.setattr(
+            module.Path,
+            "iterdir",
+            lambda _: iter([Path("/proc/123"), Path("/proc/sys")]),
+        )
+        monkeypatch.setattr(module, "process_info", lambda pid: (1, "S", 456))
+        assert module.process_table() == {123: (1, "S", 456)}
+        monkeypatch.setattr(module.sys, "platform", "unsupported")
+        with pytest.raises(OSError, match="Unsupported"):
+            module.process_table()
+    finally:
+        module._libproc.cache_clear()
+
+
+def test_unknown_platform_process_info(monkeypatch):
+    from rapid_mlx.control import process_tree
+
+    monkeypatch.setattr(process_tree.sys, "platform", "unsupported")
+    assert process_tree.process_info(123) is None
+
+
+def test_tree_root_state_signals_and_orphan_tracking(monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import process_tree as module
+
+    monkeypatch.setattr(module, "process_info", lambda pid: (1, "T", 456))
+    tree = module.ProcessTree(123)
+    tree.update_root_state()
+    assert tree.stopped
+    kill = Mock()
+    monkeypatch.setattr(module.os, "kill", kill)
+    tree.send_root(signal.SIGTERM)
+    kill.assert_called_once_with(123, signal.SIGTERM)
+    monkeypatch.setattr(module, "process_info", lambda pid: None)
+    tree.update_root_state()
+    assert not tree.stopped
+    tree.send_root(signal.SIGKILL)
+    assert kill.call_count == 1
+    tracked = Mock()
+    monkeypatch.setattr(module, "_orphan_tree", None)
+    constructor = Mock(return_value=tracked)
+    monkeypatch.setattr(module, "ProcessTree", constructor)
+    module.start_orphan_tracking()
+    module.start_orphan_tracking()
+    constructor.assert_called_once_with(os.getpid())
+    tracked.start_tracking.assert_called_once_with()
+
+
+def test_orphan_cleanup_stops_when_only_root_remains(monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx import _parent_watchdog
+    from rapid_mlx.control import process_tree as module
+
+    tree = Mock()
+    tree.refresh.return_value = {os.getpid()}
+    monkeypatch.setattr(module, "_orphan_tree", tree)
+    callback = Mock()
+    monkeypatch.setattr(_parent_watchdog, "_default_on_orphan", callback)
+    module.supervised_on_orphan(123, 1)
+    assert tree.send.call_args_list[0].args == (signal.SIGTERM,)
+    assert tree.send.call_args_list[1].args == (signal.SIGKILL,)
+    callback.assert_called_once_with(123, 1, grace=1.0)
+
+
+def test_protocol_transport_and_bounds(monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import protocol
+
+    sock = Mock()
+    monkeypatch.setattr(protocol.socket, "socket", Mock(return_value=sock))
+    conn = protocol.UnixConnection("/private/control.sock")
+    conn.connect()
+    sock.settimeout.assert_called_once_with(protocol.TIMEOUT)
+    sock.connect.assert_called_once_with("/private/control.sock")
+    sock.connect.side_effect = OSError("connect failed")
+    with pytest.raises(OSError, match="connect failed"):
+        conn.connect()
+    sock.close.assert_called_once_with()
+    connection = Mock()
+    monkeypatch.setattr(protocol, "UnixConnection", Mock(return_value=connection))
+    with pytest.raises(ValueError, match="request too large"):
+        protocol.request("socket", "secret", "POST", "x" * protocol.MAX_BODY)
+    for code, data in (
+        (403, b"{}"),
+        (200, b"x" * (protocol.MAX_BODY + 1)),
+        (200, b'{"port":8123}'),
+    ):
+        response = Mock(status=code)
+        response.read.return_value = data
+        connection.getresponse.return_value = response
+        if code == 200 and len(data) <= protocol.MAX_BODY:
+            assert protocol.request("socket", "secret") == {"port": 8123}
+        else:
+            with pytest.raises(OSError, match="invalid control response"):
+                protocol.request("socket", "secret")
+        response.read.assert_called_once_with(protocol.MAX_BODY + 1)
+    assert connection.close.call_count == 3
+
+
+def test_startup_reports_and_exit_hook(monkeypatch):
+    import atexit
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import protocol
+
+    monkeypatch.setattr(protocol, "_startup_terminal", False)
+    reporter = Mock()
+    monkeypatch.setattr(protocol, "request", reporter)
+    monkeypatch.delenv(RUNNER_ENV, raising=False)
+    protocol.report("bound", port=8123)
+    reporter.assert_not_called()
+    monkeypatch.setenv(RUNNER_ENV, "1")
+    monkeypatch.setenv(SOCKET_ENV, "control.sock")
+    monkeypatch.setenv(SECRET_ENV, "secret")
+    registered = []
+    monkeypatch.setattr(atexit, "register", registered.append)
+    protocol.install_startup_report()
+    assert len(registered) == 1
+    registered[0]()
+    reporter.assert_called_once_with(
+        "control.sock",
+        "secret",
+        "POST",
+        {
+            "event": "startup_failed",
+            "pid": os.getpid(),
+            "reason": "runner exited before readiness",
+        },
+    )
+    protocol.report_startup_failure("duplicate")
+    assert reporter.call_count == 1
+    monkeypatch.setattr(protocol, "_startup_terminal", False)
+    protocol.report("bound", port=8123, ready=False)
+    assert not protocol._startup_terminal
+    reporter.side_effect = OSError("unavailable")
+    protocol.report("bound", port=8123)
+    assert protocol._startup_terminal
+
+
+def test_private_directory_rejects_unowned_fd(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import protocol
+
+    original_fstat = os.fstat
+
+    def unowned(fd):
+        fields = list(original_fstat(fd))
+        fields[4] = os.getuid() + 1
+        return os.stat_result(fields)
+
+    close = Mock(wraps=os.close)
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol.os, "fstat", unowned)
+        patch.setattr(protocol.os, "close", close)
+        with pytest.raises(OSError, match="owned directory"):
+            protocol.private_directory(tmp_path / "private")
+    close.assert_called_once()
+
+
+def test_discovery_skips_unsafe_files_and_runtime_directories(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import protocol
+
+    root = tmp_path / "index"
+    root.mkdir(mode=0o700)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o755)
+    entry = root / "a.json"
+    entry.write_text(
+        json.dumps({"socket": str(runtime / "control.sock"), "secret": "secret"})
+    )
+    entry.chmod(0o644)
+    monkeypatch.setattr(protocol, "discovery_root", lambda: root)
+    transport = Mock(return_value={"port": 8123})
+    monkeypatch.setattr(protocol, "request", transport)
+    assert protocol.discover() == []
+    entry.chmod(0o600)
+    assert protocol.discover() == []
+    transport.assert_not_called()
+    runtime.chmod(0o700)
+    assert protocol.discover(9999) == []
+    assert protocol.discover(8123) == [{"port": 8123}]
+    assert entry.exists()
+
+
+async def test_status_forwarder_invalid_peer_and_transport_failure(monkeypatch):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from rapid_mlx.routes import control_status
+
+    with pytest.raises(HTTPException) as exc:
+        await control_status.require_loopback(
+            Request({"type": "http", "client": ("invalid-ip", 123)})
+        )
+    assert exc.value.status_code == 403
+    monkeypatch.setenv(RUNNER_ENV, "1")
+    monkeypatch.setenv(SOCKET_ENV, "socket")
+    monkeypatch.setenv(SECRET_ENV, "secret")
+
+    def unavailable(*args):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(control_status, "control_request", unavailable)
+    app = FastAPI()
+    control_status.mount_status(app)
+    with TestClient(app, client=("127.0.0.1", 123)) as client:
+        response = client.get("/rapid/v1/status")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Control plane unavailable"
+
+
+@pytest.fixture
+def short_control_root():
+    import tempfile
+
+    scratch = Path("/tmp/rapid-mlx-serve-cov")
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="socket-", dir=scratch) as directory:
+        yield Path(directory)
+
+
+@pytest.mark.parametrize("failure", ["mode", "resolve", "supervise"])
+def test_control_dispatch_setup_failure_in_process(monkeypatch, capsys, failure):
+    from unittest.mock import Mock
+
+    from rapid_mlx import cli
+    from rapid_mlx.control import modes, supervisor
+
+    for key in (RUNNER_ENV, "RAPID_MLX_SINGLE_PROCESS", "RAPID_MLX_WATCHDOG_PPID"):
+        monkeypatch.delenv(key, raising=False)
+    args = build_parser().parse_args(["serve", "qwen3.5-4b-4bit"])
+    mode = Mock(return_value="text-vlm")
+    resolve = Mock(return_value=8123)
+    supervise = Mock(return_value=None)
+    if failure == "mode":
+        mode.side_effect = ValueError("bad mode")
+    elif failure == "resolve":
+        resolve.side_effect = OSError("bad port")
+    monkeypatch.setattr(modes, "supervised_mode", mode)
+    monkeypatch.setattr(cli, "_resolve_serve_port", resolve)
+    monkeypatch.setattr(supervisor, "supervise", supervise)
+    assert cli._dispatch_serve_control(args) is None
+    if failure == "supervise":
+        supervise.assert_called_once()
+        assert capsys.readouterr().err == ""
+    else:
+        supervise.assert_not_called()
+        assert "serving in single process" in capsys.readouterr().err
+
+
+def test_discovery_missing_stale_busy_and_status_output(monkeypatch, tmp_path, capsys):
+    import http.client
+    from unittest.mock import Mock
+
+    from rapid_mlx.control import protocol
+
+    root = tmp_path / "index"
+    monkeypatch.setattr(protocol, "discovery_root", lambda: root)
+    assert protocol.discover() == []
+    root.mkdir(mode=0o700)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    entry = root / "a.json"
+    entry.write_text(
+        json.dumps({"socket": str(runtime / "control.sock"), "secret": "secret"})
+    )
+    entry.chmod(0o600)
+    transport = Mock(side_effect=http.client.HTTPException("busy"))
+    monkeypatch.setattr(protocol, "request", transport)
+    assert protocol.discover() == []
+    assert entry.exists()
+    transport.side_effect = ConnectionRefusedError
+    assert protocol.discover() == []
+    assert not entry.exists()
+    results = [{"port": 8123}, {"port": 8124}]
+    monkeypatch.setattr(protocol, "discover", lambda port: results)
+    assert protocol.status_command(SimpleNamespace(port=None)) == 0
+    assert json.loads(capsys.readouterr().out) == results
+    results.pop()
+    assert protocol.status_command(SimpleNamespace()) == 0
+    assert json.loads(capsys.readouterr().out) == results[0]
+
+
+def test_runtime_root_and_unsafe_discovery_root(monkeypatch, tmp_path):
+    from rapid_mlx.control import protocol
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    assert protocol.runtime_root() == tmp_path / f"rmlx-cp-{os.getuid()}"
+    monkeypatch.delenv("TMPDIR")
+    assert protocol.runtime_root() == Path("/tmp") / f"rmlx-cp-{os.getuid()}"
+    root = tmp_path / "index"
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    monkeypatch.setattr(protocol, "discovery_root", lambda: root)
+    assert protocol.discover() == []
+
+
+@pytest.mark.parametrize("collision", [False, True])
+def test_bind_preflight_failures_report_terminal_event(monkeypatch, capsys, collision):
+    from unittest.mock import Mock
+
+    from rapid_mlx import cli
+    from rapid_mlx.control import protocol
+    from rapid_mlx.telemetry import server_start
+
+    report = Mock()
+    monkeypatch.setattr(protocol, "report", report)
+    monkeypatch.setattr(server_start, "failed", Mock())
+    with pytest.raises(SystemExit) as exc:
+        if collision:
+            cli._exit_for_port_collision(
+                8123, "127.0.0.1", model="model", port_explicit=True
+            )
+        else:
+            cli._exit_for_host_bind_error("invalid-host", OSError("bad bind"))
+    assert exc.value.code == (1 if collision else 2)
+    report.assert_called_once_with("bind_failed")
+    output = capsys.readouterr()
+    assert (
+        "already in use" in output.out if collision else "Invalid --host" in output.err
+    )
+
+
+async def test_uvicorn_lifespan_failure_without_system_exit(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    import uvicorn
+
+    from rapid_mlx import _uvicorn
+    from rapid_mlx.control import protocol
+    from rapid_mlx.telemetry import server_start
+
+    server = _uvicorn.AcceptingConnectionsServer(uvicorn.Config(FastAPI()))
+    server.lifespan = SimpleNamespace(should_exit=True)
+    monkeypatch.setattr(server, "_startup_with_progress", AsyncMock())
+    report = Mock()
+    failed = Mock()
+    monkeypatch.setattr(protocol, "report_startup_failure", report)
+    monkeypatch.setattr(server_start, "failed", failed)
+    with pytest.raises(SystemExit) as exc:
+        await server.startup()
+    assert exc.value.code == _uvicorn.STARTUP_FAILURE
+    report.assert_called_once_with("lifespan startup failed")
+    failed.assert_called_once_with("engine_start")
+    app = FastAPI()
+
+    @app.get("/peer")
+    async def peer(request: Request):
+        return {"captured": "_rapid_mlx_transport_peer" in request.scope}
+
+    config = _uvicorn._TransportPeerConfig(app, proxy_headers=False)
+    monkeypatch.setenv(RUNNER_ENV, "1")
+    config.load()
+    assert config.loaded
+    with TestClient(config.loaded_app) as client:
+        assert client.get("/peer").json() == {"captured": False}
