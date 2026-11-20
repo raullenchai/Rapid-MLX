@@ -6008,20 +6008,31 @@ def _build_prompt_with_thinking_compat(
     they continue to surface as user-facing errors via the helper's
     existing exception sniff.
 
-    The probe uses ``inspect.signature`` lazily (only on TypeError)
-    so the hot path stays a single direct call; the fallback path
-    only fires on the first call for an engine with the legacy
-    signature.
+    Prompt controls are checked with ``inspect.signature`` before calling:
+    supported keywords are forwarded, and unsupported non-default values
+    raise instead of silently changing the requested rendering mode.
     """
-    if not add_generation_prompt or continue_final_message:
-        return build_prompt(
-            messages,
-            tools=tools,
-            enable_thinking=enable_thinking,
-            chat_template_kwargs=chat_template_kwargs,
-            add_generation_prompt=add_generation_prompt,
-            continue_final_message=continue_final_message,
-        )
+    # Forward prompt controls independently, preserving legacy signatures only
+    # when their default rendering semantics match the requested options.
+    try:
+        parameters = inspect.signature(build_prompt).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_kwargs = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+    )
+    prompt_options = {}
+    for name, value, default in (
+        ("add_generation_prompt", add_generation_prompt, True),
+        ("continue_final_message", continue_final_message, False),
+    ):
+        if accepts_kwargs or (
+            name in parameters
+            and parameters[name].kind != inspect.Parameter.POSITIONAL_ONLY
+        ):
+            prompt_options[name] = value
+        elif value != default:
+            raise ValueError(f"{name}={value!r} is not supported by build_prompt")
     supports_prompt_tokens = False
     if prompt_tokens is not None:
         try:
@@ -6037,6 +6048,7 @@ def _build_prompt_with_thinking_compat(
             enable_thinking=enable_thinking,
             chat_template_kwargs=chat_template_kwargs,
             _prompt_tokens=prompt_tokens,
+            **prompt_options,
         )
 
     if chat_template_kwargs is not None:
@@ -6047,12 +6059,17 @@ def _build_prompt_with_thinking_compat(
                 tools=tools,
                 enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
+                **prompt_options,
             )
 
-        return build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
+        return build_prompt(
+            messages, tools=tools, enable_thinking=enable_thinking, **prompt_options
+        )
 
     try:
-        return build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
+        return build_prompt(
+            messages, tools=tools, enable_thinking=enable_thinking, **prompt_options
+        )
     except TypeError as exc:
         # ``TypeError`` from kwargs mismatch carries the offending
         # kwarg name in its message under CPython. Be conservative:
@@ -6066,7 +6083,7 @@ def _build_prompt_with_thinking_compat(
         # on Qwen3 / DeepSeek-R1), which matches the pre-fix gate
         # behaviour exactly — so callers that hit this fallback see
         # no regression vs the world before PR #906.
-        return build_prompt(messages, tools=tools)
+        return build_prompt(messages, tools=tools, **prompt_options)
 
 
 def enforce_context_length_for_messages(

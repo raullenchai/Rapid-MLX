@@ -2028,8 +2028,10 @@ class ChatCompletionRequest(BaseModel):
         boundary while the wire schema keeps accepting a scalar string."""
         return _normalize_stop(self.stop)
 
-    @model_validator(mode="after")
-    def _validate_continuation(self) -> "ChatCompletionRequest":
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_continuation(cls, data, handler) -> "ChatCompletionRequest":
+        self = handler(data)
         if self.continue_final_message:
             if self.add_generation_prompt:
                 raise ValueError(
@@ -2038,6 +2040,19 @@ class ChatCompletionRequest(BaseModel):
             if not self.messages or self.messages[-1].role != "assistant":
                 raise ValueError(
                     "continue_final_message requires a final assistant message"
+                )
+            # Inspect the raw message too: Message ignores the legacy
+            # function_call field, but continuing it would drop the call.
+            final_message = data["messages"][-1] if isinstance(data, dict) else None
+            function_call = (
+                final_message.get("function_call")
+                if isinstance(final_message, dict)
+                else None
+            )
+            if self.messages[-1].tool_calls or function_call:
+                raise ValueError(
+                    "continue_final_message requires a final assistant message "
+                    "without non-empty tool_calls or function_call"
                 )
         return self
 

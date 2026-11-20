@@ -21,6 +21,7 @@ from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 from rapid_mlx.prompt_host_cache import PromptHostCache
 from rapid_mlx.reasoning import get_parser
 from rapid_mlx.routes import chat
+from rapid_mlx.service.helpers import _build_prompt_with_thinking_compat
 from rapid_mlx.utils.chat_template import (
     apply_chat_template,
     normalize_assistant_content,
@@ -76,6 +77,173 @@ def test_request_defaults_and_validation():
         )
     with pytest.raises(ValidationError, match="final assistant"):
         ChatCompletionRequest(model="test-model", messages=MESSAGES[:1], **OPTIONS)
+
+
+ASSISTANT_CALLS = [
+    {
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }
+        ]
+    },
+    {"function_call": {"name": "lookup", "arguments": "{}"}},
+]
+
+
+@pytest.mark.parametrize("calls", ASSISTANT_CALLS)
+def test_request_rejects_continuation_with_final_assistant_calls(calls):
+    messages = [*MESSAGES[:1], {**MESSAGES[-1], **calls}]
+    with pytest.raises(
+        ValidationError, match="final assistant message.*tool_calls or function_call"
+    ):
+        ChatCompletionRequest(model="test-model", messages=messages, **OPTIONS)
+    assert ChatCompletionRequest(model="test-model", messages=messages)
+
+
+@pytest.mark.parametrize("calls", [{"tool_calls": []}, {"function_call": None}])
+def test_request_allows_continuation_with_empty_assistant_calls(calls):
+    assert ChatCompletionRequest(
+        model="test-model",
+        messages=[*MESSAGES[:1], {**MESSAGES[-1], **calls}],
+        **OPTIONS,
+    )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("calls", ASSISTANT_CALLS)
+def test_continuation_with_final_assistant_calls_returns_400(client, stream, calls):
+    http, cfg = client
+    cfg.engine = CapturingEngine("must not generate")
+    response = http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [*MESSAGES[:1], {**MESSAGES[-1], **calls}],
+            "stream": stream,
+            **OPTIONS,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "final assistant message" in response.text
+    assert "tool_calls or function_call" in response.text
+    assert cfg.engine.options is None
+
+
+def test_prompt_helper_legacy_builder_accepts_defaults():
+    def build_prompt(messages, tools=None):
+        assert messages == MESSAGES
+        assert tools == TOOLS
+        return "legacy prompt"
+
+    assert (
+        _build_prompt_with_thinking_compat(
+            build_prompt, MESSAGES, tools=TOOLS, enable_thinking=False
+        )
+        == "legacy prompt"
+    )
+
+
+@pytest.mark.parametrize(
+    "options,unsupported",
+    [
+        (OPTIONS, "add_generation_prompt"),
+        ({"continue_final_message": True}, "continue_final_message"),
+    ],
+)
+def test_prompt_helper_legacy_builder_rejects_nondefault_options(options, unsupported):
+    def build_prompt(messages, tools=None):
+        pytest.fail("Unsupported prompt options must be rejected before rendering")
+
+    with pytest.raises(ValueError, match=unsupported + ".*not supported"):
+        _build_prompt_with_thinking_compat(
+            build_prompt, MESSAGES, tools=None, enable_thinking=None, **options
+        )
+
+
+@pytest.mark.parametrize("options", [{}, OPTIONS])
+@pytest.mark.parametrize("variadic", [False, True])
+def test_prompt_helper_modern_builder_receives_both_options(options, variadic):
+    seen = {}
+
+    def build_prompt(
+        messages,
+        *,
+        tools,
+        enable_thinking,
+        add_generation_prompt,
+        continue_final_message,
+    ):
+        seen.update(
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
+        )
+        return "modern prompt"
+
+    def variadic_builder(messages, **kwargs):
+        seen.update(kwargs)
+        return "modern prompt"
+
+    assert (
+        _build_prompt_with_thinking_compat(
+            variadic_builder if variadic else build_prompt,
+            MESSAGES,
+            tools=None,
+            enable_thinking=False,
+            **options,
+        )
+        == "modern prompt"
+    )
+    assert seen["add_generation_prompt"] is options.get("add_generation_prompt", True)
+    assert seen["continue_final_message"] is options.get(
+        "continue_final_message", False
+    )
+
+
+def test_prompt_helper_forwards_supported_option_through_legacy_thinking_fallback():
+    seen = []
+
+    def build_prompt(messages, tools=None, *, add_generation_prompt):
+        seen.append(add_generation_prompt)
+        return "closed prompt"
+
+    assert (
+        _build_prompt_with_thinking_compat(
+            build_prompt,
+            MESSAGES,
+            tools=None,
+            enable_thinking=False,
+            add_generation_prompt=False,
+        )
+        == "closed prompt"
+    )
+    assert seen == [False]
+    with pytest.raises(ValueError, match="continue_final_message.*not supported"):
+        _build_prompt_with_thinking_compat(
+            build_prompt, MESSAGES, tools=None, enable_thinking=False, **OPTIONS
+        )
+
+
+@pytest.mark.parametrize("error", [TypeError, ValueError])
+def test_prompt_helper_rejects_continuation_when_signature_is_unavailable(
+    monkeypatch, error
+):
+    from rapid_mlx.service import helpers
+
+    def signature(_):
+        raise error("signature unavailable")
+
+    monkeypatch.setattr(helpers.inspect, "signature", signature)
+    with pytest.raises(ValueError, match="add_generation_prompt.*not supported"):
+        _build_prompt_with_thinking_compat(
+            lambda *a, **kw: pytest.fail("must not render"),
+            MESSAGES,
+            tools=None,
+            enable_thinking=None,
+            **OPTIONS,
+        )
 
 
 @pytest.mark.parametrize("legacy", [False, True])
