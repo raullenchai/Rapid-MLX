@@ -6,8 +6,26 @@
 
 <p align="center"><strong>Run Codex, Claude Code, OpenCode, Pi, Hermes, Crush or Goose with a local model on Mac:</strong><br><code>rapid-mlx launch &lt;agent&gt;</code></p>
 
-Install on a stock Apple Silicon Mac with `curl -fsSL https://rapidmlx.com/install.sh | bash`, restart your terminal (or run `export PATH="$HOME/.local/bin:$PATH"`), then install your chosen coding agent and run, for example, `rapid-mlx launch codex`. Run the same command tomorrow; `rapid-mlx launch codex --remove` removes Rapid's private profile without changing your existing Codex settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
+**1. Install** — the guided installer handles Python and picks a model for your Mac:
 
+```bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
+```
+
+Restart your terminal or run `export PATH="$HOME/.local/bin:$PATH"`.
+Prefer [pip (Python 3.12+)](#alternative-install-methods) or Homebrew (`brew install rapid-mlx`)? Both install the same CLI.
+
+**2. Launch your coding agent** — install your chosen agent, then run one of:
+
+```bash
+rapid-mlx launch claude-code
+rapid-mlx launch codex
+rapid-mlx launch opencode
+```
+
+`rapid-mlx launch <agent>` creates a private profile, starts the server, and launches the agent. Run the same command tomorrow; `rapid-mlx launch codex --remove` removes Rapid's private profile without changing your existing Codex settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
+
+For other tools, use `rapid-mlx agents <tool> --setup`, for example `rapid-mlx agents cline --setup`.
 
 <p align="center">
   <strong>Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.</strong>
@@ -33,6 +51,35 @@ oMLX 0.7.0 and LM Studio, using the same base 4-bit weights for each model.
 | Qwen3.6-35B | 2K-prompt first token (s, lower is better) | **0.55** | 1.14 | 1.49 |
 
 <sub>Single run per engine; default serving modes with Rapid's MTP text mode, oMLX's SSD cache, and LM Studio's configured context and four parallel slots. [Full results and raw data](https://rapidmlx.com/compare).</sub>
+
+**3. Use your SDK** — start a local server in another terminal:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --port 8000
+```
+
+The first start may download weights. Without `--port`, the server picks the first free port in `8000`–`8009`; these examples pin `8000`. Install your SDK with `pip install openai` or `pip install anthropic`.
+
+OpenAI Python — base URL includes `/v1`:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+print(client.chat.completions.create(
+    model="default", messages=[{"role": "user", "content": "Say hello"}],
+).choices[0].message.content)
+```
+
+Anthropic Python — base URL is the host; the SDK calls `/v1/messages`:
+
+```python
+from anthropic import Anthropic
+client = Anthropic(base_url="http://localhost:8000", api_key="not-needed")
+print(client.messages.create(
+    model="default", max_tokens=256,
+    messages=[{"role": "user", "content": "Say hello"}],
+).content[0].text)
+```
 
 <p align="center">
   <a href="https://pypi.org/project/rapid-mlx/"><img src="https://img.shields.io/pypi/v/rapid-mlx?color=blue&label=PyPI" alt="PyPI"></a>
