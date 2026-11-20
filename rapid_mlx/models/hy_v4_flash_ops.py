@@ -124,9 +124,21 @@ def sparse_mask(query, key, group_logits, ratio, budget, xp):
         if budget > 1
         else xp.zeros((*query.shape, 0), dtype=xp.int32)
     )
-    selected = xp.any(key[:, None, :, None] // ratio == indices[:, :, None, :], axis=-1)
-    history = selected & (key[:, None, :] // ratio < upper[..., None])
-    tail = key[:, None, :] // ratio == upper[..., None]
+    # Scatter once per group, then gather once per key. Comparing every key
+    # against every selected group would allocate [batch, query, history, topk].
+    count = group_logits.shape[-1]
+    membership = xp.zeros((*query.shape, count + 1), dtype=xp.bool_)
+    membership[
+        xp.arange(query.shape[0])[:, None, None],
+        xp.arange(query.shape[1])[None, :, None],
+        indices,
+    ] = True
+    key_group = key // ratio
+    # The final, always-false slot handles padding and keys outside the logits.
+    gather = xp.where((key_group >= 0) & (key_group < count), key_group, count)
+    selected = xp.take_along_axis(membership, gather[:, None, :], axis=-1)
+    history = selected & (key_group[:, None, :] < upper[..., None])
+    tail = key_group[:, None, :] == upper[..., None]
     return (
         (history | tail)
         & (key[:, None, :] >= 0)

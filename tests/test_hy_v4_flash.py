@@ -470,6 +470,56 @@ def test_indexpool_tail_and_budget():
     np.testing.assert_array_equal(ops.fwht_fp8(np.zeros((1, 4)), np), np.zeros((1, 4)))
 
 
+@pytest.mark.parametrize(
+    "batch,query_len,history_len,ratio,group_count",
+    [(1, 1, 9, 2, 4), (2, 7, 17, 4, 5), (3, 4, 8, 1, 8), (1, 3, 3, 4, 0)],
+)
+@pytest.mark.parametrize("budget", [1, 2, 5, 20])
+def test_sparse_mask_matches_broadcast_reference(
+    batch, query_len, history_len, ratio, group_count, budget
+):
+    rng = np.random.default_rng(42)
+    query = rng.integers(-1, history_len + ratio, (batch, query_len))
+    if query_len > 1:
+        query[:, 0] = -1
+    query[:, -1] = history_len - 1
+    key = np.broadcast_to(np.arange(history_len), (batch, history_len)).copy()
+    key[:, 0] = -1
+    scores = rng.normal(size=(batch, query_len, group_count)).astype(np.float32)
+    upper = query // ratio
+    live = np.arange(group_count)[None, None, :] < upper[..., None]
+    indices = (
+        np.argsort(np.where(live, scores, -np.inf), axis=-1)[
+            ..., -min(budget - 1, group_count) :
+        ]
+        if budget > 1
+        else np.zeros((*query.shape, 0), dtype=np.int32)
+    )
+    selected = np.any(key[:, None, :, None] // ratio == indices[:, :, None, :], axis=-1)
+    expected = (
+        (
+            (selected & (key[:, None, :] // ratio < upper[..., None]))
+            | (key[:, None, :] // ratio == upper[..., None])
+        )
+        & (key[:, None, :] >= 0)
+        & (key[:, None, :] <= query[..., None])
+    )
+    actual = ops.sparse_mask(query, key, scores, ratio, budget, np)
+    assert actual.dtype == np.bool_
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_sparse_mask_never_builds_four_dimensional_intermediate():
+    class AtMostThreeDimensions(np.ndarray):
+        def __array_finalize__(self, obj):
+            assert self.ndim <= 3, self.shape
+
+    query = np.arange(5)[None].view(AtMostThreeDimensions)
+    key = np.arange(13)[None].view(AtMostThreeDimensions)
+    scores = np.ones((1, 5, 7)).view(AtMostThreeDimensions)
+    assert ops.sparse_mask(query, key, scores, 2, 5, np).shape == (1, 5, 13)
+
+
 def test_config_defaults_nested_and_rejection():
     assert tiny().mlp_layer_types == ["dense", "sparse"]
     assert (
@@ -898,6 +948,38 @@ def test_fp8_output_shards_are_bounded_and_release_tensors(
         with safe_open(shard, framework="np") as f:
             assert sum(f.get_tensor(k).nbytes for k in list(f.keys())) <= limit
     assert writer.total > limit
+
+
+def test_fp8_oversized_tensor_gets_dedicated_shard(fp8_conversion, tmp_path):
+    from safetensors.numpy import load_file
+
+    converter, _, _, _ = fp8_conversion
+    writer = converter._ShardWriter(tmp_path / "out", max_bytes=16)
+    values = {
+        "before": np.arange(2, dtype=np.float32),
+        "oversized": np.arange(5, dtype=np.float32),
+        "after": np.arange(4, dtype=np.float32),
+    }
+    for name, value in values.items():
+        writer.put(name, value)
+        if name == "oversized":
+            assert not writer.pending
+            assert writer.size == 0
+        with pytest.raises(ValueError, match="Duplicate"):
+            writer.put(name, value)
+    writer.finish(total_parameters=11)
+    index = json.loads(
+        (writer.destination / "model.safetensors.index.json").read_text()
+    )
+    assert index["metadata"] == {"total_size": 44, "total_parameters": 11}
+    assert index["weight_map"] == {
+        name: f"model-{i:05d}.safetensors" for i, name in enumerate(values, 1)
+    }
+    assert len(list(writer.destination.glob("*.safetensors"))) == 3
+    for name, filename in index["weight_map"].items():
+        tensors = load_file(writer.destination / filename)
+        assert list(tensors) == [name]
+        np.testing.assert_array_equal(tensors[name], values[name])
 
 
 def test_moe_latent_clamp_bias_and_shared_reference(cpu_model):

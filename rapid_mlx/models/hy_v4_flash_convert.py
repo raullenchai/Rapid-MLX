@@ -23,7 +23,8 @@ class _ShardWriter:
     """Bound output residency; retain only names after each synchronous save.
 
     Like the streamed build writer, publish the index only after all tensors
-    have been written. An indivisible tensor larger than the limit is rejected.
+    have been written. An indivisible tensor larger than the limit gets its
+    own shard.
     """
 
     def __init__(self, destination, max_bytes=5_000_000_000):
@@ -38,13 +39,13 @@ class _ShardWriter:
     def put(self, name, value):
         if name in self.weight_map or name in self.pending:
             raise ValueError(f"Duplicate Hy4 Flash weight: {name}")
-        if value.nbytes > self.max_bytes:
-            raise ValueError(f"Tensor exceeds output shard limit: {name}")
         if self.size + value.nbytes > self.max_bytes:
             self.flush()
         self.pending[name] = value
         self.size += value.nbytes
         self.total += value.nbytes
+        if value.nbytes > self.max_bytes:
+            self.flush()
 
     def flush(self):
         import mlx.core as mx
