@@ -610,6 +610,59 @@ def test_mllm_preflight_counts_request_template_mode(client, mode):
     ) == len(tok.encode(rendered, add_special_tokens=False))
 
 
+@pytest.mark.parametrize("mode", ["closed", "continuation"])
+@pytest.mark.parametrize("wrapped_attr", ["tokenizer", "_tokenizer"])
+def test_mllm_preflight_uses_processor_wrapped_encoder(client, mode, wrapped_attr):
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    _, cfg = client
+    cfg.max_prompt_tokens = None
+    tok = tokenizer()
+    processor = SimpleNamespace(
+        apply_chat_template=tok.apply_chat_template, **{wrapped_attr: tok}
+    )
+    eng = SimpleNamespace(is_mllm=True, tokenizer=processor)
+    options = {
+        "add_generation_prompt": False,
+        "continue_final_message": mode == "continuation",
+    }
+    rendered = apply_chat_template(processor, MESSAGES, **options)
+    expected = len(tok.encode(rendered, add_special_tokens=False))
+    assert enforce_context_length_for_messages(eng, MESSAGES, **options) == expected
+
+    cfg.context_length = expected
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length_for_messages(eng, MESSAGES, **options)
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail["error"]["code"] == "context_length_exceeded"
+    assert excinfo.value.prompt_tokens == expected
+
+
+@pytest.mark.parametrize("mode", ["closed", "continuation"])
+@pytest.mark.parametrize("max_prompt_tokens", [None, 1000])
+def test_mllm_preflight_without_encoder(client, mode, max_prompt_tokens):
+    from fastapi import HTTPException
+
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    _, cfg = client
+    cfg.max_prompt_tokens = max_prompt_tokens
+    eng = SimpleNamespace(is_mllm=True, tokenizer=LegacyApplicator())
+    options = {
+        "add_generation_prompt": False,
+        "continue_final_message": mode == "continuation",
+    }
+    if max_prompt_tokens is None:
+        assert enforce_context_length_for_messages(eng, MESSAGES, **options) is None
+    else:
+        with pytest.raises(HTTPException) as excinfo:
+            enforce_context_length_for_messages(eng, MESSAGES, **options)
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.detail["error"]["code"] == "prompt_token_count_unavailable"
+
+
 def test_mllm_continuation_template_error_is_not_silently_skipped(client):
     from fastapi import HTTPException
 

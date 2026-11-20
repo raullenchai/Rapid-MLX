@@ -6198,7 +6198,22 @@ def enforce_context_length_for_messages(
                     add_generation_prompt=add_generation_prompt,
                     continue_final_message=continue_final_message,
                 )
-                prompt_ids = tokenizer.encode(rendered, add_special_tokens=False)
+                encode = None
+                for candidate in (
+                    tokenizer,
+                    getattr(tokenizer, "tokenizer", None),
+                    getattr(tokenizer, "_tokenizer", None),
+                ):
+                    encode = getattr(candidate, "encode", None)
+                    if callable(encode):
+                        break
+                if not callable(encode):
+                    if require_text_preflight:
+                        _raise_prompt_count_unavailable(
+                            code="prompt_token_count_unavailable"
+                        )
+                    return None
+                prompt_ids = encode(rendered, add_special_tokens=False)
             elif request_prompt_tokens is not None:
                 prompt_ids = request_prompt_tokens.apply_template(
                     tokenizer,
