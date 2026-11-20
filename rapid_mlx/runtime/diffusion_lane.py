@@ -847,6 +847,7 @@ class DiffusionEngine(BaseEngine):
         tools: list[dict] | None = None,
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
         chat_template_kwargs: dict | None = None,
     ) -> str:
         self._ensure_loaded()
@@ -854,6 +855,8 @@ class DiffusionEngine(BaseEngine):
             "tokenize": False,
             "add_generation_prompt": add_generation_prompt,
         }
+        if continue_final_message:
+            template_kwargs["continue_final_message"] = True
         # Only forward ``tools`` to the chat template when the active
         # alias declares a tool parser this engine can actually surface
         # (codex r1 BLOCKING #1). Tokenizers whose ``apply_chat_template``
@@ -884,10 +887,25 @@ class DiffusionEngine(BaseEngine):
         )
         if "tools" in template_kwargs:
             template_kwargs["tools"] = sanitized_tools
-        return self._processor.tokenizer.apply_chat_template(
-            messages,
-            **template_kwargs,
-        )
+
+        def render(rows, generation):
+            return self._processor.tokenizer.apply_chat_template(
+                rows,
+                **{
+                    **{
+                        k: v
+                        for k, v in template_kwargs.items()
+                        if k != "continue_final_message"
+                    },
+                    "add_generation_prompt": generation,
+                },
+            )
+
+        if continue_final_message:
+            from rapid_mlx.utils.chat_template import _truncate_for_continuation
+
+            return _truncate_for_continuation(render(messages, False), messages, render)
+        return render(messages, add_generation_prompt)
 
     def _build_skip_special_token_ids(
         self, tokenizer: Any, *, has_tools: bool = False

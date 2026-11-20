@@ -236,6 +236,15 @@ class HarmonyStreamingRouter:
         self._parser = self._StreamableParser(self._enc, role=self._role)
         self._emitted_msg_count = 0
 
+    def seed_channel(self, channel: str) -> None:
+        """Open the verified assistant channel without emitting prefill text."""
+        self.reset()
+        name = "analysis" if channel == "reasoning" else "final"
+        header = f"<|start|>assistant<|channel|>{name}<|message|>"
+        assert self._enc is not None, "Harmony encoding is required to seed a channel"
+        for token_id in self._enc.encode(header, allowed_special="all"):
+            self.feed(token_id)
+
     @staticmethod
     def _extract_structured_tool_call(message: Any) -> dict | None:
         """Pull a structured ``{"name", "arguments"}`` payload out of a

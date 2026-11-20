@@ -87,6 +87,48 @@ def prompt_parse_context(
     )
 
 
+def continuation_prompt_parse_context(
+    prompt, messages, render, *, thinking, flint=False
+):
+    """Classify only the assistant slot proven by the continuation renderer."""
+    from .utils.chat_template import _continuation_span
+
+    closed = render(messages, False)
+    if not isinstance(closed, str):
+        raise ValueError("Chat template continuation requires a rendered string")
+    prefix, suffix = _continuation_span(closed, messages, render)
+    if prompt != prefix + suffix:
+        raise ValueError("Chat template continuation differs from the proven boundary")
+    # Paired history proves where the final assistant header starts. A role
+    # literal in an earlier user's message cannot establish parser ownership.
+    try:
+        history = render(messages[:-1], False)
+    except Exception:
+        history = None
+    start = (
+        len(history)
+        if isinstance(history, str) and prefix.startswith(history)
+        else None
+    )
+    context = prompt_parse_context(
+        prompt, thinking=thinking, assistant_start=start, flint_template=flint
+    )
+    if context.template_contract != "unknown":
+        return context
+    # Legacy templates have no registered role vocabulary. Retain controls
+    # injected in the proven assistant header as well as transformed content.
+    if start is not None:
+        header = prefix[start:]
+        control = re.search(r"</?think>", header)
+        if control is not None:
+            suffix = header[control.start() :] + suffix
+    return replace(
+        context,
+        assistant_suffix=suffix,
+        initial_channel=_initial_channel(suffix, flint=flint),
+    )
+
+
 def _verified_suffix_ids(suffix, prompt_ids, tokenizer):
     try:
         encoded = tuple(tokenizer.encode(suffix, add_special_tokens=False))

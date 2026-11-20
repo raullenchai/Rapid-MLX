@@ -1723,6 +1723,8 @@ class ChatCompletionRequest(BaseModel):
     # keys are passed through for model-specific template variables. See
     # ``_resolve_enable_thinking`` in service/helpers.py for precedence.
     chat_template_kwargs: dict | None = None
+    add_generation_prompt: bool = True
+    continue_final_message: bool = False
     # reasoning_max_tokens — caps the THINKING portion only (tokens inside
     # ``<think>...</think>``); the model then answers. Does NOT bound the
     # answer — pair with ``max_tokens`` for total length. None = no reasoning
@@ -2025,6 +2027,34 @@ class ChatCompletionRequest(BaseModel):
         normalization — giving mypy a ``list[str] | None`` view at the engine
         boundary while the wire schema keeps accepting a scalar string."""
         return _normalize_stop(self.stop)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_continuation(cls, data, handler) -> "ChatCompletionRequest":
+        self: ChatCompletionRequest = handler(data)
+        if self.continue_final_message:
+            if self.add_generation_prompt:
+                raise ValueError(
+                    "continue_final_message requires add_generation_prompt=False"
+                )
+            if not self.messages or self.messages[-1].role != "assistant":
+                raise ValueError(
+                    "continue_final_message requires a final assistant message"
+                )
+            # Inspect the raw message too: Message ignores the legacy
+            # function_call field, but continuing it would drop the call.
+            final_message = data["messages"][-1] if isinstance(data, dict) else None
+            function_call = (
+                final_message.get("function_call")
+                if isinstance(final_message, dict)
+                else None
+            )
+            if self.messages[-1].tool_calls or function_call:
+                raise ValueError(
+                    "continue_final_message requires a final assistant message "
+                    "without non-empty tool_calls or function_call"
+                )
+        return self
 
     @model_validator(mode="after")
     def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":

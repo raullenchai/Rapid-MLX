@@ -3027,9 +3027,20 @@ class BatchedEngine(BaseEngine):
         )
 
     def _prompt_parse_context(
-        self, prompt, thinking, tools, template_kwargs, prefix, messages, num_images=0
+        self,
+        prompt,
+        thinking,
+        tools,
+        template_kwargs,
+        prefix,
+        messages,
+        num_images=0,
+        continue_final_message=False,
     ):
-        from ..prompt_parse_context import prompt_parse_context
+        from ..prompt_parse_context import (
+            continuation_prompt_parse_context,
+            prompt_parse_context,
+        )
         from ..utils.chat_template import is_flint_chat_template
 
         # Native token-routed families keep their existing ownership contract.
@@ -3048,6 +3059,21 @@ class BatchedEngine(BaseEngine):
         if prefix and not prompt.endswith(prefix):
             return prompt_parse_context(
                 prompt, thinking=thinking, flint_template=flint, forced_prefix=prefix
+            )
+        if continue_final_message:
+            return continuation_prompt_parse_context(
+                prompt,
+                messages,
+                lambda rows, generation: self._apply_chat_template(
+                    rows,
+                    tools,
+                    num_images=num_images,
+                    enable_thinking=thinking,
+                    add_generation_prompt=generation,
+                    chat_template_kwargs=template_kwargs,
+                ),
+                thinking=thinking,
+                flint=flint,
             )
         assistant_start = None
         try:
@@ -3181,6 +3207,7 @@ class BatchedEngine(BaseEngine):
         tools: list[dict] | None = None,
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
         chat_template_kwargs: dict | None = None,
         _prompt_tokens=None,
     ) -> str:
@@ -3213,6 +3240,7 @@ class BatchedEngine(BaseEngine):
                 enable_thinking=enable_thinking,
                 add_generation_prompt=add_generation_prompt,
                 chat_template_kwargs=chat_template_kwargs,
+                continue_final_message=continue_final_message,
             )
         except Exception as exc:
             if not (
@@ -3226,6 +3254,8 @@ class BatchedEngine(BaseEngine):
             )
             tokenizer = getattr(self.tokenizer, "tokenizer", self.tokenizer)
             return str(tokenizer.decode(token_ids, skip_special_tokens=False))
+        if continue_final_message:
+            return prompt
         prepared, _ = self._prepare_harmony_no_thinking_prompt(
             prompt,
             enable_thinking=enable_thinking,
@@ -3242,7 +3272,9 @@ class BatchedEngine(BaseEngine):
         *,
         num_images: int,
         enable_thinking: bool | None,
-        chat_template_kwargs: dict | None,
+        add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
+        chat_template_kwargs: dict | None = None,
     ) -> tuple[str | list[int], int]:
         """Render a chat prompt, including the shared-prefix warm-up fallback."""
         # Agent warm-up may contain only the shared system and tools. Some
@@ -3258,6 +3290,8 @@ class BatchedEngine(BaseEngine):
                 num_images=num_images,
                 enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
+                continue_final_message=continue_final_message,
+                add_generation_prompt=add_generation_prompt,
             )
         except Exception as exc:
             if not (
@@ -3276,6 +3310,8 @@ class BatchedEngine(BaseEngine):
         messages: list[dict[str, Any]],
         tools: list[dict] | None = None,
         enable_thinking: bool | None = None,
+        add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
         chat_template_kwargs: dict | None = None,
     ) -> str | list[int]:
         """Render the generation prompt without starting generation."""
@@ -3291,8 +3327,10 @@ class BatchedEngine(BaseEngine):
             num_images=len(images),
             enable_thinking=enable_thinking,
             chat_template_kwargs=chat_template_kwargs,
+            continue_final_message=continue_final_message,
+            add_generation_prompt=add_generation_prompt,
         )
-        if not shared_warm_boundary:
+        if not shared_warm_boundary and not continue_final_message:
             assert isinstance(prompt, str)
             prompt, _ = self._prepare_harmony_no_thinking_prompt(
                 prompt,
@@ -3323,6 +3361,7 @@ class BatchedEngine(BaseEngine):
         num_images: int = 0,
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
+        continue_final_message: bool = False,
         chat_template_kwargs: dict | None = None,
     ) -> str:
         """Apply chat template to messages.
@@ -3403,6 +3442,7 @@ class BatchedEngine(BaseEngine):
                     "num_images": num_images,
                     "enable_thinking": enable_thinking,
                     "add_generation_prompt": add_generation_prompt,
+                    "continue_final_message": continue_final_message,
                     "chat_template_kwargs": chat_template_kwargs,
                 }
             )
@@ -3425,6 +3465,7 @@ class BatchedEngine(BaseEngine):
             model_name=self._model_name,
             add_generation_prompt=add_generation_prompt,
             chat_template_kwargs=chat_template_kwargs,
+            continue_final_message=continue_final_message,
         )
         if host_cache is not None:
             host_cache.put_render(render_fingerprint, prompt)
@@ -3543,6 +3584,8 @@ class BatchedEngine(BaseEngine):
                 admission_token, clear_context=owns_admission
             )
 
+        continue_final_message = kwargs.pop("_continue_final_message", False)
+        initial_channel = kwargs.pop("_output_router_initial_channel", None)
         request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
 
         if self._select_mllm_request_path(images, videos, admission_token):
@@ -3617,8 +3660,17 @@ class BatchedEngine(BaseEngine):
             if mllm_assistant_text_prefix:
                 mllm_full_text = mllm_assistant_text_prefix + mllm_full_text
 
+            reasoning, content, tool_calls = self._route_tokens_for_channels(
+                output.output_token_ids,
+                fallback_text=clean_output_text(mllm_full_text),
+                initial_channel=(initial_channel or "content")
+                if continue_final_message
+                else None,
+            )
             return GenerationOutput(
-                text=clean_output_text(mllm_full_text),
+                text=content,
+                reasoning_text=reasoning,
+                tool_calls=tool_calls,
                 raw_text=mllm_full_text,
                 tokens=output.output_token_ids,
                 prompt_tokens=output.prompt_tokens,
@@ -3676,7 +3728,11 @@ class BatchedEngine(BaseEngine):
             suppressed_tokens_logits_processor,
             dry_logits_processor,
         ) = _pop_lane_parity_processors(kwargs)
-        if output_router_seed is None and isinstance(prompt, str):
+        if (
+            not continue_final_message
+            and output_router_seed is None
+            and isinstance(prompt, str)
+        ):
             # ``build_prompt(enable_thinking=False)`` is part of the public
             # engine contract and returns the prepared Harmony string. A
             # caller may feed that string back into ``generate()`` without
@@ -3751,6 +3807,9 @@ class BatchedEngine(BaseEngine):
             output.output_token_ids,
             fallback_text=text,
             seed_token_ids=output_router_seed,
+            initial_channel=(initial_channel or "content")
+            if continue_final_message
+            else None,
         )
 
         return GenerationOutput(
@@ -4163,6 +4222,8 @@ class BatchedEngine(BaseEngine):
         # Extract enable_thinking before passing kwargs downstream
         enable_thinking = kwargs.pop("enable_thinking", None)
         chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
+        add_generation_prompt = kwargs.pop("add_generation_prompt", True)
+        continue_final_message = kwargs.pop("continue_final_message", False)
         # PFlash routing hints (#287). ``requires_prompt_integrity`` is
         # set by the route layer for response_format / structured-output
         # requests — those are hard-protected (no opt-out flag exists).
@@ -4191,9 +4252,13 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             enable_thinking=enable_thinking,
             chat_template_kwargs=chat_template_kwargs,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
         )
+        if continue_final_message:
+            kwargs["_continue_final_message"] = True
         output_router_seed = None
-        if not shared_warm_boundary:
+        if not shared_warm_boundary and not continue_final_message:
             assert isinstance(prompt, str)
             prompt, output_router_seed = await asyncio.to_thread(
                 run_prompt_work,
@@ -4315,6 +4380,7 @@ class BatchedEngine(BaseEngine):
             forced_assistant_prefix,
             messages,
             num_images=len(all_images),
+            continue_final_message=continue_final_message,
         )
         capture = PromptContextCapture(
             context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
@@ -4322,6 +4388,10 @@ class BatchedEngine(BaseEngine):
         if context is not None and context.template_contract != "unknown":
             kwargs["_on_prompt_prepared"] = capture
         self._align_owned_stop_scope(kwargs, context)
+        if continue_final_message:
+            kwargs["_output_router_initial_channel"] = (
+                getattr(context, "initial_channel", None) or "content"
+            )
 
         if request_prompt_tokens is not None and not all_images and not all_videos:
             if getattr(self, "_mllm_dense_singleton_fastpath", False):
@@ -4732,6 +4802,7 @@ class BatchedEngine(BaseEngine):
         *,
         fallback_text: str,
         seed_token_ids: tuple[int, ...] | None = None,
+        initial_channel: str | None = None,
     ) -> tuple[str, str, list[dict] | None]:
         """Run ``OutputRouter.feed_sequence`` on a completed token list.
 
@@ -4771,6 +4842,8 @@ class BatchedEngine(BaseEngine):
             return "", fallback_text, None
         try:
             router.reset()
+            if initial_channel is not None:
+                router.seed_channel(initial_channel)
             for token_id in seed_token_ids or ():
                 router.feed(token_id)
             routed = router.feed_sequence(token_ids)
@@ -5178,6 +5251,8 @@ class BatchedEngine(BaseEngine):
         # Extract enable_thinking before passing kwargs downstream
         enable_thinking = kwargs.pop("enable_thinking", None)
         chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
+        add_generation_prompt = kwargs.pop("add_generation_prompt", True)
+        continue_final_message = kwargs.pop("continue_final_message", False)
         # PFlash routing hints (#287) — parity with chat(). Tools are
         # NOT auto-folded into ``requires_prompt_integrity``; the
         # ``has_tools`` flag plus ``skip_when_tools`` is the user-
@@ -5199,9 +5274,11 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             enable_thinking=enable_thinking,
             chat_template_kwargs=chat_template_kwargs,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
         )
         output_router_seed = None
-        if not shared_warm_boundary:
+        if not shared_warm_boundary and not continue_final_message:
             assert isinstance(prompt, str)
             prompt, output_router_seed = await asyncio.to_thread(
                 run_prompt_work,
@@ -5289,6 +5366,8 @@ class BatchedEngine(BaseEngine):
         if requires_prompt_integrity:
             kwargs["requires_prompt_integrity"] = True
 
+        # Keep routing channel/tool transitions during continuations. The
+        # verified prompt context below seeds the already-open body channel.
         router = self._create_output_router()
         if router is not None and output_router_seed is not None:
             try:
@@ -5312,6 +5391,7 @@ class BatchedEngine(BaseEngine):
             forced_assistant_prefix,
             messages,
             num_images=len(all_images),
+            continue_final_message=continue_final_message,
         )
         capture = PromptContextCapture(
             context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
@@ -5319,6 +5399,8 @@ class BatchedEngine(BaseEngine):
         if context is not None and context.template_contract != "unknown":
             kwargs["_on_prompt_prepared"] = capture
         self._align_owned_stop_scope(kwargs, context)
+        if continue_final_message and router is not None:
+            router.seed_channel(getattr(context, "initial_channel", None) or "content")
 
         if request_prompt_tokens is not None and not all_images and not all_videos:
             if getattr(self, "_mllm_dense_singleton_fastpath", False):
@@ -5944,6 +6026,8 @@ class BatchedEngine(BaseEngine):
         # non-guided ``chat()`` path.
         enable_thinking = kwargs.pop("enable_thinking", None)
         chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
+        add_generation_prompt = kwargs.pop("add_generation_prompt", True)
+        continue_final_message = kwargs.pop("continue_final_message", False)
         # Build prompt from messages. Route through the central
         # ``shared_apply_chat_template`` wrapper so the role-marker
         # sanitisation runs on user/tool message content here too —
@@ -5961,6 +6045,8 @@ class BatchedEngine(BaseEngine):
             enable_thinking=enable_thinking,
             model_name=getattr(self, "_model_name", "") or "",
             chat_template_kwargs=chat_template_kwargs,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
         )
 
         request_prompt_tokens = kwargs.get("_prompt_tokens")
@@ -6102,6 +6188,8 @@ class BatchedEngine(BaseEngine):
             # path, not a defense-in-depth nit.
             if enable_thinking is not None:
                 kwargs["enable_thinking"] = enable_thinking
+            kwargs["add_generation_prompt"] = add_generation_prompt
+            kwargs["continue_final_message"] = continue_final_message
             return await self.chat(messages=messages, max_tokens=max_tokens, **kwargs)
 
         # Tokenize for completion count

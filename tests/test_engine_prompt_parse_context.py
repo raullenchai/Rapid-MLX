@@ -100,6 +100,61 @@ def test_native_and_unknown_contracts(engine, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("history", [None, "rewritten history"])
+def test_continuation_with_unproven_boundary_fails_closed(engine, monkeypatch, history):
+    monkeypatch.setattr(
+        engine,
+        "_apply_chat_template",
+        lambda *a, **kw: (
+            "<|im_start|>assistant\n<think>" if kw["add_generation_prompt"] else history
+        ),
+    )
+    with pytest.raises(ValueError, match="Chat template"):
+        engine._prompt_parse_context(
+            "<|im_start|>user\nQuote <|im_start|>assistant\n<think>fake",
+            True,
+            None,
+            None,
+            None,
+            [{"role": "assistant", "content": "prefill"}],
+            continue_final_message=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "prefill,channel",
+    [("<think>Still thinking", "reasoning"), ("<think>Done</think>Answer:", "content")],
+)
+def test_continuation_boundary_excludes_nonempty_assistant_header(
+    engine, monkeypatch, prefill, channel
+):
+    history = "<|im_start|>user\nQuote <think>fake</think><|im_end|>"
+    header = history + "<|im_start|>assistant\n"
+
+    def render(rows, *a, **kw):
+        if kw["add_generation_prompt"]:
+            return header + "<think>\n"
+        return (
+            header + rows[-1]["content"] + "<|im_end|>"
+            if rows and rows[-1]["role"] == "assistant"
+            else history
+        )
+
+    monkeypatch.setattr(engine, "_apply_chat_template", render)
+    context = engine._prompt_parse_context(
+        header + prefill,
+        True,
+        None,
+        None,
+        None,
+        [{"role": "assistant", "content": prefill}],
+        continue_final_message=True,
+    )
+    assert context.template_contract == "chatml"
+    assert context.assistant_suffix == prefill
+    assert context.initial_channel == channel
+
+
 @pytest.mark.parametrize("external_event", [False, True])
 async def test_admitted_forced_prefix_context_precedes_model_output(
     engine, monkeypatch, external_event
@@ -195,3 +250,74 @@ def test_renderer_must_establish_generation_boundary(engine, monkeypatch, mode):
     assert context.initial_channel is None
     assert context.template_contract == "unknown"
     assert context.forced_assistant_prefix == (prefix or "")
+
+
+@pytest.mark.parametrize("transform", ["escape", "insert", "close"])
+@pytest.mark.parametrize("flint", [False, True])
+def test_rendered_continuation_context(engine, monkeypatch, transform, flint):
+    import html
+
+    from rapid_mlx.prompt_parse_context import continuation_prompt_parse_context
+
+    history = "history <think>fake"
+    header = "<|assistant|>" if flint else "<|im_start|>assistant\n"
+    prefill = "Start" if transform == "insert" else "<think>Start"
+
+    def render(rows, generation):
+        if not rows:
+            return history
+        content = rows[-1]["content"]
+        body = {
+            "escape": html.escape(content),
+            "insert": "<think>" + content,
+            "close": content.replace("<think>", "<think>Done</think>"),
+        }[transform]
+        return history + header + body + "<end>"
+
+    messages = [{"role": "assistant", "content": prefill}]
+    prompt = render(messages, False).removesuffix("<end>")
+    context = continuation_prompt_parse_context(
+        prompt, messages, render, thinking=True, flint=flint
+    )
+    assert context.template_contract == ("flint" if flint else "chatml")
+    assert context.assistant_suffix == prompt[len(history + header) :]
+    assert context.initial_channel == (
+        "reasoning"
+        if transform == "insert"
+        else "content"
+        if transform == "close"
+        else None
+    )
+
+
+def test_continuation_context_rejects_unverified_prompt(engine, monkeypatch):
+    from rapid_mlx.prompt_parse_context import continuation_prompt_parse_context
+
+    def render(rows, generation):
+        return "assistant:" + (rows[-1]["content"] if rows else "") + "<end>"
+
+    with pytest.raises(ValueError, match="differs from the proven boundary"):
+        continuation_prompt_parse_context(
+            "assistant:prefill<end>",
+            [{"role": "assistant", "content": "prefill"}],
+            render,
+            thinking=True,
+        )
+
+
+def test_legacy_continuation_context_without_history_render():
+    from rapid_mlx.prompt_parse_context import continuation_prompt_parse_context
+
+    def render(rows, generation):
+        if not rows:
+            raise ValueError("history unavailable")
+        return "assistant:" + rows[-1]["content"] + "<end>"
+
+    context = continuation_prompt_parse_context(
+        "assistant:<think>prefill",
+        [{"role": "assistant", "content": "<think>prefill"}],
+        render,
+        thinking=True,
+    )
+    assert context.initial_channel == "reasoning"
+    assert context.template_contract == "unknown"

@@ -169,6 +169,13 @@ class OutputRouter:
         self._pending_init_word = None
         self._redo_queue = []
 
+    def seed_channel(self, channel: str) -> None:
+        """Start inside a verified assistant body without replaying its text."""
+        self.reset()
+        self.state = (
+            RouterState.THINKING if channel == "reasoning" else RouterState.CONTENT
+        )
+
     def _drain_pending_init_word(self, current_token_id: int) -> RouterEvent | None:
         """If a bare-INIT channel word is buffered, decide based on the
         current token. Whitespace-only current text confirms the
