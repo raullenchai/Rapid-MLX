@@ -492,6 +492,32 @@ def test_config_defaults_nested_and_rejection():
             ModelArgs.from_dict(config)
 
 
+@pytest.mark.parametrize("projection", ["gate_proj", "up_proj"])
+@pytest.mark.parametrize("leaf", ["weight", "scales", "biases"])
+def test_sanitize_rejects_generated_split_collisions(cpu_model, projection, leaf):
+    prefix = "model.layers.1.mlp.switch_mlp"
+    target = f"{prefix}.{projection}.{leaf}"
+    weights = {
+        f"{prefix}.gate_up_proj.{leaf}": np.ones((3, 8, 4)),
+        target: np.ones((3, 4, 4)),
+    }
+    with pytest.raises(ValueError, match=f"Duplicate Hy4 Flash weight: {target}"):
+        cpu_model.Model(tiny()).sanitize(weights)
+
+
+@pytest.mark.parametrize("projection", ["gate_proj", "up_proj", "down_proj"])
+@pytest.mark.parametrize("leaf", ["weight", "scales", "biases"])
+def test_sanitize_rejects_stacked_bank_collisions(cpu_model, projection, leaf):
+    prefix = "model.layers.1.mlp.switch_mlp"
+    target = f"{prefix}.{projection}.{leaf}"
+    weights = {target: np.ones((3, 4, 4))}
+    weights.update(
+        {f"{prefix}.{e}.{projection}.{leaf}": np.ones((4, 4)) for e in range(3)}
+    )
+    with pytest.raises(ValueError, match=f"Duplicate Hy4 Flash weight: {target}"):
+        cpu_model.Model(tiny()).sanitize(weights)
+
+
 def test_sanitize_experts_quantization_and_optional_paths(cpu_model, caplog):
     a = tiny(
         tie_word_embeddings=True,
@@ -791,6 +817,21 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
     assert converter.convert_fp8(tmp_path, tmp_path / "out5", 4, 32) is False
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "other"}))
     assert converter.convert_fp8(tmp_path, tmp_path / "out6", 4, 32) is False
+
+
+@pytest.mark.parametrize("projection", ["gate_proj", "up_proj"])
+@pytest.mark.parametrize("packed_first", [True, False])
+def test_fp8_conversion_rejects_split_collisions(
+    fp8_conversion, tmp_path, projection, packed_first
+):
+    converter, arrays, _, _ = fp8_conversion
+    target = f"model.layers.1.mlp.switch_mlp.{projection}.weight"
+    arrays[target] = np.ones((3, 64, 64), np.float32), "F32"
+    if not packed_first:
+        packed = "model.layers.1.mlp.experts.gate_up_proj"
+        arrays[packed] = arrays.pop(packed)
+    with pytest.raises(ValueError, match=f"Duplicate Hy4 Flash weight: {target}"):
+        converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "shape", "unexpected", "duplicate"])

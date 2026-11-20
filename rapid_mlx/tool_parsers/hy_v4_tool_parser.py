@@ -98,7 +98,7 @@ def detect_token_suffix(tokenizer: Any) -> str:
     Raises:
         RuntimeError: The tokenizer declares the structural tokens through
             `model_specific_special_tokens`, which transformers 5 no longer
-            round-trips.
+            round-trips, or has incomplete/inconsistent structural suffixes.
 
     """
     init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
@@ -115,14 +115,23 @@ def detect_token_suffix(tokenizer: Any) -> str:
         )
 
     structural_token_re = re.compile(
-        r"<(?:think|tool_calls|tool_call|arg_key|arg_value)(:[^\s>]+)?>"
+        r"<(/?(?:think|tool_calls|tool_call|arg_key|arg_value))(:[^\s>]+)?>"
     )
+    suffixes = set()
+    names = set()
     for token in tokenizer.get_vocab():
         match = structural_token_re.fullmatch(token)
         if match:
-            return match.group(1) or ""
-
-    return ""
+            names.add(match.group(1))
+            suffixes.add(match.group(2) or "")
+    required = {
+        close + name
+        for name in ("think", "tool_calls", "tool_call", "arg_key", "arg_value")
+        for close in ("", "/")
+    }
+    if len(suffixes) > 1 or (names and names != required):
+        raise RuntimeError("HYV4 structural tokens must share exactly one suffix")
+    return next(iter(suffixes), "")
 
 
 # =============================================================================
@@ -648,13 +657,28 @@ class HYV4ToolExtractor:
         tools: list[ToolSchema] | None,
     ) -> list[ToolCallDict]:
         start_idx = model_output.find(self.tool_calls_start_token)
-        end_idx = model_output.find(self.tool_calls_end_token)
-        if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
+        if start_idx == -1 or self.tool_calls_end_token in model_output[:start_idx]:
             raise ValueError("Malformed tool block wrapper.")
 
-        tool_block = model_output[
-            start_idx + len(self.tool_calls_start_token) : end_idx
-        ]
+        tool_calls: list[ToolCallDict] = []
+        remaining = model_output[start_idx:]
+        while remaining:
+            if not remaining.startswith(self.tool_calls_start_token):
+                raise ValueError("Unparsed tool block payload remains.")
+            body_start = len(self.tool_calls_start_token)
+            end_idx = remaining.find(self.tool_calls_end_token, body_start)
+            if end_idx == -1:
+                raise ValueError("Malformed tool block wrapper.")
+            block = remaining[body_start:end_idx]
+            if self.tool_calls_start_token in block:
+                raise ValueError("Malformed tool block wrapper.")
+            tool_calls.extend(self._extract_tool_block_strict(block, tools))
+            remaining = remaining[end_idx + len(self.tool_calls_end_token) :].strip()
+        return tool_calls
+
+    def _extract_tool_block_strict(
+        self, tool_block: str, tools: list[ToolSchema] | None
+    ) -> list[ToolCallDict]:
         if tool_block.count(self.tool_call_start_token) != tool_block.count(
             self.tool_call_end_token
         ):
@@ -662,6 +686,8 @@ class HYV4ToolExtractor:
 
         tool_calls: list[ToolCallDict] = []
         function_calls = self.tool_call_regex.findall(tool_block)
+        if self.tool_call_regex.sub("", tool_block).strip():
+            raise ValueError("Unparsed tool call payload remains.")
         if tool_block.count(self.tool_call_start_token) != len(function_calls):
             raise ValueError("Malformed tool_call body.")
 
@@ -874,34 +900,42 @@ class HYV4ToolExtractor:
                 else:
                     self._buffer += delta_text
             elif self.tool_calls_start_token in delta_text:
-                text_parts = delta_text.split(self.tool_calls_start_token)
-                self._buffer += text_parts[-1]
-                if text_parts[0]:
-                    content_delta = text_parts[0]
+                before, _, rest = delta_text.partition(self.tool_calls_start_token)
+                self._buffer += rest
+                if before:
+                    content_delta = before
             else:
                 self._buffer += delta_text
-
-        # Encountered finish, extract valid arguments
-        if (
-            not self._bare_tool_call
-            and current_text.find(self.tool_call_end_token + self.tool_calls_end_token)
-            != -1
-            and self._buffer.find(self.tool_call_end_token) == -1
-        ):
-            self._buffer += self.tool_call_end_token + self.tool_calls_end_token
 
         # Drain every complete tool call that is already buffered so a single
         # engine delta can carry content + N tool calls (batched decode).
         while True:
             cur_text = self._buffer
 
-            # Haven't encountered tool_call start tag yet; drop the inter-tag
-            # padding but keep any tail that may be a partial tool_call start
-            # tag (guided decoding can split it across deltas).
+            # Skip outer separators between calls, including batched envelopes.
+            if self._streaming_tool_name is None:
+                cur_text = cur_text.lstrip()
+                while cur_text.startswith(
+                    (self.tool_calls_start_token, self.tool_calls_end_token)
+                ):
+                    cur_text = cur_text[cur_text.index(">") + 1 :].lstrip()
+                self._buffer = cur_text
             start_idx = cur_text.find(self.tool_call_start_token)
             if start_idx == -1 and self._streaming_tool_name is None:
-                keep = partial_tag_overlap(cur_text, self.tool_call_start_token)
-                self._buffer = cur_text[len(cur_text) - keep :] if keep else ""
+                # Preserve malformed trailing text as content rather than dropping
+                # it. Retain split structural markers until the next delta.
+                keep = max(
+                    partial_tag_overlap(cur_text, marker)
+                    for marker in (
+                        self.tool_call_start_token,
+                        self.tool_calls_start_token,
+                        self.tool_calls_end_token,
+                    )
+                )
+                safe_end = len(cur_text) - keep
+                if cur_text[:safe_end]:
+                    content_delta = (content_delta or "") + cur_text[:safe_end]
+                self._buffer = cur_text[safe_end:]
                 break
 
             # === Phase 1: Detect tool name (send when first arg_key is seen) =
@@ -960,23 +994,14 @@ class HYV4ToolExtractor:
             if result:
                 tool_calls.extend(result["tool_calls"])
 
-            # Continue only after the current tool call has completed and the
-            # remaining structural payload starts with another tool call.
+            # Continue only after the current tool call has completed, so the
+            # next iteration can drain separators, further calls, or raw content.
             # A literal ``<tool_call>`` may legitimately appear inside an open
             # string argument; in that case the current tool name is still set
             # and the buffer has not been consumed, so continuing would spin on
             # the same buffer forever.
             if self._streaming_tool_name is None:
-                if self._bare_tool_call:
-                    # Skip separators only after a call, never inside a value.
-                    self._buffer = self._buffer.lstrip()
-                    while self._buffer.startswith(
-                        (self.tool_calls_start_token, self.tool_calls_end_token)
-                    ):
-                        end = self._buffer.index(">") + 1
-                        self._buffer = self._buffer[end:].lstrip()
-                if self._buffer.startswith(self.tool_call_start_token):
-                    continue
+                continue
             break
 
         if content_delta is not None or tool_calls:
@@ -1216,6 +1241,10 @@ class HyV4ToolParser(ToolParser):
             ex.tool_calls_start_token in full_text
             or ex.tool_call_start_token in full_text
         ):
+            if ex.current_tool_id >= 0 and ex._streaming_tool_name is None:
+                held = ex._buffer
+                ex._buffer = ""
+                return held
             return ""
         held = full_text[ex._guided_content_len :]
         ex._guided_content_len = len(full_text)

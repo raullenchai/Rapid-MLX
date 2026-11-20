@@ -590,24 +590,32 @@ class Model(nn.Module):
             )
         for key in list(sanitized):
             if ".switch_mlp.gate_up_proj." in key:
+                targets = [
+                    key.replace(".gate_up_proj.", f".{projection}.")
+                    for projection in ("gate_proj", "up_proj")
+                ]
+                for target in targets:
+                    if target in sanitized:
+                        raise ValueError(f"Duplicate Hy4 Flash weight: {target}")
                 gate, up = mx.split(sanitized.pop(key), 2, axis=-2)
-                sanitized[key.replace(".gate_up_proj.", ".gate_proj.")] = gate
-                sanitized[key.replace(".gate_up_proj.", ".up_proj.")] = up
+                sanitized[targets[0]] = gate
+                sanitized[targets[1]] = up
         for layer in range(self.args.num_hidden_layers):
             prefix = f"model.layers.{layer}.mlp"
             for projection in ("gate_proj", "up_proj", "down_proj"):
                 for leaf in ("weight", "scales", "biases"):
                     first = f"{prefix}.switch_mlp.0.{projection}.{leaf}"
                     if first in sanitized:
-                        sanitized[f"{prefix}.switch_mlp.{projection}.{leaf}"] = (
-                            mx.stack(
-                                [
-                                    sanitized.pop(
-                                        f"{prefix}.switch_mlp.{e}.{projection}.{leaf}"
-                                    )
-                                    for e in range(self.args.n_routed_experts)
-                                ]
-                            )
+                        target = f"{prefix}.switch_mlp.{projection}.{leaf}"
+                        if target in sanitized:
+                            raise ValueError(f"Duplicate Hy4 Flash weight: {target}")
+                        sanitized[target] = mx.stack(
+                            [
+                                sanitized.pop(
+                                    f"{prefix}.switch_mlp.{e}.{projection}.{leaf}"
+                                )
+                                for e in range(self.args.n_routed_experts)
+                            ]
                         )
         if self.args.tie_word_embeddings:
             sanitized.pop("lm_head.weight", None)

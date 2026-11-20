@@ -29,9 +29,15 @@ class Tokenizer:
         return self.vocab
 
 
+@pytest.mark.parametrize("module", ["reasoning", "tools"])
 @pytest.mark.parametrize("token", ["<think:other>", "</arg_value:other>"])
-def test_ambiguous_structural_suffix_is_rejected(token):
-    from rapid_mlx.reasoning.hy4_parser import detect_token_suffix
+def test_ambiguous_structural_suffix_is_rejected(token, module):
+    from rapid_mlx.reasoning import hy4_parser
+    from rapid_mlx.tool_parsers import hy_v4_tool_parser
+
+    detect_token_suffix = (
+        hy4_parser if module == "reasoning" else hy_v4_tool_parser
+    ).detect_token_suffix
 
     tokenizer = Tokenizer()
     tokenizer.vocab[token] = 99
@@ -39,11 +45,18 @@ def test_ambiguous_structural_suffix_is_rejected(token):
         detect_token_suffix(tokenizer)
 
 
-def test_incomplete_structural_tokens_are_rejected():
-    from rapid_mlx.reasoning.hy4_parser import detect_token_suffix
+@pytest.mark.parametrize("module", ["reasoning", "tools"])
+@pytest.mark.parametrize("missing", list(Tokenizer().vocab))
+def test_incomplete_structural_tokens_are_rejected(module, missing):
+    from rapid_mlx.reasoning import hy4_parser
+    from rapid_mlx.tool_parsers import hy_v4_tool_parser
+
+    detect_token_suffix = (
+        hy4_parser if module == "reasoning" else hy_v4_tool_parser
+    ).detect_token_suffix
 
     tokenizer = Tokenizer()
-    del tokenizer.vocab["</tool_calls:opensource>"]
+    del tokenizer.vocab[missing]
     with pytest.raises(RuntimeError, match="suffix"):
         detect_token_suffix(tokenizer)
 
@@ -152,6 +165,96 @@ def test_parallel_duplicate_keys_nullable_refs_and_bare_calls(suffix):
         assert content == "prefix"
         assert calls == expected
         assert names == [(i, "record") for i in range(3)]
+
+
+@pytest.mark.parametrize("suffix", ["", ":opensource"])
+def test_multiple_outer_envelopes_preserve_all_calls(suffix):
+    wire = "prefix" + "".join(
+        f"<tool_calls{suffix}>"
+        + call([("x", value)], suffix)
+        + f"</tool_calls{suffix}>"
+        for value in ("first", "second")
+    )
+    result = HyV4ToolParser(Tokenizer(suffix)).extract_tool_calls(wire)
+    assert result.tools_called
+    assert result.content == "prefix"
+    expected = [{"x": "first"}, {"x": "second"}]
+    assert [json.loads(c["arguments"]) for c in result.tool_calls] == expected
+    for split in range(len(wire) + 1):
+        assert stream(
+            HyV4ToolParser(Tokenizer(suffix)), [wire[:split], wire[split:]], None
+        ) == ("prefix", expected, [(0, "record"), (1, "record")])
+    assert stream(HyV4ToolParser(Tokenizer(suffix)), list(wire), None)[1] == expected
+
+
+@pytest.mark.parametrize(
+    "tail", ["garbage", "<tool_calls:opensource>garbage", "<tool_calls:broken>"]
+)
+def test_trailing_malformed_payload_falls_back_to_content(tail):
+    wire = (
+        "prefix<tool_calls:opensource>"
+        + call([], ":opensource")
+        + "</tool_calls:opensource>"
+        + tail
+    )
+    result = HyV4ToolParser().extract_tool_calls(wire)
+    assert not result.tools_called
+    assert result.content == wire
+    assert result.tool_calls == []
+
+
+@pytest.mark.parametrize("tail", ["<tool_ca", "<tool_calls:broken>"])
+def test_streaming_flush_preserves_malformed_tail(tail):
+    wire = (
+        "<tool_calls:opensource>"
+        + call([], ":opensource")
+        + "</tool_calls:opensource>"
+        + tail
+    )
+    for chunks in ([wire], list(wire)):
+        parser = HyV4ToolParser()
+        content, calls, _ = stream(parser, chunks, None)
+        assert calls == [{}]
+        assert content + parser.flush_held_content(wire) == tail
+        assert parser.flush_held_content(wire) == ""
+
+
+def test_streaming_atomic_multiple_outer_envelopes():
+    from rapid_mlx.tool_parsers.hy_v4_tool_parser import HYV4ToolExtractor
+
+    tokenizer = Tokenizer("")
+    wire = (
+        "prefix"
+        + "".join(
+            "<tool_calls>" + call([("x", value)], "") + "</tool_calls>"
+            for value in ("first", "second")
+        )
+        + "garbage"
+    )
+    ids = list(tokenizer.vocab.values())
+    ex = HYV4ToolExtractor(tokenizer.vocab, "", True)
+    result = ex.extract_tool_calls_streaming(
+        "", wire, wire, [], ids, ids, None, guided=False
+    )
+    assert result["content"] == "prefixgarbage"
+    assert [json.loads(c["arguments"]) for c in result["tool_calls"]] == [
+        {"x": "first"},
+        {"x": "second"},
+    ]
+
+
+def test_streaming_trailing_garbage_is_content():
+    wire = (
+        "prefix<tool_calls:opensource>"
+        + call([], ":opensource")
+        + "</tool_calls:opensource>garbage"
+    )
+    for split in range(len(wire) + 1):
+        assert stream(HyV4ToolParser(), [wire[:split], wire[split:]], None) == (
+            "prefixgarbage",
+            [{}],
+            [(0, "record")],
+        )
 
 
 @pytest.mark.parametrize(
@@ -441,6 +544,7 @@ def test_extractor_atomic_paths_strict_rejections_and_suffix_errors(monkeypatch)
     malformed = [
         "</tool_calls><tool_calls>",
         "<tool_calls><tool_call>x</tool_calls>",
+        "<tool_calls><tool_call>x</tool_calls><tool_calls></tool_call></tool_calls>",
         "<tool_calls><tool_call><tool_call>x</tool_call></tool_call></tool_calls>",
         "<tool_calls><tool_call>x<arg_key>k</arg_key><arg_value>v</tool_call></tool_calls>",
     ]
