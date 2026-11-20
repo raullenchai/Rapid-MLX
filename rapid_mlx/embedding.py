@@ -273,6 +273,19 @@ class EmbeddingEngine:
             return tok_max
         return None
 
+    def advertised_max_input_tokens(self) -> int | None:
+        """Effective per-input token limit for model discovery, or ``None``.
+
+        ``None`` when the engine is not loaded or the limit is only the
+        compatibility fallback (neither the model nor the operator set it).
+        """
+        limit = self.effective_max_length
+        if type(limit) is not int or limit <= 0:
+            return None
+        if getattr(self, "_effective_max_length_source", None) == "fallback":
+            return None
+        return limit
+
     def _resolve_effective_max_length(self) -> None:
         """Resolve ``effective_max_length`` from the operator setting and
         the loaded model's declared maximum."""
@@ -295,6 +308,7 @@ class EmbeddingEngine:
             else:
                 self.effective_max_length = requested
             source = "operator"
+        self._effective_max_length_source = source
         logger.info(
             "Embedding effective max input length: %d tokens "
             "(source=%s, overflow_policy=%s)",

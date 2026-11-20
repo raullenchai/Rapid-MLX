@@ -683,7 +683,24 @@ probabilities.
 GET /v1/models
 ```
 
-Returns available models.
+Returns available models. `GET /v1/models/{id}` returns the same model card.
+The OpenAI fields (`id`, `object`, `created`, `owned_by`) are unchanged.
+
+Cards with `capabilities: ["embedding"]` include the following additive fields
+when known from the loaded embedding engine:
+
+| Field | Meaning |
+| --- | --- |
+| `embedding_dimensions` | Native output vector size, from the loaded model config (including its output projection). |
+| `supported_dimensions` | Inclusive `{"min": 1, "max": <embedding_dimensions>}` range accepted by the `/v1/embeddings` `dimensions` parameter. Sliced vectors are L2-renormalized; acceptance does not guarantee retrieval quality at every size. |
+| `max_input_tokens` | Effective per-input token limit used by the embedding truncation/error policy, including an operator `--embedding-max-length` override and model clamping. |
+| `pooling` | Pooling mode, when exposed by the loaded config or known by the native encoder. |
+| `normalized` | Whether native output vectors are normalized, when known. |
+
+Unknown fields are omitted, including dimensions before the engine is loaded
+and an automatic input limit based only on the compatibility fallback. Chat
+cards omit these embedding fields. Discovery does not load weights or send a
+probe embedding request.
 
 ### Embeddings
 

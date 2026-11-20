@@ -765,3 +765,52 @@ def test_native_vision_loader_dispatch_and_legacy_rejection(vision_engine, monke
     legacy = EmbeddingEngine("legacy-model", vision=True)
     with pytest.raises(ValueError, match="requires EmbeddingGemma 2"):
         legacy.load()
+
+
+@pytest.mark.parametrize("input_value", ["2 3", [2, 3]])
+def test_discovery_dimension_matches_real_embedding_call(
+    native_engine, monkeypatch, input_value
+):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import models
+    from tests.test_embeddings_route import _build_embed_app
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "model_name", None)
+    monkeypatch.setattr(cfg, "model_alias", None)
+    monkeypatch.setattr(cfg, "model_registry", None)
+    monkeypatch.setattr(cfg, "engine", None)
+    # Use a small serving limit so discovery must expose the policy's
+    # effective limit rather than the checkpoint's larger rotary window.
+    native_engine.effective_max_length = 16
+    client, restore = _build_embed_app(
+        monkeypatch, native_engine, embedding_model_locked=native_engine.model_name
+    )
+    client.app.include_router(models.router)
+    try:
+        with client:
+            listing = client.get("/v1/models")
+            assert listing.status_code == 200
+            card = next(
+                item
+                for item in listing.json()["data"]
+                if item["id"] == native_engine.model_name
+            )
+            detail = client.get(f"/v1/models/{native_engine.model_name}")
+            assert detail.status_code == 200
+            assert detail.json()["embedding_dimensions"] == card["embedding_dimensions"]
+            assert card["max_input_tokens"] == 16
+            assert card["supported_dimensions"]["max"] == card["embedding_dimensions"]
+    finally:
+        restore()
+    # The HTTP embeddings path runs on the MLX worker thread, which cannot use
+    # weights built on this test thread, so compare against a direct call.
+    if isinstance(input_value, str):
+        vector = native_engine.embed([input_value])[0]
+    else:
+        vector = native_engine.embed_tokens([input_value])[0]
+    assert card["embedding_dimensions"] == len(vector)
+    assert (
+        card["embedding_dimensions"]
+        == native_engine._model.config.text_config.embedding_dim
+    )

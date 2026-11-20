@@ -207,6 +207,7 @@ def test_embedding_gemma2_native_contracts_run_on_apple_silicon() -> None:
     _, workflow = _workflow()
     apple_run = _apple_mlx_test_run(workflow)
     assert "tests/test_embedding_gemma2.py" in apple_run
+    assert "tests/test_models_embedding_metadata.py" in apple_run
 
 
 def test_qwen36_dual_lane_coverage_runs_on_apple_silicon() -> None:

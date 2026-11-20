@@ -2740,7 +2740,8 @@ class ModelInfo(BaseModel):
     not set ``exclude_none`` so the wire shape is stable and
     predictable). OpenAI-only clients ignore the unknown keys per
     spec whether they appear as ``null`` or are omitted, so the
-    baseline contract is unchanged either way.
+    baseline contract is unchanged either way. Unknown embedding metadata is
+    omitted instead, so clients can distinguish it from a known capability.
     """
 
     max_reference_images: int | None = None
@@ -2831,6 +2832,13 @@ class ModelInfo(BaseModel):
     # the id or the estimate can't be formed, and it serializes as
     # JSON ``null`` (no ``exclude_none``) like the other extensions.
     max_model_len: int | None = None
+    # Live embedding metadata; unknown values are omitted from discovery JSON.
+    embedding_dimensions: int | None = None
+    supported_dimensions: dict[str, int] | None = None
+    max_input_tokens: int | None = None
+    pooling: str | None = None
+    normalized: bool | None = None
+
     # Capability tags advertised on the wire. Currently used to mark
     # the configured embedding model with ``"embedding"`` so clients
     # can discover which entry is wired to ``/v1/embeddings`` without
@@ -2865,6 +2873,20 @@ class ModelInfo(BaseModel):
     # is narrower than the ordinary model lane.
     fallback_model: str | None = None
     min_memory_gb: float | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unknown_embedding_metadata(self, handler):
+        data = handler(self)
+        for key in (
+            "embedding_dimensions",
+            "supported_dimensions",
+            "max_input_tokens",
+            "pooling",
+            "normalized",
+        ):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ModelsResponse(BaseModel):
