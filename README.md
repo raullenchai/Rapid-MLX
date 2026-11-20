@@ -75,10 +75,11 @@ Anthropic Python — base URL is the host; the SDK calls `/v1/messages`:
 ```python
 from anthropic import Anthropic
 client = Anthropic(base_url="http://localhost:8000", api_key="not-needed")
-print(client.messages.create(
+msg = client.messages.create(
     model="default", max_tokens=256,
     messages=[{"role": "user", "content": "Say hello"}],
-).content[0].text)
+)
+print("".join(b.text for b in msg.content if b.type == "text"))
 ```
 
 <p align="center">
