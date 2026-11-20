@@ -588,6 +588,10 @@ def main():
         help="v2 JSON object or file: {layer: {projection: bits}}; group 64",
     )
     parser.add_argument(
+        "--rtn-projections",
+        help="v2 only: comma list of gate_proj,up_proj,down_proj to quantize with RTN",
+    )
+    parser.add_argument(
         "--routing-weight-squared",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -619,13 +623,14 @@ def main():
         v is not None
         for v in (
             args.bits_map,
+            args.rtn_projections,
             args.routing_weight_squared,
             args.min_tokens,
             args.calibration_token_budget,
         )
     ):
         parser.error(
-            "calibration budget, bits map, weighting and min-tokens require v2"
+            "calibration budget, bits map, RTN projections, weighting and min-tokens require v2"
         )
     if v2:
         from scripts.deepseek_v41_rd_common import read_slices
@@ -634,6 +639,11 @@ def main():
         recipe = V2Recipe(
             **options,
             bits_map=parse_bits_map(args.bits_map) if args.bits_map is not None else (),
+            rtn_projections=tuple(
+                sorted(p.strip() for p in args.rtn_projections.split(","))
+            )
+            if args.rtn_projections
+            else (),
             routing_weight_squared=args.routing_weight_squared is not False,
             min_tokens=1024 if args.min_tokens is None else args.min_tokens,
             calibration_token_budget=args.calibration_token_budget,

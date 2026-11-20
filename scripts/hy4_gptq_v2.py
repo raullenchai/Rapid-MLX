@@ -37,7 +37,7 @@ def parse_bits_map(value):
             if (
                 projection not in ("gate_proj", "up_proj", "down_proj")
                 or type(bits) is not int
-                or bits not in (2, 3, 4, 6, 8)
+                or bits not in (2, 3, 4, 5, 6, 8)
             ):
                 raise ValueError(
                     "bits map needs gate/up/down_proj and native affine bits"
@@ -52,6 +52,7 @@ def parse_bits_map(value):
 class V2Recipe(Recipe):
     name: str = "hy4-gptq-v2"
     bits_map: tuple[tuple[int, str, int], ...] = ()
+    rtn_projections: tuple[str, ...] = ()
     routing_weight_squared: bool = True
     min_tokens: int = 1024
     calibration_token_budget: int | None = None
@@ -60,6 +61,14 @@ class V2Recipe(Recipe):
         super().__post_init__()
         if self.name != "hy4-gptq-v2":
             raise ValueError("v2 options require hy4-gptq-v2")
+        if (
+            any(
+                p not in ("gate_proj", "up_proj", "down_proj")
+                for p in self.rtn_projections
+            )
+            or tuple(sorted(set(self.rtn_projections))) != self.rtn_projections
+        ):
+            raise ValueError("RTN projections must be valid, unique and sorted")
         if (
             type(self.routing_weight_squared) is not bool
             or type(self.min_tokens) is not int
@@ -91,9 +100,11 @@ class V2Recipe(Recipe):
         if canonical and spec and ".switch_mlp." in canonical:
             layer = int(canonical.split(".")[2])
             projection = canonical.split(".")[-2]
+            method = "rtn" if projection in self.rtn_projections else "gptq"
             for i, p, bits in self.bits_map:
                 if (i, p) == (layer, projection):
-                    return bits, 64, "gptq"
+                    return bits, 64, method
+            return spec[0], spec[1], method
         return spec
 
 
@@ -210,17 +221,26 @@ def quantize_experts(store, layer, paths, check):
         for expert in range(adapter.args.n_routed_experts):
             fitted, expert_stats = [], {}
             for name, sink in zip(names, sinks, strict=True):
-                bits, group, _ = recipe.spec(name)
+                bits, group, method = recipe.spec(name)
                 weight = adapter.tensor(name, expert=expert)
                 down = name.endswith(".down_proj.weight")
-                chunks = (
-                    (x, routing_weights(w, recipe.routing_weight_squared))
-                    for x, w in expert_chunks(
-                        paths, expert, adapter, fitted if down else None
+                forced_rtn = method == "rtn"
+                h = None
+                if forced_rtn:
+                    # Count routes without a Hessian or fitted down activations.
+                    count = 0
+                    for x, _ in expert_chunks(paths, expert, adapter, None):
+                        count += len(x)
+                        check()
+                else:
+                    chunks = (
+                        (x, routing_weights(w, recipe.routing_weight_squared))
+                        for x, w in expert_chunks(
+                            paths, expert, adapter, fitted if down else None
+                        )
                     )
-                )
-                h, count = gram(chunks, weight.shape[-1], check=check)
-                method, damping = low_token_policy(count, weight.shape[-1])
+                    h, count = gram(chunks, weight.shape[-1], check=check)
+                    method, damping = low_token_policy(count, weight.shape[-1])
                 if method == "gptq":
                     config = QuantConfig(
                         group_size=group,
@@ -234,7 +254,9 @@ def quantize_experts(store, layer, paths, check):
                 else:
                     triple = mx.quantize(weight, bits=bits, group_size=group)
                     metrics = dict(
-                        tokens=count, fallback="low_token_rtn", cols=weight.shape[-1]
+                        tokens=count,
+                        fallback="configured_rtn" if forced_rtn else "low_token_rtn",
+                        cols=weight.shape[-1],
                     )
                 store.put(sink, name, expert, triple, bank=True)
                 expert_stats[name.rsplit(".", 2)[1]] = metrics

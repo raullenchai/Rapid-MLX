@@ -169,11 +169,20 @@ The default map uses routed down Q6/g64 in every sparse layer, and gate/up
 Q6/g64 in zero-based layers 20–26. Remaining tensors follow v1, including Q4/g32
 Engram tables. `--bits-map '{"20":{"gate_proj":4,"up_proj":4}}'` or
 `--bits-map /path/to/map.json` replaces selected layer/projection entries; omitted
-entries keep the v2 defaults. Values may be 2, 3, 4, 6 or 8, with group 64.
+entries keep the v2 defaults. Values may be 2, 3, 4, 5, 6 or 8, with group 64.
 Overrides must name existing sparse layers. Each bank has one specification for
 all experts; separate banks and layers may differ. Use the same recipe options
 for the quality command; held-out calibration windows retain v1 truncation.
 All v2 options are serialized into its recipe identity.
+
+Use `--rtn-projections down_proj` to quantize routed down projections with plain
+affine RTN in every sparse layer, skipping their Hessian accumulation. The option
+accepts a comma list from `gate_proj,up_proj,down_proj` (default empty); unlisted
+projections retain GPTQ and its low-token fallback. Bits and group size still
+come from the v2 bits map. To use down Q6 with gate/up Q4 everywhere, override
+both gate/up entries to 4 for each sparse layer in 20–26 via `--bits-map`.
+Pass the same RTN option to `quality`; it is part of the recipe identity and
+changing it invalidates resume receipts.
 
 Mixed-bank loading uses the existing Hy4 load predicate, which returns
 `config["quantization"][module_prefix]` to `nn.quantize`. Output entries use

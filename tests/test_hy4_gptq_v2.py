@@ -1,6 +1,7 @@
 """Tiny NumPy contracts for opt-in v2; never initialize an MLX device."""
 
 import importlib.util
+import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -83,13 +84,69 @@ def test_map_cli_json_and_config_overrides(tmp_path):
         "[]",
         '{"-1":{"up_proj":6}}',
         '{"1":{"oops":6}}',
-        '{"1":{"up_proj":5}}',
+        '{"1":{"up_proj":7}}',
         '{"1":{"up_proj":true}}',
     ],
 )
 def test_invalid_maps(raw):
     with pytest.raises(ValueError):
         parse_bits_map(raw)
+
+
+def test_bits_map_down_six_gate_up_four_everywhere():
+    overrides = parse_bits_map(
+        json.dumps({str(i): {"gate_proj": 4, "up_proj": 4} for i in range(20, 27)})
+    )
+    recipe = V2Recipe(bits_map=overrides, rtn_projections=("down_proj",))
+    for layer in range(42):
+        assert recipe.spec(name(layer, "gate_proj")) == (4, 64, "gptq")
+        assert recipe.spec(name(layer, "up_proj")) == (4, 64, "gptq")
+        assert recipe.spec(name(layer, "down_proj")) == (6, 64, "rtn")
+
+
+@pytest.mark.parametrize("projections", [("oops",), ("down_proj", "down_proj"), ("",)])
+def test_invalid_rtn_projections(projections):
+    with pytest.raises(ValueError, match="RTN projections"):
+        V2Recipe(rtn_projections=projections)
+
+
+@pytest.mark.parametrize("command", ["build", "quality"])
+def test_rtn_projections_cli(command, monkeypatch, tmp_path):
+    from scripts import deepseek_v41_rd_common
+
+    monkeypatch.setattr(deepseek_v41_rd_common, "read_slices", lambda *a: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hy4_gptq.py",
+            command,
+            "--source",
+            str(tmp_path / "source"),
+            "--destination",
+            str(tmp_path / "out"),
+            "--slices",
+            str(tmp_path / "slices.json"),
+            "--work",
+            str(tmp_path / "quality"),
+            "--recipe",
+            "hy4-gptq-v2",
+            "--rtn-projections",
+            "up_proj,down_proj",
+        ],
+    )
+
+    def adapter(source, recipe):
+        assert recipe.rtn_projections == ("down_proj", "up_proj")
+        raise RuntimeError("recipe parsed")
+
+    monkeypatch.setattr(builder, "Hy4Adapter", adapter)
+    with pytest.raises(RuntimeError, match="recipe parsed"):
+        builder.main()
+    sys.argv[sys.argv.index("hy4-gptq-v2")] = "hy4-gptq-v1"
+    with pytest.raises(SystemExit) as error:
+        builder.main()
+    assert error.value.code == 2
 
 
 def test_larger_budget_caps_and_exhaustion():
@@ -188,6 +245,83 @@ def test_expert_build_rtn_dispatch_and_damping(quant, monkeypatch, tmp_path):
     assert calls == [(6, 48)] * 3
     assert all(s["fallback"] == "low_token_rtn" for s in stats[0].values())
     assert coverage(stats, 40)["fraction"] == 0.5
+
+
+@pytest.mark.parametrize("layer", [1, 20, 26, 27, 41])
+@pytest.mark.parametrize(
+    "projections",
+    [
+        (),
+        ("down_proj",),
+        ("gate_proj",),
+        ("up_proj",),
+        ("down_proj", "gate_proj", "up_proj"),
+    ],
+)
+def test_configured_rtn_skips_hessian_and_preserves_other_gptq(
+    quant, monkeypatch, layer, projections
+):
+    monkeypatch.setitem(sys.modules, "scripts.streamed_gptq_quant", quant)
+    mx = sys.modules["mlx.core"]
+    calls, fitted_inputs, written = [], [], []
+    recipe = V2Recipe(
+        bits_map=((layer, "gate_proj", 4), (layer, "up_proj", 4)),
+        rtn_projections=projections,
+    )
+
+    def chunks(paths, expert, adapter, fitted):
+        fitted_inputs.append(fitted)
+        yield np.ones((64, 64), np.float32), np.full(64, 0.5)
+
+    def gram(chunks, cols, *, check):
+        calls.append("gram")
+        return original_gram(chunks, cols, check=check)
+
+    def gptq(weight, h, bits, config, *, count, check):
+        calls.append(("gptq", bits, config.group_size))
+        assert count == 64 and config.damping == 0.1
+        np.testing.assert_allclose(h, np.full((64, 64), 16))
+        return (weight, weight, weight), dict(tokens=count)
+
+    def rtn(weight, *, bits, group_size):
+        calls.append(("rtn", bits, group_size))
+        return weight, weight, weight
+
+    original_gram = quant.gram
+    monkeypatch.setattr(builder, "expert_chunks", chunks)
+    monkeypatch.setattr(quant, "gram", gram)
+    monkeypatch.setattr(quant, "gptq", gptq)
+    mx.quantize = rtn
+    mx.dequantize = lambda weight, *a, **kw: weight
+    sink = SimpleNamespace(finish=lambda: None, close=lambda: None)
+    adapter = SimpleNamespace(
+        recipe=recipe,
+        args=SimpleNamespace(n_routed_experts=2),
+        tensor=lambda *a, **kw: np.ones((64, 64), np.float32),
+    )
+    store = SimpleNamespace(
+        adapter=adapter, sink=lambda n: sink, put=lambda *a, **kw: written.append(a)
+    )
+    stats = quantize_experts(store, layer, [], lambda: None)
+    expected = []
+    for projection in ("gate_proj", "up_proj", "down_proj"):
+        bits, group, method = recipe.spec(name(layer, projection))
+        if method == "gptq":
+            expected.append("gram")
+        expected.append((method, bits, group))
+    assert calls == expected * 2
+    assert len(written) == 6
+    for expert in stats:
+        for projection, metrics in expert.items():
+            assert metrics["tokens"] == 64
+            assert metrics.get("fallback") == (
+                "configured_rtn" if projection in projections else None
+            )
+    for i, fitted in enumerate(fitted_inputs):
+        if i % 3 == 2 and "down_proj" not in projections:
+            assert len(fitted) == 2
+        else:
+            assert fitted is None
 
 
 def test_six_bit_gptq_native_packing(quant):
@@ -379,8 +513,8 @@ def test_config_overrides_reach_hy4_loader(loader, monkeypatch, tmp_path):
     )
 
 
-def test_v2_options_are_bound_to_identity():
-    from scripts.streamed_gptq_io import digest
+def test_v2_options_are_bound_to_identity(tmp_path):
+    from scripts.streamed_gptq_io import digest, verify_receipt
 
     default = digest(asdict(V2Recipe()))
     for kwargs in (
@@ -388,5 +522,28 @@ def test_v2_options_are_bound_to_identity():
         dict(min_tokens=2048),
         dict(calibration_token_budget=1000),
         dict(bits_map=((20, "up_proj", 4),)),
+        dict(rtn_projections=("down_proj",)),
     ):
-        assert digest(asdict(V2Recipe(**kwargs))) != default
+        identity = digest(asdict(V2Recipe(**kwargs)))
+        assert identity != default
+        with pytest.raises(ValueError, match="resume identity mismatch"):
+            verify_receipt(tmp_path, dict(identity=default, files={}), identity)
+
+
+@pytest.mark.parametrize("bits", [5, 6])
+def test_streamed_packing_matches_native_quantizer_odd_widths(bits):
+    mx = pytest.importorskip("mlx.core")
+    from scripts import streamed_gptq_quant as sq
+
+    mx.set_default_device(mx.cpu)
+    mx.random.seed(5)
+    w = mx.random.normal((5, 256)).astype(mx.float32)
+    native = mx.quantize(w, bits=bits, group_size=64)
+    s, b = native[1].astype(mx.float32), native[2].astype(mx.float32)
+    codes = mx.clip(
+        mx.round((w.reshape(5, 4, 64) - b[..., None]) / s[..., None]),
+        0,
+        2**bits - 1,
+    )
+    packed = sq.pack_codes(np.asarray(codes).reshape(5, 256), bits)
+    assert np.array_equal(np.asarray(packed), np.asarray(native[0]))
