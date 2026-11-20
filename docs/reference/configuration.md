@@ -24,6 +24,10 @@ an assistant prefill, set `continue_final_message: true` and
 `add_generation_prompt: false`; the final message must have role `assistant`.
 Defaults are `false` and `true`, respectively. Responses contain only newly
 generated text, in streaming and non-streaming modes.
+For multimodal models, continuation and `add_generation_prompt: false` currently
+support text-only inputs. Requests containing image, video, or audio content
+parts return HTTP 400 before admission because media token counting is not yet
+supported in these modes.
 
 ## Speculative decoding options
 

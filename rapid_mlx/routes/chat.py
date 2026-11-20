@@ -63,6 +63,7 @@ from ..api.tool_calling import (
     validate_output_against_schema,
 )
 from ..api.utils import (
+    MEDIA_CONTENT_TYPES,
     UnsupportedContentBlockError,
     clean_output_text,
     decode_inline_tool_call_arguments,
@@ -4514,6 +4515,22 @@ async def _create_chat_completion_impl(
             status_code=400,
             detail="messages must not be empty",
         )
+
+    # Text-only continuation counting cannot account for processor-expanded
+    # media tokens. Reject before admission until that path supports media.
+    if engine.is_mllm and (
+        request.continue_final_message or not request.add_generation_prompt
+    ):
+        for message in request.messages:
+            if isinstance(message.content, list) and any(
+                (part.get("type") if isinstance(part, dict) else part.type)
+                in MEDIA_CONTENT_TYPES
+                for part in message.content
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Continuation / add_generation_prompt=false is not supported with media inputs yet.",
+                )
 
     if request.continue_final_message:
         try:

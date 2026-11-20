@@ -584,6 +584,99 @@ def test_non_text_assistant_continuation_returns_400(client, stream, content):
     assert cfg.engine.options is None
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("continuation", [False, True])
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+        {"type": "image"},
+        {"type": "input_image", "image_url": "https://example.com/a.png"},
+        {"type": "video", "video": "https://example.com/a.mp4"},
+        {"type": "video_url", "video_url": {"url": "https://example.com/a.mp4"}},
+        {"type": "audio"},
+        {"type": "audio_url", "audio_url": {"url": "https://example.com/a.wav"}},
+        {"type": "input_audio", "input_audio": {"data": "AA==", "format": "wav"}},
+    ],
+)
+def test_mllm_media_continuation_rejected_before_admission(
+    client, monkeypatch, stream, continuation, media
+):
+    http, cfg = client
+    cfg.engine = CapturingEngine("must not generate")
+    cfg.engine.is_mllm = True
+
+    def unexpected_admission(*args, **kwargs):
+        pytest.fail("media continuation must be rejected before admission")
+
+    monkeypatch.setattr(chat, "_check_admission_or_503", unexpected_admission)
+    response = http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Describe"}, media],
+                },
+                MESSAGES[-1],
+            ],
+            "add_generation_prompt": False,
+            "continue_final_message": continuation,
+            "stream": stream,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "not supported with media inputs yet" in response.text
+    assert cfg.engine.options is None
+
+
+@pytest.mark.parametrize("is_mllm", [False, True])
+def test_text_only_continuation_admitted(client, is_mllm):
+    http, cfg = client
+    cfg.engine = CapturingEngine("42")
+    cfg.engine.is_mllm = is_mllm
+    cfg.max_prompt_tokens = 1000
+    response = http.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": MESSAGES, **OPTIONS},
+    )
+    assert response.status_code == 200, response.text
+    assert cfg.engine.options["continue_final_message"] is True
+
+
+@pytest.mark.parametrize("path", ["tool_grammar", "guided_fallback"])
+def test_text_only_continuation_preserves_generation_options(client, monkeypatch, path):
+    http, cfg = client
+    cfg.engine = CapturingEngine("42")
+    extra = {}
+    grammar = SimpleNamespace(reasoning_gate_id=None)
+    if path == "tool_grammar":
+
+        async def build_grammar(*args, **kwargs):
+            return grammar
+
+        monkeypatch.setattr(chat, "_offload_tool_grammar_build", build_grammar)
+        extra["tools"] = TOOLS
+    else:
+        cfg.engine.supports_guided_generation = True
+
+        async def fail_guided(**kwargs):
+            raise RuntimeError("guided generation unavailable")
+
+        cfg.engine.generate_with_schema = fail_guided
+        extra["response_format"] = {"type": "json_object"}
+    response = http.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": MESSAGES, **OPTIONS, **extra},
+    )
+    assert response.status_code == 200, response.text
+    assert cfg.engine.options["continue_final_message"] is True
+    assert cfg.engine.options["add_generation_prompt"] is False
+    if path == "tool_grammar":
+        assert cfg.engine.options["grammar_logits_processor"] is grammar
+
+
 @pytest.mark.parametrize("mode", ["generation", "closed", "continuation"])
 def test_mllm_preflight_counts_request_template_mode(client, mode):
     from rapid_mlx.prompt_token_reuse import RequestPromptTokens
