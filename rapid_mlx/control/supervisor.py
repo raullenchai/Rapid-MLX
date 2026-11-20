@@ -25,6 +25,7 @@ from . import (
     SECRET_HEADER,
     SOCKET_ENV,
 )
+from .process_tree import ProcessTree
 from .protocol import MAX_BODY, TIMEOUT, discovery_root, private_directory, runtime_root
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class Supervisor:
         self.mode = mode
         self.listen_fd = listen_fd
         self.child = None
+        self.tree = None
         self.started_at = None
         self.restarts = 0
         self.state = "starting"
@@ -64,14 +66,23 @@ class Supervisor:
                 "pid": self.child.pid if self.child else None,
                 "started_at": self.started_at,
                 "restarts": self.restarts,
-                "state": self.state,
+                "state": (
+                    "stopped"
+                    if (
+                        self.tree
+                        and self.child.returncode is None
+                        and self.tree.stopped
+                        and not self.stopping.is_set()
+                    )
+                    else self.state
+                ),
             },
             "port": self.port,
             "mode": self.mode,
         }
 
     def stop(self, signum):
-        # killpg may already have signalled the runner. Forward at most once;
+        # Terminal job control may already have signalled the runner. Forward once;
         # a second signal must not reset the four-second shutdown deadline.
         if self.stopping.is_set():
             return
@@ -276,17 +287,24 @@ class Supervisor:
         return [*self.argv[:index], "--port", str(self.port), *self.argv[index:]]
 
     def signal_descendants(self, signum):
-        # Supervised runners own a process group (without a new session).
-        # This remains addressable after runner exit and catches inherited pipes.
-        if self.child is not None:
+        # The runner shares the terminal/service group. Never signal that group:
+        # it can also contain the service runtime parent or the invoking shell.
+        signalled = self.tree.send(signum) if self.tree is not None else set()
+        if (
+            self.child is not None
+            and self.child.returncode is None
+            and self.child.pid not in signalled
+        ):
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(self.child.pid, signum)
+                self.child.send_signal(signum)
 
     async def wait_exit(self):
         # asyncio Process.wait can wait for inherited pipe EOF after exit.
         # The child watcher sets returncode independently of those pipes.
         while self.child.returncode is None:
-            await asyncio.sleep(0.05)
+            if not self.stopping.is_set():
+                self.tree.refresh()
+            await asyncio.sleep(0.1)
         return self.child.returncode
 
     def close_pipes(self):
@@ -319,11 +337,12 @@ class Supervisor:
                 self.child = await asyncio.create_subprocess_exec(
                     *self.spawn_argv(),
                     env=self.env,
-                    process_group=0,
                     pass_fds=(() if self.listen_fd is None else (self.listen_fd,)),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
+                self.tree = ProcessTree(self.child.pid)
+                self.tree.refresh()
                 self.spawn_ready.set()
                 with self.best_effort("discovery index publication"):
                     self.publish_index()
@@ -342,15 +361,18 @@ class Supervisor:
                 await asyncio.wait(
                     (wait, stopping), return_when=asyncio.FIRST_COMPLETED
                 )
-                if self.stopping.is_set() and not wait.done():
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.shield(wait),
-                            max(0, 4.0 - (time.monotonic() - self.stop_started)),
+                if self.stopping.is_set():
+                    # Keep tracked descendants through runner exit/reparenting.
+                    # A stopped runner is alive too; only exit or the deadline
+                    # ends this grace period, never a job-control stop.
+                    deadline = self.stop_started + 4.0
+                    while time.monotonic() < deadline:
+                        live = self.tree.refresh()
+                        if wait.done() and not live:
+                            break
+                        await asyncio.sleep(
+                            min(0.05, max(0, deadline - time.monotonic()))
                         )
-                    except TimeoutError:
-                        with contextlib.suppress(ProcessLookupError):
-                            self.child.kill()
                 self.signal_descendants(signal.SIGKILL)
                 code = await asyncio.wait_for(wait, 0.2)
                 stopping.cancel()

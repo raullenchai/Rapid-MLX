@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """No-Metal control-plane contracts, using real subprocesses and Unix sockets."""
 
+import fcntl
 import json
 import os
+import pty
+import select
 import signal
 import socket
 import stat
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +113,10 @@ n = int(countfile.read_text()) + 1 if countfile.exists() else 1
 countfile.write_text(str(n))
 (base / ('argv' + str(n))).write_text(json.dumps({'argv': sys.argv, 'pgid': os.getpgrp(), 'pid': os.getpid()}))
 mode = os.environ.get('FAKE_MODE', 'wait')
+if mode == 'prompt':
+    from rapid_mlx._download_gate import confirm_or_abort
+    assert confirm_or_abort('test/no-download', 11 * 1024**3, auto_yes_env='TEST_UNUSED_AUTO_YES')
+    (base / 'accepted').touch()
 if mode == 'bind':
     report('bind_failed')
     sys.exit(3)
@@ -153,7 +161,9 @@ time.sleep(60)
 """)
     processes = []
 
-    def launch(mode="wait", fd=None, fast=False, service=False, injection=""):
+    def launch(
+        mode="wait", fd=None, fast=False, service=False, injection="", terminal=False
+    ):
         env = os.environ.copy()
         env["FAKE_MODE"] = mode
         env["PYTHONPATH"] = str(Path.cwd())
@@ -185,14 +195,26 @@ raise SystemExit(runtime._supervise([sys.executable, '-c', {code!r}, sys.argv[1]
                 "[sys.executable, sys.argv[1], '--listen-fd', sys.argv[2]]",
             ).replace("listen_fd=None", "listen_fd=int(sys.argv[2])")
             argv = [sys.executable, "-c", code, str(runner), str(fd)]
+        if terminal:
+            master, slave = pty.openpty()
+
+            def foreground():
+                os.setsid()
+                fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
         proc = subprocess.Popen(
             argv,
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
+            stdin=slave if terminal else None,
+            stdout=slave if terminal else subprocess.PIPE,
+            stderr=slave if terminal else subprocess.PIPE,
+            start_new_session=not terminal,
+            preexec_fn=foreground if terminal else None,
             pass_fds=(() if fd is None else (fd,)),
         )
+        proc.terminal = master if terminal else None
+        if terminal:
+            os.close(slave)
         processes.append(proc)
         return proc
 
@@ -205,6 +227,8 @@ raise SystemExit(runtime._supervise([sys.executable, '-c', {code!r}, sys.argv[1]
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate()
+        if proc.terminal is not None:
+            os.close(proc.terminal)
     shutil.rmtree(base)
 
 
@@ -231,7 +255,7 @@ def test_socket_permissions_secret_and_status_cli(fake, capsys):
         )
     )
     assert secret not in str(child["argv"])
-    assert child["pgid"] == child["pid"]
+    assert child["pgid"] == os.getpgid(proc.pid)
     assert status_command(SimpleNamespace(port=None)) == 0
     assert json.loads(capsys.readouterr().out)["control_version"] == 1
     result = subprocess.run(
@@ -598,7 +622,7 @@ def test_service_supervisor_runner_signal_and_log_relay(fake):
     eventually(lambda: (base / "armed").exists())
     status = eventually(live_status)
     assert status["runner"]["pid"] != proc.pid
-    assert json.loads((base / "argv1").read_text())["pgid"] == status["runner"]["pid"]
+    assert json.loads((base / "argv1").read_text())["pgid"] == os.getpgid(proc.pid)
     proc.terminate()
     proc.communicate(timeout=6)
     assert proc.returncode == 143
@@ -1170,3 +1194,210 @@ def test_pre_spawn_cleanup_failure_cannot_prevent_fallback(fake, monkeypatch, ca
     assert "serving in single process" in caplog.records[0].message
     assert caplog.records[0].exc_info is None
     assert list(base.glob("rmlx-cp-*/i-*"))
+
+
+def test_foreground_prompt_and_ctrl_c(fake):
+    base, launch = fake
+    proc = launch("prompt", terminal=True)
+    output = bytearray()
+
+    def prompted():
+        readable, _, _ = select.select([proc.terminal], [], [], 0.05)
+        if readable:
+            output.extend(os.read(proc.terminal, 65536))
+        return b"Continue?" in output
+
+    eventually(prompted)
+    os.write(proc.terminal, b"y\n")
+    eventually(lambda: (base / "accepted").exists(), timeout=2)
+    eventually(lambda: (base / "armed").exists())
+    runner = json.loads((base / "argv1").read_text())["pid"]
+    assert os.getpgid(runner) == os.tcgetpgrp(proc.terminal) == proc.pid
+    before = time.monotonic()
+    os.write(proc.terminal, b"\x03")
+    proc.wait(timeout=4.5)
+    assert time.monotonic() - before < 4.5
+    assert proc.returncode == 130
+    with pytest.raises(ProcessLookupError):
+        os.kill(runner, 0)
+
+
+def test_stopped_runner_is_alive_and_status_recovers(fake):
+    base, launch = fake
+    proc = launch()
+    eventually(lambda: (base / "armed").exists())
+    runner = json.loads((base / "argv1").read_text())["pid"]
+    os.kill(runner, signal.SIGSTOP)
+    eventually(lambda: (s := live_status()) and s["runner"]["state"] == "stopped")
+    time.sleep(0.3)
+    assert (base / "count").read_text() == "1"
+    os.kill(runner, signal.SIGCONT)
+    eventually(lambda: (s := live_status()) and s["runner"]["state"] == "ready")
+    proc.terminate()
+    proc.communicate(timeout=4.5)
+
+
+@pytest.mark.parametrize("mode", ["grandchild", "grandchild-term"])
+def test_sigkill_supervisor_cleans_grandchild(fake, mode):
+    import psutil
+
+    base, launch = fake
+    proc = launch(mode)
+    eventually(lambda: (base / "armed").exists())
+    runner = json.loads((base / "argv1").read_text())["pid"]
+    grandchild = int((base / "grandchild").read_text())
+    try:
+        proc.kill()
+        proc.communicate(timeout=9)
+        for pid in (runner, grandchild):
+            eventually(
+                lambda pid=pid: (
+                    not psutil.pid_exists(pid)
+                    or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+                ),
+                timeout=1,
+            )
+    finally:
+        for pid in (runner, grandchild):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_shared_service_parent_survives_runner_cleanup(fake):
+    base, launch = fake
+    proc = launch("grandchild", service=True)
+    status = eventually(lambda: (base / "armed").exists() and live_status())
+    supervisor = status["supervisor_pid"]
+    runner = status["runner"]["pid"]
+    assert os.getpgid(proc.pid) == os.getpgid(supervisor) == os.getpgid(runner)
+    before = time.monotonic()
+    os.kill(supervisor, signal.SIGTERM)
+    _, stderr = proc.communicate(timeout=4.5)
+    assert proc.returncode == 143, stderr
+    assert time.monotonic() - before < 4.5
+
+
+def test_process_tree_retains_orphans_and_rejects_recycled_pids(monkeypatch):
+    from rapid_mlx.control import process_tree
+
+    # The ancestor/service and a sibling must never receive a cleanup signal.
+    table = {
+        10: (1, "S", "service"),
+        20: (10, "S", "runner"),
+        21: (10, "S", "sibling"),
+        30: (20, "S", "installer"),
+        40: (30, "S", "worker"),
+    }
+    monkeypatch.setattr(process_tree, "process_table", lambda: table)
+    signals = []
+    monkeypatch.setattr(process_tree.os, "kill", lambda *args: signals.append(args))
+    tree = process_tree.ProcessTree(20)
+    tree.send(signal.SIGTERM)
+    assert set(signals) == {
+        (20, signal.SIGTERM),
+        (30, signal.SIGTERM),
+        (40, signal.SIGTERM),
+    }
+    assert signals[-1] == (20, signal.SIGTERM)
+    # Runner exits, installer is reparented, and the worker PID is reused.
+    del table[20]
+    table[30] = (1, "S", "installer")
+    table[40] = (10, "S", "unrelated replacement")
+    table[50] = (30, "S", "late worker")
+    signals.clear()
+    tree.send(signal.SIGKILL)
+    assert set(signals) == {(30, signal.SIGKILL), (50, signal.SIGKILL)}
+
+
+@pytest.mark.parametrize("state", ["T", "T+", "t"])
+def test_process_tree_stopped_counts_as_alive(monkeypatch, state):
+    from rapid_mlx.control import process_tree
+
+    monkeypatch.setattr(
+        process_tree, "process_table", lambda: {20: (10, state, "runner")}
+    )
+    tree = process_tree.ProcessTree(20)
+    assert tree.refresh() == {20}
+    assert tree.stopped
+    supervisor = Supervisor([], port=8000, mode="text-vlm")
+    supervisor.child = SimpleNamespace(pid=20, returncode=None)
+    supervisor.tree = tree
+    assert supervisor.status()["runner"]["state"] == "stopped"
+    supervisor.child.returncode = -signal.SIGKILL
+    supervisor.state = "restarting"
+    assert supervisor.status()["runner"]["state"] == "restarting"
+
+
+def test_process_tree_snapshot_failure_never_signals_stale_pids(monkeypatch):
+    from rapid_mlx.control import process_tree
+
+    monkeypatch.setattr(
+        process_tree, "process_table", lambda: {20: (10, "S", "runner")}
+    )
+    tree = process_tree.ProcessTree(20)
+    tree.refresh()
+
+    def denied():
+        raise PermissionError("process table unavailable")
+
+    monkeypatch.setattr(process_tree, "process_table", denied)
+    signals = []
+    monkeypatch.setattr(process_tree.os, "kill", lambda *args: signals.append(args))
+    assert tree.send(signal.SIGKILL) == set()
+    assert signals == []
+
+
+def test_process_table_portable_columns_and_locale(monkeypatch):
+    from rapid_mlx.control import process_tree
+
+    class Ps:
+        pid = 99
+        returncode = 0
+
+        def __init__(self, argv, **kwargs):
+            assert argv == ["/bin/ps", "-Ao", "pid=,ppid=,stat=,lstart="]
+            assert kwargs["env"]["LC_ALL"] == "C"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def communicate(self, timeout):
+            assert timeout <= 0.2
+            return (
+                "   20  10 T+   Thu Nov 19 12:30:00 2026\n"
+                " 30 20 S Mon Nov  9 01:02:03 2026\n"
+                " 99 20 R Thu Nov 19 12:31:00 2026\n",
+                "",
+            )
+
+    monkeypatch.setattr(process_tree.subprocess, "Popen", Ps)
+    assert process_tree.process_table() == {
+        20: (10, "T+", "Thu Nov 19 12:30:00 2026"),
+        30: (20, "S", "Mon Nov  9 01:02:03 2026"),
+    }
+
+
+def test_supervised_orphan_cleans_children_before_default_callback(monkeypatch):
+    from rapid_mlx import _parent_watchdog
+    from rapid_mlx.control import process_tree
+
+    runner = os.getpid()
+    table = {runner: (1, "S", "runner"), 30: (runner, "S", "installer")}
+    monkeypatch.setattr(process_tree, "process_table", lambda: table)
+    clock = iter([0, 0, 2])
+    monkeypatch.setattr(process_tree.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(process_tree.time, "sleep", lambda _: None)
+    signals = []
+    monkeypatch.setattr(process_tree.os, "kill", lambda *args: signals.append(args))
+
+    def default(expected, observed):
+        assert (expected, observed) == (10, 1)
+        assert signals == [(30, signal.SIGTERM), (30, signal.SIGKILL)]
+
+    monkeypatch.setattr(_parent_watchdog, "_default_on_orphan", default)
+    process_tree.supervised_on_orphan(10, 1)
