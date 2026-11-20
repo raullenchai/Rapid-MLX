@@ -3971,8 +3971,10 @@ class StreamingPostProcessor:
                 events.append(StreamEvent(type="content", content=raw_delta["content"]))
             if raw_delta and raw_delta.get("tool_calls"):
                 allowed = self._apply_parallel_cap(
-                    self._filter_declared_calls(
-                        raw_delta["tool_calls"], incremental=True
+                    self._apply_forced_tool_choice_filter(
+                        self._filter_declared_calls(
+                            raw_delta["tool_calls"], incremental=True
+                        )
                     )
                 )
                 if allowed:

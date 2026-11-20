@@ -218,6 +218,56 @@ def test_formatted_prose_stream_does_not_rescan_markdown():
     assert "".join(content) == text
 
 
+@pytest.mark.parametrize("size", [0, 1, 7, 13])
+@pytest.mark.parametrize("choice", ["auto", "required", "named"])
+@pytest.mark.parametrize("parallel", [True, False])
+def test_deferred_calls_obey_tool_choice_and_parallel_cap(size, choice, parallel):
+    request = {
+        **REQUEST,
+        "tool_choice": (
+            {"type": "function", "function": {"name": "get_weather"}}
+            if choice == "named"
+            else choice
+        ),
+        "parallel_tool_calls": parallel,
+    }
+    example = f"Example: `{CALL}`\n"
+    text = example + CALL.replace("Paris", "Rome") + CALL.replace("Paris", "Oslo")
+    calls, content = stream(text, request, size)
+    expected = [("get_weather", '{"city": "Rome"}')]
+    if parallel and choice != "named":
+        expected.append(("get_weather", '{"city": "Oslo"}'))
+    assert calls == expected
+    assert content == example
+
+
+@pytest.mark.parametrize("size", [0, 1, 7, 13])
+@pytest.mark.parametrize("city", ["Rome", '"Rome"'])
+def test_forced_legacy_eof_preserves_argument_fragments(size, city):
+    request = {
+        **REQUEST,
+        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+    }
+    calls, content = stream(CALL.replace("Paris", city), request, size)
+    assert calls == [("get_weather", '{"city": "Rome"}')]
+    assert content == ""
+
+
+@pytest.mark.parametrize("size", [0, 1, 7, 13])
+def test_deferred_forced_choice_keeps_already_admitted_call(size):
+    request = {
+        **REQUEST,
+        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+    }
+    text = (
+        CALL.replace("Paris", '"Rome"')
+        + f"\nExample: `{CALL}`\n"
+        + CALL.replace("Paris", '"Oslo"')
+    )
+    calls, _ = stream(text, request, size)
+    assert calls == [("get_weather", '{"city": "Rome"}')]
+
+
 def test_first_visible_opener_without_markup():
     parser = Qwen3CoderToolParser(None)
     assert parser._first_opener_pos("") == 0
