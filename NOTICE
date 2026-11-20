@@ -33,6 +33,12 @@ project (https://github.com/vllm-project/vllm).
 Vendored third-party source
 ===========================
 
+The Inkling 2 text architecture and Metal kernels in `rapid_mlx/models/inkling2/`
+are adapted from MLX-LM PR #2086, revision
+0c4c99192230f1943dd468d297f0b8a64ae7b7c2, Copyright © 2026 Apple Inc.,
+under the MIT License. See that directory's LICENSE and NOTICE for terms,
+provenance, and port differences.
+
 The Raon-1 nano architecture in `rapid_mlx/models/raon1_nano.py` and the
 Raon parser state machines are from KRAFTON/Raon-1-nano-mlx (Apache-2.0),
 architecture revision 81e25155d3332c261ba503c0ae63eb65ad868398,

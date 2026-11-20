@@ -1,0 +1,22 @@
+Inkling 2 text runtime
+Copyright © 2026 Apple Inc.
+
+Vendored from MLX-LM PR #2086, "Add Inkling 2 Mini model":
+https://github.com/ml-explore/mlx-lm/pull/2086
+Revision: 0c4c99192230f1943dd468d297f0b8a64ae7b7c2
+Distributed under the MIT License; see LICENSE in this directory.
+
+Port differences: package imports use rapid_mlx.models.inkling2; vision
+configuration is accepted but no tower is constructed, image methods and
+processor are omitted, and both original and converted vision weights are
+dropped during sanitize. Compatibility imports use the installed MLX-LM
+layout. Text mathematics, loop visits, caches and Metal kernels are retained.
+Model weights are separate and are not redistributed here.
+
+Compatibility helpers in compat.py and switch_layers.py are selected from
+MLX-LM 0.32.2, models/base.py, models/muse_spark.py, models/switch_layers.py
+and kernels/_common.py (Copyright © 2023-2026 Apple Inc., MIT). This retains
+per-expert global-scale support on the repository's 0.31.3 dependency without
+patching shared classes. The existing operation-based router is used when
+the fused routing helper is unavailable. Kernel launch helpers and distributed
+helpers retain their arithmetic; the expert-sharding chunk budget is local.

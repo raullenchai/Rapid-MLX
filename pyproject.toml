@@ -724,6 +724,8 @@ rapid_mlx = [
     "models/embedding_gemma2/LICENSE",
     "models/embedding_gemma2/NOTICE",
     "models/NOTICE-RAON",
+    "models/inkling2/LICENSE",
+    "models/inkling2/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 # Vendored LTX-2.5 runtime (scripts/vendor_ltx25.py). The provenance file and
