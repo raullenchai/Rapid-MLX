@@ -16,8 +16,15 @@ import tempfile
 import threading
 import time
 
-from . import CONTROL_VERSION, RUNNER_ENV, SECRET_ENV, SECRET_HEADER, SOCKET_ENV
-from .protocol import MAX_BODY, TIMEOUT, runtime_root
+from . import (
+    CONTROL_VERSION,
+    PARENT_ENV,
+    RUNNER_ENV,
+    SECRET_ENV,
+    SECRET_HEADER,
+    SOCKET_ENV,
+)
+from .protocol import MAX_BODY, TIMEOUT, discovery_root, private_directory, runtime_root
 
 
 def exit_code(code):
@@ -43,10 +50,13 @@ class Supervisor:
         self.directory = None
         self.server = None
         self.spawn_ready = asyncio.Event()
+        self.index_entry = None
+        self.stop_started = None
 
     def status(self):
         return {
             "control_version": CONTROL_VERSION,
+            "supervisor_pid": os.getpid(),
             "runner": {
                 "pid": self.child.pid if self.child else None,
                 "started_at": self.started_at,
@@ -62,12 +72,11 @@ class Supervisor:
         # a second signal must not reset the four-second shutdown deadline.
         if self.stopping.is_set():
             return
+        self.stop_started = time.monotonic()
+        self.signal_descendants(signum)
         self.stop_signal = signum
         self.state = "stopping"
         self.stopping.set()
-        if self.child is not None and self.child.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                self.child.send_signal(signum)
 
     async def handle(self, reader, writer):
         try:
@@ -160,8 +169,19 @@ class Supervisor:
             metadata, "x", opener=lambda p, flags: os.open(p, flags, 0o600)
         ) as output:
             json.dump({"secret": self.secret}, output)
+        index = private_directory(discovery_root())
+        self.index_entry = index / (self.directory.name + ".json")
+        temporary = self.index_entry.with_suffix(".tmp")
+        with open(temporary, "x", opener=lambda p, f: os.open(p, f, 0o600)) as output:
+            json.dump({"socket": str(path), "secret": self.secret}, output)
+        temporary.replace(self.index_entry)
         self.env.update(
-            {RUNNER_ENV: "1", SOCKET_ENV: str(path), SECRET_ENV: self.secret}
+            {
+                RUNNER_ENV: "1",
+                SOCKET_ENV: str(path),
+                SECRET_ENV: self.secret,
+                PARENT_ENV: str(os.getpid()),
+            }
         )
 
     async def pump(self, source, sink):
@@ -227,9 +247,29 @@ class Supervisor:
     def spawn_argv(self):
         if self.listen_fd is not None:
             return self.argv
-        # Appending takes precedence over the original port without changing
-        # any other option. The first chosen port survives every restart.
-        return [*self.argv, "--port", str(self.port)]
+        # Last option wins, but options must precede the positional separator.
+        index = self.argv.index("--") if "--" in self.argv else len(self.argv)
+        return [*self.argv[:index], "--port", str(self.port), *self.argv[index:]]
+
+    def signal_descendants(self, signum):
+        # Supervised runners own a process group (without a new session).
+        # This remains addressable after runner exit and catches inherited pipes.
+        if self.child is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self.child.pid, signum)
+
+    async def wait_exit(self):
+        # asyncio Process.wait can wait for inherited pipe EOF after exit.
+        # The child watcher sets returncode independently of those pipes.
+        while self.child.returncode is None:
+            await asyncio.sleep(0.05)
+        return self.child.returncode
+
+    def close_pipes(self):
+        for fd in (1, 2):
+            transport = self.child._transport.get_pipe_transport(fd)
+            if transport is not None:
+                transport.close()
 
     def restart_delay(self):
         return min(60, 2 ** min(self.restarts, 6))
@@ -255,14 +295,14 @@ class Supervisor:
                 self.child = await asyncio.create_subprocess_exec(
                     *self.spawn_argv(),
                     env=self.env,
+                    process_group=0,
                     pass_fds=(() if self.listen_fd is None else (self.listen_fd,)),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 self.spawn_ready.set()
                 if self.stopping.is_set():
-                    with contextlib.suppress(ProcessLookupError):
-                        self.child.send_signal(self.stop_signal)
+                    self.signal_descendants(self.stop_signal)
                 pumps = [
                     asyncio.create_task(
                         self.pump(self.child.stdout, sys.stdout.buffer)
@@ -271,25 +311,35 @@ class Supervisor:
                         self.pump(self.child.stderr, sys.stderr.buffer)
                     ),
                 ]
-                wait = asyncio.create_task(self.child.wait())
+                wait = asyncio.create_task(self.wait_exit())
                 stopping = asyncio.create_task(self.stopping.wait())
                 await asyncio.wait(
                     (wait, stopping), return_when=asyncio.FIRST_COMPLETED
                 )
                 if self.stopping.is_set() and not wait.done():
                     try:
-                        await asyncio.wait_for(asyncio.shield(wait), 4.0)
+                        await asyncio.wait_for(
+                            asyncio.shield(wait),
+                            max(0, 4.0 - (time.monotonic() - self.stop_started)),
+                        )
                     except TimeoutError:
                         with contextlib.suppress(ProcessLookupError):
                             self.child.kill()
-                code = await wait
+                self.signal_descendants(signal.SIGKILL)
+                code = await asyncio.wait_for(wait, 0.2)
                 stopping.cancel()
                 await asyncio.gather(stopping, return_exceptions=True)
                 # A runner's descendants must not hold shutdown open forever.
-                done, pending = await asyncio.wait(pumps, timeout=0.5)
+                drain = (
+                    max(0, 4.3 - (time.monotonic() - self.stop_started))
+                    if self.stop_started is not None
+                    else 0.3
+                )
+                done, pending = await asyncio.wait(pumps, timeout=drain)
                 for task in pending:
                     task.cancel()
                 await asyncio.gather(*pumps, return_exceptions=True)
+                self.close_pipes()
                 if self.stopping.is_set():
                     return 128 + self.stop_signal
                 if self.bind_failed or code == 0:
@@ -307,13 +357,17 @@ class Supervisor:
                     self.state = "starting"
             return 128 + self.stop_signal
         finally:
-            if self.child is not None and self.child.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    self.child.kill()
-                await self.child.wait()
+            if self.child is not None:
+                self.signal_descendants(signal.SIGKILL)
+                self.close_pipes()
+                if self.child.returncode is None:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self.wait_exit(), 0.2)
             if self.server:
                 self.server.close()
                 await self.server.wait_closed()
+            if self.index_entry:
+                self.index_entry.unlink(missing_ok=True)
             if self.directory:
                 shutil.rmtree(self.directory)
             if self.listen_fd is not None:

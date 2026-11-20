@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import socket
+import stat
 from pathlib import Path
 
 from . import RUNNER_ENV, SECRET_ENV, SECRET_HEADER, SOCKET_ENV
@@ -74,16 +75,68 @@ def runtime_root():
     return Path(os.environ.get("TMPDIR", "/tmp")) / f"rmlx-cp-{os.getuid()}"
 
 
+def discovery_root():
+    return Path.home() / ".rapid-mlx" / "run"
+
+
+def private_directory(path):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise OSError("control discovery directory must be an owned 0700 directory")
+    return path
+
+
 def discover(port=None):
-    """Return live instances only. Stale files never imply a running service."""
+    """Resolve the stable private index, independent of the caller's TMPDIR."""
     results = []
-    for info in sorted(runtime_root().glob("*/instance.json")):
+    root = discovery_root()
+    try:
+        info = root.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            return []
+    except OSError:
+        return []
+    for entry in sorted(root.glob("*.json")):
         try:
-            metadata = json.loads(info.read_text())
-            status = request(info.parent / "control.sock", metadata["secret"])
+            info = entry.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                continue
+            metadata = json.loads(entry.read_text())
+            path = Path(metadata["socket"])
+            info = path.parent.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+            ):
+                continue
+            status = request(path, metadata["secret"])
             if port is None or status["port"] == port:
                 results.append(status)
-        except (OSError, ValueError, KeyError, http.client.HTTPException):
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ):
+            with contextlib.suppress(OSError):
+                entry.unlink()
+        except (OSError, http.client.HTTPException):
+            # A busy live supervisor may time out; keep its discovery entry.
             continue
     return results
 

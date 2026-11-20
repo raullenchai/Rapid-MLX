@@ -13596,12 +13596,20 @@ def _scan_running_servers(
 
     import psutil
 
+    from rapid_mlx.control.protocol import discover
+
+    instances = discover()
+    supervisors = {item.get("supervisor_pid") for item in instances}
+    runners = {item["runner"]["pid"]: item for item in instances}
     rows: list[tuple[int, str, str, str]] = []
     for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
         try:
             cmd = proc.info["cmdline"] or []
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+        if proc.info["pid"] in supervisors:
+            continue
+        instance = runners.get(proc.info["pid"])
         serve_index = serve_subcommand_index(cmd)
         if serve_index is None:
             continue
@@ -13648,6 +13656,11 @@ def _scan_running_servers(
             model = _ps_redact(options.get("--model") or model, credentials)
             served = _ps_redact(options.get("--served-model-name"), credentials)
             port = str(8000 if options["--port"] is None else options["--port"])
+
+        if instance is not None:
+            port = str(instance["port"])
+            if options is not None:
+                options["--port"] = instance["port"]
 
         if states is not None:
             states.append(
@@ -17338,7 +17351,7 @@ def _capture_start_failures(func: Callable):
 
 def _dispatch_serve_control(args):
     """Decide before runtime setup; fallback continues in this same process."""
-    from rapid_mlx.control import RUNNER_ENV
+    from rapid_mlx.control import PARENT_ENV, RUNNER_ENV
     from rapid_mlx.control.modes import supervised_mode
 
     mode = supervised_mode(args)
@@ -17371,8 +17384,12 @@ def _dispatch_serve_control(args):
         # environment, watchdog ownership and inherited descriptors.
         print("Control functionality is unavailable in this mode.", file=sys.stderr)
     elif os.environ.get(RUNNER_ENV) == "1":
+        from rapid_mlx._parent_watchdog import install_parent_watchdog
         from rapid_mlx.control.protocol import install_startup_report
 
+        raw_parent = os.environ.get(PARENT_ENV)
+        if raw_parent is not None:
+            install_parent_watchdog(int(raw_parent))
         install_startup_report()
 
 

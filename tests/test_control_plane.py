@@ -90,11 +90,15 @@ def fake(tmp_path, monkeypatch):
 
     base = Path(tempfile.mkdtemp(prefix="cp-", dir="/private/tmp"))
     monkeypatch.setenv("TMPDIR", str(base))
+    monkeypatch.setenv("HOME", str(base))
     runner = base / "fake.py"
     runner.write_text("""
 import argparse, json, os, signal, socket, sys, time
 from pathlib import Path
 from rapid_mlx.control.protocol import report
+from rapid_mlx.cli import _dispatch_serve_control
+from types import SimpleNamespace
+_dispatch_serve_control(SimpleNamespace())
 p = argparse.ArgumentParser()
 p.add_argument('--port', type=int)
 p.add_argument('--listen-fd', type=int)
@@ -124,7 +128,14 @@ else:
 report('bound', port=listener.getsockname()[1], ready=(mode != 'loading'))
 if mode == 'crash' and n == 1:
     sys.exit(9)
-if mode in ('ignore', 'loghang'):
+if mode in ('grandchild', 'grandchild-term'):
+    import subprocess
+    child = subprocess.Popen([sys.executable, '-c',
+        'import signal,time,sys; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).touch(); time.sleep(60)', str(base / 'grandchild-ready')])
+    while not (base / 'grandchild-ready').exists():
+        time.sleep(0.01)
+    (base / 'grandchild').write_text(str(child.pid))
+if mode in ('ignore', 'loghang', 'grandchild'):
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, signal.SIG_IGN)
 else:
@@ -219,7 +230,7 @@ def test_socket_permissions_secret_and_status_cli(fake, capsys):
         )
     )
     assert secret not in str(child["argv"])
-    assert child["pgid"] == proc.pid
+    assert child["pgid"] == child["pid"]
     assert status_command(SimpleNamespace(port=None)) == 0
     assert json.loads(capsys.readouterr().out)["control_version"] == 1
     result = subprocess.run(
@@ -304,10 +315,10 @@ def test_four_second_kill_deadline_double_signal_and_process_group(fake):
     os.killpg(proc.pid, signal.SIGTERM)
     time.sleep(0.2)
     proc.send_signal(signal.SIGINT)
-    proc.communicate(timeout=6)
+    _, stderr = proc.communicate(timeout=6)
     elapsed = time.monotonic() - before
-    assert 3.8 <= elapsed < 5.5
-    assert proc.returncode == 128 + signal.SIGTERM
+    assert 3.8 <= elapsed < 4.5
+    assert proc.returncode == 128 + signal.SIGTERM, stderr.decode(errors="replace")
     assert (base / "count").read_text() == "1"
 
 
@@ -419,6 +430,7 @@ def test_forwarder_body_bound_and_fallback_absent(monkeypatch):
 
 def test_status_no_instance(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     assert status_command(SimpleNamespace(port=None)) == 1
     assert "No supervised" in capsys.readouterr().err
 
@@ -585,7 +597,7 @@ def test_service_supervisor_runner_signal_and_log_relay(fake):
     eventually(lambda: (base / "armed").exists())
     status = eventually(live_status)
     assert status["runner"]["pid"] != proc.pid
-    assert json.loads((base / "argv1").read_text())["pgid"] == proc.pid
+    assert json.loads((base / "argv1").read_text())["pgid"] == status["runner"]["pid"]
     proc.terminate()
     proc.communicate(timeout=6)
     assert proc.returncode == 143
@@ -658,3 +670,132 @@ async def test_production_uvicorn_startup_reports(monkeypatch, failure):
         else:
             await server.startup()
             assert events == [("bound", {"port": listener.getsockname()[1]})]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["serve", "--", "qwen3.5-4b-4bit"],
+        ["serve", "--port", "8000", "--", "qwen3.5-4b-4bit"],
+        ["serve", "qwen3.5-4b-4bit", "--port=8000"],
+    ],
+)
+def test_pinned_port_before_end_of_options(argv):
+    supervisor = Supervisor(argv, port=8017, mode="text-vlm")
+    args = build_parser().parse_args(supervisor.spawn_argv())
+    assert args.port == 8017
+    assert args.model == "qwen3.5-4b-4bit"
+
+
+def test_sigkill_supervisor_runner_watchdog(fake):
+    import psutil
+
+    base, launch = fake
+    proc = launch()
+    eventually(lambda: (base / "armed").exists())
+    runner_pid = json.loads((base / "argv1").read_text())["pid"]
+    before = time.monotonic()
+    proc.kill()
+    proc.communicate(timeout=3)
+    eventually(lambda: (base / "signal").exists(), timeout=2.8)
+    eventually(lambda: not psutil.pid_exists(runner_pid), timeout=0.5)
+    assert (base / "signal").read_text() == str(signal.SIGTERM)
+    assert time.monotonic() - before < 2.8
+
+
+@pytest.mark.parametrize("mode", ["grandchild", "grandchild-term"])
+def test_grandchild_inherited_pipes_shutdown_bounded(fake, mode):
+    import psutil
+
+    base, launch = fake
+    proc = launch(mode)
+    eventually(lambda: (base / "armed").exists())
+    grandchild = int((base / "grandchild").read_text())
+    before = time.monotonic()
+    proc.terminate()
+    proc.communicate(timeout=4.5)
+    assert time.monotonic() - before < 4.5
+    assert proc.returncode == 143
+    assert (
+        not psutil.pid_exists(grandchild)
+        or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+    )
+
+
+def test_status_cross_tmpdir_and_stale_cleanup(fake, monkeypatch, tmp_path):
+    from rapid_mlx.control.protocol import discovery_root
+
+    _, launch = fake
+    proc = launch()
+    first = eventually(
+        lambda: (s := live_status()) and s["runner"]["state"] == "ready" and s
+    )
+    index = discovery_root()
+    assert stat.S_IMODE(index.stat().st_mode) == 0o700
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    assert discover() == [first]
+    result = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.cli", "status"],
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["port"] == first["port"]
+    stale = index / "stale.json"
+    stale.write_text(json.dumps({"socket": str(index / "gone.sock"), "secret": "gone"}))
+    stale.chmod(0o600)
+    discover()
+    assert not stale.exists()
+    proc.terminate()
+    proc.communicate(timeout=5)
+    assert not list(index.glob("*.json"))
+
+
+def test_process_discovery_deduplicates_and_uses_bound_port(monkeypatch):
+    import psutil
+
+    from rapid_mlx import cli
+    from rapid_mlx.control import protocol
+
+    instance = {"supervisor_pid": 100, "runner": {"pid": 101}, "port": 8017}
+    monkeypatch.setattr(protocol, "discover", lambda: [instance])
+
+    def process(pid):
+        return SimpleNamespace(
+            info={
+                "pid": pid,
+                "cmdline": ["rapid-mlx", "serve", "tiny"],
+                "create_time": time.time(),
+            },
+            environ=lambda: {},
+            net_connections=lambda **kw: [],
+        )
+
+    monkeypatch.setattr(
+        psutil, "process_iter", lambda *a: [process(100), process(101), process(102)]
+    )
+    monkeypatch.setattr(cli, "_ps_ready", lambda url: None)
+    states = []
+    rows = cli._scan_running_servers(states=states)
+    assert [(row[0], row[1]) for row in rows] == [(101, "8017"), (102, "8000")]
+    assert [state["port"] for state in states] == [8017, 8000]
+    assert states[0]["base_url"] == "http://127.0.0.1:8017"
+
+
+def test_discovery_timeout_keeps_live_index(fake, monkeypatch):
+    from rapid_mlx.control import protocol
+
+    _, launch = fake
+    proc = launch()
+    eventually(live_status)
+    entries = list(protocol.discovery_root().glob("*.json"))
+    assert len(entries) == 1
+
+    def busy(*args):
+        raise TimeoutError("busy")
+
+    monkeypatch.setattr(protocol, "request", busy)
+    assert protocol.discover() == []
+    assert entries[0].exists()
+    proc.terminate()
+    proc.communicate(timeout=5)
