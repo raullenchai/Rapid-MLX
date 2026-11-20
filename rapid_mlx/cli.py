@@ -17391,11 +17391,12 @@ def _dispatch_serve_control(args):
             [
                 sys.executable,
                 *interpreter_flags,
-                # Use the same imported entry point as the console script.
-                # Running cli as __main__ creates a second module and bypasses
-                # startup instrumentation installed on rapid_mlx.cli.
-                "-c",
-                "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()",
+                # ``-m rapid_mlx`` imports rapid_mlx.cli and calls the console
+                # entry point; running cli itself as __main__ would create a
+                # second module and bypass its startup instrumentation. Process
+                # discovery (``rapid-mlx ps``) recognises this form.
+                "-m",
+                "rapid_mlx",
                 *sys.argv[1:],
             ],
             port=port,

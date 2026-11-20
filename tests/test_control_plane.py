@@ -662,8 +662,8 @@ def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch, port):
             "-u",
             "-X",
             "utf8",
-            "-c",
-            "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()",
+            "-m",
+            "rapid_mlx",
             "serve",
             "qwen3.5-4b-4bit",
         ]
