@@ -67,7 +67,13 @@ def test_endpoint_cli(monkeypatch, capsys):
     monkeypatch.setattr(
         protocol, "discover", lambda port: [{"port": port or 8000}, {"port": 9000}]
     )
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: local.get(*a))
+    urls = []
+
+    def fake_get(url, **kw):
+        urls.append(url)
+        return local.get(url)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
     for flags in ([], ["--json"], ["--port", "8001"]):
         monkeypatch.setattr(sys, "argv", ["rapid-mlx", "log", *flags])
         with pytest.raises(SystemExit) as exc:
@@ -82,6 +88,9 @@ def test_endpoint_cli(monkeypatch, capsys):
             assert row[:8] == time.strftime("%H:%M:%S", time.localtime(calls[0]["ts"]))
             assert header.index("PATH") == row.index("/v1/messages")
             assert len(row) == 114
+        assert urls[-1].startswith(
+            f"http://127.0.0.1:{8001 if '--port' in flags else 8000}/"
+        )
     monkeypatch.setattr(protocol, "discover", lambda port: [])
     assert protocol.log_command(None) == 1
     assert "No running serve" in capsys.readouterr().err
