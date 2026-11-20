@@ -251,7 +251,7 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(wrapped) == "network"
     contextual = RuntimeError("outer private detail")
     contextual.__context__ = requests.ReadTimeout("inner private detail")
-    assert model_events.pull_error_class(contextual) == "other"
+    assert model_events.pull_error_class(contextual) == "network"
     cyclic = RuntimeError("cycle")
     cyclic.__cause__ = cyclic
     assert model_events.pull_error_class(cyclic) == "other"
@@ -2613,3 +2613,88 @@ def test_emitted_properties_contain_only_closed_diagnostics(
         )
     ]
     assert registry.validate(*captured[0]) == captured[0][1]
+
+
+@pytest.mark.parametrize(
+    "kind,expected",
+    [
+        ("hub_500", "http_server_error"),
+        ("hub_429", "http_client_error"),
+        ("hub_302", "http_error"),
+        ("urllib_503", "http_server_error"),
+        ("urllib_429", "http_client_error"),
+        ("urllib_302", "http_error"),
+        ("invalid_ref", "invalid_model_ref"),
+        ("mirror", "mirror_only"),
+        ("resume", "resumable_download"),
+        ("memory", "insufficient_memory"),
+        ("preflight", "preflight_rejected"),
+        ("unknown", "unknown"),
+    ],
+)
+@pytest.mark.parametrize("wrapper", [None, "__cause__", "__context__"])
+def test_pull_failure_subtypes_are_closed_and_emitted(
+    monkeypatch, kind, expected, wrapper
+):
+    from huggingface_hub.errors import HfHubHTTPError, HFValidationError
+
+    from rapid_mlx._mirror import MirrorOnlyPullError, ResumableDownloadError
+    from rapid_mlx.byom.preflight import PreflightRejectedError
+
+    private = "https://private.example/org/repo?token=secret /private/path"
+    if kind.startswith("hub_"):
+        code = kind.split("_")[1]
+        response = httpx.Response(int(code), request=httpx.Request("GET", private))
+        failure = HfHubHTTPError(private, response=response)
+    elif kind.startswith("urllib_"):
+        failure = urllib.error.HTTPError(
+            private, int(kind.split("_")[1]), private, {}, None
+        )
+    else:
+        failure = {
+            "invalid_ref": HFValidationError(private),
+            "mirror": MirrorOnlyPullError(private),
+            "resume": ResumableDownloadError(private),
+            "memory": PreflightRejectedError("insufficient_memory"),
+            "preflight": PreflightRejectedError(private),
+            "unknown": RuntimeError(private),
+        }[kind]
+    if wrapper:
+        outer = RuntimeError(private)
+        setattr(outer, wrapper, failure)
+        failure = outer
+    assert model_events.pull_error_class(failure) == "other"
+    assert model_events.pull_failure_subtype(failure) == expected
+    calls = []
+    monkeypatch.setattr(
+        track_module, "track", lambda event, props: calls.append((event, props))
+    )
+    model_events.emit_model_pull_failed(failure)
+    props = {"error_class": "other", "failure_subtype": expected}
+    assert calls == [("model_pull_failed", props)]
+    assert registry.validate("model_pull_failed", props) == props
+    assert "secret" not in json.dumps(calls)
+
+
+def test_pull_chain_is_bounded_and_cycle_safe():
+    failure = RuntimeError("private")
+    failure.__context__ = failure
+    assert model_events.pull_error_class(failure) == "other"
+    assert model_events.pull_failure_subtype(failure) == "unknown"
+    failure = TimeoutError("private")
+    for _ in range(model_events._EXCEPTION_CHAIN_LIMIT):
+        outer = RuntimeError("private")
+        outer.__context__ = failure
+        failure = outer
+    assert model_events.pull_error_class(failure) == "other"
+    assert model_events.pull_failure_subtype(failure) == "unknown"
+
+
+@pytest.mark.parametrize("reason", ["unsupported_format", "unsupported_architecture"])
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+def test_wrapped_pull_preflight_keeps_existing_class(reason, link):
+    from rapid_mlx.byom.preflight import PreflightRejectedError
+
+    failure = RuntimeError("private")
+    setattr(failure, link, PreflightRejectedError(reason))
+    assert model_events.pull_error_class(failure) == reason

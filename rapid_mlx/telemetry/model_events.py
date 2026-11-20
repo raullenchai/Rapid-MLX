@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 import urllib.error
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ParamSpec, TypeAlias
 
@@ -119,6 +119,60 @@ def _exception_text(exc: BaseException) -> str:
 _PULL_PREFLIGHT_CLASSES = frozenset({"unsupported_format", "unsupported_architecture"})
 
 
+def _pull_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Follow explicit causes, falling back to context, with a bounded walk."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(_EXCEPTION_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        yield current
+        try:
+            current = current.__cause__ or current.__context__
+        except BaseException:
+            break
+
+
+def pull_failure_subtype(exc: BaseException) -> str:
+    """Refine ``other`` pull failures using only types and closed status ranges.
+
+    No message, URL, model reference, or arbitrary preflight value is emitted.
+    """
+    from huggingface_hub.errors import HfHubHTTPError, HFValidationError
+
+    from rapid_mlx._mirror import MirrorOnlyPullError, ResumableDownloadError
+    from rapid_mlx.byom.preflight import PreflightRejectedError
+
+    for current in _pull_exception_chain(exc):
+        if isinstance(current, PreflightRejectedError):
+            return (
+                "insufficient_memory"
+                if current.failure_class == "insufficient_memory"
+                else "preflight_rejected"
+            )
+        if isinstance(current, HFValidationError):
+            return "invalid_model_ref"
+        if isinstance(current, MirrorOnlyPullError):
+            return "mirror_only"
+        if isinstance(current, ResumableDownloadError):
+            return "resumable_download"
+        status = None
+        if isinstance(current, HfHubHTTPError):
+            status = getattr(current.response, "status_code", None)
+        elif isinstance(current, urllib.error.HTTPError):
+            status = current.code
+        else:
+            continue
+        if isinstance(status, int):
+            if 500 <= status < 600:
+                return "http_server_error"
+            if 400 <= status < 500:
+                return "http_client_error"
+        return "http_error"
+    return "unknown"
+
+
 def pull_error_class(exc: BaseException) -> str:
     """Classify a pull exception without putting its message on the wire.
 
@@ -137,21 +191,13 @@ def pull_error_class(exc: BaseException) -> str:
 
     from rapid_mlx.byom.preflight import PreflightRejectedError
 
-    if isinstance(exc, PreflightRejectedError):
-        # The preflight only refuses a pull for these two closed reasons.
-        return (
-            exc.failure_class
-            if exc.failure_class in _PULL_PREFLIGHT_CLASSES
-            else "other"
-        )
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    for _ in range(_EXCEPTION_CHAIN_LIMIT):
-        if current is None:
-            break
-        if id(current) in seen:
-            break
-        seen.add(id(current))
+    for current in _pull_exception_chain(exc):
+        if isinstance(current, PreflightRejectedError):
+            return (
+                current.failure_class
+                if current.failure_class in _PULL_PREFLIGHT_CLASSES
+                else "other"
+            )
         if isinstance(current, GatedRepoError):
             return "gated"
         if isinstance(current, HfHubHTTPError) and getattr(
@@ -183,7 +229,6 @@ def pull_error_class(exc: BaseException) -> str:
             ),
         ):
             return "network"
-        current = current.__cause__
     return "other"
 
 
@@ -584,7 +629,10 @@ def emit_model_pull_failed(
     from rapid_mlx.telemetry.model_id import telemetry_model_id
     from rapid_mlx.telemetry.track import track
 
-    props: dict[str, object] = {"error_class": pull_error_class(exc)}
+    error_class = pull_error_class(exc)
+    props: dict[str, object] = {"error_class": error_class}
+    if error_class == "other":
+        props["failure_subtype"] = pull_failure_subtype(exc)
     if model_ref is not None:
         props["model"] = telemetry_model_id(model_ref)
         props["model_type"] = model_type(model_ref)

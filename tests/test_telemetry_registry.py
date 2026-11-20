@@ -542,3 +542,25 @@ def test_agent_configuration_server_state_is_closed(state):
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "value", ["https://private.example/org/repo", "private/path", "arbitrary"]
+)
+def test_pull_failure_subtype_rejects_free_text(value):
+    assert (
+        reg.validate(
+            "model_pull_failed", {"error_class": "other", "failure_subtype": value}
+        )
+        is None
+    )
+
+
+def test_pull_failure_subtype_only_when_other():
+    assert (
+        reg.validate(
+            "model_pull_failed",
+            {"error_class": "network", "failure_subtype": "unknown"},
+        )
+        is None
+    )
