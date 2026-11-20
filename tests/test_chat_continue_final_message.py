@@ -155,7 +155,7 @@ def test_ambiguous_fallback_boundary_is_rejected():
     tok = LegacyApplicator()
     tok.chat_template = (
         "{% for m in messages %}{{ m.role }}:"
-        "{% if m.content != 'RAPID_MLX_CONTINUATION_BOUNDARY' %}"
+        "{% if m.content != '\u27e6continuation-boundary\u27e7' %}"
         "{{ m.content }}{% endif %}end{% endfor %}"
     )
     history = [*MESSAGES[:1], {"role": "assistant", "content": "end"}]
