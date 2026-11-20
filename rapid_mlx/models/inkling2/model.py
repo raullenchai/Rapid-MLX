@@ -2,11 +2,16 @@
 # SPDX-License-Identifier: MIT
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 from mlx import nn
 from mlx.nn.layers.distributed import shard_linear
+
+from ... import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 from mlx_lm.models.cache import ArraysCache, CacheList, KVCache, RotatingKVCache
 from mlx_lm.models.pipeline import PipelineMixin
 
@@ -37,7 +42,7 @@ class TextModel(PipelineMixin, nn.Module):
         self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
         # Keep the norm separate so embed_tokens can be quantized.
         self.embed_norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-        self.layers = [
+        self.layers: list[DecoderLayer | None] = [
             (
                 SlidingDecoderLayer(args, i)
                 if i in args.local_layer_ids
@@ -51,32 +56,43 @@ class TextModel(PipelineMixin, nn.Module):
             self.message_input = MessageInput(args.hidden_size, len(args.loop_core))
 
     def embed(self, inputs: mx.array) -> mx.array:
-        return self.embed_norm(self.embed_tokens(inputs))
+        return cast(mx.array, self.embed_norm(self.embed_tokens(inputs)))
 
     @property
     def layer_visits(self) -> list[DecoderLayer]:
         if self.args.loop_config is None:
-            return self.pipeline_layers
+            return cast(list[DecoderLayer], self.pipeline_layers)
         core = self.args.loop_core
-        passes = self.args.loop_config["num_passes"]
-        layers = self.layers
+        passes = cast(int, self.args.loop_config["num_passes"])
+        layers = cast(list[DecoderLayer], self.layers)
         return (
             layers[: core.start]
             + layers[core.start : core.stop] * passes
             + layers[core.stop :]
         )
 
-    def pipeline(self, group, split=None) -> None:
-        if self.args.loop_config is not None:
-            raise ValueError("Pipeline parallel does not support looped models.")
-        super().pipeline(group, split)
+    def pipeline(self, group: mx.distributed.Group, split: Any = None) -> None:
+        # Looped cores reuse layers across passes, so stage splitting is unsupported.
+        raise ValueError("Pipeline parallel is not supported for Inkling 2.")
 
-    def _run_loop(self, hidden_states, cache, conv_mask):
+    def _run_loop(
+        self,
+        hidden_states: mx.array,
+        cache: list[Any],
+        conv_mask: mx.array | None,
+    ) -> tuple[mx.array, mx.array | None]:
+        assert self.args.loop_config is not None
         core = self.args.loop_core
         caches = iter(cache)
 
-        def run(layers, hidden_states, block_states, bank=None):
+        def run(
+            layers: list[DecoderLayer | None],
+            hidden_states: mx.array,
+            block_states: mx.array | None,
+            bank: tuple[mx.array, mx.array] | None = None,
+        ) -> tuple[mx.array, mx.array | None]:
             for i, layer in enumerate(layers):
+                assert layer is not None
                 messages = None if bank is None else self.message_input(bank, i)
                 hidden_states, block_states = layer(
                     hidden_states,
@@ -92,6 +108,8 @@ class TextModel(PipelineMixin, nn.Module):
         for loop_pass in range(self.args.loop_config["num_passes"]):
             bank = None
             if loop_pass > 0:
+                assert block_states is not None
+                assert prelude[1] is not None
                 bank = (
                     block_states[prelude[1].shape[0] + 1 :],
                     unweighted_rms_norm(hidden_states.astype(mx.float32)),
@@ -121,7 +139,7 @@ class TextModel(PipelineMixin, nn.Module):
             conv_mask = cache[0][1].make_mask(hidden_states.shape[1])
 
         rank, size = self.pipeline_rank, self.pipeline_size
-        block_states = None
+        block_states: mx.array | None = None
         if rank < size - 1:
             num_blocks = -(-self.start_idx // self.args.n_layers_per_attn_res_block)
             states = mx.zeros((num_blocks + 1, *hidden_states.shape), mx.float32)
@@ -138,6 +156,7 @@ class TextModel(PipelineMixin, nn.Module):
                 hidden_states, cache, conv_mask
             )
 
+        assert block_states is not None
         if rank != 0:
             states = mx.concatenate(
                 [hidden_states.astype(mx.float32)[None], block_states]
@@ -171,13 +190,13 @@ class Inkling2Model(nn.Module):
 
     @property
     def start_idx(self) -> int:
-        return self.language_model.start_idx
+        return cast(int, self.language_model.start_idx)
 
     @property
     def end_idx(self) -> int | None:
-        return self.language_model.end_idx
+        return cast(int | None, self.language_model.end_idx)
 
-    def pipeline(self, group, split=None) -> None:
+    def pipeline(self, group: mx.distributed.Group, split: Any = None) -> None:
         self.language_model.pipeline(group, split)
 
 
@@ -189,7 +208,7 @@ class Model(nn.Module):
         self.model = Inkling2Model(args)
         text = args.text
         self.lm_head = nn.Linear(text.hidden_size, text.vocab_size, bias=False)
-        self.sharding_group = None
+        self.sharding_group: mx.distributed.Group | None = None
 
     def __call__(
         self,
@@ -207,7 +226,7 @@ class Model(nn.Module):
         softcap = text.final_logit_softcapping
         logits = logits.astype(mx.float32)
         logits = mx.tanh(logits / softcap) * softcap
-        return logits[..., : text.unpadded_vocab_size]
+        return cast(mx.array, logits[..., : text.unpadded_vocab_size])
 
     def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         return checkpoint.sanitize(self, weights)
@@ -290,7 +309,7 @@ class Model(nn.Module):
 
     @property
     def layers(self) -> list[DecoderLayer]:
-        return self.model.language_model.pipeline_layers
+        return cast(list[DecoderLayer], self.model.language_model.pipeline_layers)
 
     def make_cache(self) -> list[CacheList]:
         window = self.args.text.sliding_window_size

@@ -3,11 +3,16 @@
 
 import math
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 from mlx import nn
 from mlx.nn.layers.distributed import sum_gradients
+
+from ... import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 from mlx_lm.models.cache import BatchRotatingKVCache, RotatingKVCache
 
 from rapid_mlx.models.inkling2.compat import (
@@ -54,7 +59,9 @@ def unweighted_rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
 
 
 @partial(mx.compile, shapeless=True)
-def _l2_clip(hidden_states: mx.array, scale: mx.array, threshold: float) -> mx.array:
+def _l2_clip(
+    hidden_states: mx.array, scale: mx.array | float, threshold: float
+) -> mx.array:
     states = hidden_states.astype(mx.float32) * scale
     norm = mx.sqrt((states * states).sum(axis=-1, keepdims=True))
     scaled = states * mx.minimum(threshold / (norm + 1e-6), 1.0)
@@ -178,20 +185,22 @@ class DynamicShortConvolution(nn.Module):
         return out.astype(hidden_states.dtype), window
 
 
-def _positions(offset, length: int) -> mx.array:
+def _positions(offset: int | mx.array, length: int) -> mx.array:
     pos = mx.arange(length)
     if isinstance(offset, mx.array):
-        return offset[:, None] + pos
+        return cast(mx.array, offset[:, None] + pos)
     return pos + offset
 
 
-def _key_positions(cache: Any, num_keys: int, num_queries: int, end) -> mx.array:
+def _key_positions(
+    cache: Any, num_keys: int, num_queries: int, end: int | mx.array
+) -> mx.array:
     k = mx.arange(num_keys)
     if num_queries == 1 and isinstance(cache, (RotatingKVCache, BatchRotatingKVCache)):
         # A decode step writes in place, so the keys can be rotated.
         k = (k - cache._idx) % num_keys
     if isinstance(end, mx.array):
-        return (end - num_keys)[:, None] + k
+        return cast(mx.array, (end - num_keys)[:, None] + k)
     return k + (end - num_keys)
 
 
@@ -384,7 +393,7 @@ class SlidingAttention(Attention):
         value_hidden_states: mx.array,
         *,
         cache: Any | None,
-        conv_states: list,
+        conv_states: list[mx.array | None],
         conv_mask: mx.array | None,
     ) -> mx.array:
         kv_cache = cache[0] if cache is not None else None
@@ -421,7 +430,7 @@ class FullAttention(Attention):
         value_hidden_states: mx.array,
         *,
         cache: Any | None,
-        conv_states: list,
+        conv_states: list[mx.array | None],
         conv_mask: mx.array | None,
     ) -> mx.array:
         kv_cache = cache[0] if cache is not None else None
@@ -478,13 +487,15 @@ class Experts(nn.Module):
         x = mx.expand_dims(x, (-2, -3))
         indices = mx.stop_gradient(indices)
         do_sort = indices.size >= 64
-        idx, inv_order = indices, None
+        inv_order: mx.array | None = None
+        idx = indices
         if do_sort:
             x, idx, inv_order = _gather_sort(x, indices)
         gate_up = self.gate_up_proj(x, idx, sorted_indices=do_sort)
         x = self.act_fn(gate_up[..., 0::2], gate_up[..., 1::2])
         x = self.down_proj(x, idx, sorted_indices=do_sort)
         if do_sort:
+            assert inv_order is not None
             x = _scatter_unsort(x, inv_order, indices.shape)
         return x.squeeze(-2)
 
@@ -501,13 +512,16 @@ class TopKRouter(nn.Module):
     def __call__(self, hidden_states: mx.array) -> tuple[mx.array, mx.array]:
         logits = hidden_states.astype(mx.float32) @ self.weight.T
         if _use_kernels() and expert_routing is not None:
-            return expert_routing(
-                logits,
-                self.e_score_correction_bias,
-                top_k=self.top_k,
-                multiplier=1.0,
-                score_eps=_ROUTER_SCORE_EPS,
-                route_scale=self.routed_scaling_factor,
+            return cast(
+                tuple[mx.array, mx.array],
+                expert_routing(
+                    logits,
+                    self.e_score_correction_bias,
+                    top_k=self.top_k,
+                    multiplier=1.0,
+                    score_eps=_ROUTER_SCORE_EPS,
+                    route_scale=self.routed_scaling_factor,
+                ),
             )
         scores = mx.sigmoid(logits)
         biased = scores + self.e_score_correction_bias
@@ -523,7 +537,7 @@ class SparseMoeBlock(nn.Module):
         super().__init__()
         self.gate = TopKRouter(args)
         self.experts = Experts(args)
-        self.sharding_group = None
+        self.sharding_group: mx.distributed.Group | None = None
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
         group = self.sharding_group
@@ -593,7 +607,9 @@ class MessageInput(nn.Module):
         # The query, key, value and mlp queries of each looped layer.
         self.query = mx.zeros((num_looped_layers, 4, dims), mx.float32)
 
-    def __call__(self, bank: tuple, loop_layer_idx: int) -> mx.array:
+    def __call__(
+        self, bank: tuple[mx.array, mx.array], loop_layer_idx: int
+    ) -> mx.array:
         return _depth_attention(*bank, self.query[loop_layer_idx])
 
 
@@ -612,13 +628,16 @@ class DecoderLayer(nn.Module):
         self.post_attention_convolution = ShortConvolution(dims, kernel_size)
         self.post_mlp_convolution = ShortConvolution(dims, kernel_size)
         if layer_idx in args.loop_core:
+            assert args.loop_config is not None
             rank = args.loop_config["gate_rank"]
             self.q_message_gate = MessageGate(dims, rank)
             self.k_message_gate = MessageGate(dims, rank)
             self.v_message_gate = MessageGate(dims, rank)
             self.mlp_message_gate = MessageGate(dims, rank)
 
-    def _mix_messages(self, states: tuple, messages: mx.array) -> tuple:
+    def _mix_messages(
+        self, states: tuple[mx.array, mx.array, mx.array], messages: mx.array
+    ) -> tuple[mx.array, mx.array, mx.array]:
         q_states, k_states, v_states = states
         return (
             self.q_message_gate(q_states, messages[..., 0, :]),
@@ -637,12 +656,15 @@ class DecoderLayer(nn.Module):
     ) -> tuple[mx.array, mx.array]:
         dtype = hidden_states.dtype
         conv = cache[1] if cache is not None else None
-        conv_states = list(conv.cache) if conv is not None else [None] * 4
+        conv_states: list[mx.array | None] = (
+            list(conv.cache) if conv is not None else [None] * 4
+        )
         block_residual = hidden_states
         normed_residual = unweighted_rms_norm(block_residual.astype(mx.float32))
 
         attention_inputs = None
         if self.attention_input is not None:
+            assert block_states is not None
             attention_inputs = self.attention_input(block_states, normed_residual)
         hidden_states = self._self_attention(
             hidden_states, attention_inputs, cache, conv_states, conv_mask, messages
@@ -662,6 +684,7 @@ class DecoderLayer(nn.Module):
             residual = hidden_states = block_residual.astype(mx.float32) + hidden_states
 
         normed_states = unweighted_rms_norm(hidden_states)
+        assert block_states is not None
         hidden_states = self.mlp_input(block_states, normed_states)[..., 0, :]
         if messages is not None:
             hidden_states = self.mlp_message_gate(hidden_states, messages[..., 3, :])
@@ -675,6 +698,7 @@ class DecoderLayer(nn.Module):
         if conv is not None:
             n = self.post_mlp_convolution.kernel_size - 1
             for i, window in enumerate(conv_states):
+                assert window is not None
                 conv[i] = _conv_state(window, conv.lengths, n)
             conv.advance(block_residual.shape[1])
         hidden_states = residual + hidden_states.astype(mx.float32)
@@ -688,13 +712,21 @@ class SlidingDecoderLayer(DecoderLayer):
         self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
     def _self_attention(
-        self, hidden_states, attention_inputs, cache, conv_states, conv_mask, messages
-    ):
+        self,
+        hidden_states: mx.array,
+        attention_inputs: mx.array | None,
+        cache: Any | None,
+        conv_states: list[mx.array | None],
+        conv_mask: mx.array | None,
+        messages: mx.array | None,
+    ) -> mx.array:
         dtype = hidden_states.dtype
         if attention_inputs is not None:
             hidden_states = attention_inputs[..., 0, :]
         if messages is None:
-            states = (self.input_layernorm(hidden_states).astype(dtype),) * 3
+            states: tuple[mx.array, ...] | list[mx.array] = (
+                self.input_layernorm(hidden_states).astype(dtype),
+            ) * 3
         else:
             states = self._mix_messages((hidden_states,) * 3, messages)
             states = [self.input_layernorm(s).astype(dtype) for s in states]
@@ -716,8 +748,14 @@ class FullDecoderLayer(DecoderLayer):
         self.v_input_layernorm = nn.RMSNorm(args.hidden_size, eps=eps)
 
     def _self_attention(
-        self, hidden_states, attention_inputs, cache, conv_states, conv_mask, messages
-    ):
+        self,
+        hidden_states: mx.array,
+        attention_inputs: mx.array | None,
+        cache: Any | None,
+        conv_states: list[mx.array | None],
+        conv_mask: mx.array | None,
+        messages: mx.array | None,
+    ) -> mx.array:
         dtype = hidden_states.dtype
         if attention_inputs is None:
             query_states = key_states = value_states = hidden_states

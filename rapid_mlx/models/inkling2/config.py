@@ -3,6 +3,10 @@
 
 from dataclasses import dataclass
 
+from ... import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 from mlx_lm.models.base import BaseModelArgs
 
 __all__ = [

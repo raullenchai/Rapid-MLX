@@ -105,7 +105,7 @@ def sanitize(model, weights: dict[str, mx.array]) -> dict[str, mx.array]:
 
     # Pipeline stages can miss the files of the other layers.
     for name in amax.keys() & denominator.keys():
-        scale = _NVFP4_E2M1_MAX * _NVFP4_E4M3_MAX
+        scale: float | mx.array = _NVFP4_E2M1_MAX * _NVFP4_E4M3_MAX
         scale = scale / denominator[name].astype(mx.float32)
         sanitized[f"{name}.global_scale"] = amax[name].astype(mx.float32) * scale
 

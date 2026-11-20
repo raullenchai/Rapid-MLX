@@ -1,6 +1,9 @@
 # Copyright © 2026 Apple Inc.
 # SPDX-License-Identifier: MIT
 
+from collections.abc import Callable
+from typing import cast
+
 import mlx.core as mx
 
 from rapid_mlx.models.inkling2.compat import row_threads, scalar
@@ -87,11 +90,14 @@ _DEPTH_ATTENTION_SOURCE = """
     }
 """
 
-_depth_attention_kernel = mx.fast.metal_kernel(
-    name="depth_attention",
-    input_names=["blocks", "partial", "queries", "scale"],
-    output_names=["out"],
-    source=_DEPTH_ATTENTION_SOURCE,
+_depth_attention_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="depth_attention",
+        input_names=["blocks", "partial", "queries", "scale"],
+        output_names=["out"],
+        source=_DEPTH_ATTENTION_SOURCE,
+    ),
 )
 
 
@@ -269,12 +275,15 @@ _RELATIVE_ATTENTION_SOURCE = """
     }
 """
 
-_relative_attention_kernel = mx.fast.metal_kernel(
-    name="relative_attention",
-    input_names=["q", "k", "v", "rel", "sinks", "key_start", "sizes", "scale"],
-    output_names=["out"],
-    source=_RELATIVE_ATTENTION_SOURCE,
-    ensure_row_contiguous=False,
+_relative_attention_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="relative_attention",
+        input_names=["q", "k", "v", "rel", "sinks", "key_start", "sizes", "scale"],
+        output_names=["out"],
+        source=_RELATIVE_ATTENTION_SOURCE,
+        ensure_row_contiguous=False,
+    ),
 )
 
 
