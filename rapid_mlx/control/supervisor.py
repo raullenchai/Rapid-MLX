@@ -367,7 +367,14 @@ class Supervisor:
                 self.tree.stop_tracking()
                 self.signal_descendants(signal.SIGKILL)
                 code = await asyncio.wait_for(wait, 0.2)
-                self.emit("runner_exited" if code == 0 else "runner_crashed", code=code)
+                if self.stopping.is_set():
+                    # A requested stop ends with the forwarded signal; that is
+                    # an orderly exit, not a crash.
+                    self.emit("runner_exited", code=code, requested=True)
+                else:
+                    self.emit(
+                        "runner_exited" if code == 0 else "runner_crashed", code=code
+                    )
                 stopping.cancel()
                 await asyncio.gather(stopping, return_exceptions=True)
                 if self.stopping.is_set():

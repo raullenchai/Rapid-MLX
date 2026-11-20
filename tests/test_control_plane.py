@@ -2228,6 +2228,8 @@ async def test_supervisor_lifecycle_in_process(monkeypatch, tmp_path, caplog, sc
             return 0
 
         monkeypatch.setattr(instance, "wait_exit", broken_wait)
+    emit = Mock(wraps=instance.emit)
+    monkeypatch.setattr(instance, "emit", emit)
     try:
         if scenario in ("spawn_error", "wait_error"):
             with pytest.raises((OSError, RuntimeError)):
@@ -2246,6 +2248,11 @@ async def test_supervisor_lifecycle_in_process(monkeypatch, tmp_path, caplog, sc
                     else signal.SIGTERM
                 )
                 assert result == 128 + expected_signal
+                if instance.child is not None and scenario != "backoff_stop":
+                    # backoff_stop follows a genuine crash (code 7).
+                    emitted = [c.args[0] for c in emit.call_args_list]
+                    assert "runner_crashed" not in emitted
+                    assert "runner_exited" in emitted
         assert not directory.exists()
         assert not instance.index_entry.exists()
         server.close.assert_called_once_with()
