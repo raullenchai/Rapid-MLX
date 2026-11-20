@@ -5,8 +5,9 @@ import asyncio
 import http.client
 import ipaddress
 import os
+from collections import deque
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from rapid_mlx.control import RUNNER_ENV, SECRET_ENV, SOCKET_ENV
 from rapid_mlx.control.protocol import MAX_BODY, TIMEOUT
@@ -31,7 +32,18 @@ def mount_status(app):
     if os.environ.get(RUNNER_ENV) != "1":
         return
     path, secret = os.environ[SOCKET_ENV], os.environ[SECRET_ENV]
+    from rapid_mlx.control.call_log import CallLog
+
+    calls: deque[dict] = deque(maxlen=1000)
+    app.add_middleware(CallLog, calls=calls)
     router = APIRouter()
+
+    @router.get(
+        "/rapid/v1/log",
+        dependencies=[Depends(require_loopback), Depends(verify_api_key)],
+    )
+    async def log(limit: int = Query(50, ge=1, le=1000)):
+        return {"calls": list(calls)[-limit:]}
 
     @router.get(
         "/rapid/v1/status",
