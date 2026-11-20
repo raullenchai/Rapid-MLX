@@ -41,7 +41,7 @@ def record(rid="r", **fields):
 
 def test_storage_privacy_filters_rotation_and_settings(history):
     history.append(
-        [record(prompt="SECRET PROMPT", Authorization="Bearer secret"), record()], 1, 2
+        [record(prompt="SECRET PROMPT", Authorization="Bearer secret")], 1, 2
     )
     assert history.status() == dict(
         enabled=True,
@@ -74,8 +74,8 @@ def test_storage_privacy_filters_rotation_and_settings(history):
     assert history.old.exists()
     loaded = History(history.root)
     before = loaded.status()["records"]
-    loaded.append([record("29")], 1)
-    assert loaded.status()["records"] == before
+    loaded.append([record("30")], 1)
+    assert loaded.status()["records"] == before + 1
     assert (
         history.api("PUT", "/rapid/v1/log/settings", {"enabled": False})[1]["enabled"]
         is False
@@ -261,12 +261,12 @@ def test_delivery_full_down_batch_and_singleton(monkeypatch):
     monkeypatch.setattr(observer, "request", transport)
     sink.flush([{}])
     assert sink.dropped == 2
-    transport.side_effect = None
+    transport.side_effect = lambda *a, **k: {"batch_seq": a[3]["batch_seq"]}
     sink.closed = Mock()
     sink.closed.is_set.side_effect = [False, False, False, False, False, False, True]
     sink.pending = Mock()
     sink.run()
-    assert [len(c.args[3]["records"]) for c in transport.call_args_list[1:]] == [
+    assert [len(c.args[3]["records"]) for c in transport.call_args_list[2:]] == [
         8,
         2,
         0,
@@ -277,24 +277,19 @@ def test_delivery_full_down_batch_and_singleton(monkeypatch):
     assert observer.delivery() is observer.delivery()
 
 
-def test_idle_delivery_periodic_intervals_without_subscribers(monkeypatch):
-    """P2 must not wake the supervisor with 10 empty socket reports per second."""
+def test_idle_delivery_has_no_timer(monkeypatch):
     sink = observer.Delivery()
-    intervals = []
-    flush = Mock()
+    waits = []
 
-    def wait(event, timeout=None):
-        intervals.append(timeout)
-        if len(intervals) == 3:
-            sink.closed.set()
-            return True
-        return False  # Advance an idle reporting interval without wall-clock delay.
+    def wait(timeout=None):
+        waits.append(timeout)
+        sink.closed.set()
 
-    monkeypatch.setattr(observer.threading.Event, "wait", wait)
-    monkeypatch.setattr(sink, "flush", flush)
+    monkeypatch.setattr(sink.pending, "wait", wait)
+    monkeypatch.setattr(sink, "flush", Mock())
     sink.run()
-    assert intervals == [5.0, 5.0, 5.0]
-    assert flush.call_args_list == [(([],),), (([],),)]
+    assert waits == [None]
+    sink.flush.assert_not_called()
 
 
 def test_delivery_wakes_for_records_and_close(monkeypatch):
@@ -304,7 +299,7 @@ def test_delivery_wakes_for_records_and_close(monkeypatch):
     real_wait = sink.pending.wait
     batches = []
 
-    def wait(timeout):
+    def wait(timeout=None):
         idle.set()
         return real_wait(timeout)
 
@@ -321,7 +316,7 @@ def test_delivery_wakes_for_records_and_close(monkeypatch):
         assert batches == []  # No report on startup with no subscribers/requests.
         for i in range(20):
             sink.enqueue({"i": i})
-        assert delivered.wait(1)  # Records must not wait for the five-second timer.
+        assert delivered.wait(1)  # Records wake the worker immediately.
         assert [item["i"] for batch in batches for item in batch] == list(range(20))
         assert all(len(batch) <= 8 for batch in batches)
     finally:
@@ -384,11 +379,14 @@ def test_control_routes_auth_settings_and_sse_header(monkeypatch):
         captured = Mock(return_value=routes.StreamingResponse(iter([])))
         monkeypatch.setattr(routes, "BoundedEventResponse", captured)
         assert (
-            client.get("/rapid/v1/events", headers={"Last-Event-ID": "7"}).status_code
+            client.get(
+                "/rapid/v1/events?port=8000&instance=a", headers={"Last-Event-ID": "7"}
+            ).status_code
             == 200
         )
         stream = captured.call_args.args[0]
         assert stream.ag_frame.f_locals["cursor"] == 7
+        assert stream.ag_frame.f_locals["filters"] == {"port": "8000", "instance": "a"}
     with TestClient(app, client=("192.0.2.1", 1)) as client:
         for path in ("/rapid/v1/log", "/rapid/v1/log/settings", "/rapid/v1/events"):
             assert client.get(path).status_code == 403
@@ -1003,12 +1001,16 @@ async def test_residency_does_not_wait_for_blocked_control_socket(monkeypatch):
             pass
 
         def request(self, method, target, *, body, headers):
+            self.batch_seq = json.loads(body)["batch_seq"]
             payloads.append(json.loads(body))
             entered.set()
             assert release.wait(2)
 
         def getresponse(self):
-            return SimpleNamespace(status=200, read=lambda _: b"{}")
+            return SimpleNamespace(
+                status=200,
+                read=lambda _: json.dumps({"batch_seq": self.batch_seq}).encode(),
+            )
 
         def close(self):
             pass
@@ -1691,15 +1693,11 @@ def test_history_writes_never_parse_retained_records(history, monkeypatch):
     assert history.status()["records"] == 1
 
 
-def test_history_repair_long_incomplete_tail_and_bounded_dedup(history):
+def test_history_repair_long_incomplete_tail(history):
     history.logs.write_bytes(b"{" + b"x" * 20000)
     history.append([record("repaired")], 1)
     assert list(history.records())[0]["request_id"] == "repaired"
     assert history.malformed == 1
-    for i in range(9000):
-        history.remember(str(i))
-    assert len(history.seen) == 8192
-    assert "0" not in history.seen and "8999" in history.seen
 
 
 async def test_writer_close_handles_concurrent_consumer(tmp_path, monkeypatch):

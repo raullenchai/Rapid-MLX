@@ -4,6 +4,7 @@
 import asyncio
 import collections
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -23,7 +24,15 @@ from . import (
     SOCKET_ENV,
 )
 from .process_tree import ProcessTree
-from .protocol import MAX_BODY, TIMEOUT, discovery_root, private_directory, runtime_root
+from .protocol import (
+    DEADLINE_HEADER,
+    JOB_TIMEOUT,
+    MAX_BODY,
+    TIMEOUT,
+    discovery_root,
+    private_directory,
+    runtime_root,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +66,8 @@ class Supervisor:
         self.stop_started = None
         self.history = None
         self.query_slots = asyncio.Semaphore(4)
+        self.batch_runner = None
+        self.batch_sequence = 0
 
     def emit(self, kind, **fields):
         # Optional diagnostics must never interrupt supervision or its cleanup.
@@ -135,13 +146,21 @@ class Supervisor:
                         if self.history is None:
                             code, result = 503, {}
                         else:
-                            self.history.append(
-                                data["records"], data["pid"], data["dropped"]
-                            )
+                            runner = (data["pid"], data.get("runner_instance"))
+                            seq = data.get("batch_seq", 0)
+                            if not isinstance(seq, int) or seq < 0:
+                                raise ValueError("invalid batch sequence")
+                            if self.batch_runner != runner:
+                                self.batch_runner, self.batch_sequence = runner, 0
+                            duplicate = seq and seq <= self.batch_sequence
+                            if not duplicate:
+                                self.history.append(
+                                    data["records"], data["pid"], data["dropped"]
+                                )
                             self.history.runner_skipped[data["pid"]] = int(
                                 data.get("skipped", 0)
                             )
-                            for event in data.get("events", []):
+                            for event in [] if duplicate else data.get("events", []):
                                 if event.get("event") in (
                                     "model_loaded",
                                     "model_unloaded",
@@ -149,11 +168,18 @@ class Supervisor:
                                     self.emit(
                                         event["event"], model=str(event["model"])[:256]
                                     )
-                            code, result = 200, {}
+                            self.batch_sequence = max(self.batch_sequence, seq)
+                            code, result = 200, {"batch_seq": seq}
                 elif target.startswith("/rapid/v1/") and self.history:
                     data = (
                         json.loads(await reader.readexactly(length)) if length else {}
                     )
+                    options = {}
+                    if DEADLINE_HEADER.lower() in headers:
+                        options["deadline"] = min(
+                            float(headers[DEADLINE_HEADER.lower()]),
+                            time.monotonic() + JOB_TIMEOUT,
+                        )
                     if self.query_slots.locked():
                         code, result = 503, {"error": "history queries are busy"}
                     else:
@@ -163,7 +189,10 @@ class Supervisor:
                         # Release on worker completion, including if handle is
                         # cancelled while the worker is still using its slot.
                         future = asyncio.get_running_loop().run_in_executor(
-                            None, self.history.api, method, target, data
+                            None,
+                            functools.partial(
+                                self.history.api, method, target, data, **options
+                            ),
                         )
                         future.add_done_callback(lambda _: self.query_slots.release())
                         code, result = await asyncio.shield(future)

@@ -13,6 +13,7 @@ import uuid
 
 from . import RUNNER_ENV, SECRET_ENV, SOCKET_ENV
 from .protocol import request
+from .text import client_identity
 
 _current = contextvars.ContextVar("rapid_call_metadata", default=None)
 _delivery = None
@@ -47,6 +48,8 @@ def usage(output):
 
 class Delivery:
     def __init__(self, *, capacity=1024):
+        self.instance = uuid.uuid4().hex
+        self.batch_seq = 0
         self.queue = queue.Queue(maxsize=capacity)
         self.queue_dropped = 0
         self.transport_dropped = 0
@@ -71,22 +74,37 @@ class Delivery:
     def flush(self, batch):
         events = [item for item in batch if "event" in item]
         records = [item for item in batch if "event" not in item]
-        try:
-            request(
-                os.environ[SOCKET_ENV],
-                os.environ[SECRET_ENV],
-                "POST",
-                {
-                    "pid": os.getpid(),
-                    "records": records,
-                    "events": events,
-                    "dropped": self.dropped,
-                    "skipped": self.skipped,
-                },
-                target="/records",
-            )
-        except (OSError, ValueError, TypeError, KeyError, http.client.HTTPException):
-            self.transport_dropped += len(batch)
+        self.batch_seq += 1
+        payload = {
+            "runner_instance": self.instance,
+            "batch_seq": self.batch_seq,
+            "pid": os.getpid(),
+            "records": records,
+            "events": events,
+            "dropped": self.dropped,
+            "skipped": self.skipped,
+        }
+        for attempt in range(2):
+            try:
+                ack = request(
+                    os.environ[SOCKET_ENV],
+                    os.environ[SECRET_ENV],
+                    "POST",
+                    payload,
+                    target="/records",
+                )
+                if ack != {"batch_seq": self.batch_seq}:
+                    raise ValueError("invalid batch acknowledgement")
+                return
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                KeyError,
+                http.client.HTTPException,
+            ):
+                if attempt:
+                    self.transport_dropped += len(batch)
 
     def close(self):
         self.closed.set()
@@ -104,9 +122,8 @@ class Delivery:
 
     def run(self):
         while not self.closed.is_set():
-            # Records and shutdown wake immediately; idle drop reports must not
-            # turn into ten empty control-socket requests per second.
-            self.pending.wait(5.0)
+            # Wake only for records or shutdown; no idle reporting timer.
+            self.pending.wait()
             self.pending.clear()
             if self.closed.is_set():
                 break
@@ -194,7 +211,9 @@ class CallObserver:
                     {
                         "ts": time.time(),
                         "request_id": uuid.uuid4().hex,
-                        "client": f"{peer[0] if peer else 'unknown'} {client}"[:256],
+                        "client": client_identity(
+                            f"{peer[0] if peer else 'unknown'} {client}"
+                        ),
                         "app": None,
                         "model": str(data["model"])[:256]
                         if data.get("model") is not None

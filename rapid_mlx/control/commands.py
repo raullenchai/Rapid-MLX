@@ -9,6 +9,7 @@ from datetime import datetime
 
 from .history import History
 from .protocol import discover, discovery_root, request
+from .text import display
 
 
 def connection(port=None):
@@ -28,7 +29,7 @@ def connection(port=None):
 
 
 def table_row(item, command):
-    value = lambda key: "-" if item.get(key) is None else str(item[key])
+    value = lambda key: "-" if item.get(key) is None else display(item[key])
     stamp = (
         datetime.fromtimestamp(item["ts"]).astimezone()
         if item.get("ts") is not None
@@ -44,7 +45,9 @@ def table_row(item, command):
     )
     if command == "events":
         details = " ".join(
-            f"{k}={v}" for k, v in item.items() if k not in {"ts", "event"}
+            f"{display(k)}={display(v)}"
+            for k, v in item.items()
+            if k not in {"ts", "event"}
         )
         return f"{clock:<19} {value('event'):<22} {details}"
     model = value("model").rsplit("/", 1)[-1]

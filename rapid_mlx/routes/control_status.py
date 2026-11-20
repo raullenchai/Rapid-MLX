@@ -5,12 +5,15 @@ import asyncio
 import http.client
 import ipaddress
 import os
+import time
+from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from rapid_mlx.control import CONTROL_PREFIX, RUNNER_ENV, SECRET_ENV, SOCKET_ENV
-from rapid_mlx.control.protocol import MAX_BODY, TIMEOUT
+from rapid_mlx.control.protocol import JOB_TIMEOUT, MAX_BODY, TIMEOUT, mutation
 from rapid_mlx.control.protocol import request as control_request
 from rapid_mlx.middleware.auth import verify_api_key
 
@@ -76,14 +79,12 @@ def mount_status(app):
                 target = request.url.path
                 if request.url.query:
                     target += "?" + request.url.query
-                return await asyncio.to_thread(
-                    control_request,
-                    path,
-                    secret,
-                    request.method,
-                    payload,
-                    target=target,
-                )
+            options: dict[str, Any] = {"target": target}
+            if mutation(request.method, target):
+                options["deadline"] = time.monotonic() + JOB_TIMEOUT
+            return await asyncio.to_thread(
+                control_request, path, secret, request.method, payload, **options
+            )
         except (TimeoutError, OSError, ValueError, http.client.HTTPException):
             raise HTTPException(503, "Control plane unavailable") from None
 
@@ -94,7 +95,17 @@ def mount_status(app):
         except ValueError:
             raise HTTPException(400, "Invalid Last-Event-ID") from None
         return BoundedEventResponse(
-            event_stream(path, secret, cursor), media_type="text/event-stream"
+            event_stream(
+                path,
+                secret,
+                cursor,
+                {
+                    k: request.query_params[k]
+                    for k in ("port", "instance")
+                    if k in request.query_params
+                },
+            ),
+            media_type="text/event-stream",
         )
 
     app.include_router(router)
@@ -109,7 +120,7 @@ class BoundedEventResponse(StreamingResponse):
         await super().stream_response(bounded_send)
 
 
-async def event_stream(path, secret, cursor):
+async def event_stream(path, secret, cursor, filters=None):
     """Pull from the fixed parent ring; no per-client accumulating queue.
 
     A client falling behind the retained ring must reconnect. Each response
@@ -123,11 +134,12 @@ async def event_stream(path, secret, cursor):
                 control_request,
                 path,
                 secret,
-                target=f"{CONTROL_PREFIX}/events?since={cursor}",
+                target=f"{CONTROL_PREFIX}/events?"
+                + urlencode({"since": cursor, **(filters or {})}),
             )
         except (OSError, ValueError, http.client.HTTPException):
             return
-        if batch and cursor and batch[0]["id"] > cursor + 1:
+        if not filters and batch and cursor and batch[0]["id"] > cursor + 1:
             return
         for event in batch:
             cursor = event["id"]

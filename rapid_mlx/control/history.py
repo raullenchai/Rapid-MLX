@@ -16,7 +16,8 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from . import CONTROL_PREFIX
-from .protocol import private_directory
+from .protocol import JOB_TIMEOUT, TIMEOUT, private_directory
+from .text import client_identity
 
 FIELDS = frozenset(
     [
@@ -123,34 +124,24 @@ class History:
             if self.cursor_path.exists()
             else 0
         )
-        self.seen = collections.OrderedDict()
         self.counts_path = root / "calls.counts.json"
         self.counts = [0, 0]
         self.malformed = 0
-        self.lock_timeout = 2.0
+        self.lock_timeout = TIMEOUT
         self.dropped = 0
         self.runner_dropped = {}
         self.runner_skipped = {}
-        # Inspect only bounded tails at startup; explicit queries migrate legacy rows.
+        # Validate descriptors without scanning records or rebuilding an ID cache.
         with self.locked():
             for path in (self.old, self.logs):
-                if not path.exists():
-                    continue
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(fd, "rb") as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                        raise OSError("history must be an owned regular file")
-                    start = max(0, info.st_size - 65536)
-                    stream.seek(start)
-                    lines = stream.read().splitlines()
-                for line in lines[1 if start else 0 :]:
+                if path.exists():
+                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
                     try:
-                        item = json.loads(line)
-                        self.remember(item["request_id"])
-                        self.call_sequence = max(self.call_sequence, item.get("seq", 0))
-                    except (ValueError, KeyError, TypeError):
-                        pass
+                        info = os.fstat(fd)
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                            raise OSError("history must be an owned regular file")
+                    finally:
+                        os.close(fd)
 
     def upgrade(self):
         # Upgrade retained records once; cursors belong to the parent, never the runner.
@@ -205,7 +196,7 @@ class History:
                         break
                     except BlockingIOError:
                         if time.monotonic() >= deadline:
-                            raise TimeoutError("history lock timed out after 2 seconds")
+                            raise TimeoutError("history lock timed out")
                         time.sleep(0.01)
                 self.depth += 1
                 if self.settings_path.exists():
@@ -274,11 +265,6 @@ class History:
                 except ValueError:
                     self.malformed += 1
 
-    def remember(self, rid):
-        self.seen[rid] = None
-        if len(self.seen) > 8192:
-            self.seen.popitem(last=False)
-
     def repair_tail(self):
         # Find the last newline backwards in bounded chunks, without parsing history.
         if not self.logs.exists():
@@ -336,8 +322,8 @@ class History:
             if not isinstance(rid, str) or not rid or len(rid) > 128:
                 self.dropped += 1
                 continue
-            if rid in self.seen:
-                continue
+            if isinstance(item["client"], str):
+                item["client"] = client_identity(item["client"])
             for key in ("client", "model", "route", "outcome"):
                 value = item[key]
                 item[key] = value[:256] if isinstance(value, str) else None
@@ -371,7 +357,6 @@ class History:
             with os.fdopen(fd, "a") as stream:
                 os.fchmod(stream.fileno(), 0o600)
                 stream.write(line)
-            self.remember(rid)
             self.counts[1] += 1
             write_private(self.counts_path, json.dumps(self.counts))
 
@@ -465,7 +450,6 @@ class History:
             if method == "DELETE":
                 self.logs.unlink(missing_ok=True)
                 self.old.unlink(missing_ok=True)
-                self.seen.clear()
                 self.counts = [0, 0]
                 write_private(self.counts_path, json.dumps(self.counts))
                 return 200, {}
@@ -498,7 +482,15 @@ class History:
                 if self.event_path.exists()
                 else []
             )
-            return 200, [e for e in events if e["id"] > since]
+            return 200, [
+                e
+                for e in events
+                if e["id"] > since
+                and ("port" not in query or e.get("port") == int(query["port"][0]))
+                and (
+                    "instance" not in query or e.get("instance") == query["instance"][0]
+                )
+            ]
         return 404, {}
 
 
@@ -507,7 +499,7 @@ class APIJob(concurrent.futures.Future):
 
     def __init__(self):
         super().__init__()
-        self.deadline = time.monotonic() + 2.2
+        self.deadline = time.monotonic() + JOB_TIMEOUT
 
     def claim(self):
         if time.monotonic() >= self.deadline:
@@ -536,8 +528,10 @@ class HistoryWriter:
         self.thread.start()
         self.ready.result()
 
-    def submit(self, method, *args, **kwargs):
+    def submit(self, method, *args, deadline=None, **kwargs):
         result = APIJob() if method == "api" else concurrent.futures.Future()
+        if deadline is not None:
+            result.deadline = min(result.deadline, deadline)
         with self.admission:
             try:
                 if self.closed:
@@ -645,9 +639,15 @@ class HistoryWriter:
             "skipped": sum(self.runner_skipped.values()),
         }
 
-    def api(self, method, target, data):
+    def api(self, method, target, data, *, deadline=None):
         try:
-            result = self.submit("api", method, target, data)
+            result = self.submit(
+                "api",
+                method,
+                target,
+                data,
+                **({"deadline": deadline} if deadline is not None else {}),
+            )
             try:
                 return result.result(timeout=max(0, result.deadline - time.monotonic()))
             except TimeoutError:
@@ -658,7 +658,7 @@ class HistoryWriter:
             except concurrent.futures.CancelledError:
                 raise TimeoutError("history job expired") from None
         except TimeoutError:
-            return 503, {"error": "history lock or writer timed out after 2 seconds"}
+            return 503, {"error": "history lock or writer timed out"}
         except OSError as exc:
             return 503, {"error": str(exc)}
 

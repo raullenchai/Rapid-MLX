@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import stat
+import time
 from pathlib import Path
 
 from . import RUNNER_ENV, SECRET_ENV, SECRET_HEADER, SOCKET_ENV
@@ -16,6 +17,12 @@ _startup_terminal = False
 MAX_BODY = 16384
 MAX_RESPONSE = 4 * 1024 * 1024
 TIMEOUT = 2.0
+JOB_TIMEOUT = TIMEOUT - 0.5
+DEADLINE_HEADER = "X-Rapid-Control-Deadline"
+
+
+def mutation(method, target):
+    return method in {"DELETE", "PUT"} and target.startswith("/rapid/v1/log")
 
 
 class UnixConnection(http.client.HTTPConnection):
@@ -33,16 +40,27 @@ class UnixConnection(http.client.HTTPConnection):
             raise
 
 
-def request(path, secret, method="GET", payload=None, *, target=None):
+def request(path, secret, method="GET", payload=None, *, target=None, deadline=None):
     body = json.dumps(payload).encode() if payload is not None else b""
     if len(body) > MAX_BODY:
         raise ValueError("control request too large")
+    is_mutation = mutation(method, target or "")
+    headers = {SECRET_HEADER: secret, "Content-Type": "application/json"}
+    if is_mutation:
+        headers[DEADLINE_HEADER] = str(
+            deadline if deadline is not None else time.monotonic() + JOB_TIMEOUT
+        )
     with contextlib.closing(UnixConnection(path)) as conn:
+        if is_mutation:
+            # Connecting cannot submit a mutation. Once connected, neither the
+            # send nor response wait may expire independently of the writer.
+            conn.connect()
+            conn.sock.settimeout(None)
         conn.request(
             method,
             target or ("/rapid/v1/status" if method == "GET" else "/startup"),
             body=body,
-            headers={SECRET_HEADER: secret, "Content-Type": "application/json"},
+            headers=headers,
         )
         response = conn.getresponse()
         data = response.read(MAX_RESPONSE + 1)
