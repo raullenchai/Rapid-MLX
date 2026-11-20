@@ -1754,6 +1754,7 @@ class EngineCore:
         """
         import uuid as uuid_module
 
+        from .middleware.priority import request_priority
         from .request import Request
 
         if sampling_params is None:
