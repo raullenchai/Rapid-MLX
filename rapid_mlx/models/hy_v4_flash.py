@@ -28,6 +28,14 @@ from .hy_v4_flash_config import (  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def _update_aux_cache(cache, keys):
+    # Keep ordinary KVCache/BatchKVCache bookkeeping (including merge, filter,
+    # trim and extraction), but never retain a second, unread activation graph.
+    # Independent zero-width arrays carry sequence length without payload.
+    values = mx.zeros((*keys.shape[:-1], 0), dtype=keys.dtype)
+    return cache.update_and_fetch(keys, values)[0]
+
+
 class HCPre(nn.Module):
     def __init__(self, args):
         super().__init__()
@@ -193,7 +201,7 @@ class Indexer(nn.Module):
         d = a.compressed_indexer_head_dim
         heads = a.compressed_indexer_num_attention_heads
         raw = self.token_key_norm(self.token_key_projection(x)).astype(mx.bfloat16)
-        raw, _ = cache.update_and_fetch(raw[:, None], raw[:, None])
+        raw = _update_aux_cache(cache, raw[:, None])
         raw = raw[:, 0]
         ratio = a.compressed_indexer_compress_ratio
         count = (raw.shape[1] + ratio - 1) // ratio
@@ -331,7 +339,7 @@ class Attention(nn.Module):
                 & (key_positions[:, None, :] > positions[..., None] - a.sliding_window)
                 & (key_positions[:, None, :] >= 0)
             )
-            cache[1].update_and_fetch(x[:, None, :, :1], x[:, None, :, :1])
+            _update_aux_cache(cache[1], mx.zeros((b, 1, length, 0), dtype=x.dtype))
         out = ops.attention(
             q.transpose(0, 2, 1, 3),
             k.transpose(0, 2, 1, 3),
@@ -461,9 +469,14 @@ class DecoderLayer(nn.Module):
         return mx.where(positions < 0, -1, inputs), prior
 
     def __call__(self, hidden, inputs, cache):
-        tokens, _ = cache[2].update_and_fetch(
-            inputs[:, None, :, None], inputs[:, None, :, None]
+        token_keys = (
+            inputs[:, None, :, None]
+            if self.engram_layer is not None
+            else mx.zeros(
+                (*inputs.shape[:1], 1, inputs.shape[1], 0), dtype=inputs.dtype
+            )
         )
+        tokens = _update_aux_cache(cache[2], token_keys)
         if self.engram_layer is not None:
             prior = tokens[:, 0, : -inputs.shape[1], 0]
             hash_inputs, prior = self.engram_inputs(inputs, prior, cache[0].offset)
@@ -524,7 +537,8 @@ class Model(nn.Module):
         return self.model.layers
 
     def make_cache(self):
-        # Retain latent KV, raw index keys and original token IDs together.
+        # Retain latent KV, sparse-layer index keys and Engram-layer token IDs.
+        # Unused payloads have zero width, but all slots advance together.
         # Keeping full history makes ordinary prompt-cache trimming exact.
         return [CacheList(KVCache(), KVCache(), KVCache()) for _ in self.layers]
 
@@ -537,8 +551,14 @@ class Model(nn.Module):
         if self.args.enable_lm_head_fp32:
             h = h.astype(mx.float32)
         if self.args.tie_word_embeddings:
-            return self.model.embed_tokens.as_linear(h)
-        return self.lm_head(h)
+            logits = self.model.embed_tokens.as_linear(h)
+        else:
+            logits = self.lm_head(h)
+        # Decode evaluates logits, not every cache branch. Materialize auxiliary
+        # roots too, especially BatchKVCache offsets and the final Engram token
+        # write, so unread lazy updates cannot retain earlier decoding graphs.
+        mx.async_eval(logits, [c[i].state for c in cache for i in (1, 2)])
+        return logits
 
     def sanitize(self, weights):
         sanitized = {}

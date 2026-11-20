@@ -142,6 +142,10 @@ def cpu_model(monkeypatch):
             self.keys, self.values = self.keys[:, :, :-n], self.values[:, :, :-n]
             self.offset -= n
 
+        @property
+        def state(self):
+            return self.keys, self.values
+
     class CacheList(list):
         def __init__(self, *caches):
             super().__init__(caches)
@@ -156,6 +160,7 @@ def cpu_model(monkeypatch):
     )
     mx.bfloat16 = np.float32
     mx.sigmoid = lambda x: ops.sigmoid(x, np)
+    mx.async_eval = lambda *args: None
     nn = ModuleType("mlx.nn")
     nn.Module, nn.Linear, nn.Embedding, nn.RMSNorm = Module, Linear, Embedding, RMSNorm
     modules = {
@@ -190,6 +195,120 @@ def test_engram_uint32_inputs_keep_signed_padding_and_history(cpu_model):
     assert inputs.dtype == prior.dtype == np.int32
     np.testing.assert_array_equal(inputs, [[-1, 3], [4, 5]])
     np.testing.assert_array_equal(prior, [[-1, -1], [1, 2]])
+
+
+def test_auxiliary_payloads_only_store_keys_that_are_read(cpu_model, monkeypatch):
+    model = cpu_model.Model(tiny())
+    cache = model.make_cache()
+    writes = []
+    update = cpu_model.KVCache.update_and_fetch
+
+    def record(self, keys, values):
+        writes.append((self, keys, values))
+        return update(self, keys, values)
+
+    monkeypatch.setattr(cpu_model.KVCache, "update_and_fetch", record)
+    for tokens in ([[1, 2, 3], [0, 3, 4]], [[5], [6]], [[7, 8], [9, 10]]):
+        model(np.array(tokens, np.int32), cache)
+    for layer, slots in zip(model.layers, cache):
+        for slot in (1, 2):
+            expected_width = (
+                (0 if layer.self_attn.is_window_layer else 4)
+                if slot == 1
+                else (0 if layer.engram_layer is None else 1)
+            )
+            selected = [(k, v) for c, k, v in writes if c is slots[slot]]
+            assert len(selected) == 3
+            for keys, values in selected:
+                assert keys.shape[-1] == expected_width
+                assert values.shape == (*keys.shape[:-1], 0)
+                assert values.nbytes == 0
+                if expected_width == 0:
+                    assert keys.nbytes == 0
+        assert all(c.offset == 6 for c in slots)
+        assert slots[0].values.shape[-1] == 2  # Rotary keys are still required.
+    for slots in cache:
+        slots.trim(2)
+    model(np.array([[7, 8], [9, 10]], np.int32), cache)
+    assert all(c.offset == 6 for slots in cache for c in slots)
+
+
+@pytest.mark.parametrize("tied", [False, True])
+def test_each_call_schedules_logits_and_all_auxiliary_roots(
+    cpu_model, monkeypatch, tied
+):
+    class BatchCache(cpu_model.KVCache):
+        @property
+        def state(self):
+            # BatchKVCache includes counters as well as key/value storage.
+            return self.keys, self.values, self.offset, self.left_padding
+
+    model = cpu_model.Model(tiny(tie_word_embeddings=tied))
+    cache = [
+        cpu_model.CacheList(*(BatchCache() for _ in range(3))) for _ in model.layers
+    ]
+    for slots in cache:
+        for c in slots:
+            c.offset = np.array([0, -1])
+            c.left_padding = np.array([0, 1])
+    scheduled = []
+    monkeypatch.setattr(
+        cpu_model.mx, "async_eval", lambda *args: scheduled.append(args)
+    )
+    for tokens in ([[1, 2], [0, 3]], [[4], [5]], [[6], [7]]):
+        logits = model(np.array(tokens, np.int32), cache)
+        assert len(scheduled) == 1
+        output, roots = scheduled.pop()
+        assert output is logits
+        expected = [c[i].state for c in cache for i in (1, 2)]
+        assert len(roots) == len(expected)
+        for actual, state in zip(roots, expected):
+            assert all(a is b for a, b in zip(actual, state, strict=True))
+
+
+def test_greedy_logits_match_legacy_auxiliary_writes(cpu_model, monkeypatch):
+    """Replay the removed writes on the same weights, including padded batches."""
+    model = cpu_model.Model(tiny())
+
+    def generate():
+        cache = model.make_cache()
+        for slots in cache:
+            for c in slots:
+                c.offset = np.array([0, -2])
+        tokens = np.array([[1, 2, 3, 4], [0, 0, 3, 4]], np.int32)
+        outputs = []
+        for _ in range(32):
+            logits = model(tokens, cache)
+            tokens = logits[:, -1].argmax(-1)[:, None].astype(np.int32)
+            outputs.append((logits.copy(), tokens.copy()))
+        return outputs
+
+    actual = generate()
+    legacy_keys = {}
+    attention = cpu_model.Attention.__call__
+    decoder = cpu_model.DecoderLayer.__call__
+
+    def legacy_attention(self, x, cache):
+        if self.is_window_layer:
+            legacy_keys[id(cache[1])] = x[:, None, :, :1]
+        return attention(self, x, cache)
+
+    def legacy_decoder(self, hidden, inputs, cache):
+        legacy_keys[id(cache[2])] = inputs[:, None, :, None]
+        return decoder(self, hidden, inputs, cache)
+
+    def legacy_update(cache, keys):
+        keys = legacy_keys.get(id(cache), keys)
+        return cache.update_and_fetch(keys, keys)[0]
+
+    monkeypatch.setattr(cpu_model.Attention, "__call__", legacy_attention)
+    monkeypatch.setattr(cpu_model.DecoderLayer, "__call__", legacy_decoder)
+    monkeypatch.setattr(cpu_model, "_update_aux_cache", legacy_update)
+    for (logits, tokens), (old_logits, old_tokens) in zip(
+        actual, generate(), strict=True
+    ):
+        np.testing.assert_array_equal(logits, old_logits)
+        np.testing.assert_array_equal(tokens, old_tokens)
 
 
 def test_uint32_logits_match_int32_prefill_and_decode(cpu_model):

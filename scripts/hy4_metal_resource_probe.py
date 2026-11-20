@@ -50,12 +50,13 @@ def main():
     ]
     if not readers or not all(hasattr(r, "_cache") for r in readers):
         raise RuntimeError("Engram SSD offload was not installed")
-    tokens = tokenizer.apply_chat_template(
+    text = tokenizer.apply_chat_template(
         [{"role": "user", "content": args.prompt}],
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
         enable_thinking=True,
     )
+    tokens = tokenizer.encode(text, add_special_tokens=False)
 
     class Probe:
         calls = 0
