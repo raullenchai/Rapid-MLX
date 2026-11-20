@@ -3967,6 +3967,8 @@ class StreamingPostProcessor:
                 self.tool_accumulated_text or self.accumulated_text,
                 request=self.request,
             )
+            if raw_delta and raw_delta.get("content"):
+                events.append(StreamEvent(type="content", content=raw_delta["content"]))
             if raw_delta and raw_delta.get("tool_calls"):
                 allowed = self._apply_parallel_cap(
                     self._filter_declared_calls(

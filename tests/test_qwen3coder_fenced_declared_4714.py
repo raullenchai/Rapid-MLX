@@ -49,6 +49,174 @@ MULTI_TOOL_REQUEST = {
 }
 EXAMPLE = f"Here is the format:\n```xml\n{CALL}\n```\n"
 
+JSON_CALL = '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13])
+@pytest.mark.parametrize(
+    "example",
+    [
+        f"Use `{CALL}`.\n",
+        f"Use ``{BARE}``.\n",
+        "> ~~~xml\n"
+        + "\n".join("> " + line for line in CALL.splitlines())
+        + "\n> ~~~\n",
+    ],
+)
+@pytest.mark.parametrize("real_call", [False, True])
+def test_quoted_declared_examples_remain_content(example, real_call, size):
+    text = example + (CALL.replace("Paris", "Rome") if real_call else "")
+    calls, content = (
+        non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
+    )
+    assert calls == ([("get_weather", '{"city": "Rome"}')] if real_call else [])
+    assert content == example
+
+
+@pytest.mark.parametrize("size", [0, 1, 2, 7, 13])
+@pytest.mark.parametrize(
+    "example", [f"Use `{JSON_CALL}`.\n", f"> ~~~json\n> {JSON_CALL}\n> ~~~\n"]
+)
+@pytest.mark.parametrize("real_call", [False, True])
+def test_quoted_json_examples_stay_out_of_cross_format_fallback(
+    example, real_call, size
+):
+    text = example + (JSON_CALL.replace("Paris", "Rome") if real_call else "")
+    calls, content = stream(text, REQUEST, size)
+    assert [(name, json.loads(args)) for name, args in calls] == (
+        [("get_weather", {"city": "Rome"})] if real_call else []
+    )
+    # Cross-format recovery historically leaves the real wire in content.
+    assert content == text
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13])
+def test_stray_backtick_before_call_with_backticks_in_argument(size):
+    prefix = "I will check ` shortly. "
+    text = prefix + CALL.replace("Paris", "`Paris`")
+    calls, content = (
+        non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
+    )
+    assert calls == [("get_weather", '{"city": "`Paris`"}')]
+    assert content == prefix
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13])
+@pytest.mark.parametrize("quote", ["`", "``", "```"])
+def test_real_calls_on_both_sides_of_inline_example(size, quote):
+    example = f"\nUse {quote}{CALL}{quote}.\n"
+    text = CALL.replace("Paris", '"Rome"') + example + CALL.replace("Paris", '"Oslo"')
+    calls, content = (
+        non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
+    )
+    assert calls == [
+        ("get_weather", '{"city": "Rome"}'),
+        ("get_weather", '{"city": "Oslo"}'),
+    ]
+    if size is None or size == 0:
+        assert content == example
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13])
+@pytest.mark.parametrize("marker", ["~~~", "```"])
+@pytest.mark.parametrize("close", [True, False])
+def test_blockquote_fence_ends_before_outside_call(size, marker, close):
+    example = f"> {marker}xml\n> {CALL.replace(chr(10), chr(10) + '> ')}\n"
+    if close:
+        example += f"> {marker}\n"
+    text = example + CALL.replace("Paris", "Rome")
+    calls, content = (
+        non_stream(text, REQUEST) if size is None else stream(text, REQUEST, size)
+    )
+    assert calls == [("get_weather", '{"city": "Rome"}')]
+    assert content == example
+
+
+@pytest.mark.parametrize("size", [0, 1, 2, 7, 13])
+def test_inline_cross_format_text_call_example_followed_by_real_call(size):
+    example = '`[Calling tool: get_weather({"city":"Paris"})]`\n'
+    text = example + '[Calling tool: get_weather({"city":"Rome"})]'
+    calls, _ = stream(text, REQUEST, size)
+    assert [(name, json.loads(args)) for name, args in calls] == [
+        ("get_weather", {"city": "Rome"})
+    ]
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13])
+def test_inline_delimiter_in_genuine_call_arguments_is_opaque(size):
+    code = f"`{JSON_CALL}`\n> ~~~xml\n> example\n> ~~~"
+    run = f"<tool_call><function=run><parameter=code>{json.dumps(code)}</parameter></function></tool_call>"
+    text = run + CALL
+    calls, content = (
+        non_stream(text, MULTI_TOOL_REQUEST)
+        if size is None
+        else stream(text, MULTI_TOOL_REQUEST, size)
+    )
+    assert calls == [
+        ("run", json.dumps({"code": code})),
+        ("get_weather", '{"city": "Paris"}'),
+    ]
+    # Wrapper-looking parameter data remains unchanged in the tool arguments.
+
+
+@pytest.mark.parametrize("size", [0, 1, 7])
+@pytest.mark.parametrize("wire", ["wrapped", "raw", "calling"])
+def test_cross_format_call_arguments_keep_inline_delimiters(size, wire):
+    args = {"city": "`Paris`"}
+    payload = json.dumps({"name": "get_weather", "arguments": args})
+    text = {
+        "wrapped": f"<tool_call>{payload}</tool_call>",
+        "raw": payload,
+        "calling": f"[Calling tool: get_weather({json.dumps(args)})]",
+    }[wire]
+    calls, _ = stream(text, REQUEST, size)
+    assert [(name, json.loads(arguments)) for name, arguments in calls] == [
+        ("get_weather", args)
+    ]
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 7])
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_inline_span_across_line_endings(size, newline):
+    example = f"Use `{newline}{CALL.replace(chr(10), newline)}{newline}`."
+    result = (
+        non_stream(example, REQUEST) if size is None else stream(example, REQUEST, size)
+    )
+    assert result == ([], example)
+
+
+@pytest.mark.parametrize("size", [None, 0, 1, 7])
+def test_incomplete_inline_call_example_stays_content(size):
+    example = "Use `<function=get_weather><parameter=city>Paris`."
+    result = (
+        non_stream(example, REQUEST) if size is None else stream(example, REQUEST, size)
+    )
+    assert result == ([], example)
+
+
+def test_formatted_prose_stream_does_not_rescan_markdown():
+    from unittest.mock import patch
+
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import _MarkdownCodeTracker
+
+    text = "ordinary `code` prose. " * 500
+    parser = Qwen3CoderToolParser(None)
+    content = []
+    with patch.object(
+        _MarkdownCodeTracker, "code_ranges", wraps=_MarkdownCodeTracker.code_ranges
+    ) as scan:
+        for start in range(0, len(text), 16):
+            result = parser.extract_tool_calls_streaming(
+                text[:start],
+                text[: start + 16],
+                text[start : start + 16],
+                request=REQUEST,
+            )
+            assert result is not None and not result.get("tool_calls")
+            content.append(result.get("content", ""))
+        assert scan.call_count == 0
+    assert "".join(content) == text
+
 
 def test_first_visible_opener_without_markup():
     parser = Qwen3CoderToolParser(None)
@@ -348,9 +516,17 @@ def test_streaming_advance_waits_for_next_function_body():
 
 
 @pytest.mark.parametrize("real_call", [False, True])
-def test_chat_completions_preserves_example(real_call, monkeypatch):
+@pytest.mark.parametrize(
+    "example",
+    [
+        EXAMPLE,
+        f"Use `{CALL}`.",
+        "> ~~~xml\n" + "\n".join("> " + line for line in CALL.splitlines()) + "\n> ~~~",
+    ],
+)
+def test_chat_completions_preserves_example(real_call, example, monkeypatch):
     # The route strips outer whitespace from all assistant responses.
-    example = EXAMPLE.rstrip()
+    example = example.rstrip()
     client = _make_client(
         _RecordingEngine(text=example + ("\n" + CALL if real_call else "")),
         tool_call_parser="qwen3_coder_xml",
