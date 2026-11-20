@@ -539,7 +539,7 @@ def test_forwarder_body_bound_and_fallback_absent(monkeypatch):
     monkeypatch.setenv(RUNNER_ENV, "1")
     monkeypatch.setenv(SOCKET_ENV, "/fake")
     monkeypatch.setenv(SECRET_ENV, "secret")
-    mount_status(app)
+    mount_status(app := FastAPI())
     with TestClient(app, client=("127.0.0.1", 1)) as client:
         assert (
             client.request("GET", "/rapid/v1/status", content=b"x" * 16385).status_code

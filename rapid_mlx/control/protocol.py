@@ -7,6 +7,8 @@ import json
 import os
 import socket
 import stat
+import sys
+import time
 from pathlib import Path
 
 from . import RUNNER_ENV, SECRET_ENV, SECRET_HEADER, SOCKET_ENV
@@ -168,3 +170,54 @@ def install_startup_report():
 def report_startup_failure(reason):
     if not _startup_terminal:
         report("startup_failed", reason=reason[:512])
+
+
+def log_command(args):
+    import httpx
+
+    statuses = discover(getattr(args, "port", None))
+    if not statuses:
+        print("No running serve.", file=sys.stderr)
+        return 1
+    port = statuses[0]["port"]
+    key = os.environ.get("RAPID_MLX_API_KEY")
+    try:
+        response = httpx.get(
+            f"http://127.0.0.1:{port}/rapid/v1/log",
+            params={"limit": args.limit},
+            headers={"Authorization": f"Bearer {key}"} if key else {},
+            trust_env=False,
+            timeout=2,
+        )
+    except httpx.RequestError:
+        print(f"could not reach serve on port {port}", file=sys.stderr)
+        return 1
+    if not response.is_success:
+        message = (
+            "serve requires an API key: set RAPID_MLX_API_KEY"
+            if response.status_code in (401, 403)
+            else f"serve returned HTTP {response.status_code}"
+        )
+        print(message, file=sys.stderr)
+        return 1
+    data = response.json()
+    if args.json:
+        print(json.dumps(data))
+    else:
+        layout = "{:<8} {:<40.40} {:<7.7} {:<40.40} {:>6} {:>8}"
+        print(
+            layout.format("TIME", "CLIENT", "METHOD", "PATH", "STATUS", "MS")
+            + f"  serve :{port}"
+        )
+        for call in data["calls"]:
+            stamp = time.strftime("%H:%M:%S", time.localtime(call["ts"]))
+            print(
+                layout.format(
+                    stamp,
+                    *(
+                        call[k]
+                        for k in ("client", "method", "path", "status", "duration_ms")
+                    ),
+                )
+            )
+    return 0

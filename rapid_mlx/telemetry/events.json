@@ -369,7 +369,7 @@
         "recipe", "ls", "version", "help", "pull", "import", "rm", "alias",
         "ps", "top", "upgrade", "update", "chat", "run", "info", "agents", "start",
         "connect", "doctor", "telemetry", "feedback", "share", "launch",
-        "service", "status", "bare", "other"
+        "service", "status", "log", "bare", "other"
       ]
     },
     "agent_failure_cause": {
