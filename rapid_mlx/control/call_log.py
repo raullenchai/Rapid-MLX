@@ -37,7 +37,7 @@ class CallLog:
                 dict(
                     ts=stamp,
                     method=scope["method"],
-                    path=path,
+                    path="".join(c for c in path if c.isprintable())[:200],
                     status=status if status is not None else 500,
                     duration_ms=int((time.monotonic() - started) * 1000),
                     client=label,

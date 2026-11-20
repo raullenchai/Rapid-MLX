@@ -41,6 +41,8 @@ async def test_recording():
     with pytest.raises(ValueError):
         await log(dict(s, fail=True), None, send)
     assert calls[-1]["status"] == 500
+    await log(dict(s, path="/v1/\x1b[2J\u202ex" + "y" * 300), None, send)
+    assert calls[-1]["path"] == "/v1/[2Jx" + "y" * 192
     s.update(path="/v1/messages", headers=[(b"user-agent", b"curl/1.2 other")])
     for _ in range(1001):
         await log(s, None, send)
