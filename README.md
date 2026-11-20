@@ -17,13 +17,15 @@ Prefer [pip (Python 3.12+)](#alternative-install-methods) or Homebrew (`brew ins
 
 **2. Launch your coding agent** — install your chosen agent, then run one of:
 
+Using an SDK instead? [Jump to the Python quickstart](#python-quickstart).
+
 ```bash
 rapid-mlx launch claude-code
-rapid-mlx launch codex
 rapid-mlx launch opencode
+rapid-mlx launch codex
 ```
 
-`rapid-mlx launch <agent>` creates a private profile, starts the server, and launches the agent. Run the same command tomorrow; `rapid-mlx launch codex --remove` removes Rapid's private profile without changing your existing Codex settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
+`rapid-mlx launch <agent>` creates a private profile, starts the server, and launches the agent. Run the same command tomorrow; `rapid-mlx launch claude-code --remove` removes Rapid's private profile without changing your existing Claude Code settings. [One-command guides for each agent](https://rapidmlx.com/docs/agents/). A first reply can take longer while a model downloads, loads, or processes the agent's opening prompt.
 
 For other tools, use `rapid-mlx agents <tool> --setup`, for example `rapid-mlx agents cline --setup`.
 
@@ -52,13 +54,17 @@ oMLX 0.7.0 and LM Studio, using the same base 4-bit weights for each model.
 
 <sub>Single run per engine; default serving modes with Rapid's MTP text mode, oMLX's SSD cache, and LM Studio's configured context and four parallel slots. [Full results and raw data](https://rapidmlx.com/compare).</sub>
 
-**3. Use your SDK** — start a local server in another terminal:
+<a id="python-quickstart"></a>
+
+**Or use the OpenAI / Anthropic SDK**
+
+Start a local server, then run the Python examples below from a separate terminal:
 
 ```bash
 rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
-The first start may download weights. Without `--port`, the server picks the first free port in `8000`–`8009`; these examples pin `8000`. Install your SDK with `pip install openai` or `pip install anthropic`.
+On first run, this command downloads a ~3 GB 4B model if it is not already cached. Without `--port`, the server picks the first free port in `8000`–`8009`; these examples pin `8000`. Install your SDK with `pip install openai` or `pip install anthropic`.
 
 OpenAI Python — base URL includes `/v1`:
 
