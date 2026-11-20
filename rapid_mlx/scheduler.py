@@ -6621,6 +6621,12 @@ class Scheduler:
             pass
         return len(prompt_tokens)
 
+    def _waiting_priority(self, request: Request, now: float) -> bool:
+        return (
+            request.serve_priority == "background"
+            and now - request._arrival_monotonic <= 30.0
+        )
+
     def _select_waiting_request(self) -> tuple[Request, bool] | None:
         """Choose, but do not remove, the next opt-in admission candidate.
 
@@ -6636,6 +6642,13 @@ class Scheduler:
         ]
         if not candidates:
             return None
+        now = time.monotonic()
+        priority = min(self._waiting_priority(r, now) for _, r in candidates)
+        candidates = [
+            pair
+            for pair in candidates
+            if self._waiting_priority(pair[1], now) == priority
+        ]
         max_deferrals = self.config.scheduling_max_deferrals
         forced = [
             pair for pair in candidates if pair[1]._admission_deferrals >= max_deferrals
@@ -10039,7 +10052,11 @@ class Scheduler:
         released when that request emits its first token (its prompt state
         is stored just before) or leaves, and is never held again.
         """
+        selected = None
+        now = time.monotonic()
         for request in self.waiting:
+            if selected is not None and self._waiting_priority(request, now):
+                continue
             if request.prefix_wait_leader is not None:
                 leader = self.running.get(request.prefix_wait_leader)
                 if leader is not None and leader.num_output_tokens == 0:
@@ -10055,9 +10072,12 @@ class Scheduler:
                         getattr(self, "_shared_prefix_waits", 0) + 1
                     )
                     continue
-            self.waiting.remove(request)
-            return request
-        return None
+            selected = request
+            if not self._waiting_priority(request, now):
+                break
+        if selected is not None:
+            self.waiting.remove(selected)
+        return selected
 
     def _prefill_memory_rows(self) -> list[tuple[Request, int]]:
         """Live prompt rows, including inserts not yet consumed by mlx-lm."""
