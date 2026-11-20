@@ -30,6 +30,7 @@ from ._env import env_truthy
 from .engine_startup_errors import startup_failure_boundary
 from .lattice.memory import memory_policy
 from .lattice.scheduling import scheduling_value
+from .middleware.priority import request_priority
 from .model_registry import get_registry
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .request import (
@@ -1201,6 +1202,7 @@ class EngineCore:
 
         request = Request(
             request_id=request_id,
+            serve_priority=request_priority.get(),
             prompt=prompt,
             sampling_params=sampling_params,
             images=images,
@@ -1763,6 +1765,7 @@ class EngineCore:
             request_id = str(uuid_module.uuid4())
             request = Request(
                 request_id=request_id,
+                serve_priority=request_priority.get(),
                 prompt=prompt,
                 sampling_params=sampling_params,
             )

@@ -302,6 +302,7 @@ class Request:
         default_factory=time.monotonic, init=False, repr=False
     )
     _first_token_monotonic: float | None = field(default=None, init=False, repr=False)
+    serve_priority: str = "interactive"
 
     @property
     def num_output_tokens(self) -> int:

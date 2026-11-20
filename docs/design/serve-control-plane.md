@@ -99,11 +99,10 @@ runner 停着或模型加载中（启动探测返回 503，`_startup_probe.py:46
 
 ## 7. 优先级（astra P1 #6）
 
-- 约定：`X-Rapid-Priority: interactive | background`，缺省 interactive；应用 token 发出的请求缺省 background。
-- 端到端：各路由适配层解析头 → 经引擎接口传到 Request（不只是 `engine_core.py:1202` 一处，所有构造路径都要传）→ 调度器准入。
-- 调度：FCFS 和 validated-tail 两种选择策略都加优先级排序；不改变前缀保持、兼容性检查和内存准入（`scheduler.py:10034,10634`）。background 等待超过 30 s 升为同级后，按"最早到达优先"打破平局，并复用现有有界 deferral（`scheduler.py:6639`），保证在代价排序下也不会饿死。
-- **承诺范围收窄**：只保证"排队时前台先进"；已经在跑的后台请求不会被抢占。满载全是后台时，前台需要等一个槽位释放——在文档里写清楚。
-- 支持范围：文本/VLM 批处理调度器；音频、图像、视频路径第一版忽略此头。
+- 最小实现：统一解析 `X-Rapid-Priority: interactive | background`，头名和值不区分大小写；缺省或未知值为 interactive。
+- 文本/VLM 批处理请求通过 contextvar 传到 Request；FCFS 和 validated-tail 都先比较优先级，background 等待超过 30 s（单调时钟）视为 interactive。
+- 同级保持原有顺序：FCFS 为 FIFO；validated-tail 保留代价排序、有界 deferral 和 FIFO 平局。不改变前缀、兼容性或内存准入。
+- 只保证排队准入顺序，不抢占运行中的请求；满载时 interactive 仍需等槽位释放。音频、图像、视频路径忽略此头。
 
 ## 8. 性能门槛（合并前）
 
