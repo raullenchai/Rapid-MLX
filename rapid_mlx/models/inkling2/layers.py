@@ -51,7 +51,7 @@ _ROUTER_SCORE_EPS = 1e-20
 
 
 def _use_kernels() -> bool:
-    return mx.default_device() == mx.gpu and mx.metal.is_available()
+    return bool(mx.default_device() == mx.gpu and mx.metal.is_available())
 
 
 def unweighted_rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
