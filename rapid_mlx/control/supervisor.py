@@ -56,6 +56,7 @@ class Supervisor:
         self.index_entry = None
         self.stop_started = None
         self.history = None
+        self.query_slots = asyncio.Semaphore(4)
 
     def emit(self, kind, **fields):
         # Optional diagnostics must never interrupt supervision or its cleanup.
@@ -104,7 +105,7 @@ class Supervisor:
 
     async def handle(self, reader, writer):
         try:
-            async with asyncio.timeout(TIMEOUT):
+            async with asyncio.timeout(TIMEOUT) as request_timeout:
                 head = await reader.readuntil(b"\r\n\r\n")
                 lines = head.decode("ascii").split("\r\n")
                 method, target, _ = lines[0].split()
@@ -153,9 +154,22 @@ class Supervisor:
                     data = (
                         json.loads(await reader.readexactly(length)) if length else {}
                     )
-                    code, result = await asyncio.to_thread(
-                        self.history.api, method, target, data
-                    )
+                    if self.query_slots.locked():
+                        code, result = 503, {"error": "history queries are busy"}
+                    else:
+                        await self.query_slots.acquire()
+                        # API jobs arbitrate their own deadline against execution.
+                        request_timeout.reschedule(None)
+                        # Release on worker completion, including if handle is
+                        # cancelled while the worker is still using its slot.
+                        future = asyncio.get_running_loop().run_in_executor(
+                            None, self.history.api, method, target, data
+                        )
+                        future.add_done_callback(lambda _: self.query_slots.release())
+                        code, result = await asyncio.shield(future)
+                        request_timeout.reschedule(
+                            asyncio.get_running_loop().time() + TIMEOUT
+                        )
                 elif method == "POST" and target == "/startup":
                     data = json.loads(await reader.readexactly(length))
                     await self.spawn_ready.wait()

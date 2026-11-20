@@ -383,6 +383,28 @@ class History:
                 self.counts[index] = 0
         write_private(self.counts_path, json.dumps(self.counts))
 
+    def trim_cap(self, bound):
+        # Explicit cap changes may scan history; appends only inspect file sizes.
+        if not any(
+            p.exists() and p.stat().st_size > bound for p in (self.old, self.logs)
+        ):
+            return
+        segments = [collections.deque(), collections.deque()]
+        index, size = 1, 0
+        for item in reversed(list(self._records())):
+            line = json.dumps(item) + "\n"
+            length = len(line.encode())
+            if size + length > bound:
+                if index == 0 or length > bound:
+                    break
+                index, size = 0, 0
+            segments[index].appendleft(line)
+            size += length
+        for index, path in enumerate((self.old, self.logs)):
+            write_private(path, "".join(segments[index]))
+            self.counts[index] = len(segments[index])
+        write_private(self.counts_path, json.dumps(self.counts))
+
     @serialized
     def event(self, kind, **fields):
         if self.event_path.exists():
@@ -429,10 +451,12 @@ class History:
                     or not 4096 <= data["max_bytes"] <= 50 * 1024 * 1024
                 ):
                     raise ValueError("invalid size cap")
+                previous_cap = self.settings["max_bytes"]
                 self.settings.update(data)
                 write_private(self.settings_path, json.dumps(self.settings))
                 half = (self.settings["max_bytes"] - 512) * 3 // 8
-                self.enforce_cap(half)
+                if self.settings["max_bytes"] != previous_cap:
+                    self.trim_cap(half)
                 self.event("log_settings_changed", **self.settings)
             elif method != "GET":
                 return 404, {}
@@ -478,6 +502,19 @@ class History:
         return 404, {}
 
 
+class APIJob(concurrent.futures.Future):
+    """Future's state lock arbitrates the caller's cancellation and execution."""
+
+    def __init__(self):
+        super().__init__()
+        self.deadline = time.monotonic() + 2.2
+
+    def claim(self):
+        if time.monotonic() >= self.deadline:
+            self.cancel()
+        return self.set_running_or_notify_cancel()
+
+
 class HistoryWriter:
     """One daemon owns storage; the control loop only submits bounded work."""
 
@@ -500,7 +537,7 @@ class HistoryWriter:
         self.ready.result()
 
     def submit(self, method, *args, **kwargs):
-        result = concurrent.futures.Future()
+        result = APIJob() if method == "api" else concurrent.futures.Future()
         with self.admission:
             try:
                 if self.closed:
@@ -572,14 +609,24 @@ class HistoryWriter:
                     finally:
                         store.lock_timeout = timeout
                 else:
-                    value = getattr(store, method)(*args, **kwargs)
+                    # Claim only after the storage lock: a timed-out waiter must
+                    # never mutate later when a competing writer releases it.
+                    with store.locked():
+                        if not result.claim():
+                            continue
+                        value = getattr(store, method)(*args, **kwargs)
                 self.snapshot = store.status()
                 for future in results:
                     future.set_result(value)
             except Exception as exc:
                 self.dropped += count
                 for future in results:
-                    future.set_exception(exc)
+                    if (
+                        method != "api"
+                        or future.running()
+                        or future.set_running_or_notify_cancel()
+                    ):
+                        future.set_exception(exc)
 
     def append(self, records, pid, dropped=0):
         self.runner_dropped[pid] = max(self.runner_dropped.get(pid, 0), int(dropped))
@@ -600,7 +647,16 @@ class HistoryWriter:
 
     def api(self, method, target, data):
         try:
-            return self.submit("api", method, target, data).result(timeout=2.2)
+            result = self.submit("api", method, target, data)
+            try:
+                return result.result(timeout=max(0, result.deadline - time.monotonic()))
+            except TimeoutError:
+                if not result.cancel():
+                    # Execution won the state lock; return its actual outcome.
+                    return result.result()
+                raise
+            except concurrent.futures.CancelledError:
+                raise TimeoutError("history job expired") from None
         except TimeoutError:
             return 503, {"error": "history lock or writer timed out after 2 seconds"}
         except OSError as exc:
@@ -622,5 +678,8 @@ class HistoryWriter:
                         job = self.queue.get_nowait()
                     except queue.Empty:
                         continue  # The writer consumed it between the queue operations.
-                    job[-1].set_exception(OSError("history writer closed"))
+                    if job[0] == "api":
+                        job[-1].cancel()
+                    else:
+                        job[-1].set_exception(OSError("history writer closed"))
                     self.dropped += len(job[1][0]) if job[0] == "append" else 1

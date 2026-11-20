@@ -1071,10 +1071,10 @@ def test_shrink_enforces_each_file_even_below_total_cap(tmp_path):
     history.call_sequence = 26 * 1024
     assert history.status()["bytes"] == 26 * mib
     history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 30 * mib})
-    assert not history.old.exists()
-    assert history.logs.stat().st_size == mib
+    bound = (30 * mib - 512) * 3 // 8
+    assert all(p.stat().st_size <= bound for p in (history.old, history.logs))
     retained = list(history.records())
-    assert retained[0]["seq"] == 25 * 1024
+    assert retained[0]["seq"] == 0
     assert retained[-1]["seq"] == 26 * 1024 - 1
     # Growth up to the active-file bound cannot exceed the new total cap.
     for i in range(40000, 40100):
@@ -1679,8 +1679,14 @@ def test_history_writes_never_parse_retained_records(history, monkeypatch):
     history.append([record("new")], 1)
     history.event("runner_ready")
     assert history.status()["records"] == 2
-    history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 4096})
+    history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 8192})
     assert history.status()["records"] == 2
+    # A cap changed by another writer still needs scan-free append enforcement.
+    history.old.write_text("x\n" * 5000)
+    history.logs.write_text("x\n" * 5000)
+    history.append([record("bounded")], 1)
+    assert not history.old.exists()
+    assert history.status()["records"] == 1
 
 
 def test_history_repair_long_incomplete_tail_and_bounded_dedup(history):
@@ -1817,3 +1823,213 @@ def test_writer_retries_contended_appends(tmp_path, monkeypatch, shutdown, event
         holder.join(1)
         writer.close()
         writer.thread.join(3)
+
+
+@pytest.mark.parametrize(
+    "method,target,data",
+    [
+        ("DELETE", "/rapid/v1/log", {}),
+        ("PUT", "/rapid/v1/log/settings", {"enabled": False}),
+    ],
+)
+def test_expired_mutation_never_runs_after_lock_release(tmp_path, method, target, data):
+    import fcntl
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    root = tmp_path / "history"
+    writer = HistoryWriter(root)
+    try:
+        writer.submit("append", [record("retained")], 1).result(1)
+        with (root / "history.lock").open("r+") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            # A contended append holds the FIFO ahead of the mutation.
+            append = writer.submit("append", [record("queued")], 1)
+            assert writer.api(method, target, data)[0] == 503
+        append.result(3)
+        code, rows = writer.api("GET", "/rapid/v1/log", {})
+        assert code == 200
+        assert {r["request_id"] for r in rows} == {"retained", "queued"}
+        assert writer.api("GET", "/rapid/v1/log/settings", {})[1]["enabled"]
+        assert writer.api(method, target, data)[0] == 200
+        if method == "DELETE":
+            assert writer.api("GET", "/rapid/v1/log", {}) == (200, [])
+        else:
+            assert not writer.api("GET", "/rapid/v1/log/settings", {})[1]["enabled"]
+    finally:
+        writer.close()
+        writer.thread.join(3)
+    assert not writer.thread.is_alive()
+
+
+def test_shrink_preserves_newest_records_on_writer(tmp_path, monkeypatch):
+    import threading
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    root = tmp_path / "history"
+    store = History(root, cap=50000)
+    store.append([record(str(i)) for i in range(80)], 1)
+    bound = (4096 - 512) * 3 // 8
+    assert all(p.stat().st_size > bound for p in (store.old, store.logs))
+    before = list(store.records())
+    threads = []
+    original = store.trim_cap.__func__
+
+    def trim(self, size):
+        threads.append(threading.current_thread())
+        assert self.depth == 1
+        return original(self, size)
+
+    monkeypatch.setattr(History, "trim_cap", trim)
+    writer = HistoryWriter(root)
+    try:
+        assert (
+            writer.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 4096})[0] == 200
+        )
+        code, rows = writer.api("GET", "/rapid/v1/log", {})
+        assert code == 200 and rows
+        assert list(reversed(rows)) == before[-len(rows) :]
+        assert rows[0] == before[-1]
+        assert writer.status()["records"] == len(rows)
+        assert sum(p.stat().st_size for p in (store.old, store.logs)) <= 2 * bound
+        assert sum(p.stat().st_size for p in root.rglob("*") if p.is_file()) <= 4096
+        assert threads == [writer.thread]
+    finally:
+        writer.close()
+        writer.thread.join(3)
+
+
+async def test_query_admission_survives_handler_cancellation(monkeypatch):
+    import threading
+
+    supervisor = Supervisor([], port=8000, mode="lazy")
+    release = threading.Event()
+    entered = threading.Event()
+    calls = []
+
+    def api(*args):
+        calls.append(args)
+        entered.set()
+        assert release.wait(5)
+        return 200, []
+
+    supervisor.history = SimpleNamespace(api=api)
+    supervisor.query_slots = asyncio.Semaphore(1)
+
+    async def call():
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            f"GET /rapid/v1/log HTTP/1.1\r\nX-Rapid-Control-Secret: {supervisor.secret}\r\n\r\n".encode()
+        )
+        writer = SimpleNamespace(
+            write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock()
+        )
+        await supervisor.handle(reader, writer)
+        return writer.write.call_args.args[0]
+
+    first = asyncio.create_task(call())
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert b"503" in await call()
+        assert len(calls) == 1
+    finally:
+        release.set()
+    for _ in range(100):
+        if not supervisor.query_slots.locked():
+            break
+        await asyncio.sleep(0.01)
+    assert not supervisor.query_slots.locked()
+    assert b"200" in await call()
+
+
+def test_claimed_mutation_returns_result_after_deadline(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+
+    from rapid_mlx.control.history import APIJob, HistoryWriter
+
+    initialized = APIJob.__init__
+
+    def initialize(self):
+        initialized(self)
+        self.deadline = time.monotonic() + 0.05
+
+    monkeypatch.setattr(APIJob, "__init__", initialize)
+    entered, release = threading.Event(), threading.Event()
+    original = History.api
+
+    def api(self, *args):
+        entered.set()
+        assert release.wait(3)
+        return original(self, *args)
+
+    monkeypatch.setattr(History, "api", api)
+    writer = HistoryWriter(tmp_path / "history")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            result = pool.submit(writer.api, "DELETE", "/rapid/v1/log", {})
+            try:
+                assert entered.wait(1)
+                time.sleep(0.15)
+                assert not result.done()
+            finally:
+                release.set()
+            assert result.result(1) == (200, {})
+    finally:
+        writer.close()
+        writer.thread.join(3)
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_writer_expiration_and_shutdown_cancel_api_jobs(
+    tmp_path, monkeypatch, shutdown
+):
+    import concurrent.futures
+    import threading
+    import time
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    entered, release = threading.Event(), threading.Event()
+    original = History.append
+
+    def append(self, *args):
+        entered.set()
+        assert release.wait(3)
+        return original(self, *args)
+
+    monkeypatch.setattr(History, "append", append)
+    writer = HistoryWriter(tmp_path / "history", queue_size=1)
+    try:
+        append_result = writer.submit("append", [record("retained")], 1)
+        assert entered.wait(1)
+        job = writer.submit("api", "DELETE", "/rapid/v1/log", {})
+        job.deadline = time.monotonic() - 1
+        if shutdown:
+            # Also exercise closing a full queue containing a caller-cancelled job.
+            job.cancel()
+            writer.close()
+        release.set()
+        append_result.result(1)
+        with pytest.raises(concurrent.futures.CancelledError):
+            job.result(1)
+        monkeypatch.setattr(writer, "submit", lambda *args: job)
+        assert writer.api("DELETE", "/rapid/v1/log", {})[0] == 503
+        assert [r["request_id"] for r in History(writer.root).records()] == ["retained"]
+    finally:
+        release.set()
+        writer.close()
+        writer.thread.join(3)
+
+
+def test_shrink_drops_record_larger_than_new_segment(history):
+    history.settings["max_bytes"] = 50000
+    huge = record("huge") | {"client": "x" * 4096}
+    history.logs.write_text(json.dumps(huge) + "\n")
+    history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 4096})
+    assert list(history.records()) == []
