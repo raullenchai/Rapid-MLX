@@ -412,6 +412,10 @@ def test_swift_validator_does_not_redeclare_the_enums():
     # in ``cli_command``) is still caught anywhere else in the file.
     kinds = "|".join(sorted(reg._COMMON_ONLY_KINDS | reg._EVENT_KINDS))
     source = re.sub(rf'\bcase\s+"(?:{kinds})"\s*:', "", source)
+    # `events` is both a CLI command and the registry's structural/resource
+    # name. Exempt only those uses, keeping hard-coded enum copies detectable.
+    source = re.sub(r'forResource: "events", withExtension: "json"', "", source)
+    source = source.replace('root["events"]', "root[registryEventsKey]")
     literals = set(re.findall(r'"([^"\\\n]*)"', source))
     for enum_name, values in (
         (name, body["values"]) for name, body in _specs(registry["enums"]).items()

@@ -12,6 +12,8 @@ from typing import cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from rapid_mlx.control.observer import metadata as call_metadata
+
 from ..api.models import (
     EmbeddingData,
     EmbeddingRequest,
@@ -36,6 +38,7 @@ async def create_embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> JSONResponse:
     """Create embeddings for the given input text(s)."""
+    call_metadata(model=request.model)
     from ..embedding import (
         EMBEDDINGS_EXTRA_HTTP_INSTALL_HINT,
         EmbeddingInputTooLongError,
@@ -356,6 +359,9 @@ async def create_embeddings(
                     for i, vec in enumerate(embeddings)
                 ]
 
+            call_metadata(
+                model=model_name, prompt_tokens=prompt_tokens, completion_tokens=0
+            )
             response = EmbeddingResponse(
                 data=data,
                 model=model_name,

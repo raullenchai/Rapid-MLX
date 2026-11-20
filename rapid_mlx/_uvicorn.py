@@ -372,7 +372,7 @@ class _TransportPeerConfig(uvicorn.Config):
 
     def load(self) -> None:
         super().load()
-        if os.environ.get("RAPID_MLX_CONTROL_RUNNER") != "1" or not self.proxy_headers:
+        if os.environ.get("RAPID_MLX_CONTROL_RUNNER") != "1":
             return
         # Uvicorn has resolved imports/factories and installed proxy middleware.
         # Capture the socket peer outside that middleware, before it rewrites
@@ -383,7 +383,9 @@ class _TransportPeerConfig(uvicorn.Config):
             scope["_rapid_mlx_transport_peer"] = scope.get("client")
             await loaded_app(scope, receive, send)
 
-        self.loaded_app = transport_peer_status
+        from rapid_mlx.control.observer import install
+
+        self.loaded_app = install(transport_peer_status)
 
 
 def _run_server(

@@ -44,7 +44,7 @@ rapid-mlx serve [model] [现有参数]
        │   私有 Unix socket：$RUNTIME_DIR/<instance>/control.sock（目录 0700）
        ├─ runner 子进程 = 现有 serve，参数原样，自己绑定对外端口
        │     ├─ 所有现有路由、认证、LAN、启动探测、/healthz：完全不变
-       │     ├─ /rapid/v1/*  → 薄转发到 control.sock（只有这组走转发，低流量；P1 只开 status）
+       │     ├─ /rapid/v1/*  → 薄转发到 control.sock（只有这组走转发，低流量；P2 显式开放 status、log、events）
        │     └─ 最外层 ASGI 请求观察器 → 每个请求一条调用记录，进有界队列，由后台线程写给 control.sock
        └─ app 子进程（可选）
 ```
@@ -77,7 +77,7 @@ rapid-mlx serve [model] [现有参数]
 | 组 | 接口 | 说明 |
 |---|---|---|
 | 状态 | `GET /rapid/v1/status` | 控制面版本、runner（pid、启动时间、重启次数、状态）、apps、日志设置 |
-| 调用日志 | `GET /rapid/v1/log?since=&client=&app=&limit=`、`DELETE /rapid/v1/log`、`PUT /rapid/v1/log/settings` | 一条记录：时间、request id、客户端、应用、模型、路由、状态码、prompt/completion token（runner 内部计数，取不到就记 null）、TTFT、总耗时、是否被取消。**默认只记元数据，不记内容**；按应用显式开启才记内容。本地 JSONL，大小上限、可清空 |
+| 调用日志 | `GET /rapid/v1/log?since=&client=&model=&route=&outcome=&limit=`、`DELETE /rapid/v1/log`、`GET/PUT /rapid/v1/log/settings` | 一条记录：时间、request id、客户端、应用、模型、路由、状态码、prompt/completion token（runner 内部计数，取不到就记 null）、TTFT、总耗时、是否被取消。**P2 只记元数据，不记内容**；内容采集全部推迟到 P5 应用作用域，P2 没有内容开关。默认开启，可持久关闭；本地 JSONL，有大小上限、可清空 |
 | 任务 | `GET /rapid/v1/jobs`、`GET /rapid/v1/jobs/{id}`、`POST /rapid/v1/jobs/{id}/cancel`；`POST /rapid/v1/jobs` 仅供应用登记自己的长任务 | 统一视图：聚合现有 agent/cua/video runs（复用它们的取消接口，不另造），加上应用登记的任务。持久记录；runner 重启后未完成的任务标为 `interrupted`，不自动重放 |
 | 事件 | `GET /rapid/v1/events`（SSE，`Last-Event-ID` 续传，环形缓冲 + 落盘最近 N 条） | runner 启停/崩溃/重启、模型加载/卸载、任务状态、应用状态 |
 | 应用 | `GET /rapid/v1/apps`、`POST /rapid/v1/apps/{id}/start|stop|restart`、`GET /rapid/v1/apps/{id}/open` | 从 `~/.rapid-mlx/apps/` 或 `--apps-dir` 发现；`open` 走一次性码登录 |
@@ -89,6 +89,17 @@ runner 停着或模型加载中（启动探测返回 503，`_startup_probe.py:46
 - 内容来源：chat / messages / responses / embeddings / audio 各自的适配层把 token 数、TTFT、模型名写进请求作用域的元数据；观察器只读，不接管 receive 通道。
 - 状态分开记：已发送的 HTTP 状态码 + 最终结果（`ok` / `error` / `cancelled`，含客户端断开、任务取消、显式取消）——流式请求可能 200 之后才失败。
 - 投递承诺：**每个可观察到结束的请求尝试发一条**；队列满或 runner 被 SIGKILL 会丢，丢弃数在 status 里公开；记录带 request id，控制面按它去重。不承诺"严格恰好一次"。
+
+### P2 实现约定（CLI / engine）
+
+- 监管 runner 的 Uvicorn `Config.load()` 完成后安装最外层观察器；桌面、单进程不安装。观察器不包装 `receive`，只观察 `send` 的状态、首个非空 body、完成，并在 `finally` 中投递一次。内部重入复用 scope 标记。路由保存模板（无法匹配时为 `<unmatched>`），不保存原始 URL、查询串或请求头集合。
+- 记录字段：`ts`（Unix 秒）、服务端生成的 `request_id`、`client`（真实 peer + 最多 128 字节的 X-Rapid-Client / User-Agent）、`app`、`model`、`route`、`http_status`、`outcome`、`prompt_tokens`、`completion_tokens`、`ttft_ms`、`duration_ms`。`app` 恒为 null；客户端 app 头不可信。适配器通过 `scope["state"]["rapid_call"]` 的共享字典写标量，ContextVar 仅传递该字典给现有异步生成器/子任务；复用已有计数。音频无 token 计数时为 null。首 body 的时间可被引擎已有 TTFT 指标覆盖。
+- runner 热路径仅构建小字典、`put_nowait`，无 JSON/磁盘/socket I/O。1024 条有界队列，后台线程每批最多 8 条通过带启动密钥的 `/records` 投递；满队列或投递失败丢弃，累计数随下一次后台报告送达。SIGKILL 前尚未报告的记录和 drop 数不能保证保留。
+- 控制进程独占 `~/.rapid-mlx/control/<instance>/calls.jsonl` 和一个轮转文件。目录 0700、文件 0600；总上限默认 50 MiB，settings 的 `max_bytes` 可设 4096 至 52428800；缩小立即重新限额。保留窗口内按 request_id 去重（含重读落盘文件）。DELETE 清空保留窗口及其去重集合。
+- GET log 返回最新优先数组，默认 100、最大 1000；`since` 为排他的 Unix 秒时间戳，client/model/route/outcome 精确匹配。GET/PUT settings 支持 `enabled` 和 `max_bytes`；设置落在用户控制目录，供后续实例沿用。`--no-call-log` 对本次实例强制关闭。status 的 `log` 返回 enabled / records / bytes / dropped（runner 累计 + 控制侧拒绝）。
+- 事件包括 runner_starting / runner_ready / runner_exited / runner_crashed / runner_restarting / runner_stopped、model_loaded / model_unloaded 和 log_settings_changed。模型事件挂在 residency 索引增删路径，覆盖加载、替换、TTL/LRU 和卸载；不把 app/job 事件提前加入 P2。事件最多保留 1000 条，最近 N 条和递增 id 一起落盘，runner 重启后延续。
+- SSE 尊重 Last-Event-ID，每秒 heartbeat comment；每个客户端最多持有一个有界事件快照，没有增长队列。发送阻塞超过 5 秒或客户端游标落后于保留窗口时断开。客户端重连可续读仍保留的 id。CLI `rapid-mlx log [--follow] [--limit N] [--json]`、`log clear`、`events [--follow]` 直接连私有 socket（follow 轮询），不依赖 runner 的公开端口；可用 `--port` 选实例。
+- P2 不支持内容采集、可信 app 归属、统一 jobs、优先级、Desktop 展示。P5 才能增加经验证的 app token 和内容作用域；当前不得根据任意客户端头开启内容记录。
 
 ## 6. 认证与安全（astra P1 #2）
 
@@ -117,7 +128,7 @@ M5 Max + 一台小 Mac，单进程（今天）vs 控制面+runner（调用日志
 | # | 内容 | 验收 |
 |---|---|---|
 | P1 | 控制面骨架：父进程、watchdog 改写、进程组/信号/回收（4 s 截止）、日志管道、退避重启与退出、结构化启动上报、端口固定、继承 fd、control.sock + 启动密钥、**只有** `/rapid/v1/status`（不做通配转发）、`rapid-mlx status` 直连 socket、白名单 + 启动前回落 | 桌面 app 启停/崩溃/强杀/killpg 回归；`rapid-mlx service` 回归；白名单内外全部模式启动矩阵；性能门槛 |
-| P2 | 调用日志（最外层观察器 + 适配层元数据 + 控制面存储）+ 事件流 | 各路由类型各一条、流式中途失败、断开/取消、丢弃计数、去重、内容默认不记 |
+| P2 | 已实现：监管 runner 最外层调用观察器、六类适配层元数据、有界后台投递、轮转 JSONL/设置/API/CLI、生命周期和 residency 事件、SSE 续传；修复 pre-spawn 回退说明进入 startup-note / log-file | 进程内测试：流/非流各路由一条、200 后流错误、断开/显式取消、满队列、去重、无内容/密钥、非监管无观察器、SSE Last-Event-ID 与慢客户端上限。§8 双机真实模型性能、外部进程回归仍需合并前验收；内容/app 归属推迟 P5 |
 | P3 | 优先级端到端 + aging（两种调度策略） | 饿死测试、前缀/内存准入不回归、混合负载数字 |
 | P4 | 统一任务视图（聚合现有 runs + 应用登记） | 重启后 interrupted；取消走现有接口 |
 | P5 | 应用托管 + 应用 token 作用域；Research Loop 迁入为第一个应用 | 原型的一次性码登录、cookie 主机名隔离测试改名后全过 |

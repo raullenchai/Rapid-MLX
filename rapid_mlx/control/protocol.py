@@ -14,6 +14,7 @@ from . import RUNNER_ENV, SECRET_ENV, SECRET_HEADER, SOCKET_ENV
 _startup_terminal = False
 
 MAX_BODY = 16384
+MAX_RESPONSE = 4 * 1024 * 1024
 TIMEOUT = 2.0
 
 
@@ -32,20 +33,20 @@ class UnixConnection(http.client.HTTPConnection):
             raise
 
 
-def request(path, secret, method="GET", payload=None):
+def request(path, secret, method="GET", payload=None, *, target=None):
     body = json.dumps(payload).encode() if payload is not None else b""
     if len(body) > MAX_BODY:
         raise ValueError("control request too large")
     with contextlib.closing(UnixConnection(path)) as conn:
         conn.request(
             method,
-            "/rapid/v1/status" if method == "GET" else "/startup",
+            target or ("/rapid/v1/status" if method == "GET" else "/startup"),
             body=body,
             headers={SECRET_HEADER: secret, "Content-Type": "application/json"},
         )
         response = conn.getresponse()
-        data = response.read(MAX_BODY + 1)
-        if len(data) > MAX_BODY or response.status != 200:
+        data = response.read(MAX_RESPONSE + 1)
+        if len(data) > MAX_RESPONSE or response.status != 200:
             raise OSError("invalid control response")
         return json.loads(data)
 

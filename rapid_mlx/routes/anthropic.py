@@ -12,6 +12,9 @@ from functools import wraps
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
+from rapid_mlx.control.observer import metadata as call_metadata
+from rapid_mlx.control.observer import usage as call_usage
+
 from ..api.anthropic_adapter import (
     AnthropicContentError,
     AnthropicOutputConfigError,
@@ -537,6 +540,7 @@ async def create_anthropic_message(
     # pinned pydantic version (``errors.pydantic.dev/2.13/...``), and
     # the attacker-supplied ``input_value`` out of the response body.
     anthropic_request = AnthropicRequest(**body)
+    call_metadata(model=anthropic_request.model)
 
     if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(anthropic_request.model)
@@ -949,6 +953,7 @@ async def create_anthropic_message(
             return Response(status_code=499)
 
         if is_cancellation_finish_reason(output.finish_reason):
+            call_metadata(outcome="cancelled")
             return Response(status_code=499)
 
         _window_error = context_window_exhausted(
@@ -2344,6 +2349,10 @@ async def _stream_anthropic_messages(
             prompt_tokens = output.prompt_tokens
         if hasattr(output, "completion_tokens") and output.completion_tokens:
             completion_tokens = output.completion_tokens
+            call_usage(output)
+            call_metadata(
+                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+            )
         if hasattr(output, "cached_tokens") and output.cached_tokens:
             cached_tokens = output.cached_tokens
         # H-03: latch the matched stop string from whichever chunk
@@ -3194,6 +3203,7 @@ async def _stream_anthropic_messages(
             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
 
     if is_cancellation_finish_reason(stream_finish_reason):
+        call_metadata(outcome="cancelled")
         cancellation_event = {
             "type": "error",
             "error": cancellation_error(

@@ -32,6 +32,8 @@ from fastapi import (
 )
 from starlette.responses import PlainTextResponse, Response
 
+from rapid_mlx.control.observer import metadata as call_metadata
+
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
 from ..model_downloads import ModelDownloadsDisabledError
@@ -1831,6 +1833,7 @@ async def _run_stt_request(
     # up front so unknown ``model`` form fields fail fast with a 404
     # "model_not_found_error" and never trigger a model load (F-165).
     model_name = _resolve_stt_model(model)
+    call_metadata(model=model_name)
 
     # Forced-alignment routing (Qwen3-ForcedAligner). Requests that carry
     # a ``text`` field never reach this helper — ``create_transcription``
@@ -2555,6 +2558,7 @@ async def _run_alignment_request(
     # Resolve the aligner model up front (404 for unknown aliases) BEFORE
     # draining the upload — same fail-fast ordering as the ASR path.
     model_name = _resolve_stt_model(model)
+    call_metadata(model=model_name)
 
     # ``text`` only means anything to a forced aligner: a Whisper /
     # Parakeet engine cannot align, so silently ignoring the field would
@@ -3720,6 +3724,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     # Reject unknown names before probing optional runtimes or loading weights.
     model = request.model if "model" in request.model_fields_set else None
     model_name = _resolve_tts_model(model)
+    call_metadata(model=model_name)
 
     # TTS-lane audio dep probe (F-D05 + codex r3 BLOCKING). Fires
     # BEFORE the lazy TTSEngine import — if the TTS sub-module of
@@ -4340,6 +4345,7 @@ async def create_music(request: AudioMusicRequest = Body(...)):
     ``api_error`` envelope (``code="music_generation_failed"``), matching
     the speech route.
     """
+    call_metadata(model=request.model)
     dit, decoder = _resolve_music_model(request.model)
 
     tmp_path: str | None = None

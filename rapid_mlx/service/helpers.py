@@ -2765,6 +2765,9 @@ def _build_usage(
     non-empty — surfaced by the v0.6.66 hybrid onboarding sweep on
     qwen3.6-27b-8bit (300/300 split with non-empty content).
     """
+    from rapid_mlx.control.observer import usage
+
+    usage(output)
     cfg = get_config()
     total_completion = output.completion_tokens
     detail_completion = (
@@ -2827,6 +2830,9 @@ def _build_usage(
 
 def get_usage(output: GenerationOutput) -> Usage:
     """Extract usage metrics from GenerationOutput."""
+    from rapid_mlx.control.observer import usage
+
+    usage(output)
     total_prompt_tokens = (
         output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
     )
@@ -4693,6 +4699,9 @@ async def _run_disconnect_guard(
                     f"disconnected={is_disc} elapsed={_elapsed()}"
                 )
             if is_disc:
+                from rapid_mlx.control.observer import metadata
+
+                metadata(outcome="cancelled")
                 return
 
     chunk_count = 0
@@ -4810,6 +4819,9 @@ async def _run_disconnect_guard(
                 finished_normally = True
                 break
             except asyncio.CancelledError:
+                from rapid_mlx.control.observer import metadata
+
+                metadata(outcome="cancelled")
                 consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
                 if not callable(consume_abort) or not consume_abort(anext_task):
                     raise
@@ -4829,6 +4841,9 @@ async def _run_disconnect_guard(
                 finished_normally = True
                 break
             except Exception as exc:
+                from rapid_mlx.control.observer import metadata
+
+                metadata(outcome="error")
                 logger.error(
                     f"[disconnect_guard] generator raised {type(exc).__name__}: "
                     f"{exc}, {chunk_count} chunks, elapsed={_elapsed()}",
@@ -5246,6 +5261,9 @@ async def _wait_with_disconnect(
                     f"disconnected={is_disc} elapsed={_time.monotonic() - _t0:.1f}s"
                 )
             if is_disc:
+                from rapid_mlx.control.observer import metadata
+
+                metadata(outcome="cancelled")
                 return
 
     disconnect_task = asyncio.create_task(_wait_disconnect())
@@ -5283,6 +5301,9 @@ async def _wait_with_disconnect(
         try:
             return task.result()
         except asyncio.CancelledError:
+            from rapid_mlx.control.observer import metadata
+
+            metadata(outcome="cancelled")
             consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
             if callable(consume_abort) and consume_abort(task):
                 # Carry the stable ``model_replacement`` code so this

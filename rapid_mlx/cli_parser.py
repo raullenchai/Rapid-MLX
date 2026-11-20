@@ -1765,6 +1765,11 @@ def _add_serve_parser(
             "--force-openai-harmony-streaming."
         ),
     )
+    serve_parser.add_argument(
+        "--no-call-log",
+        action="store_true",
+        help="Disable supervised metadata call logging",
+    )
     # GC control (Tier 0 optimization)
     serve_parser.add_argument(
         "--gc-control",
@@ -2681,6 +2686,14 @@ def _add_alias_parser(
     status_parser.add_argument(
         "--port", type=_port_arg, help="Select a supervised instance by port"
     )
+    for command in ("log", "events"):
+        history = subparsers.add_parser(command, help=f"Show local serve {command}")
+        history.add_argument("--port", type=_port_arg, help="Select instance by port")
+        history.add_argument("--follow", action="store_true", help="Follow new records")
+        history.add_argument("--limit", type=int, default=100)
+        history.add_argument("--json", action="store_true", help="Print JSON")
+        if command == "log":
+            history.add_argument("action", nargs="?", choices=["clear"])
     ps_parser = subparsers.add_parser("ps", help="List running rapid-mlx servers")
     ps_parser.add_argument(
         "--json",

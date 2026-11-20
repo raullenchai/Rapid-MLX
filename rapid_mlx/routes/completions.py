@@ -14,6 +14,8 @@ from functools import partial
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
+from rapid_mlx.control.observer import metadata as call_metadata
+
 from ..api.models import (
     CompletionChoice,
     CompletionRequest,
@@ -180,6 +182,7 @@ async def _stream_completion_prompts(engine, prompts, request, **kwargs):
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
+    call_metadata(model=request.model)
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
     _caller_agent, _caller_client = _telemetry_inference.request_caller_headers(
@@ -847,6 +850,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             total_cached_tokens += getattr(output, "cached_tokens", 0) or 0
 
         if is_cancellation_finish_reason(output.finish_reason):
+            call_metadata(outcome="cancelled")
             return Response(status_code=499)
 
         elapsed = time.perf_counter() - start_time
@@ -855,6 +859,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             f"Completion: {total_prompt_tokens} prompt + {total_completion_tokens} completion tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
         )
 
+        call_metadata(
+            prompt_tokens=total_prompt_tokens, completion_tokens=total_completion_tokens
+        )
         comp_response = CompletionResponse(
             model=_resolve_model_name(request.model),
             choices=choices,
@@ -1101,6 +1108,7 @@ async def stream_completion(
                 _buffered_finish_reason = output.finish_reason
             continue
         if output.finished and is_cancellation_finish_reason(output.finish_reason):
+            call_metadata(outcome="cancelled")
             return
         choice = {
             "index": 0,
@@ -1177,6 +1185,7 @@ async def stream_completion(
     # streaming anyway.
     if _json_mode:
         if is_cancellation_finish_reason(_buffered_finish_reason):
+            call_metadata(outcome="cancelled")
             return
         cleaned = extract_json_from_response(_buffered_text) if _buffered_text else ""
         # Emit content + finish in a single chunk for symmetry with

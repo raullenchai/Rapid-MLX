@@ -28,6 +28,9 @@ from typing import cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from rapid_mlx.control.observer import metadata as call_metadata
+from rapid_mlx.control.observer import usage as call_usage
+
 from ..api.errors import RESPONSES_TEXT_FORMAT_PARAM, GuidedGenerationCancelledError
 from ..api.models import (
     AssistantMessage,
@@ -1043,6 +1046,7 @@ async def create_response(request: Request):
         )
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
+    call_metadata(model=responses_request.model)
     engine = get_engine(responses_request.model)
     _served_telemetry_id = engine_telemetry_id(engine)
     await ensure_engine_ready(engine)
@@ -2497,6 +2501,7 @@ async def _non_stream(
         else output.finish_reason
     )
     if is_cancellation_finish_reason(finish_reason):
+        call_metadata(outcome="cancelled")
         return Response(status_code=499)
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
@@ -4039,6 +4044,10 @@ async def _stream_responses(
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
                 completion_tokens = output.completion_tokens
+                call_usage(output)
+                call_metadata(
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+                )
             if hasattr(output, "cached_tokens") and output.cached_tokens:
                 cached_tokens = output.cached_tokens
             # r6-A R6-C2: capture the most-recent ``finish_reason`` from
@@ -4727,6 +4736,9 @@ async def _stream_responses(
             completed_output.append(reasoning_item_payload_done or {})
 
         def _stream_usage_payload() -> dict:
+            call_metadata(
+                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+            )
             # #591 P2 (item 6): floor-clamp before the upper clamp. A buggy
             # engine that surfaces a negative ``cached_tokens`` would
             # otherwise pass through unchanged and emit
@@ -5366,6 +5378,7 @@ async def _stream_responses(
         # ``max_output_tokens`` cutoff was indistinguishable from a
         # clean finish on the wire.
         if is_cancellation_finish_reason(last_finish_reason):
+            call_metadata(outcome="cancelled")
             yield _emit(
                 "response.failed",
                 {
@@ -5416,6 +5429,7 @@ async def _stream_responses(
         )
 
     except Exception as e:  # noqa: BLE001
+        call_metadata(outcome="error")
         if _is_preheader_admission_error(e):
             raise
         # response.failed gives Codex a clean shutdown signal instead of

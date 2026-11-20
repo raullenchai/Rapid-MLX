@@ -17403,7 +17403,11 @@ def _dispatch_serve_control(args):
             mode=mode,
             listen_fd=getattr(args, "listen_fd", None),
         )
-        if code is not None:
+        if isinstance(code, str):
+            from rapid_mlx.local_models import serve_startup_note
+
+            serve_startup_note(args, code)
+        elif code is not None:
             raise SystemExit(code)
         return
     if (
@@ -17526,6 +17530,10 @@ def main(*, _supervise=False):
             ):
                 _print_next_step()
         raise
+    if args.command in ("log", "events"):
+        from rapid_mlx.control.commands import history_command
+
+        raise SystemExit(history_command(args))
     if args.command == "status":
         from rapid_mlx.control.protocol import status_command
 

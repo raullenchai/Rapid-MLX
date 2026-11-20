@@ -17,6 +17,8 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from rapid_mlx.control.observer import metadata as call_metadata
+from rapid_mlx.control.observer import usage as call_usage
 from rapid_mlx.tool_call_diagnostics import (
     current_rejected_tool_calls,
     observe_tool_rejections,
@@ -4051,6 +4053,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
+    call_metadata(model=request.model)
     if (
         request.local_search is not None
         and os.environ.get("RAPID_MLX_LAN_INFERENCE_ONLY") == "1"
@@ -7374,6 +7377,7 @@ async def _create_chat_completion_impl(
         else output.finish_reason
     )
     if is_cancellation_finish_reason(finish_reason):
+        call_metadata(outcome="cancelled")
         return Response(status_code=499)
 
     # Clean and strip thinking tags from content
@@ -8154,6 +8158,10 @@ async def stream_chat_completion(
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
                 completion_tokens = output.completion_tokens
+                call_usage(output)
+                call_metadata(
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+                )
             _window_error = context_window_exhausted(
                 engine,
                 prompt_tokens,
@@ -8383,6 +8391,7 @@ async def stream_chat_completion(
         if buffered_finish is not None and is_cancellation_finish_reason(
             buffered_finish[1].finish_reason
         ):
+            call_metadata(outcome="cancelled")
             return
 
         # Fallback tool call detection (post-stream). Collect ALL fallback

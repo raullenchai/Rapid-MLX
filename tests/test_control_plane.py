@@ -1379,15 +1379,9 @@ def test_setup_failure_returns_to_exact_legacy_path(
             with conn:
                 conn.sendall(b"served")
             assert client.recv(32) == b"served"
-    if step in ("mode", "port"):
-        # CLI-side setup failures use the buffered serve startup note so
-        # ``--log-file`` captures the reason supervision was disabled.
-        assert not caplog.records
-        assert "serving in single process" in capsys.readouterr().err
-    else:
-        assert len(caplog.records) == 1
-        assert "serving in single process" in caplog.records[0].message
-        assert caplog.records[0].exc_info is None
+    # Every pre-spawn failure uses the buffered note, including socket setup.
+    assert not caplog.records
+    assert "serving in single process" in capsys.readouterr().err
     assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
     assert not list(base.glob("rmlx-cp-*/i-*"))
 
@@ -2026,11 +2020,16 @@ def test_native_mtp_profile_stays_single_process(monkeypatch):
         ),
     ],
 )
-async def test_control_handler_in_process(method, target, data, headers, code, state):
+async def test_control_handler_in_process(
+    method, target, data, headers, code, state, tmp_path
+):
     import asyncio
     from unittest.mock import AsyncMock, Mock
 
     instance = Supervisor([], port=8000, mode="text-vlm")
+    from rapid_mlx.control.history import History
+
+    instance.history = History(tmp_path / "history")
     instance.child = SimpleNamespace(pid=123, returncode=None)
     instance.spawn_ready.set()
     body = json.dumps(data).encode() if data else b""
@@ -2136,6 +2135,9 @@ async def test_supervisor_lifecycle_in_process(monkeypatch, tmp_path, caplog, sc
     from rapid_mlx.control import supervisor as module
 
     instance = Supervisor(["runner"], port=8123, mode="text-vlm")
+    from rapid_mlx.control.history import History
+
+    instance.history = History(tmp_path / "history")
     child = SimpleNamespace(pid=123, returncode=None)
     tree = Mock()
     tree.send.return_value = set()
@@ -2268,9 +2270,10 @@ def test_supervise_fallback_and_post_spawn_propagation(monkeypatch, caplog):
     instance = Supervisor([], port=0, mode="lazy")
     monkeypatch.setattr(module, "Supervisor", lambda *a, **kw: instance)
     monkeypatch.setattr(instance, "run", AsyncMock(side_effect=OSError("setup")))
-    assert module.supervise([]) is None
-    assert "serving in single process" in caplog.text
-    assert "setup" not in caplog.text.split("(OSError)")[-1]
+    assert module.supervise([]) == (
+        "Control plane setup failed (OSError); serving in single process."
+    )
+    assert not caplog.text
     instance.child = SimpleNamespace(pid=123, returncode=0)
     with pytest.raises(OSError, match="setup"):
         module.supervise([])
@@ -2393,18 +2396,18 @@ def test_protocol_transport_and_bounds(monkeypatch):
         protocol.request("socket", "secret", "POST", "x" * protocol.MAX_BODY)
     for code, data in (
         (403, b"{}"),
-        (200, b"x" * (protocol.MAX_BODY + 1)),
+        (200, b"x" * (protocol.MAX_RESPONSE + 1)),
         (200, b'{"port":8123}'),
     ):
         response = Mock(status=code)
         response.read.return_value = data
         connection.getresponse.return_value = response
-        if code == 200 and len(data) <= protocol.MAX_BODY:
+        if code == 200 and len(data) <= protocol.MAX_RESPONSE:
             assert protocol.request("socket", "secret") == {"port": 8123}
         else:
             with pytest.raises(OSError, match="invalid control response"):
                 protocol.request("socket", "secret")
-        response.read.assert_called_once_with(protocol.MAX_BODY + 1)
+        response.read.assert_called_once_with(protocol.MAX_RESPONSE + 1)
     assert connection.close.call_count == 3
 
 
