@@ -2454,6 +2454,16 @@ def sanitize_template_inputs(
     return messages, tools
 
 
+def _truncate_for_continuation(prompt: str, messages: list[dict]) -> str:
+    content = messages[-1].get("content") if messages else None
+    if not isinstance(content, str) or not content or content not in prompt:
+        raise ValueError(
+            "Chat template cannot continue_final_message: final assistant content "
+            "was not found in the rendered prompt"
+        )
+    return prompt[: prompt.rfind(content) + len(content)]
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -2462,6 +2472,7 @@ def apply_chat_template(
     model_name: str = "",
     add_generation_prompt: bool = True,
     chat_template_kwargs: dict | None = None,
+    continue_final_message: bool = False,
 ) -> str:
     """Apply a chat template to messages with consistent fallback behavior.
 
@@ -2477,6 +2488,7 @@ def apply_chat_template(
         model_name=model_name,
         add_generation_prompt=add_generation_prompt,
         chat_template_kwargs=chat_template_kwargs,
+        continue_final_message=continue_final_message,
     )
     if isinstance(prompt, str) and _template_drops_think_from_tool_loop_history(
         template_applicator, tools=tools
@@ -2493,6 +2505,7 @@ def _render_chat_template(
     model_name: str = "",
     add_generation_prompt: bool = True,
     chat_template_kwargs: dict | None = None,
+    continue_final_message: bool = False,
 ) -> str:
     """Apply a chat template to messages with consistent fallback behavior.
 
@@ -2510,11 +2523,13 @@ def _render_chat_template(
         model_name: Model name string, used for auto-detection of
             ``enable_thinking`` when set to None.
         add_generation_prompt: Whether the template should append the
-            assistant generation prefix (default True — every serving path).
-            Passed False only by the reasoning-budget seed probe
+            assistant generation prefix (default True).
+            Also passed False by the reasoning-budget seed probe
             (``routes/chat.py::_template_generation_prefix``), which renders the
             SAME conversation with and without the generation prompt and takes
             the delta to isolate the template-added prefix exactly.
+        continue_final_message: Continue the final assistant content, omitting
+            turn terminators. Requires add_generation_prompt=False.
 
     Returns:
         The formatted prompt string.  Falls back to a plain
@@ -2614,11 +2629,16 @@ def _render_chat_template(
     # a Jinja template.  Route by model identity before the generic tokenizer
     # fallback (which would otherwise silently apply ChatML).
     if is_deepseek_v4:
-        return encode_messages(
+        prompt = encode_messages(
             messages,
             tools=tools,
             enable_thinking=enable_thinking is not False,
             add_generation_prompt=add_generation_prompt,
+        )
+        return (
+            _truncate_for_continuation(prompt, messages)
+            if continue_final_message
+            else prompt
         )
 
     if is_original_v4:
@@ -2666,7 +2686,11 @@ def _render_chat_template(
             )
             if prompt.endswith(suffix):
                 prompt = prompt[: -len(suffix)]
-        return prompt
+        return (
+            _truncate_for_continuation(prompt, messages)
+            if continue_final_message
+            else prompt
+        )
 
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
@@ -2676,7 +2700,7 @@ def _render_chat_template(
         if tools:
             messages = _inject_tools_into_messages(messages, tools)
         prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-        return prompt + "\nassistant:"
+        return prompt + "\nassistant:" if add_generation_prompt else prompt
 
     if enable_thinking is None:
         enable_thinking = "coder" not in model_name.lower()
@@ -2686,6 +2710,8 @@ def _render_chat_template(
         "add_generation_prompt": add_generation_prompt,
         "enable_thinking": enable_thinking,
     }
+    if continue_final_message:
+        template_kwargs["continue_final_message"] = True
     if tools:
         template_kwargs["tools"] = tools
 
@@ -2704,7 +2730,13 @@ def _render_chat_template(
     # below (and the ``reasoning_effort`` pop in the second retry) handles
     # that exactly as it does today.
     for key, value in supplied_template_kwargs.items():
-        if key in ("tokenize", "add_generation_prompt", "enable_thinking", "tools"):
+        if key in (
+            "tokenize",
+            "add_generation_prompt",
+            "continue_final_message",
+            "enable_thinking",
+            "tools",
+        ):
             continue
         if key not in template_kwargs:
             template_kwargs[key] = value
@@ -2758,13 +2790,26 @@ def _render_chat_template(
     if _looks_like_hy3(model_name) and enable_thinking is not False:
         template_kwargs.setdefault("reasoning_effort", "low")
 
-    def _apply_with_alternating_fallback(
-        candidate_messages: list[dict], candidate_kwargs: dict
-    ) -> str:
+    def _apply_native(candidate_messages, **candidate_kwargs):
         try:
             return template_applicator.apply_chat_template(
                 candidate_messages, **candidate_kwargs
             )
+        except TypeError:
+            if not candidate_kwargs.get("continue_final_message"):
+                raise
+            legacy_kwargs = dict(candidate_kwargs)
+            legacy_kwargs.pop("continue_final_message")
+            rendered = template_applicator.apply_chat_template(
+                candidate_messages, **legacy_kwargs
+            )
+            return _truncate_for_continuation(rendered, candidate_messages)
+
+    def _apply_with_alternating_fallback(
+        candidate_messages: list[dict], candidate_kwargs: dict
+    ) -> str:
+        try:
+            return _apply_native(candidate_messages, **candidate_kwargs)
         except Exception as exc:
             if "conversation roles must alternate" not in str(exc).lower():
                 raise
@@ -2784,9 +2829,7 @@ def _render_chat_template(
                 if fallback_tools:
                     flattened = _inject_tools_into_messages(flattened, fallback_tools)
             try:
-                return template_applicator.apply_chat_template(
-                    flattened, **alternating_kwargs
-                )
+                return _apply_native(flattened, **alternating_kwargs)
             except Exception:
                 raise exc
 

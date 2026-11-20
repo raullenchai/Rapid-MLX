@@ -226,6 +226,7 @@ class StreamingPostProcessor:
         reasoning_max_tokens: int | None = None,
         line1_gate_engaged: bool = False,
         tool_authorization_names: set[str] | None = None,
+        prompt_thinking_active: bool | None = None,
     ):
         self.cfg = cfg
         self.prompt_parse_context: PromptParseContext | None = None
@@ -299,6 +300,9 @@ class StreamingPostProcessor:
         # leaving content empty. Track the explicit signal so process_chunk
         # can skip the reasoning path in that case.
         self.enable_thinking = enable_thinking
+        # Continuations derive this state from the assistant prefill rather
+        # than the new-turn template. Preserve the override across reset().
+        self._prompt_thinking_active = prompt_thinking_active
         self._prompt_owner = self._new_prompt_owner()
         # R8-M2 (2026-06-22): one-way latch tracking whether the model
         # has emitted an explicit ``<think>`` token despite
@@ -373,7 +377,9 @@ class StreamingPostProcessor:
                     tokenizer = getattr(cfg.engine, "tokenizer", None)
                     template = getattr(tokenizer, "chat_template", "") or ""
                     configure_kwargs["prompt_thinking_active"] = (
-                        _should_start_in_thinking(
+                        self._prompt_thinking_active
+                        if self._prompt_thinking_active is not None
+                        else _should_start_in_thinking(
                             template,
                             enable_thinking,
                             unconditional=bool(
@@ -2583,7 +2589,9 @@ class StreamingPostProcessor:
                     tokenizer = getattr(self.cfg.engine, "tokenizer", None)
                     template = getattr(tokenizer, "chat_template", "") or ""
                     configure_kwargs["prompt_thinking_active"] = (
-                        _should_start_in_thinking(
+                        self._prompt_thinking_active
+                        if self._prompt_thinking_active is not None
+                        else _should_start_in_thinking(
                             template,
                             self.enable_thinking,
                             unconditional=bool(

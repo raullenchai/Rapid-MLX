@@ -2502,6 +2502,8 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
     classify streamed text as reasoning, so stop matching and the
     reasoning/content split agree on where the answer begins.
     """
+    if getattr(request, "continue_final_message", False):
+        return {}
     if not getattr(request, "stop", None):
         return {}
     cfg = get_config()
@@ -5973,6 +5975,8 @@ def _build_prompt_with_thinking_compat(
     tools: list | None,
     enable_thinking: bool | None,
     chat_template_kwargs: dict | None = None,
+    add_generation_prompt: bool = True,
+    continue_final_message: bool = False,
     prompt_tokens=None,
 ):
     """Call ``engine.build_prompt`` with ``enable_thinking=...``,
@@ -6009,6 +6013,15 @@ def _build_prompt_with_thinking_compat(
     only fires on the first call for an engine with the legacy
     signature.
     """
+    if not add_generation_prompt or continue_final_message:
+        return build_prompt(
+            messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
+        )
     supports_prompt_tokens = False
     if prompt_tokens is not None:
         try:
@@ -6064,6 +6077,8 @@ def enforce_context_length_for_messages(
     max_tokens: int | None = None,
     enable_thinking: bool | None = None,
     chat_template_kwargs: dict | None = None,
+    add_generation_prompt: bool = True,
+    continue_final_message: bool = False,
     telemetry_model: str | None = None,
     caller_agent: str | None = None,
     caller_client: str | None = None,
@@ -6154,7 +6169,20 @@ def enforce_context_length_for_messages(
             # text, so a few images read as hundreds of thousands of tokens.
             template_messages = BatchedEngine._prepare_mllm_messages(messages)
             template_tools = convert_tools_for_template(tools) if tools else None
-            if request_prompt_tokens is not None:
+            if not add_generation_prompt or continue_final_message:
+                from ..utils.chat_template import apply_chat_template
+
+                rendered = apply_chat_template(
+                    tokenizer,
+                    template_messages,
+                    tools=template_tools,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
+                    add_generation_prompt=add_generation_prompt,
+                    continue_final_message=continue_final_message,
+                )
+                prompt_ids = tokenizer.encode(rendered, add_special_tokens=False)
+            elif request_prompt_tokens is not None:
                 prompt_ids = request_prompt_tokens.apply_template(
                     tokenizer,
                     template_messages,
@@ -6173,7 +6201,15 @@ def enforce_context_length_for_messages(
             prompt_tokens = _tokenized_prompt_length(prompt_ids)
         except HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
+            from ..request import is_chat_template_error
+
+            if (
+                not add_generation_prompt or continue_final_message
+            ) and is_chat_template_error(exc):
+                raise HTTPException(
+                    status_code=400, detail=f"Chat template error: {exc}"
+                ) from exc
             logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
             if require_text_preflight:
                 _raise_prompt_count_unavailable(code="prompt_token_count_unavailable")
@@ -6204,6 +6240,8 @@ def enforce_context_length_for_messages(
             enable_thinking=enable_thinking,
             chat_template_kwargs=chat_template_kwargs,
             prompt_tokens=request_prompt_tokens,
+            add_generation_prompt=add_generation_prompt,
+            continue_final_message=continue_final_message,
         )
     except HTTPException:
         raise

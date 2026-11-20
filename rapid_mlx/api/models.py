@@ -1723,6 +1723,8 @@ class ChatCompletionRequest(BaseModel):
     # keys are passed through for model-specific template variables. See
     # ``_resolve_enable_thinking`` in service/helpers.py for precedence.
     chat_template_kwargs: dict | None = None
+    add_generation_prompt: bool = True
+    continue_final_message: bool = False
     # reasoning_max_tokens — caps the THINKING portion only (tokens inside
     # ``<think>...</think>``); the model then answers. Does NOT bound the
     # answer — pair with ``max_tokens`` for total length. None = no reasoning
@@ -2025,6 +2027,19 @@ class ChatCompletionRequest(BaseModel):
         normalization — giving mypy a ``list[str] | None`` view at the engine
         boundary while the wire schema keeps accepting a scalar string."""
         return _normalize_stop(self.stop)
+
+    @model_validator(mode="after")
+    def _validate_continuation(self) -> "ChatCompletionRequest":
+        if self.continue_final_message:
+            if self.add_generation_prompt:
+                raise ValueError(
+                    "continue_final_message requires add_generation_prompt=False"
+                )
+            if not self.messages or self.messages[-1].role != "assistant":
+                raise ValueError(
+                    "continue_final_message requires a final assistant message"
+                )
+        return self
 
     @model_validator(mode="after")
     def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":
