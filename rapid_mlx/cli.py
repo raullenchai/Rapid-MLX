@@ -393,8 +393,10 @@ def _exit_for_port_collision(
 ) -> NoReturn:
     """Emit the established preflight failure and terminate with rc 1."""
 
+    from rapid_mlx.control.protocol import report
     from rapid_mlx.telemetry.server_start import failed
 
+    report("bind_failed")
     failed("bind", port_explicit=port_explicit, exit_reason="port_in_use")
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
@@ -418,6 +420,9 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
 def _exit_for_host_bind_error(host: str, exc: OSError) -> NoReturn:
     """Turn an invalid/unavailable bind address into a CLI diagnostic."""
 
+    from rapid_mlx.control.protocol import report
+
+    report("bind_failed")
     display_host = host or "0.0.0.0"
     print(
         f"Invalid --host {display_host!r}: could not bind that address ({exc}).",
@@ -6634,7 +6639,7 @@ def _serve_cua_only_mode(args) -> None:
 
 def _validate_local_search_exposure_or_exit(args) -> None:
     from .local_search_runtime import validate_exposure
-    from .server import _resolve_api_key
+    from .server_exposure import _resolve_api_key
 
     try:
         validate_exposure(
@@ -13578,16 +13583,24 @@ def _elide_front(text: str, width: int) -> str:
     return "…" + text[-(width - 1) :]
 
 
-def _scan_running_servers() -> list[tuple[int, str, str, str]]:
+def _scan_running_servers(
+    *, states: list[dict] | None = None
+) -> list[tuple[int, str, str, str]]:
     """``[(pid, port, model, uptime), ...]`` for running ``rapid-mlx serve``
     processes, found by a local process scan (no network).
 
     Shared by ``rapid-mlx ps`` and the bare-command front door.
+    Supplying ``states`` additionally collects JSON metadata and probes readiness.
     """
     import time
 
     import psutil
 
+    from rapid_mlx.control.protocol import discover
+
+    instances = discover()
+    supervisors = {item.get("supervisor_pid") for item in instances}
+    runners = {item["runner"]["pid"]: item for item in instances}
     rows: list[tuple[int, str, str, str]] = []
     for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
         try:
@@ -13597,62 +13610,64 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
         serve_index = serve_subcommand_index(cmd)
         if serve_index is None:
             continue
+        if proc.info["pid"] in supervisors:
+            continue
+        instance = runners.get(proc.info["pid"])
 
-        # Extract model arg and --port flag. argparse accepts options
-        # before positionals, so the model is the first non-flag token
-        # after `serve` whose prior token isn't a value-taking flag.
-        # The small list of flags here is conservative; unknown flags
-        # are assumed to NOT take a value.
-        VALUE_FLAGS = {
-            "--host",
-            "--port",
-            "--api-key",
-            "--tool-call-parser",
-            "--reasoning-parser",
-            "--log-level",
-            "--mcp-config",
-            "--cors-origins",
-            "--trusted-hosts",
-            "--served-model-name",
-            "--max-tokens",
-            "--gpu-memory-utilization",
-        }
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from rapid_mlx.cli_parser import build_parser
+
+        parser = next(
+            action
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+        ).choices["serve"]
+        argv = cmd[serve_index + 1 :]
+        # Collect every occurrence, including overwritten keys. Parsing is
+        # solely argparse's job; this pass only identifies values to hide
+        # if a credential is repeated in a model, host, or log target.
+        credentials = []
+        for index, token in enumerate(argv):
+            if token.startswith("--api-key="):
+                credentials.append(token.split("=", 1)[1])
+            elif token == "--api-key" and index + 1 < len(argv):
+                credentials.append(argv[index + 1])
+        options = None
+        # Never print argparse diagnostics: invalid values can be credentials.
+        # Unknown options can also make their values look like positionals, so
+        # discard all argv metadata unless the entire invocation is understood.
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            try:
+                parsed, unknown = parser.parse_known_args(argv)
+                if not unknown:
+                    options = {
+                        "--" + name.replace("_", "-"): value
+                        for name, value in vars(parsed).items()
+                    }
+            except (SystemExit, argparse.ArgumentError, ValueError):
+                pass
+
         model = "(unknown)"
-        port = "8000"  # serve's default
-        served = None  # --served-model-name value, if any (issue #2353)
-        try:
-            i = serve_index + 1
-            # Pre-PR this loop ``break``ed on the first positional, so a
-            # ``rapid-mlx serve qwen3.5-4b-4bit --port 8005`` ended with
-            # port="8000" because the positional model token came before
-            # ``--port``. Keep scanning for flags after we've captured the
-            # model — argparse accepts them on either side.
-            model_seen = False
-            while i < len(cmd):
-                tok = cmd[i]
-                if tok.startswith("--"):
-                    if "=" in tok:
-                        key, val = tok.split("=", 1)
-                        if key == "--port":
-                            port = val
-                        elif key == "--served-model-name":
-                            served = val
-                        i += 1
-                    elif tok in VALUE_FLAGS:
-                        if tok == "--port" and i + 1 < len(cmd):
-                            port = cmd[i + 1]
-                        elif tok == "--served-model-name" and i + 1 < len(cmd):
-                            served = cmd[i + 1]
-                        i += 2
-                    else:
-                        i += 1
-                else:
-                    if not model_seen:
-                        model = tok
-                        model_seen = True
-                    i += 1
-        except ValueError:
-            pass
+        port = "8000"
+        served = None
+        if options is not None:
+            model = _ps_redact(options.get("--model") or model, credentials)
+            served = _ps_redact(options.get("--served-model-name"), credentials)
+            port = str(8000 if options["--port"] is None else options["--port"])
+
+        if instance is not None:
+            port = str(instance["port"])
+            if options is not None:
+                options["--port"] = instance["port"]
+
+        if states is not None:
+            states.append(
+                _ps_server_state(
+                    proc, options, served or model, credentials=credentials
+                )
+            )
 
         # #2353: a user sets --served-model-name to choose the API model
         # identity; the process surface should lead with that identity and
@@ -13668,10 +13683,95 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
     return rows
 
 
+def _ps_ready(base_url: str) -> bool | None:
+    """Probe readiness without credentials, proxies, or redirects."""
+    import requests
+
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                f"{base_url}/health/ready", timeout=0.25, allow_redirects=False
+            )
+            if response.status_code == 200:
+                return True
+            if response.status_code == 503:
+                return False
+    except requests.RequestException:
+        pass
+    return None
+
+
+def _ps_redact(value, credentials):
+    if isinstance(value, str):
+        for credential in sorted(set(credentials), key=len, reverse=True):
+            if credential:
+                value = value.replace(credential, "[redacted]")
+    return value
+
+
+def _ps_server_state(proc, options: dict | None, model: str, *, credentials=()) -> dict:
+    import psutil
+
+    parsed = options is not None
+    options = options or {}
+    host = options.get("--host", "127.0.0.1")
+    port = int(8000 if options.get("--port") is None else options["--port"])
+    try:
+        listeners = [
+            c.laddr
+            for c in proc.net_connections(kind="inet")
+            if c.status == psutil.CONN_LISTEN and c.laddr
+        ]
+        matching = [a for a in listeners if a.port == port]
+        if matching or len(listeners) == 1:
+            address = (matching or listeners)[0]
+            host, port = address.ip, address.port
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        pass
+    # Wildcard binds are reachable through loopback. IPv6 URL literals need brackets.
+    connect_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    authority = f"[{connect_host}]" if ":" in connect_host else connect_host
+    base_url = f"http://{authority}:{port}" if port else None
+    try:
+        env = proc.environ()
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        env = None
+    auth: bool | None = bool(options.get("--api-key"))
+    if not auth:
+        auth = bool(env.get("RAPID_MLX_API_KEY")) if env is not None else None
+    if not parsed:
+        auth = None
+    credentials = [*credentials, options.get("--api-key") or ""]
+    if env is not None:
+        credentials.append(env.get("RAPID_MLX_API_KEY", ""))
+    state = {
+        "pid": proc.info["pid"],
+        "bind_host": host,
+        "port": port or None,
+        "base_url": base_url,
+        "model_ids": [] if model == "(unknown)" else [model],
+        "auth_required": auth,
+        "ready": _ps_ready(base_url) if base_url else None,
+        "started_at": proc.info.get("create_time"),
+        "log_path": options.get("--log-file")
+        or (env.get("RAPID_MLX_LOG_FILE") if env is not None else None),
+    }
+    state["model_ids"] = [
+        _ps_redact(model_id, credentials) for model_id in state["model_ids"]
+    ]
+    return {key: _ps_redact(value, credentials) for key, value in state.items()}
+
+
 def ps_command(_args):
     """List running rapid-mlx servers (process scan)."""
-    # Surface the staleness nudge up front. ps has no ``--json`` form, so
-    # there is no machine-readable mode whose stderr must stay clean.
+    if getattr(_args, "json", False):
+        import json
+
+        states: list[dict] = []
+        _scan_running_servers(states=states)
+        print(json.dumps({"schema_version": 1, "servers": states}))
+        return
     if not getattr(_args, "json", False):
         from rapid_mlx._version_check import print_staleness_warning_if_any
 
@@ -17234,6 +17334,9 @@ def _capture_start_failures(func: Callable):
         try:
             return func(*args, **kwargs)
         except BaseException as exc:
+            from rapid_mlx.control.protocol import report_startup_failure
+
+            report_startup_failure(type(exc).__name__)
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
@@ -17246,8 +17349,94 @@ def _capture_start_failures(func: Callable):
     return wrapped
 
 
+def _dispatch_serve_control(args):
+    """Decide before runtime setup; fallback continues in this same process."""
+    try:
+        from rapid_mlx.control import PARENT_ENV, RUNNER_ENV
+        from rapid_mlx.control.modes import supervised_mode
+
+        mode = supervised_mode(args)
+        if mode is not None:
+            from rapid_mlx.control.supervisor import supervise
+            from rapid_mlx.server_exposure import normalize_bind_host
+
+            # The runner owns explicit-port validation after its telemetry
+            # lifecycle begins. The parent only selects automatic ports once
+            # so restarts keep the same listener address.
+            port = args.port
+            if port is None or getattr(args, "listen_fd", None) is not None:
+                port = _resolve_serve_port(
+                    normalize_bind_host(args.host),
+                    args.port,
+                    model=args.model or "retrieval",
+                    port_explicit=port_explicit_for(args),
+                    listen_fd=getattr(args, "listen_fd", None),
+                )
+    except Exception as exc:
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(
+            args,
+            f"Control plane setup failed ({type(exc).__name__}); "
+            "serving in single process.",
+        )
+        return
+    if mode is not None:
+        import subprocess
+
+        # Preserve interpreter flags such as -u, -X, -W for the runner,
+        # the same way multiprocessing does for its children.
+        interpreter_flags = subprocess._args_from_interpreter_flags()
+        code = supervise(
+            [
+                sys.executable,
+                *interpreter_flags,
+                # ``-m rapid_mlx`` imports rapid_mlx.cli and calls the console
+                # entry point; running cli itself as __main__ would create a
+                # second module and bypass its startup instrumentation. Process
+                # discovery (``rapid-mlx ps``) recognises this form.
+                "-m",
+                "rapid_mlx",
+                *sys.argv[1:],
+            ],
+            port=port,
+            mode=mode,
+            listen_fd=getattr(args, "listen_fd", None),
+        )
+        if code is not None:
+            raise SystemExit(code)
+        return
+    if (
+        RUNNER_ENV not in os.environ
+        and "RAPID_MLX_WATCHDOG_PPID" not in os.environ
+        and getattr(args, "watchdog_ppid", None) is None
+        and os.environ.get("RAPID_MLX_SINGLE_PROCESS") != "1"
+    ):
+        # Continue directly into the exact legacy path, preserving argv,
+        # environment, watchdog ownership and inherited descriptors.
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(args, "Control functionality is unavailable in this mode.")
+    elif os.environ.get(RUNNER_ENV) == "1":
+        from rapid_mlx._parent_watchdog import install_parent_watchdog
+        from rapid_mlx.control.process_tree import (
+            start_orphan_tracking,
+            supervised_on_orphan,
+        )
+        from rapid_mlx.control.protocol import install_startup_report
+
+        raw_parent = os.environ.get(PARENT_ENV)
+        if raw_parent is not None:
+            start_orphan_tracking()
+            install_parent_watchdog(
+                int(raw_parent), interval=0.5, on_orphan=supervised_on_orphan
+            )
+        install_startup_report()
+
+
 @_capture_start_failures
-def main():
+def main(*, _supervise=False):
+    """Dispatch in process; only the console entry point owns supervision."""
     from ._hf_logging import (
         quiet_hf_progress_bars_off_terminal,
         quiet_transport_loggers,
@@ -17337,6 +17526,20 @@ def main():
             ):
                 _print_next_step()
         raise
+    if args.command == "status":
+        from rapid_mlx.control.protocol import status_command
+
+        raise SystemExit(status_command(args))
+    if args.command == "serve":
+        if getattr(args, "enable_local_search", False):
+            _validate_local_search_exposure_or_exit(args)
+        if _supervise:
+            _dispatch_serve_control(args)
+    if args.command == "top":
+        from rapid_mlx.top import top_command
+
+        top_command(args)
+        return
     if args.command == "pull":
         if getattr(args, "json", False) and not getattr(args, "check", False):
             parser.error("pull --json requires --check")
@@ -17373,10 +17576,6 @@ def main():
         if hasattr(args, "log_level")
         else "INFO"
     )
-    if getattr(args, "command", None) == "serve" and getattr(
-        args, "enable_local_search", False
-    ):
-        _validate_local_search_exposure_or_exit(args)
     from rapid_mlx import model_downloads
 
     model_downloads.configure(getattr(args, "disable_model_downloads", False))
@@ -17685,6 +17884,9 @@ def main():
                 except log_file.LogFileError as log_exc:
                     print(f"error: {log_exc}", file=sys.stderr)
                     _serve_usage_exit(cause=log_exc)
+                from rapid_mlx.local_models import flush_serve_startup_notes
+
+                flush_serve_startup_notes(args)
                 if isinstance(exc, InvalidModelConfig):
                     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
@@ -18173,7 +18375,7 @@ def _run_front_door(parser, args, version: str) -> int:
 def cli_entrypoint() -> None:
     """Console entry point with normal Unix broken-pipe semantics."""
     try:
-        main()
+        main(_supervise=True)
     except BrokenPipeError:
         # Unix consumers commonly stop reading early (for example,
         # ``rapid-mlx models | head``).  Treat EPIPE as normal completion

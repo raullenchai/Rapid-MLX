@@ -33,7 +33,10 @@ from dataclasses import dataclass
 
 import pytest
 
-pytestmark = pytest.mark.requires_mlx
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.usefixtures("preserve_mlx_generation_streams"),
+]
 
 # ---------------------------------------------------------------------------
 # SOP §10 routing registry — single source of truth.
@@ -3479,15 +3482,16 @@ class TestPagedCacheLaneAdmission:
         )
         monkeypatch.setattr(engine, "_install_resolved_metal_budget", lambda: None)
 
-        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
-            asyncio.run(engine.start())
+        try:
+            with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+                asyncio.run(engine.start())
 
-        assert "RotatingKVCache" in str(excinfo.value)
-        assert engine._loaded is False
-        # The aborted startup leaves the mlx-step worker behind; reap it so
-        # the test does not leak a thread.
-        if engine._model_load_executor is not None:
-            engine._model_load_executor.shutdown(wait=False)
+            assert "RotatingKVCache" in str(excinfo.value)
+            assert engine._loaded is False
+        finally:
+            # Join the aborted startup's worker before restoring streams.
+            if engine._model_load_executor is not None:
+                engine._model_load_executor.shutdown(wait=True)
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from urllib.parse import urlsplit
 
 from starlette.responses import PlainTextResponse
@@ -150,13 +152,26 @@ class BrowserSecurityMiddleware:
                 ):
                     status = 403
         if status is not None:
+            message = "Cross-origin requests disabled"
+            if status == 400:
+                hostname = "<invalid>"
+                if authority is not None:
+                    candidate = authority[0]
+                    if len(candidate) <= 253 and (
+                        re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9.])?", candidate)
+                        or re.fullmatch(r"[0-9a-f:]+", candidate)
+                    ):
+                        hostname = candidate
+                message = (
+                    f"Invalid host header: {hostname}. "
+                    "Configure --trusted-hosts <name> to allow this hostname."
+                )
+                logging.getLogger(__name__).warning(message)
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
             else:
                 await PlainTextResponse(
-                    "Invalid host header"
-                    if status == 400
-                    else "Cross-origin requests disabled",
+                    message,
                     status_code=status,
                 )(scope, receive, send)
             return

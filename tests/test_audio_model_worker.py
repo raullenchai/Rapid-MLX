@@ -16,6 +16,13 @@ from rapid_mlx.engine.batched import BatchedEngine
 from rapid_mlx.runtime.audio_worker import AudioWorkerDispatcher
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _preserve_audio_generation_streams(request):
+    """Restore after audio workers join, retaining the no-MLX test lane."""
+    if importlib.util.find_spec("mlx") is not None:
+        request.getfixturevalue("preserve_mlx_generation_streams")
+
+
 @pytest.fixture(autouse=True)
 def _stub_mlx_thread_init_on_non_mlx_hosts(monkeypatch):
     """Keep the worker contract testable in the Linux unit-test lane."""

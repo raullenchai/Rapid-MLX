@@ -28,6 +28,8 @@ final class MenuBarController: NSObject {
 
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
+    private var resourceMonitor: MenuBarResourceMonitor?
+    private var resourceTask: Task<Void, Never>?
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -159,6 +161,14 @@ final class MenuBarController: NSObject {
                 let line = NSMenuItem(title: text, action: nil, keyEquivalent: "")
                 line.isEnabled = false
                 menu.addItem(line)
+                if let server = AppDelegate.shared.server {
+                    let monitor = MenuBarResourceMonitor()
+                    resourceMonitor = monitor
+                    let card = NSMenuItem()
+                    card.view = NSHostingView(rootView: MenuBarResourceCard(server: server, monitor: monitor))
+                    card.view?.frame = NSRect(x: 0, y: 0, width: 320, height: 236)
+                    menu.addItem(card)
+                }
 
             case .button(let action, let title, let enabled, let shortcut):
                 let key = shortcut.map { String($0.key) } ?? ""
@@ -301,6 +311,23 @@ final class MenuBarController: NSObject {
 // MARK: - NSMenuDelegate
 
 extension MenuBarController: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        resourceTask?.cancel()
+        guard let server = AppDelegate.shared.server, let monitor = resourceMonitor else { return }
+        resourceTask = Task {
+            while !Task.isCancelled {
+                await monitor.refresh(server: server)
+                do { try await Task.sleep(for: .seconds(3)) }
+                catch { return }
+            }
+        }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        resourceTask?.cancel()
+        resourceTask = nil
+    }
+
     /// Rebuild the menu before every display so the dynamic rows are
     /// fresh. Cost is trivial and the alternative — an AppKit-side
     /// observer of the ``@Observable`` server / updater — buys nothing

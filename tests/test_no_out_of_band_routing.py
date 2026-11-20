@@ -119,11 +119,23 @@ ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
 # (debug verbosity, version-check disable, etc.).
 ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
+        # Process supervision only: parent liveness, runner recursion guard,
+        # local control socket and its authentication secret. These preserve
+        # the selected model, parser, tier and inference engine.
+        "RAPID_MLX_CONTROL_PPID",
+        "RAPID_MLX_CONTROL_RUNNER",
+        "RAPID_MLX_CONTROL_SOCKET",
+        "RAPID_MLX_CONTROL_SECRET",
+        # Internal legacy-process fallback; changes process ownership only,
+        # never the model, parser, tier or inference engine selected by CLI.
+        "RAPID_MLX_SINGLE_PROCESS",
         "RAPID_MLX_LORA_DIR",  # image LoRA library directory; no routing
         "RAPID_MLX_STEP_WORKGROUP",  # opt out of macOS step scheduling hint; no routing
         "RAPID_MLX_BATCHGEN_FASTPATH",  # kill switch for the exact-equivalent unpadded admission fast path; no routing
         # Opt-in fused affine-4 MoE expert kernels for Qwen3.6 MoE; picks a
         # kernel implementation for the same model, never a model or route.
+        "RAPID_MLX_GEMMA4_AFFINE4",  # Gemma 4 fused affine-4 MoE decode kill switch
+        "RAPID_MLX_LFM2MOE_AFFINE4",  # LFM2-MoE fused affine-4 expert decode kill switch
         "RAPID_MLX_QWEN35_AFFINE4",
         # Singleton expert buffer binding; same model, kernels and arithmetic.
         "RAPID_MLX_QWEN35_AFFINE4_BANK_VIEWS",

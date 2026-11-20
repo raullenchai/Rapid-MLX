@@ -1408,3 +1408,504 @@ def test_append_tool_use_suffix_handles_all_content_shapes():
 
     # unexpected shape → coerced to text, never raises
     assert _append_tool_use_suffix(123, suffix) == "123" + suffix
+
+
+class _GuidedRetryEngine(_RecordingEngine):
+    def __init__(
+        self, retry_text='[{"name":"get_time","parameters":{"city":"Tokyo"}}]'
+    ):
+        super().__init__()
+        self.retry_text = retry_text
+        self.guided_calls = []
+
+    async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        self.guided_calls.append((messages, json_schema, kwargs))
+        if isinstance(self.retry_text, Exception):
+            raise self.retry_text
+        return GenerationOutput(
+            text=self.retry_text,
+            raw_text=self.retry_text,
+            prompt_tokens=4,
+            completion_tokens=12,
+            finished=True,
+            finish_reason="stop",
+        )
+
+
+def _required_retry_request(client, **overrides):
+    return client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Just answer in prose."}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 128,
+            "temperature": 0.2,
+            "parallel_tool_calls": False,
+            **overrides,
+        },
+    )
+
+
+def test_required_multi_tool_guided_retry(monkeypatch):
+    import json
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    engine = _GuidedRetryEngine()
+    resp = _required_retry_request(_make_client(engine))
+    assert resp.status_code == 200, resp.text
+    choice = resp.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert not choice["message"].get("content")
+    call = choice["message"]["tool_calls"][0]
+    assert call["id"].startswith("call_")
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "get_time"
+    assert json.loads(call["function"]["arguments"]) == {"city": "Tokyo"}
+    assert len(engine.guided_calls) == 1
+    messages, schema, kwargs = engine.guided_calls[0]
+    assert messages == engine.last_messages
+    assert schema["minItems"] == schema["maxItems"] == 1
+    assert len(schema["items"]["anyOf"]) == 2
+    assert kwargs["raise_on_failure"] is True
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["max_tokens"] == 128
+    assert resp.json()["usage"]["completion_tokens"] == 13
+    assert resp.json()["usage"]["prompt_tokens"] == 8
+
+
+@pytest.mark.parametrize(
+    "retry_text",
+    [
+        "[]",
+        '[{"name":"unknown","parameters":{}}]',
+        '[{"name":"get_time","parameters":{"city":7}}]',
+        '[{"name":"get_time"}]',
+        "plain text",
+        RuntimeError("schema compile failed"),
+    ],
+)
+def test_required_multi_tool_failed_retry_preserves_422(monkeypatch, retry_text):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    engine = _GuidedRetryEngine(retry_text)
+    resp = _required_retry_request(_make_client(engine))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == (
+        'tool_choice="required" but the model returned a text response '
+        "with no tool_calls. Local inference has no decoder-level "
+        "constraint; the system-prompt enforcement was insufficient "
+        "for this prompt. Retry with a more concrete user message or "
+        'use tool_choice={"type":"function","function":{"name":...}} '
+        "to pin a specific tool."
+    )
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_guided_unavailable(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: False)
+    engine = _GuidedRetryEngine()
+    resp = _required_retry_request(_make_client(engine))
+    assert resp.status_code == 422, resp.text
+    assert "Local inference has no decoder-level constraint" in resp.json()["detail"]
+    assert not engine.guided_calls
+
+
+def test_required_single_tool_skips_guided_retry(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    engine = _GuidedRetryEngine()
+    resp = _required_retry_request(_make_client(engine), tools=_TOOLS_FIXTURE[:1])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["choices"][0]["message"]["tool_calls"][0]["function"] == {
+        "name": "get_weather",
+        "arguments": "{}",
+    }
+    assert not engine.guided_calls
+
+
+@pytest.mark.parametrize("with_budget", [False, True])
+def test_required_multi_tool_reasoning_retry_uses_gated_processor(
+    monkeypatch, with_budget
+):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.reasoning import get_parser
+
+    processor = object()
+    budget = object() if with_budget else None
+    builds = []
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.resolve_schema_reasoning_end_id", lambda *_: 42
+    )
+
+    def build(tokenizer, schema, **kwargs):
+        builds.append((schema, kwargs))
+        return processor
+
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.build_json_schema_logits_processor", build
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._build_reasoning_budget_processor",
+        lambda *a, **k: budget,
+    )
+
+    class ReasoningEngine(_GuidedRetryEngine):
+        def __init__(self):
+            super().__init__()
+            self.chat_calls = []
+
+        async def chat(self, messages, **kwargs):
+            self.chat_calls.append((messages, kwargs))
+            if kwargs.get("grammar_logits_processor") is processor:
+                return GenerationOutput(
+                    text="<think>Choose the clock.</think>" + self.retry_text,
+                    raw_text="<think>Choose the clock.</think>" + self.retry_text,
+                    prompt_tokens=4,
+                    completion_tokens=20,
+                    finished=True,
+                    finish_reason="stop",
+                )
+            return await super().chat(messages, **kwargs)
+
+    engine = ReasoningEngine()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser = get_parser("qwen3")()
+    resp = _required_retry_request(
+        client, chat_template_kwargs={"enable_thinking": True}
+    )
+    assert resp.status_code == 200, resp.text
+    choice = resp.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_time"
+    assert len(builds) == 1
+    assert builds[0][1] == {"reasoning_end_id": 42}
+    assert len(engine.chat_calls) == 2
+    assert engine.chat_calls[0][0] == engine.chat_calls[1][0]
+    assert engine.chat_calls[1][1].get("reasoning_budget_logits_processor") is budget
+    assert not engine.guided_calls
+
+
+@pytest.mark.parametrize(
+    ("end_id", "error_message"),
+    [
+        (None, "No atomic reasoning-end marker"),
+        (42, "Tool-array schema compile failed"),
+    ],
+)
+def test_required_multi_tool_reasoning_setup_failure(
+    monkeypatch, caplog, end_id, error_message
+):
+    from unittest.mock import Mock
+
+    from rapid_mlx.config import get_config
+    from rapid_mlx.reasoning import get_parser
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.resolve_schema_reasoning_end_id", lambda *_: end_id
+    )
+    build = Mock(return_value=None)
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.build_json_schema_logits_processor", build
+    )
+    engine = _GuidedRetryEngine()
+    client = _make_client(engine)
+    cfg = get_config()
+    cfg.no_thinking = False
+    cfg.reasoning_parser = get_parser("qwen3")()
+
+    resp = _required_retry_request(
+        client, chat_template_kwargs={"enable_thinking": True}
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert 'tool_choice="required"' in resp.json()["detail"]
+    assert not engine.guided_calls
+    assert build.call_count == (0 if end_id is None else 1)
+    failure = next(
+        record
+        for record in caplog.records
+        if "guided tool-array retry failed" in record.getMessage()
+    )
+    assert failure.exc_info[0] is RuntimeError
+    assert str(failure.exc_info[1]) == error_message
+
+
+def test_required_multi_tool_retry_rejects_forced_schema_error(monkeypatch, caplog):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    validate = Mock(return_value="Tool arguments failed validation")
+    monkeypatch.setattr("rapid_mlx.routes.chat._forced_synth_schema_error", validate)
+    engine = _GuidedRetryEngine()
+
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 422, resp.text
+    assert 'tool_choice="required"' in resp.json()["detail"]
+    assert len(engine.guided_calls) == 1
+    validate.assert_called_once()
+    assert validate.call_args.args[:2] == ("get_time", '{"city": "Tokyo"}')
+    failure = next(
+        record
+        for record in caplog.records
+        if "guided tool-array retry failed" in record.getMessage()
+    )
+    assert failure.exc_info[0] is ValueError
+    assert str(failure.exc_info[1]) == "Tool arguments failed validation"
+
+
+def test_required_multi_tool_retry_http_error_passthrough(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    detail = {"error": {"code": "retry_unavailable", "message": "Try again"}}
+    engine = _GuidedRetryEngine(
+        HTTPException(status_code=503, detail=detail, headers={"Retry-After": "1"})
+    )
+
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json() == {"detail": detail}
+    assert resp.headers["Retry-After"] == "1"
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_retry_timeout_passthrough(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    error = TimeoutError("guided retry timed out")
+    engine = _GuidedRetryEngine(error)
+
+    with pytest.raises(TimeoutError, match="guided retry timed out") as exc:
+        _required_retry_request(_make_client(engine))
+
+    assert exc.value is error
+    assert len(engine.guided_calls) == 1
+
+
+@pytest.mark.parametrize("guided_cancel", [False, True])
+def test_required_multi_tool_retry_user_cancel_passthrough(monkeypatch, guided_cancel):
+    import asyncio
+    import concurrent.futures
+
+    from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+
+    class CancelledEngine(_GuidedRetryEngine):
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            self.guided_calls.append((messages, json_schema, kwargs))
+            if guided_cancel:
+                raise GuidedGenerationCancelledError()
+            raise asyncio.CancelledError()
+
+    engine = CancelledEngine()
+    # TestClient transports ASGI task cancellation as a futures cancellation.
+    with pytest.raises(concurrent.futures.CancelledError):
+        _required_retry_request(_make_client(engine))
+
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_retry_lifecycle_cancel_returns_503(monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx.api.errors import GuidedGenerationCancelledError
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    owner = object()
+    engine = _GuidedRetryEngine(GuidedGenerationCancelledError(lifecycle_task=owner))
+    engine.consume_lifecycle_task_abort = Mock(return_value=True)
+
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json() == {
+        "detail": {
+            "error": {
+                "message": "Request cancelled by model replacement",
+                "type": "server_error",
+                "code": "model_replacement",
+                "param": None,
+            }
+        }
+    }
+    engine.consume_lifecycle_task_abort.assert_called_once_with(owner)
+    assert len(engine.guided_calls) == 1
+
+
+def test_required_multi_tool_retry_cancelled_output_returns_499(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+
+    class CancelledOutputEngine(_GuidedRetryEngine):
+        async def generate_with_schema(self, **kwargs):
+            output = await super().generate_with_schema(**kwargs)
+            return replace(output, finish_reason="cancelled")
+
+    engine = CancelledOutputEngine()
+    resp = _required_retry_request(_make_client(engine))
+
+    assert resp.status_code == 499, resp.text
+    assert resp.content == b""
+    assert len(engine.guided_calls) == 1
+
+
+@pytest.mark.parametrize("choice", ["pinned", "required", "multi"])
+@pytest.mark.parametrize("parsed", [True, False])
+def test_forced_schema_failure_guided_retry(monkeypatch, choice, parsed):
+    import copy
+    import json
+
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    tools = copy.deepcopy(_TOOLS_FIXTURE if choice == "multi" else _TOOLS_FIXTURE[:1])
+    tools[0]["function"]["parameters"]["required"] = ["city"]
+    tools[0]["function"]["parameters"]["properties"]["city"]["maxLength"] = 5
+
+    class InvalidEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            if parsed:
+                output.text = output.raw_text = (
+                    '<tool_call>{"name":"get_weather",'
+                    '"arguments":{"city":"Too long a city"}}</tool_call>'
+                )
+            return output
+
+    engine = InvalidEngine('[{"name":"get_weather","parameters":{"city":"Tokyo"}}]')
+    resp = _required_retry_request(
+        _make_client(engine),
+        tools=tools,
+        tool_choice=(
+            {"type": "function", "function": {"name": "get_weather"}}
+            if choice == "pinned"
+            else "required"
+        ),
+        parallel_tool_calls=True,
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    calls = result["choices"][0]["message"]["tool_calls"]
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_weather"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Tokyo"}
+    assert result["usage"]["completion_tokens"] == 13
+    assert result["usage"]["prompt_tokens"] == 8
+    assert len(engine.guided_calls) == 1
+    schema = engine.guided_calls[0][1]
+    assert len(schema["items"]["anyOf"]) == len(tools)
+    if choice == "pinned":
+        assert schema["maxItems"] == 1
+    else:
+        assert "maxItems" not in schema
+
+
+@pytest.mark.parametrize("parsed", [True, False])
+@pytest.mark.parametrize(
+    "failure", ["unavailable", "invalid", "compile", "wrong_tool", "multiple"]
+)
+@pytest.mark.parametrize("pinned", [True, False])
+def test_forced_schema_retry_preserves_original_error(
+    monkeypatch, parsed, failure, pinned
+):
+    import copy
+
+    tools = copy.deepcopy(_TOOLS_FIXTURE[:1])
+    tools[0]["function"]["parameters"]["required"] = ["city"]
+    tools[0]["function"]["parameters"]["properties"]["city"]["maxLength"] = 5
+
+    class InvalidEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            if parsed:
+                output.text = output.raw_text = (
+                    '<tool_call>{"name":"get_weather",'
+                    '"arguments":{"city":"Too long a city"}}</tool_call>'
+                )
+            return output
+
+    retry_text = {
+        "compile": RuntimeError("schema compile failed"),
+        "wrong_tool": '[{"name":"get_time","parameters":{"city":"Tokyo"}}]',
+        "multiple": '[{"name":"get_weather","parameters":{"city":"Tokyo"}},'
+        '{"name":"get_weather","parameters":{"city":"Tokyo"}}]',
+    }.get(failure, '[{"name":"get_weather","parameters":{"city":7}}]')
+    engine = InvalidEngine(retry_text)
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: False)
+    client = _make_client(engine)
+    overrides = {
+        "tools": tools,
+        "tool_choice": (
+            {"type": "function", "function": {"name": "get_weather"}}
+            if pinned
+            else "required"
+        ),
+    }
+    original = _required_retry_request(client, **overrides)
+    assert original.status_code == (400 if parsed else 422), original.text
+    assert (
+        "violates declared schema" if parsed else "required property"
+    ) in original.text
+    monkeypatch.setattr(
+        "rapid_mlx.api.guided.is_guided_available",
+        lambda: failure != "unavailable",
+    )
+    response = _required_retry_request(client, **overrides)
+    assert response.status_code == original.status_code
+    assert response.json() == original.json()
+    assert len(engine.guided_calls) == (0 if failure == "unavailable" else 1)
+
+
+def test_auto_schema_violation_does_not_retry(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+
+    class InvalidEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            output.text = output.raw_text = (
+                '<tool_call>{"name":"get_weather","arguments":{"city":"Too long a city"}}</tool_call>'
+            )
+            return output
+
+    engine = InvalidEngine()
+    import copy
+
+    tools = copy.deepcopy(_TOOLS_FIXTURE)
+    tools[0]["function"]["parameters"]["properties"]["city"]["maxLength"] = 5
+    response = _required_retry_request(
+        _make_client(engine), tool_choice="auto", tools=tools
+    )
+    assert response.status_code == 400, response.text
+    assert "violates declared schema" in response.text
+    assert not engine.guided_calls
+
+
+def test_pinned_argument_repair_failure_guided_retry(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.api.guided.is_guided_available", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.routes.chat._repair_forced_call_arguments",
+        lambda *args: "Arguments do not satisfy the declared schema",
+    )
+
+    class ParsedEngine(_GuidedRetryEngine):
+        async def chat(self, messages, **kwargs):
+            output = await super().chat(messages, **kwargs)
+            output.text = output.raw_text = (
+                '<tool_call>{"name":"get_weather","arguments":{"city":"Tokyo"}}'
+                "</tool_call>"
+            )
+            return output
+
+    engine = ParsedEngine('[{"name":"get_weather","parameters":{"city":"Tokyo"}}]')
+    response = _required_retry_request(
+        _make_client(engine),
+        tool_choice={"type": "function", "function": {"name": "get_weather"}},
+    )
+    assert response.status_code == 200, response.text
+    assert len(engine.guided_calls) == 1

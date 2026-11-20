@@ -154,6 +154,7 @@ from .runtime.resident_models import (
     _release_allocator_cache,
     estimate_model_bytes,
 )
+from .server_exposure import _resolve_api_key  # noqa: F401 — compatibility re-export
 from .service.helpers import (  # noqa: F401 — re-export for backward compat
     _FALLBACK_TEMPERATURE,
     _FALLBACK_TOP_P,
@@ -334,37 +335,6 @@ _rerank_max_documents: int = 1000
 # API key authentication
 _api_key: str | None = None
 _auth_warning_logged: bool = False
-
-
-def _resolve_api_key(argv_value: str | None) -> str | None:
-    """Resolve the effective API key with env-var fallback.
-
-    Argv-inline (``--api-key X``) wins for backwards-compat with
-    existing scripts; otherwise we fall back to the ``RAPID_MLX_API_KEY``
-    env var. Explicit empty or whitespace-only values are invalid; only
-    absent values disable auth. The env-var form keeps keys out of ``argv``
-    (visible to ``ps -ef`` for any local user) — this is the path
-    rapid-desktop's sidecar shim uses to avoid the codex BLOCKER #3
-    "bearer-in-shell-history" leak.
-
-    Exposed at module scope (not buried inside ``main()``) so the
-    env-fallback contract is directly unit-testable without booting
-    a model — a regression here is the bug the dogfood-v0.8.2 finding
-    #3 exposed, so a test-via-the-real-code path matters.
-    """
-    key = argv_value if argv_value is not None else os.environ.get("RAPID_MLX_API_KEY")
-    if key is not None and not key.strip():
-        source = "--api-key" if argv_value is not None else "RAPID_MLX_API_KEY"
-        raise ValueError(
-            f"{source} must be a non-empty string; "
-            + (
-                "omit the flag"
-                if argv_value is not None
-                else "unset the environment variable"
-            )
-            + " to run without authentication"
-        )
-    return key
 
 
 # Per-request body size cap (DoS defense). 0 disables. Resolved from
@@ -1612,6 +1582,23 @@ class ResolvedCORSPolicy:
 
 _last_resolved_cors_policy: ResolvedCORSPolicy | None = None
 
+_EXTENSION_UUID_HOST = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+_EXTENSION_ORIGIN_PATTERNS = {
+    "chrome-extension://*": r"chrome-extension://[a-p]{32}",
+    "moz-extension://*": f"moz-extension://{_EXTENSION_UUID_HOST}",
+    "safari-web-extension://*": f"safari-web-extension://{_EXTENSION_UUID_HOST}",
+}
+
+
+def _extension_origin_regex(origins: list[str]) -> str | None:
+    """Compile only supported scheme wildcards, never operator-supplied regex."""
+    patterns = [
+        pattern
+        for entry, pattern in _EXTENSION_ORIGIN_PATTERNS.items()
+        if entry in origins
+    ]
+    return "(?:" + "|".join(patterns) + ")" if patterns else None
+
 
 def get_resolved_cors_policy() -> ResolvedCORSPolicy | None:
     """Return the policy configured during this process's CLI startup."""
@@ -1729,6 +1716,10 @@ def configure_cors(
     module-level ``app``. ``configure_cors_from_env`` is the production
     entry-point — it skips registration entirely when no origins are
     configured, which is what closes F-090 at the default-deny layer.
+
+    Extension scheme wildcards use Starlette's full-match regex alongside
+    literal origins, so preflight and simple requests share one matcher.
+    They echo the matched origin and keep non-wildcard credential semantics.
     """
     if not origins:
         # Defensive: callers should not invoke ``configure_cors`` with an
@@ -1767,7 +1758,10 @@ def configure_cors(
     # header instead of a cryptic 400 envelope.
     app.add_middleware(
         _SpecAlignedCORSMiddleware,
-        allow_origins=origins,
+        allow_origins=[
+            origin for origin in origins if origin not in _EXTENSION_ORIGIN_PATTERNS
+        ],
+        allow_origin_regex=_extension_origin_regex(origins),
         allow_credentials=allow_credentials,
         allow_methods=list(methods) if methods is not None else ["*"],
         allow_headers=list(headers) if headers is not None else ["*"],
@@ -3939,6 +3933,7 @@ from .routes.anthropic import router as _anthropic_router
 from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
+from .routes.control_status import mount_status as _mount_control_status
 from .routes.cua import router as _cua_router
 from .routes.embeddings import router as _embeddings_router
 from .routes.health import admin_router as _health_admin_router
@@ -3956,6 +3951,7 @@ from .routes.responses import router as _responses_router
 from .routes.runtime_config import router as _runtime_config_router
 from .routes.video import router as _video_router
 
+_mount_control_status(app)
 app.include_router(_probe_router)
 app.include_router(_health_router)
 # Destructive control-plane routes (F-150 / F-151). Distinct router so the

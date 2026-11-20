@@ -1023,6 +1023,7 @@ def _register_canonical_request_models() -> None:
             RerankRequest,
         )
         from ..api.responses_models import ResponsesRequest
+        from ..routes.health import CacheClearRequest
     except Exception:  # pragma: no cover — defensive
         logger.debug(
             "Failed to import canonical request models for the envelope "
@@ -1043,6 +1044,7 @@ def _register_canonical_request_models() -> None:
         # actual model fields so ``error.param`` is populated
         # (``"input"``) instead of collapsing to ``<field>``.
         AudioSpeechRequest,
+        CacheClearRequest,
     ):
         register_request_model(cls)
     # Route-path → root-model bindings. Walked in declaration order, so
@@ -1063,6 +1065,7 @@ def _register_canonical_request_models() -> None:
     # body model so the envelope's ``param`` slot points at the
     # right ``input`` field.
     register_request_path("/v1/audio/speech", AudioSpeechRequest)
+    register_request_path("/v1/cache/clear", CacheClearRequest)
 
 
 def install_exception_handlers(app: FastAPI) -> None:

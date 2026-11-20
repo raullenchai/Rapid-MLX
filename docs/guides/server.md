@@ -237,6 +237,36 @@ image failures still return HTTP 500 with `type: "image_generation_error"` and
 `code: "image_generation_failed"`. Cancellation returns HTTP 200 with
 `cancelled: true` and any images already completed.
 
+### Partial prefix cache release
+
+To release older reusable text prefixes while keeping the most recently used
+conversation warm, send an optional JSON body to the existing cache-clear control:
+
+```bash
+curl -X POST http://localhost:8000/v1/cache/clear \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
+  -d '{"keep_recent": 1}'
+```
+
+`keep_recent` must be a nonnegative integer. Zero releases all eligible entries;
+a value at least as large as the current entry count releases nothing. Omitting
+the body preserves full-clear behavior. The route uses the same authentication
+as other admin controls and runs eviction on the model worker. Memory-aware,
+legacy trie, and paged text prefix caches use their existing LRU eviction paths.
+Pinned trie entries and active paged request tables can keep the count above the
+requested value. Shared or pinned paged blocks remain resident while referenced.
+Backends without partial-release support return HTTP 409.
+
+The response contains `entries_freed`, `bytes_freed`, `entries_kept`, and
+`bytes_kept`. `GET /v1/cache/stats` exposes text scheduler diagnostics under
+`prefix_cache`, including the most recent partial-release result as `last_release`
+(`null` before the first call). Byte counts describe logical resident KV storage,
+including shared/pinned paged blocks that survive entry eviction; they exclude
+weights, allocator caches, and request-owned copies, and do not promise an equal
+drop in process or Metal memory. Existing cache hit/miss counters are preserved.
+An automatic byte ceiling is a separate follow-up.
+
 ### User image LoRAs (next release)
 
 Place compatible `.safetensors` adapters directly in `~/.rapid-mlx/loras/`,
@@ -653,7 +683,24 @@ probabilities.
 GET /v1/models
 ```
 
-Returns available models.
+Returns available models. `GET /v1/models/{id}` returns the same model card.
+The OpenAI fields (`id`, `object`, `created`, `owned_by`) are unchanged.
+
+Cards with `capabilities: ["embedding"]` include the following additive fields
+when known from the loaded embedding engine:
+
+| Field | Meaning |
+| --- | --- |
+| `embedding_dimensions` | Native output vector size, from the loaded model config (including its output projection). |
+| `supported_dimensions` | Inclusive `{"min": 1, "max": <embedding_dimensions>}` range accepted by the `/v1/embeddings` `dimensions` parameter. Sliced vectors are L2-renormalized; acceptance does not guarantee retrieval quality at every size. |
+| `max_input_tokens` | Effective per-input token limit used by the embedding truncation/error policy, including an operator `--embedding-max-length` override and model clamping. |
+| `pooling` | Pooling mode, when exposed by the loaded config or known by the native encoder. |
+| `normalized` | Whether native output vectors are normalized, when known. |
+
+Unknown fields are omitted, including dimensions before the engine is loaded
+and an automatic input limit based only on the compatibility fallback. Chat
+cards omit these embedding fields. Discovery does not load weights or send a
+probe embedding request.
 
 ### Embeddings
 
@@ -1445,6 +1492,25 @@ For a browser frontend, explicitly allow its origin:
 ```bash
 rapid-mlx serve qwen3.5-4b-4bit --cors-origins http://localhost:3000
 ```
+
+For browser extensions, opt in to an entire extension scheme without looking up
+each extension's ID:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --cors-origins 'chrome-extension://*' 'moz-extension://*'
+# Equivalent environment configuration:
+export RAPID_MLX_CORS_ALLOW_ORIGINS='chrome-extension://*,moz-extension://*'
+```
+
+Supported scheme patterns are `chrome-extension://*`, `moz-extension://*`, and
+`safari-web-extension://*`. They match only extension IDs (32 lowercase letters
+`a`–`p` for Chrome, UUID hosts for Firefox and Safari), with no port, path,
+userinfo, query, or fragment. HTTP(S) entries remain literal; general globs and
+regular expressions are unsupported. Bare `*` retains its all-origin meaning.
+Scheme patterns trust every extension using that scheme; prefer literal origins
+when access should be limited to specific extensions. Credentials stay disabled
+by default on the CLI/env path; `RAPID_MLX_CORS_ALLOW_CREDENTIALS=true` opts in.
+Scheme patterns echo the matched origin and support credentials, unlike bare `*`.
 
 For LAN or reverse-proxy access, set the expected Host names explicitly; this
 replaces the local defaults, so include loopback names if they are also needed:

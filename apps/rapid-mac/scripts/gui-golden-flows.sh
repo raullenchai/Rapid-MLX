@@ -62,7 +62,7 @@ Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 Flows: fresh-install, cached-quickstart, cached-uncataloged-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, chat-depth, launch-integrations,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, dictation-rc2-upgrade, audio-readiness, all
+       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, menubar-resource-card, dictation, dictation-rc2-upgrade, audio-readiness, all
 
 Most named regression flows drive the app through the accessibility API alone.
 The preflight contract tests keep the exact allowlist in sync with
@@ -525,7 +525,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         fresh-install|cached-quickstart|cached-uncataloged-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|chat-depth|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
-        model-switch-active-request|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        model-switch-active-request|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected|menubar-resource-card) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -1976,6 +1976,81 @@ wait_settings_stable() {
     die "Settings AX tree did not settle with required identifiers: $*"
 }
 
+start_fixture_chat_model() {
+    # Skip can hand off the RAM-only starter before catalog discovery, or
+    # leave the cached fixture selected if the picker resolved first. These
+    # journeys test chat persistence/recovery, so explicitly choose their
+    # fixture instead of starting whichever side of that race won.
+    wait_identifier_enabled ModelPickerBar.ModelMenu "$OUT/fixture-picker-ready.json"
+    # The onboarding/discovery race can switch the picker back to the starter
+    # after any single snapshot, so (re)select whenever the observed alias is
+    # not the fixture, with a bounded number of selections.
+    # A selection takes a moment to show in the picker, so wait at least
+    # 8 polls (about 2 s) before selecting again to avoid repeated starts.
+    local selections=0 since_select=8
+    for _ in {1..60}; do
+        see_main "$OUT/fixture-model-selected.json"
+        since_select=$((since_select + 1))
+        if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+            if (( selections < 4 && since_select >= 8 )); then
+                selections=$((selections + 1))
+                since_select=0
+                "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+                    "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/fixture-model-select.json" \
+                    || die "chat fixture model could not be selected"
+            fi
+            sleep 0.25
+            continue
+        fi
+        if [[ "$(element_field "$OUT/fixture-model-selected.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]]; then
+            # Discovery may already have activated this fixture. The waiter
+            # accepts its existing launch event in this persona's log; no new
+            # launch is required. Starting and ready both hide Readiness.Action,
+            # so independently wait for the composer before sending a prompt.
+            # Selecting a cached model does not always start it: an idle
+            # fixture still shows Start. Press it once enabled, as a user
+            # would. If the action disappears, startup is already under way.
+            local start_check="$OUT/fixture-model-selected.json"
+            for _ in {1..80}; do
+                jq -e '.data.ui_elements[]?
+                       | select(.identifier == "Readiness.Action"
+                                and (.description == "Start" or .description == "启动"))' \
+                    "$start_check" >/dev/null || break
+                if jq -e '.data.ui_elements[]?
+                          | select(.identifier == "Readiness.Action"
+                                   and (.description == "Start" or .description == "启动")
+                                   and .enabled == true)' \
+                    "$start_check" >/dev/null; then
+                    # Auto-start can remove Start between the snapshot and
+                    # the press. A failed press is not fatal: the startup
+                    # event check below decides whether the model came up.
+                    press "$start_check" Readiness.Action "$OUT/fixture-model-start.json" \
+                        || log "  Start vanished before press; checking startup evidence"
+                    break
+                fi
+                sleep 0.25
+                start_check="$OUT/fixture-model-start-ready.json"
+                see_main "$start_check"
+                # Discovery can reset the picker while Start is disabled.
+                # Re-enter bounded selection before acting on another alias.
+                if [[ "$(element_field "$start_check" ModelPickerBar.ModelMenu value)" != "$FAKE_ALIAS" ]]; then
+                    continue 2
+                fi
+            done
+            wait_fake_event_after_start \
+                ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
+                "chat fixture model did not become ready" \
+                readiness
+            wait_send_idle "$OUT/fixture-model-ready.json"
+            [[ "$(element_field "$OUT/fixture-model-ready.json" ModelPickerBar.ModelMenu value)" == "$FAKE_ALIAS" ]] \
+                || die "chat fixture model changed while waiting for composer readiness"
+            return
+        fi
+        sleep 0.25
+    done
+    die "chat fixture model selection did not settle on $FAKE_ALIAS"
+}
+
 start_model() {
     # The readiness band is mounted before its action becomes interactive
     # while the catalog finishes resolving the selected model.  Pressing the
@@ -2775,7 +2850,7 @@ flow_chat_restore() {
     log "3/6 basic chat and session restore"
     start_persona chat-restore
     dismiss_first_run
-    start_model
+    start_fixture_chat_model
     send_prompt "golden restore marker" chat
     for _ in {1..100}; do
         see_main "$OUT/chat-complete.json"
@@ -3037,12 +3112,7 @@ flow_model_crash_recovery() {
     start_persona model-crash-recovery FAKE_DIE_AFTER_CHUNKS=2 \
         FAKE_DIE_ONCE_STATE="$OUT_ROOT/model-crash-recovery/died-once"
     dismiss_first_run
-    # Skipping onboarding can leave the recommended starter selected. This
-    # journey's baseline and crash fixture belong to the cached fake model.
-    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
-        "ModelPickerBar.Alias.$FAKE_ALIAS" > "$OUT/select-crash-model.json" \
-        || die "crash fixture model could not be selected"
-    start_model
+    start_fixture_chat_model
     send_prompt "golden crash marker" crash
     for _ in {1..160}; do
         see_main "$OUT/crash-recovered.json"
@@ -5704,6 +5774,59 @@ wait_picker_dismissed() {
     return 1
 }
 
+# Poll the open tray itself: ordinary see_main intentionally excludes extras.
+wait_resource_card() {
+    local state="$1" destination="$2" physical_bytes="$3" i
+    for ((i=0; i<80; i++)); do
+        if "$AX_DRIVER" dump-status-menu "$APP_PID" > "$destination" \
+            && python3 "$ROOT/scripts/gui-resource-card.py" "$destination" "$state" "$physical_bytes" \
+                2> "$OUT/card-assertion.txt"; then
+            # Standard normalized AX snapshot, uploaded beside the raw tree.
+            # A committed comparison can follow a reviewed GUI capture.
+            python3 "$BASELINE_TOOL" normalize --scrub "$FAKE_ALIAS" "$destination" \
+                > "$OUT/menubar-resource-card.$state.observed.txt"
+            return
+        fi
+        sleep 0.25
+    done
+    cat "$OUT/card-assertion.txt" >&2
+    die "menu resource card did not settle: $state"
+}
+
+flow_menubar_resource_card() {
+    log "flow: menubar-resource-card"
+    start_persona menubar-resource-card FAKE_RESOURCE_CARD=1 \
+        FAKE_INTER_TOKEN_SLEEP_S=0.02 FAKE_CONTENT_REPEAT=1000
+    local physical_bytes
+    physical_bytes="$(sysctl -n hw.memsize)"
+    "$AX_DRIVER" status-menu "$APP_PID" > "$OUT/menu-idle-open.json"
+    wait_resource_card idle "$OUT/card-idle.json" "$physical_bytes"
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/menu-idle-close.json"
+
+    dismiss_first_run
+    start_fixture_chat_model
+    send_prompt "Keep generating while I inspect memory" "resource-generation"
+    "$AX_DRIVER" status-menu "$APP_PID" > "$OUT/menu-active-open.json"
+    wait_resource_card two "$OUT/card-two.json" "$physical_bytes"
+    # A single action, deliberately without the generic press retry: replaying
+    # an unload would mask a duplicate DELETE. Endpoint evidence is independent
+    # of the AX row disappearing.
+    "$AX_DRIVER" press-status-menu "$APP_PID" \
+        MenuBar.Resources.Unload.fake-evictable-alias > "$OUT/card-unload.json"
+    jq -e '.success == true' "$OUT/card-unload.json" >/dev/null
+    wait_resource_card one "$OUT/card-one.json" "$physical_bytes"
+    # Observe another complete polling interval to catch duplicate actions.
+    sleep 3.2
+    wait_resource_card one "$OUT/card-one-refreshed.json" "$physical_bytes"
+    jq -e -s '[.[] | select(.event == "model_delete")] as $deletes
+        | ($deletes | length) == 1
+          and $deletes[0].model == "fake-evictable-alias"' \
+        "$OUT/fake-events.jsonl" > "$OUT/delete-once.json" \
+        || die "resource card did not send exactly one evictable-model DELETE"
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/menu-active-close.json"
+    cleanup_persona
+}
+
 flow_model_switch_active_request() {
     log "flow: model-switch-active-request"
     # The default response has 19 chunks: 100 repeats at 20 ms provide at
@@ -6101,6 +6224,7 @@ case "$FLOW" in
     browse-all-destination) run_journey browse-all-destination flow_browse_all_destination ;;
     chat-document-attachment) run_journey chat-document-attachment flow_chat_document_attachment ;;
     chat-multimodal-attachments) run_journey chat-multimodal-attachments flow_chat_multimodal_attachments ;;
+    menubar-resource-card) run_journey menubar-resource-card flow_menubar_resource_card ;;
     image-generation) run_journey image-generation flow_image_generation ;;
     dictation) run_journey dictation flow_dictation ;;
     dictation-rc2-upgrade) run_journey dictation-rc2-upgrade flow_dictation_rc2_upgrade ;;
@@ -6130,6 +6254,7 @@ case "$FLOW" in
         run_journey browse-all-destination flow_browse_all_destination
         run_journey chat-document-attachment flow_chat_document_attachment
         run_journey chat-multimodal-attachments flow_chat_multimodal_attachments
+        run_journey menubar-resource-card flow_menubar_resource_card
         run_journey image-generation flow_image_generation
         run_journey dictation flow_dictation
         run_journey audio-readiness flow_audio_readiness

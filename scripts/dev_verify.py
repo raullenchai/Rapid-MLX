@@ -188,7 +188,12 @@ AREA_JOURNEYS: dict[str, AreaMapping] = {
         ),
     ),
     "Menu-bar icon / Dock / window behaviour": AreaMapping(
-        ("window-close-prompt", "campaign-banner", "launch-integrations"),
+        (
+            "window-close-prompt",
+            "campaign-banner",
+            "launch-integrations",
+            "menubar-resource-card",
+        ),
     ),
     "Updating the app": AreaMapping(("update-state", "update-busy")),
     "Installing or launching for the first time": AreaMapping(
@@ -219,6 +224,7 @@ AREA_JOURNEYS: dict[str, AreaMapping] = {
             "chat-restore",
             "chat-document-attachment",
             "chat-multimodal-attachments",
+            "menubar-resource-card",
             "image-generation",
             "dictation",
             "dictation-rc2-upgrade",

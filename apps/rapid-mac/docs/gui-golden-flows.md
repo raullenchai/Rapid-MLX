@@ -712,3 +712,23 @@ changes sidebar visibility immediately and cancels search polling when turned
 off. Engine flags apply when the model next starts, following the existing
 spawn-time settings behavior; restart the model to change an already-running
 engine. Disabling preserves the index.
+
+### Menu bar resource card
+
+`--flow menubar-resource-card` runs in the existing `models` CI group. Its
+opt-in fake sidecar serves a pinned primary (2.50 GB), an evictable model
+(1.00 GB), and 42.5 tok/s during an actual fixture chat request. The journey
+opens the real status item through `AXExtrasMenuBar`; ordinary window dumps
+remain unchanged. It checks the idle/no-server `Idle` and `Unloaded` copy,
+then both model names and memory readings, the aggregate against the host's
+physical RAM, disabled primary unload, and active throughput. A single unload
+press must remove the evictable row, reduce memory to 2.50 GB, and produce
+exactly one DELETE, including after another polling interval.
+
+Raw tray dumps (`card-idle.json`, `card-two.json`, `card-one.json`) and standard
+normalized `menubar-resource-card.<state>.observed.txt` snapshots are written
+alongside the action and wire evidence. CI uploads this journey's evidence on
+success as well as failure. These are captured artifacts, not yet committed
+structural comparisons or PNG appearance baselines; recording and reviewing
+those needs a GUI-enabled host. This journey needs Accessibility, but neither
+Peekaboo nor Screen Recording.

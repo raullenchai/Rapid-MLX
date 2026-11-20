@@ -16,6 +16,401 @@ def function(name):
 
 
 class HarnessIsolationTests(unittest.TestCase):
+    def test_fixture_reselects_after_picker_drift_during_start_wait(self):
+        for drift_poll in (2, 40, 81):
+            for starter_action in ("enabled", "disabled", "absent"):
+                with (
+                    self.subTest(drift_poll=drift_poll, starter_action=starter_action),
+                    tempfile.TemporaryDirectory() as tmp,
+                ):
+                    shell = (
+                        function("start_fixture_chat_model")
+                        + r"""
+OUT="$1"
+drift_poll="$2"
+starter_action="$3"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=driver
+polls=0
+selection_requests=0
+presses=0
+sleep() { :; }
+log() { :; }
+die() { echo "$*" >&2; exit 1; }
+wait_identifier_enabled() { :; }
+see_main() {
+    polls=$((polls + 1))
+    local alias=fake-alias enabled=false action
+    action='{"identifier":"Readiness.Action","description":"Start","enabled":false}'
+    if (( selection_requests > 0 )); then
+        enabled=true
+    elif (( polls >= drift_poll )); then
+        alias=starter
+        [[ "$starter_action" != enabled ]] || enabled=true
+        [[ "$starter_action" != absent ]] || action=null
+    fi
+    jq -n --arg alias "$alias" --argjson action "$action" --argjson enabled "$enabled" \
+        '{data: {ui_elements: ([{identifier: "ModelPickerBar.ModelMenu", value: $alias}]
+          + (if $action == null then [] else [$action + {enabled: $enabled}] end))}}' > "$1"
+}
+element_field() {
+    jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"
+}
+driver() {
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] \
+        || die "unexpected selection arguments"
+    selection_requests=$((selection_requests + 1))
+    (( polls >= drift_poll )) || die "fixture unnecessarily reselected"
+}
+press() {
+    [[ "$(element_field "$1" ModelPickerBar.ModelMenu value)" == fake-alias ]] \
+        || die "Start pressed for starter"
+    [[ "$2" == Readiness.Action ]] || die "unexpected press"
+    presses=$((presses + 1))
+}
+wait_fake_event_after_start() {
+    [[ "$selection_requests" == 1 && "$presses" == 1 ]] || die "fixture was not reselected and started"
+}
+wait_send_idle() { see_main "$1"; }
+start_fixture_chat_model
+echo "$selection_requests $presses"
+"""
+                    )
+                    result = subprocess.run(
+                        [
+                            "/bin/bash",
+                            "-eu",
+                            "-o",
+                            "pipefail",
+                            "-c",
+                            shell,
+                            "test",
+                            tmp,
+                            str(drift_poll),
+                            starter_action,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "1 1\n")
+
+    def test_fixture_selection_rechecks_snapshots_and_bounds_retries(self):
+        for scenario, initial, aliases, expected_polls in (
+            ("picker-reset", "fake-alias", ["starter", "fake-alias"], [1]),
+            ("never-sticks", "starter", ["starter"] * 60, [1, 9, 17, 25]),
+            ("delayed", "starter", ["starter"] * 5 + ["fake-alias"], [1]),
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                for index, alias in enumerate([initial, *aliases]):
+                    (directory / f"snapshot-{index}.json").write_text(
+                        json.dumps(
+                            {
+                                "data": {
+                                    "ui_elements": [
+                                        {
+                                            "identifier": "ModelPickerBar.ModelMenu",
+                                            "value": alias,
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+                    )
+                shell = (
+                    function("start_fixture_chat_model")
+                    + r"""
+OUT="$1"
+limit="$2"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=driver
+polls=0
+sleep() { :; }
+die() { echo "$*" >&2; exit 1; }
+wait_identifier_enabled() { cp "$OUT/snapshot-0.json" "$2"; }
+see_main() {
+    polls=$((polls + 1))
+    local index="$polls"
+    [[ "$index" -le "$limit" ]] || index="$limit"
+    cp "$OUT/snapshot-$index.json" "$1"
+}
+element_field() {
+    jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"
+}
+driver() {
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] \
+        || die "unexpected selection arguments"
+    echo "$polls" >> "$OUT/selections"
+}
+wait_fake_event_after_start() { :; }
+wait_send_idle() { cp "$OUT/fixture-model-selected.json" "$1"; }
+start_fixture_chat_model
+echo ready
+"""
+                )
+                result = subprocess.run(
+                    [
+                        "/bin/bash",
+                        "-eu",
+                        "-o",
+                        "pipefail",
+                        "-c",
+                        shell,
+                        "test",
+                        tmp,
+                        str(len(aliases)),
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                selections = directory / "selections"
+                observed_polls = (
+                    [int(poll) for poll in selections.read_text().splitlines()]
+                    if selections.exists()
+                    else []
+                )
+                self.assertEqual(observed_polls, expected_polls, result.stderr)
+                if scenario == "never-sticks":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(
+                        result.stderr,
+                        "chat fixture model selection did not settle on fake-alias\n",
+                    )
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "ready\n")
+
+    def test_chat_lifecycle_flows_select_fixture_before_starting(self):
+        # Exercise each journey's real setup through its first prompt. Skip
+        # may win discovery (starter alias) or lose it (cached fixture alias).
+        for flow in ("flow_chat_restore", "flow_model_crash_recovery"):
+            for initial_alias, selection in (
+                ("lfm2.5-2.6b-4bit", "delayed"),
+                ("fake-alias", "delayed"),
+                ("fake-alias", "ready"),
+                ("fake-alias", "idle"),
+                ("fake-alias", "idle-localized"),
+                ("fake-alias", "start-disabled-then-enabled"),
+                ("fake-alias", "auto-start"),
+                ("fake-alias", "start-press-missing-auto-start"),
+                ("fake-alias", "start-press-missing-no-event"),
+                ("fake-alias", "start-stays-disabled"),
+                ("fake-alias", "never-ready"),
+                ("fake-alias", "alias-drift"),
+                ("lfm2.5-2.6b-4bit", "ready"),
+                ("lfm2.5-2.6b-4bit", "missing-event"),
+                ("lfm2.5-2.6b-4bit", "disabled-picker"),
+                ("lfm2.5-2.6b-4bit", "missing-picker"),
+                ("lfm2.5-2.6b-4bit", "ignored"),
+                ("lfm2.5-2.6b-4bit", "failed"),
+            ):
+                with self.subTest(
+                    flow=flow, initial=initial_alias, selection=selection
+                ):
+                    shell = (
+                        "\n".join(
+                            function(name)
+                            for name in (
+                                "wait_identifier_enabled",
+                                "start_fixture_chat_model",
+                                "wait_fake_event_after_start",
+                                "wait_send_idle",
+                                flow,
+                            )
+                        )
+                        + r"""
+OUT_ROOT="$1"
+OUT="$1"
+FAKE_ALIAS=fake-alias
+APP_PID=123
+AX_DRIVER=fixture_driver
+selected_alias="$2"
+selection="$3"
+polls=0
+selection_requested=0
+selection_attempts=0
+start_presses=0
+fixture_started=0
+initial_alias="$selected_alias"
+# Idle fixtures emit no launch event until Start is pressed or auto-start wins.
+if [[ "$selected_alias" == fake-alias && "$selection" != idle* && "$selection" != start-* && "$selection" != auto-start ]]; then
+    printf '{"event":"server_started","alias":"fake-alias"}\n' > "$OUT/fake-events.jsonl"
+fi
+follow_memory_confirmation_edge() {
+    MEMORY_CONFIRMATION_SIGNATURE=''
+    MEMORY_CONFIRMATION_POLLS=0
+    MEMORY_CONFIRMATION_ATTEMPTS=0
+    MEMORY_CONFIRMATION_CLICKED=0
+    MEMORY_CONFIRMATION_VISIBLE=0
+}
+log() { :; }
+start_persona() { :; }
+dismiss_first_run() { :; }
+sleep() { :; }
+die() { echo "$*" >&2; exit 1; }
+fixture_driver() {
+    if [[ "$*" == 'press 123 Readiness.Action' && "$selection" == start-press-missing-* ]]; then
+        echo 'AX identifier missing: Readiness.Action' >&2
+        return 1
+    fi
+    [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 2
+    [[ "$polls" -ge 2 ]] || die "picker used before enabled"
+    selection_attempts=$((selection_attempts + 1))
+    # Reselecting the current item succeeds without emitting a launch event.
+    [[ "$selected_alias" != fake-alias ]] || return 0
+    [[ "$selection" != failed ]] || return 1
+    selection_requested=1
+    if [[ "$selection" != missing-event ]]; then
+        printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
+    fi
+}
+see_main() {
+    polls=$((polls + 1))
+    if [[ "$selection_requested" == 1 && "$selection" != ignored ]] \
+       && { [[ "$selection" != delayed ]] || [[ "$polls" -ge 4 ]]; }; then
+        selected_alias=fake-alias
+    fi
+    local picker_enabled=false readiness='' start_enabled=true start_label=Start
+    if [[ "$polls" -ge 2 && "$selection" != disabled-picker ]]; then
+        picker_enabled=true
+    fi
+    # The old selection may expose a disabled action. The selected cached
+    # fixture can already be ready and expose no readiness action at all.
+    if { [[ "$selection" == auto-start && "$polls" -ge 4 ]] \
+         || [[ "$selection" == start-press-missing-auto-start && "$start_presses" -gt 0 ]]; } \
+       && [[ "$fixture_started" == 0 ]]; then
+        fixture_started=1
+        printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
+    fi
+    if [[ "$fixture_started" == 0 ]] \
+       && { [[ "$selection" == idle* || "$selection" == start-* || "$selection" == auto-start ]]; }; then
+        if [[ "$selection" == start-stays-disabled || "$selection" == auto-start ]] \
+           || { [[ "$selection" == start-disabled-then-enabled && "$polls" -lt 4 ]]; }; then
+            start_enabled=false
+        fi
+        [[ "$selection" != idle-localized ]] || start_label=启动
+        readiness=",{\"identifier\":\"Readiness.Action\",\"description\":\"$start_label\",\"enabled\":$start_enabled}"
+    elif [[ "$selection" == never-ready ]] \
+       || { [[ "$selection" == delayed ]] && [[ "$polls" -lt 6 ]]; }; then
+        readiness=',{"identifier":"Composer.LoadStatus"}'
+    elif [[ "$selected_alias" == fake-alias || "$selection" == alias-drift ]]; then
+        readiness=',{"identifier":"ChatView.SendOrStopButton","description":"Send message","enabled":true}'
+        if [[ "$selection" == alias-drift && "$polls" -ge 4 ]]; then
+            selected_alias=lfm2.5-2.6b-4bit
+        fi
+    else
+        readiness=',{"identifier":"Readiness.Action","enabled":false}'
+    fi
+    if [[ "$selection" == missing-picker ]]; then
+        printf '{"data":{"ui_elements":[]}}\n' > "$1"
+    else
+        printf '{"data":{"ui_elements":[{"identifier":"ModelPickerBar.ModelMenu","enabled":%s,"value":"%s"}%s]}}\n' \
+            "$picker_enabled" "$selected_alias" "$readiness" > "$1"
+    fi
+}
+element_field() { jq -r --arg id "$2" '.data.ui_elements[] | select(.identifier == $id) | .value' "$1"; }
+press() {
+    [[ "$2" == Readiness.Action ]] || die "unexpected press: $2"
+    jq -e '.data.ui_elements[] | select(.identifier == "Readiness.Action"
+        and (.description == "Start" or .description == "启动") and .enabled == true)' \
+        "$1" >/dev/null || die "Start pressed before enabled"
+    [[ "$fixture_started" == 0 ]] || die "fixture started twice"
+    start_presses=$((start_presses + 1))
+    if [[ "$selection" == start-press-missing-* ]]; then
+        fixture_driver press "$APP_PID" "$2"
+        return $?
+    fi
+    fixture_started=1
+    printf '{"event":"server_started","alias":"fake-alias"}\n' >> "$OUT/fake-events.jsonl"
+    printf '{}\n' > "$3"
+}
+start_model() { die "cached fixture must not be started twice"; }
+send_prompt() {
+    local expected_presses=0
+    if [[ "$selection" == idle* || "$selection" == start-disabled-then-enabled || "$selection" == start-press-missing-* ]]; then
+        expected_presses=1
+    fi
+    [[ "$start_presses" == "$expected_presses" ]] || die "unexpected Start press count: $start_presses"
+    if [[ "$selection" == start-disabled-then-enabled || "$selection" == auto-start ]]; then
+        [[ "$polls" -ge 4 ]] || die "startup polling skipped"
+    fi
+    if [[ "$initial_alias" == fake-alias ]]; then
+        [[ "$selection_attempts" == 0 ]] || die "fixture model unnecessarily reselected"
+    else
+        [[ "$selection_attempts" == 1 ]] || die "fixture model not selected exactly once"
+    fi
+    [[ "$(element_field "$OUT/fixture-model-ready.json" ModelPickerBar.ModelMenu value)" == fake-alias ]] \
+        || die "prompt sent on wrong alias"
+    echo "started $selected_alias"
+    exit 0
+}
+"""
+                        + "\n"
+                        + flow
+                    )
+                    with tempfile.TemporaryDirectory() as tmp:
+                        result = subprocess.run(
+                            [
+                                "/bin/bash",
+                                "-eu",
+                                "-o",
+                                "pipefail",
+                                "-c",
+                                shell,
+                                "test",
+                                tmp,
+                                initial_alias,
+                                selection,
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                    if selection in (
+                        "ignored",
+                        "failed",
+                        "missing-event",
+                        "disabled-picker",
+                        "missing-picker",
+                        "never-ready",
+                        "alias-drift",
+                        "start-stays-disabled",
+                        "start-press-missing-no-event",
+                    ):
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertNotIn("started", result.stdout)
+                        if selection in (
+                            "start-stays-disabled",
+                            "start-press-missing-no-event",
+                        ):
+                            self.assertTrue(
+                                result.stderr.endswith(
+                                    "chat fixture model did not become ready\n",
+                                ),
+                                result.stderr,
+                            )
+                        self.assertIn(
+                            "ModelPickerBar.ModelMenu"
+                            if selection in ("disabled-picker", "missing-picker")
+                            else (
+                                "composer never settled"
+                                if selection == "never-ready"
+                                else "fixture model"
+                            ),
+                            result.stderr,
+                        )
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, "started fake-alias\n")
+                    if selection.startswith("start-press-missing-"):
+                        self.assertIn(
+                            "AX identifier missing: Readiness.Action\n", result.stderr
+                        )
+
     def test_crash_recovery_pins_fixture_before_start_and_checks_respawn_alias(self):
         for restarted_alias in ("fake-alias", "lfm2.5-2.6b-4bit"):
             with (
@@ -23,7 +418,9 @@ class HarnessIsolationTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as tmp,
             ):
                 shell = (
-                    function("flow_model_crash_recovery")
+                    function("start_fixture_chat_model")
+                    + "\n"
+                    + function("flow_model_crash_recovery")
                     + r"""
 OUT_ROOT="$1"
 OUT="$1"
@@ -38,15 +435,23 @@ driver() {
     [[ "$*" == 'select-menu-item 123 ModelPickerBar.ModelMenu ModelPickerBar.Alias.fake-alias' ]] || exit 1
     touch "$OUT/fixture-selected"
 }
-start_model() {
+wait_identifier_enabled() { echo starter > "$2"; }
+wait_fake_event_after_start() {
     [[ -f "$OUT/fixture-selected" ]] || die "started without selecting fixture"
     printf '{"event": "server_started", "alias": "fake-alias"}\n' > "$OUT/fake-events.jsonl"
 }
 see_main() {
-    printf '{"data":{"ui_elements":[{"identifier":"ChatView.SendOrStopButton"}]}}\n' > "$1"
+    local alias=starter
+    [[ ! -f "$OUT/fixture-selected" ]] || alias=fake-alias
+    printf '{"data":{"ui_elements":[{"identifier":"ModelPickerBar.ModelMenu","value":"%s"},{"identifier":"ChatView.SendOrStopButton"}]}}\n' "$alias" > "$1"
 }
-element_field() { echo 'Send message'; }
-wait_send_idle() { :; }
+element_field() {
+    if [[ "$1" == */fixture-picker-ready.json ]]; then echo starter
+    elif [[ "$2" == ModelPickerBar.ModelMenu ]]; then
+        jq -r '.data.ui_elements[] | select(.identifier == "ModelPickerBar.ModelMenu") | .value' "$1"
+    else echo 'Send message'; fi
+}
+wait_send_idle() { see_main "$1"; }
 baseline() { touch "$OUT/baseline-checked"; }
 cleanup_persona() { :; }
 RESTARTED_ALIAS="$2"

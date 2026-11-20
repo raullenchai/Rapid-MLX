@@ -274,3 +274,11 @@ journeys:
     fixtures: [fake-sidecar, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/RapidApp.swift, apps/rapid-mac/Sources/Rapid/UI/]
     owns_baseline: true
+  - name: menubar-resource-card
+    group: models
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, resident-model, slow-stream, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/MenuBarController.swift, apps/rapid-mac/Sources/Rapid/UI/MenuBarResourceCard.swift, apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: false

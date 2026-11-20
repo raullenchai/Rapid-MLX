@@ -804,6 +804,19 @@
       }
     },
     {
+      "id": "gemma4-affine4-enrollment",
+      "model": {
+        "family": "gemma4_affine4_install"
+      },
+      "knobs": {
+        "gemma4_affine4": true
+      },
+      "provenance": {
+        "evidence": "Selected affine-4 Gemma experts; exact class/layout gates and a per-block 2% relative RMS probe are mandatory. Performance qualification remains separate.",
+        "hardware_scope": "Metal devices passing the local numerical probe."
+      }
+    },
+    {
       "id": "qwen35-affine4-enrollment",
       "model": {
         "family": "qwen35_affine4_install"
@@ -827,6 +840,38 @@
       "provenance": {
         "evidence": "Historical default-on enrollment in rapid_mlx/qwen35_moe_router.py:install_qwen35_moe_router; no new qualification. Local class, route, layout and numerical checks remain mandatory.",
         "hardware_scope": "Universal, including unknown and future hardware; no software restriction or new measurements."
+      }
+    },
+    {
+      "id": "lfm2moe-affine4-enrollment",
+      "hardware": [
+        {
+          "gpu_generation": 17,
+          "tier": "base"
+        },
+        {
+          "gpu_generation": 17,
+          "tier": "Pro"
+        },
+        {
+          "gpu_generation": 17,
+          "tier": "Max"
+        },
+        {
+          "gpu_generation": 17,
+          "tier": "Ultra"
+        }
+      ],
+      "model": {
+        "family": "lfm2moe_affine4_install"
+      },
+      "knobs": {
+        "lfm2moe_affine4": true
+      },
+      "provenance": {
+        "evidence": "LFM2-MoE affine4 singleton expert fusion; exact class/layout checks and a per-block 2% relative-RMS load-time probe are mandatory. Apple M5 Max (gpu_generation 17): stock 199.6 -> fused 205.2 tok/s (+2.6%). Apple M2 Pro 32 GB, LiquidAI/LFM2.5-24B-A2B-MLX-4bit, 256-token decode, fresh server per run, 3 interleaved rounds: fused 84.44 / 84.66 / 84.66 vs stock 94.62 / 95.90 / 95.67 tok/s (11.5% slower). Apple M4 Pro 48 GB (gpu_generation 16), main 8b1f96e5d, same model and decode protocol: fused 114.60 / 114.75 / 114.73 vs stock 127.96 / 128.12 / 128.24 tok/s (10.5% slower). M3 (gpu_generation 15) not measured.",
+        "decision": "enable on M5 generation: measured +2.6%; M2 Pro -11.5%, M4 Pro -10.5%",
+        "hardware_scope": "Generation-wide generalization from measured Apple M5 Max to all supported tiers (base, Pro, Max, Ultra) of gpu_generation 17, including all core/memory variants and missing core/memory facts. Other generations and unknown hardware stay stock until measured."
       }
     },
     {

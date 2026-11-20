@@ -298,6 +298,8 @@ def _cast(text: str, types: set[str]) -> Any:
 def _conform(value: Any, schema: dict) -> tuple[Any, bool]:
     if isinstance(value, str):
         cast = _cast(value, _schema_types(schema))
+        if isinstance(cast, (dict, list)):
+            cast, _ = _conform(cast, schema)
         return cast, cast is not value
     if isinstance(value, dict):
         properties = schema.get("properties")
@@ -329,6 +331,14 @@ def _conform_object(arguments: dict, properties: dict) -> bool:
             arguments[key] = cast
             changed = True
     return changed
+
+
+def _parameter_json(key: str, value: str, properties: dict) -> str:
+    """Serialize one entry with all schema coercion completed before emission."""
+    schema = properties.get(key)
+    if isinstance(schema, dict):
+        value, _ = _conform(value, schema)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _stable_prefix(arguments: str, string_keys: set[str] | None) -> str:
@@ -380,7 +390,7 @@ def _stable_prefix(arguments: str, string_keys: set[str] | None) -> str:
 
 
 class _Call:
-    __slots__ = ("id", "name", "raw", "named", "string_keys", "sent")
+    __slots__ = ("id", "name", "raw", "named", "string_keys", "sent", "prefixes")
 
     def __init__(self) -> None:
         self.id = ""
@@ -389,6 +399,142 @@ class _Call:
         self.named = False
         self.string_keys: set[str] | None = None
         self.sent = ""
+        self.prefixes: list[str] = []
+
+
+class _ParameterPrefix:
+    """Incremental JSON projection; the shared scanner resolves held closers.
+
+    Keep raw fragments for boundary resolution, but never reparse an open
+    value on each token. Only a framing newline and unresolved markup are
+    withheld from string deltas. Other schema types wait for their boundary.
+    """
+
+    def __init__(self, properties: dict) -> None:
+        self.properties = properties
+        self.raw: list[str] = []
+        self.header: list[str] | None = None
+        self.key: str | None = None
+        self.closed = False
+        self.tail: list[str] = []
+        self.tail_text = False
+        self.function_tail: list[Piece] = []
+        self.first = True
+        self.newline = ""
+        self.sent = 0
+        self.count = 0
+        self.string = False
+        self.parameter_markup = False
+        self.maybe_quoted: bool | None = None
+
+    def _value(self, value: str) -> str:
+        if self.first and value:
+            self.first = False
+            value = value.removeprefix("\n")
+        value = self.newline + value
+        if self.maybe_quoted is None and value.strip():
+            self.maybe_quoted = value.lstrip().startswith('"')
+        self.parameter_markup |= "<parameter" in value or "</parameter" in value
+        self.newline = "\n" if value.endswith("\n") else ""
+        if self.newline:
+            value = value[:-1]
+        encoded = json.dumps(value, ensure_ascii=False)[1:-1]
+        self.sent += len(encoded)
+        return encoded
+
+    def _finish(self) -> str:
+        parameters = split_marked_parameters(
+            "".join(self.raw),
+            _NAMED_PARAMETER.pattern,
+            PARAMETER_CLOSE,
+            valid_names=set(self.properties) or None,
+        )
+        if not parameters:
+            return ""
+        key, value = parameters[0]
+        encoded = _parameter_json(key, value, self.properties)
+        if self.string:
+            rest = encoded[1 + self.sent :]
+        else:
+            rest = self._key(key) + encoded
+        self.count += 1
+        return rest
+
+    def _key(self, key: str) -> str:
+        return (
+            (", " if self.count else "{") + json.dumps(key, ensure_ascii=False) + ": "
+        )
+
+    def feed(self, piece: Piece) -> str:
+        # A function close needs the next function close/sibling or EOF to
+        # become structural. When another close arrives, the earlier one and
+        # its intervening body are payload under the shared last-close rule.
+        if piece.kind == FUNCTION_CLOSE:
+            rest = ""
+            if self.function_tail:
+                first, *body = self.function_tail
+                rest = self._feed_parameter(Piece(None, first.value))
+                rest += "".join(self._feed_parameter(part) for part in body)
+            self.function_tail = [piece]
+            return rest
+        if self.function_tail:
+            self.function_tail.append(piece)
+            return ""
+        return self._feed_parameter(piece)
+
+    def _feed_parameter(self, piece: Piece) -> str:
+        kind, value = piece.kind, piece.value
+        if kind == PARAMETER_OPEN and (self.key is None or self.closed):
+            self.header = [value]
+            return ""
+        if self.header is not None:
+            self.header.append(value)
+            if kind != TAG_CLOSE:
+                return ""
+            header = "".join(self.header)
+            self.header = None
+            match = _NAMED_PARAMETER.fullmatch(header)
+            key = match.group(1).strip() if match else ""
+            sibling = self.closed and (not self.properties or key in self.properties)
+            if self.key is None or sibling:
+                rest = self._finish() if self.key is not None else ""
+                self.raw = [header]
+                self.key = key
+                self.closed = False
+                self.tail, self.tail_text = [], False
+                self.first, self.newline, self.sent = True, "", 0
+                self.parameter_markup, self.maybe_quoted = False, None
+                schema = self.properties.get(key)
+                self.string = schema is None or _schema_types(schema) == {"string"}
+                return rest + (self._key(key) + '"' if self.string else "")
+            # An opener without a preceding closer (or an undeclared sibling)
+            # is literal value text, just as in split_marked_parameters.
+            value = header
+        if self.key is None:
+            return ""
+        self.raw.append(value)
+        if kind == PARAMETER_CLOSE:
+            rest = ""
+            if self.tail and (
+                self.tail_text or (self.parameter_markup and self.maybe_quoted is False)
+            ):
+                # Non-framing text followed by another close proves that
+                # the previous candidate was literal. A repeated closing run
+                # stays held unless earlier unquoted parameter markup rules
+                # out the shared scanner's duplicate-closer cleanup.
+                if self.string:
+                    rest = self._value("".join(self.tail))
+                self.tail, self.tail_text = [], False
+            self.tail.append(value)
+            self.closed = True
+            return rest
+        if self.tail:
+            self.tail.append(value)
+            self.tail_text |= bool(value.strip())
+            return ""
+        if not self.string:
+            return ""
+        return self._value(value)
 
 
 class RaonToolParser(ToolParser):
@@ -418,6 +564,10 @@ class RaonToolParser(ToolParser):
         self._calls: list[_Call] = []
         self._held_content = ""
         self._content_started = False
+        self._pending_arguments: list[str] = []
+        self._pending_name = ""
+        self._parameter_prefix: _ParameterPrefix | None = None
+        self._sibling_header: list[str] | None = None
 
     def _use_request(self, request: Any) -> None:
         request = _request(request)
@@ -520,6 +670,91 @@ class RaonToolParser(ToolParser):
             events.append(("reasoning_end", "", -1))
         return events
 
+    def _bounded_argument_events(self) -> list[tuple[str, str, int]]:
+        """Resolve held bodies with the complete parser's sibling boundaries."""
+        # The first header has already passed through the grammar. Restore a
+        # header for the shared call scanner without emitting its name twice.
+        header = f"<function={self._pending_name}>"
+        raw = header + "".join(self._pending_arguments)
+        self._pending_arguments = []
+        self._parameter_prefix = None
+        self._sibling_header = None
+        names = declared_tool_names({"tools": self._request_tools})
+        spans = split_marked_calls(
+            raw,
+            r"<function=([^>]+)>",
+            FUNCTION_CLOSE,
+            valid_names=names,
+        )
+        markup = RaonMarkupStream(self.markup)
+        if not spans:
+            return self._events(markup.feed(raw[len(header) :], [])) + self._events(
+                markup.finish()
+            )
+        events = []
+        cursor = len(header)
+        for _, body, start, end in spans:
+            if start:
+                header_end = raw.index(">", start) + 1
+                events += self._events(markup.feed(raw[cursor:header_end], []))
+            events.append(("args", body, self._index))
+            events += self._events(markup.feed(FUNCTION_CLOSE, []))
+            cursor = end
+        events += self._events(markup.feed(raw[cursor:], []))
+        events += self._events(markup.finish())
+        return events
+
+    def _stream_events(self, pieces: list[Piece]) -> list[tuple[str, str, int]]:
+        events = []
+        for piece in pieces:
+            if self._state == _ARGS and piece.kind != DISCARD:
+                if not self._pending_arguments:
+                    if piece.kind in (None, PARAMETER_OPEN) and piece.value:
+                        events.append(("args", "", self._index))
+                    self._parameter_prefix = _ParameterPrefix(
+                        self._properties(self._pending_name.strip())
+                    )
+                self._pending_arguments.append(piece.value)
+                assert self._parameter_prefix is not None
+                if piece.kind == FUNCTION_OPEN and self._parameter_prefix.function_tail:
+                    self._sibling_header = []
+                if self._sibling_header is not None:
+                    self._sibling_header.append(piece.value)
+                    if piece.kind == TAG_CLOSE:
+                        header = "".join(self._sibling_header)
+                        self._sibling_header = None
+                        names = declared_tool_names({"tools": self._request_tools})
+                        match = re.fullmatch(r"<function=([^>]+)>", header)
+                        if match and (
+                            not names
+                            or self._pending_name.strip() not in names
+                            or match.group(1).strip() in names
+                        ):
+                            # The shared call scanner now has a real sibling,
+                            # so flush this call and enter the next header.
+                            current = self._bounded_argument_events()
+                            for kind, value, _ in current:
+                                if kind == "open":
+                                    self._pending_name = ""
+                                elif kind == "name":
+                                    self._pending_name += value
+                            events += current
+                            continue
+                prefix = self._parameter_prefix.feed(piece)
+                if prefix:
+                    events.append(("prefix", prefix, self._index))
+                if piece.kind == TOOL_CALL_END:
+                    events += self._bounded_argument_events()
+            else:
+                current = self._events([piece])
+                for kind, value, _ in current:
+                    if kind == "open":
+                        self._pending_name = ""
+                    elif kind == "name":
+                        self._pending_name += value
+                events += current
+        return events
+
     # -- tool schema ------------------------------------------------------------
 
     def _properties(self, name: str) -> dict:
@@ -601,9 +836,7 @@ class RaonToolParser(ToolParser):
         return True
 
     def _argument_delta(self, call: _Call) -> str | None:
-        current = _parameters_json(call.raw, True)
-        if call.name:
-            current = self._typed(current, call.name)
+        current = self._arguments(call)
         stable = _stable_prefix(current, call.string_keys)
         if (
             not stable
@@ -615,7 +848,7 @@ class RaonToolParser(ToolParser):
         return delta
 
     def _argument_rest(self, call: _Call) -> str | None:
-        final = self._typed(_parameters_json(call.raw, False), call.name)
+        final = self._arguments(call)
         if len(final) <= len(call.sent) or (
             call.sent and not final.startswith(call.sent)
         ):
@@ -627,6 +860,9 @@ class RaonToolParser(ToolParser):
         self, index: int, value: str, deltas: list[DeltaToolCall]
     ) -> None:
         call = self._calls[index]
+        if call.prefixes:
+            call.sent += "".join(call.prefixes)
+            call.prefixes.clear()
         if value:
             call.raw += value
         if not call.named:
@@ -660,7 +896,10 @@ class RaonToolParser(ToolParser):
     @staticmethod
     def _merge(deltas: list[DeltaToolCall]) -> list[DeltaToolCall]:
         merged: dict[int, DeltaToolCall] = {}
+        arguments: dict[int, list[str]] = {}
         for delta in deltas:
+            if delta.function is not None and delta.function.arguments is not None:
+                arguments.setdefault(delta.index, []).append(delta.function.arguments)
             first = merged.setdefault(delta.index, delta)
             if first is delta:
                 continue
@@ -675,12 +914,10 @@ class RaonToolParser(ToolParser):
                 continue
             if delta.function.name is not None and first.function.name is None:
                 first.function.name = delta.function.name
-            if delta.function.arguments is not None:
-                first.function.arguments = (
-                    delta.function.arguments
-                    if first.function.arguments is None
-                    else first.function.arguments + delta.function.arguments
-                )
+        for index, parts in arguments.items():
+            function = merged[index].function
+            assert function is not None
+            function.arguments = "".join(parts)
         return deltas if len(merged) == len(deltas) else list(merged.values())
 
     def _delta(
@@ -711,6 +948,14 @@ class RaonToolParser(ToolParser):
                     self._calls[index].name += value
                 elif kind == "args":
                     self._on_arguments(index, value, deltas)
+                elif kind == "prefix":
+                    call = self._calls[index]
+                    call.prefixes.append(value)
+                    deltas.append(
+                        DeltaToolCall(
+                            index=index, function=DeltaFunctionCall(arguments=value)
+                        )
+                    )
                 else:
                     self._on_close(index, deltas)
         if len(deltas) > 1:
@@ -746,18 +991,9 @@ class RaonToolParser(ToolParser):
             name, raw = call.name.strip(), call.raw
             if not name and raw.strip():
                 name, arguments = self._json_call(raw)
+                arguments = self._typed(arguments, name)
             elif raw.strip():
-                parameters = split_marked_parameters(
-                    raw,
-                    _NAMED_PARAMETER.pattern,
-                    PARAMETER_CLOSE,
-                    valid_names=set(self._properties(name)) or None,
-                )
-                arguments = (
-                    json.dumps(dict(parameters), ensure_ascii=False)
-                    if parameters
-                    else _parameters_json(raw, False)
-                )
+                arguments = self._arguments(call)
             else:
                 arguments = "{}"
             if name:
@@ -765,12 +1001,32 @@ class RaonToolParser(ToolParser):
                 found.append(
                     ToolCall(
                         id=call.id,
-                        function=FunctionCall(
-                            name=name, arguments=self._typed(arguments, name)
-                        ),
+                        function=FunctionCall(name=name, arguments=arguments),
                     )
                 )
         return found
+
+    def _arguments(self, call: _Call) -> str:
+        properties = self._properties(call.name.strip())
+        parameters = split_marked_parameters(
+            call.raw,
+            _NAMED_PARAMETER.pattern,
+            PARAMETER_CLOSE,
+            valid_names=set(properties) or None,
+        )
+        if parameters:
+            # Preserve repeated entries so append-only deltas can finish the
+            # object. JSON decoding retains the established last-value-wins
+            # result. Use the prefix serializer for every occurrence, including
+            # nested coercion; never reserialize a collapsed dictionary later.
+            pairs = [
+                json.dumps(key, ensure_ascii=False)
+                + ": "
+                + _parameter_json(key, value, properties)
+                for key, value in parameters
+            ]
+            return "{" + ", ".join(pairs) + "}"
+        return self._typed(_parameters_json(call.raw, False), call.name)
 
     @staticmethod
     def _json_call(raw: str) -> tuple[str, str]:
@@ -848,13 +1104,22 @@ class RaonToolParser(ToolParser):
             self._started = True
             self._reset(_CONTENT)
         self._use_request(request)
-        return self._delta(self._events(self._stream.feed(delta_text, delta_token_ids)))
+        return self._delta(
+            self._stream_events(self._stream.feed(delta_text, delta_token_ids))
+        )
 
     def finish_streaming(self) -> DeltaMessage | None:
-        events = self._finish_events()
+        events = self._stream_events(self._stream.finish())
+        if self._pending_arguments:
+            events += self._bounded_argument_events()
+        events += self._finish_events()
         if events or self._held_content:
             return self._delta(events, finished=True)
         return None
+
+    def finalize_legacy_raw_stream(self, full_text: str, request=None):
+        """Release bare calls whose final boundary stays ambiguous until EOF."""
+        return _wire(self.finish_streaming())
 
     def reset(self):
         super().reset()

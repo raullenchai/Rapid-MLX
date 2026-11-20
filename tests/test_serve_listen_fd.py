@@ -29,6 +29,13 @@ import pytest
 
 from rapid_mlx import cli
 
+
+@pytest.fixture(autouse=True)
+def single_process_runner_contract(monkeypatch):
+    """These tests exercise the runner; supervision has separate fake-runner tests."""
+    monkeypatch.setenv("RAPID_MLX_SINGLE_PROCESS", "1")
+
+
 # ---------------------------------------------------------------------------
 # Helpers — mirror the chat-command test style: drive ``cli.main()`` and
 # capture the resolved ``argparse.Namespace`` via a ``serve_command`` stub.

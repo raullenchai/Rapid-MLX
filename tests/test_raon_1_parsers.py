@@ -2,6 +2,7 @@
 """Release-format fixtures, including the vendor's non-Qwen edge semantics."""
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -50,8 +51,8 @@ EXPECTED = {
     "count": 42,
     "enabled": True,
     "ratio": 2.5,
-    "items": ["1", 2],
-    "options": {"n": "3"},
+    "items": [1, 2],
+    "options": {"n": 3},
     "maybe": None,
     "choice": 7,
 }
@@ -106,6 +107,316 @@ def test_complete_literal_markers_preserve_values_and_call_boundaries(value):
     assert [
         (item["name"], json.loads(item["arguments"])) for item in result.tool_calls
     ] == [("run", {"text": value}), ("run", {"count": 42})]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "</parameter>",
+        "</function>",
+        "</parameter> and </parameter>",
+        "</function> and </function>",
+        "<parameter=fake> and </parameter>",
+    ],
+)
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_postprocessor_literal_marker_value_parity_at_every_split(marker, wrapped):
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    value = f"a literal {marker} inside"
+    text = call({"text": value})
+    if not wrapped:
+        text = text.removeprefix("<tool_call>\n").removesuffix("\n</tool_call>")
+    complete = RaonToolParser().extract_tool_calls(text, REQUEST)
+    expected = [(tc["name"], json.loads(tc["arguments"])) for tc in complete.tool_calls]
+    assert expected == [("run", {"text": value})]
+
+    for chunks in [list(text)] + [
+        [text[:offset], text[offset:]] for offset in range(len(text) + 1)
+    ]:
+        cfg = MagicMock()
+        cfg.engine = None
+        cfg.reasoning_parser = None
+        cfg.reasoning_parser_name = None
+        cfg.tool_call_parser = "raon_1"
+        cfg.tool_parser_instance = None
+        cfg.enable_auto_tool_choice = True
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=REQUEST)
+        events = []
+        for chunk in chunks:
+            events.extend(
+                pp.process_chunk(
+                    SimpleNamespace(
+                        new_text=chunk,
+                        finished=False,
+                        token=0,
+                        finish_reason=None,
+                        prompt_tokens=0,
+                        generation_tokens=0,
+                        channel=None,
+                        tool_calls=None,
+                        completion_tokens=0,
+                        tokens=[],
+                        logprobs=None,
+                    )
+                )
+            )
+        events.extend(pp.finalize())
+        calls = {}
+        for event in events:
+            if event.type != "tool_call":
+                continue
+            for tc in event.tool_calls:
+                current = calls.setdefault(tc["index"], {"name": "", "arguments": ""})
+                for key in current:
+                    current[key] += tc.get("function", {}).get(key, "")
+        assert [
+            (tc["name"], json.loads(tc["arguments"])) for tc in calls.values()
+        ] == expected, chunks
+
+
+def test_argument_prefixes_and_resolved_parameters_stream_before_function_close():
+    parser = RaonToolParser()
+    arguments = []
+
+    def feed(chunk):
+        delta = parser.extract_tool_calls_streaming("", "", chunk, request=REQUEST)
+        for item in (delta or {}).get("tool_calls", []):
+            arguments.append(item.get("function", {}).get("arguments", ""))
+        return "".join(arguments)
+
+    feed("<tool_call><function=run><parameter=text>\n")
+    assert feed("first") == '{"text": "first'
+    assert feed(" second\n") == '{"text": "first second'
+    feed("</parameter>\n<parameter=count>")
+    assert '"text": "first second"' in "".join(arguments)
+    feed("42\n</parameter>\n<parameter=enabled>")
+    assert '"count": 42' in "".join(arguments)
+    feed("1\n</parameter>\n</function></tool_call>")
+    assert json.loads("".join(arguments)) == {
+        "text": "first second",
+        "count": 42,
+        "enabled": True,
+    }
+
+
+@pytest.mark.parametrize("occurrences", [2, 3])
+@pytest.mark.parametrize(
+    "key, values",
+    [
+        ("text", ["first", "second", "third"]),
+        ("text", ["first </parameter> inside", "second", "third"]),
+        ("text", ["first", "second </function> inside", "third"]),
+        (
+            "text",
+            ["first </function> inside", "second </parameter> inside", "third"],
+        ),
+        ("count", ["1", "2", "3"]),
+        ("choice", ["1", "second", "3"]),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [True, False])
+@pytest.mark.parametrize("trailing_parameter", [True, False])
+def test_repeated_parameters_stream_valid_last_value_wins_at_every_split(
+    occurrences, key, values, wrapped, trailing_parameter
+):
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _wire
+
+    parameters = [
+        f"<parameter={key}>{value}</parameter>" for value in values[:occurrences]
+    ]
+    # A distinct trailing parameter also exercises reconciliation after repeats.
+    if trailing_parameter:
+        parameters.append("<parameter=enabled>1</parameter>")
+    text = "<function=run>" + "".join(parameters) + "</function>"
+    if wrapped:
+        text = "<tool_call>" + text + "</tool_call>"
+    complete = RaonToolParser().extract_tool_calls(text, REQUEST).tool_calls[0]
+    last = values[occurrences - 1]
+    expected = {key: int(last) if last.isdigit() and key != "text" else last}
+    if trailing_parameter:
+        expected["enabled"] = True
+    assert json.loads(complete["arguments"]) == expected
+
+    chunkings = [
+        list(text),
+        # The reported failure: one closed parameter per chunk.
+        [
+            ("<tool_call>" if wrapped else "") + "<function=run>" + parameters[0],
+            *parameters[1:],
+            "</function>" + ("</tool_call>" if wrapped else ""),
+        ],
+    ] + [[text[:offset], text[offset:]] for offset in range(len(text) + 1)]
+    for chunks in chunkings:
+        parser = RaonToolParser()
+        arguments = []
+
+        def collect(delta, arguments=arguments):
+            for item in (delta or {}).get("tool_calls", []):
+                assert item["index"] == 0
+                arguments.append(item.get("function", {}).get("arguments", ""))
+
+        for chunk in chunks:
+            collect(parser.extract_tool_calls_streaming("", "", chunk, request=REQUEST))
+        collect(_wire(parser.finish_streaming()))
+        streamed = "".join(arguments)
+        assert json.loads(streamed) == expected, chunks
+        assert streamed == complete["arguments"], chunks
+        assert len(json.loads(streamed, object_pairs_hook=list)) == occurrences + int(
+            trailing_parameter
+        )
+
+
+@pytest.mark.parametrize(
+    "key,values,typed",
+    [
+        ("options", ['{"n":"1"}', '{"n":"2"}'], [{"n": 1}, {"n": 2}]),
+        ("items", ['["1"]', '["2", "3"]'], [[1], [2, 3]]),
+        ("options", ["plain text", '{"n":"2"}'], ["plain text", {"n": 2}]),
+    ],
+)
+def test_repeated_nested_parameters_use_identical_typed_entries_at_every_split(
+    key, values, typed
+):
+    from rapid_mlx.tool_parsers.raon_1_tool_parser import _wire
+
+    parameters = [f"<parameter={key}>{value}</parameter>" for value in values]
+    chunks = [
+        "<tool_call><function=run>" + parameters[0],
+        parameters[1],
+        "</function></tool_call>",
+    ]
+    text = "".join(chunks)
+    expected_pairs = list(zip([key, key], typed))
+    for parts in [chunks, list(text)] + [
+        [text[:offset], text[offset:]] for offset in range(len(text) + 1)
+    ]:
+        parser = RaonToolParser()
+        arguments = []
+        for part in parts:
+            delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+            for item in (delta or {}).get("tool_calls", []):
+                arguments.append(item.get("function", {}).get("arguments", ""))
+            if parts is chunks and part == chunks[1]:
+                # The first entry is resolved before the call closes, already
+                # carrying its final nested types.
+                assert "".join(arguments) == (
+                    "{" + json.dumps(key) + ": " + json.dumps(typed[0])
+                )
+        delta = _wire(parser.finish_streaming())
+        for item in (delta or {}).get("tool_calls", []):
+            arguments.append(item.get("function", {}).get("arguments", ""))
+        streamed = "".join(arguments)
+        complete = RaonToolParser().extract_tool_calls(text, REQUEST).tool_calls[0]
+        assert (
+            json.loads(streamed)
+            == json.loads(complete["arguments"])
+            == {key: typed[-1]}
+        ), parts
+        assert json.loads(streamed, object_pairs_hook=list) == [
+            (key, list(value.items()) if isinstance(value, dict) else value)
+            for key, value in expected_pairs
+        ], parts
+        assert streamed == complete["arguments"], parts
+
+
+def test_large_argument_stream_has_linear_buffering():
+    parser = RaonToolParser()
+    chunks = []
+    start = time.monotonic()
+    # Pass only deltas: constructing a cumulative input in the test would
+    # itself copy a quadratic number of bytes in this one-character workload.
+    for part in (
+        ["<tool_call><function=run><parameter=text>\n"]
+        + ["x"] * 200_000
+        + ["\n</parameter></function></tool_call>"]
+    ):
+        delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+        chunks.extend(
+            tc.get("function", {}).get("arguments", "")
+            for tc in (delta or {}).get("tool_calls", [])
+        )
+    assert time.monotonic() - start < 15
+    assert json.loads("".join(chunks)) == {"text": "x" * 200_000}
+    assert sum(bool(chunk) for chunk in chunks) > 100_000
+
+
+@pytest.mark.parametrize("marker", ["</parameter>", "</function>"])
+def test_resolved_literal_closer_releases_held_prefix(marker):
+    parser = RaonToolParser()
+    arguments = []
+    parts = [
+        "<tool_call><function=run><parameter=text>\nfirst ",
+        marker,
+        " inside\n",
+        "</parameter>",
+    ]
+    if marker == "</function>":
+        # A function closer stays ambiguous until the next function boundary.
+        parts.append("</function>")
+    for part in parts:
+        delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+        arguments.extend(
+            tc.get("function", {}).get("arguments", "")
+            for tc in (delta or {}).get("tool_calls", [])
+        )
+    assert "".join(arguments) == '{"text": "first ' + marker + " inside"
+    delta = parser.extract_tool_calls_streaming(
+        "",
+        "",
+        "</function></tool_call>" if marker == "</parameter>" else "</tool_call>",
+        request=REQUEST,
+    )
+    arguments.extend(
+        tc.get("function", {}).get("arguments", "")
+        for tc in (delta or {}).get("tool_calls", [])
+    )
+    assert json.loads("".join(arguments)) == {"text": f"first {marker} inside"}
+
+
+@pytest.mark.parametrize("step", [1, 7, 10000])
+def test_sibling_functions_in_one_wrapper_keep_separate_argument_prefixes(step):
+    first = "<function=run><parameter=text>one</parameter></function>"
+    second = "<function=run><parameter=text>two</parameter></function>"
+    text = "<tool_call>" + first + second + "</tool_call>"
+    assert stream_tools(text, [text[i : i + step] for i in range(0, len(text), step)])[
+        1
+    ] == [
+        ("run", {"text": "one"}),
+        ("run", {"text": "two"}),
+    ]
+
+
+def test_literal_parameter_opener_does_not_hold_the_following_value():
+    parser = RaonToolParser()
+    arguments = []
+    for part in [
+        "<tool_call><function=run><parameter=text>\nplain ",
+        "<parameter=",
+        "literal without a tag end",
+    ]:
+        delta = parser.extract_tool_calls_streaming("", "", part, request=REQUEST)
+        arguments.extend(
+            tc.get("function", {}).get("arguments", "")
+            for tc in (delta or {}).get("tool_calls", [])
+        )
+    assert "".join(arguments) == '{"text": "plain <parameter=literal without a tag end'
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"</parameter>"\n</parameter>\n</parameter>',
+        "<parameter=fake> </parameter></parameter>",
+        "\n </function>\n</parameter>\n</function> ",
+    ],
+)
+def test_literal_closer_runs_and_quoted_values_match_complete_scanning(value):
+    text = call({"text": value, "count": "42"})
+    complete = RaonToolParser().extract_tool_calls(text, REQUEST)
+    assert stream_tools(text, list(text))[1] == [
+        (tc["name"], json.loads(tc["arguments"])) for tc in complete.tool_calls
+    ]
 
 
 @pytest.mark.parametrize("step", [1, 2, 7, 31, 10000])
@@ -309,6 +620,83 @@ def test_empty_malformed_call_does_not_invent_a_function():
     assert stream_tools(text, list(text)) == ("Before.After.", [])
 
 
+@pytest.mark.parametrize(
+    "body,properties,expected",
+    [
+        pytest.param(
+            "<function=run><parameter=>ignored</parameter>"
+            "<parameter=count>2</parameter></function>",
+            # An empty property name is valid in JSON Schema, but the wire
+            # opener still requires a name. Its numeric type withholds string
+            # deltas until the malformed parameter can be rejected.
+            {**PROPERTIES, "": {"type": "integer"}},
+            [("run", {"count": 2})],
+            id="empty-parameter-name-before-declared-sibling",
+        ),
+        pytest.param(
+            "<function=run><parameter=text>before</parameter>"
+            "<parameter=undeclared>after</parameter></function>",
+            PROPERTIES,
+            [("run", {"text": "before</parameter><parameter=undeclared>after"})],
+            id="undeclared-sibling-is-literal-value-text",
+        ),
+        pytest.param(
+            "<function=><function=run></function>",
+            PROPERTIES,
+            [],
+            id="nested-header-in-empty-function-does-not-invent-a-call",
+        ),
+    ],
+)
+def test_malformed_and_literal_headers_preserve_streaming_parity(
+    body, properties, expected
+):
+    request = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "parameters": {"type": "object", "properties": properties},
+                },
+            }
+        ]
+    }
+    # A subsequent valid call verifies that rejected/literal headers do not
+    # consume the next call or leak marker text into surrounding prose.
+    text = "Before.<tool_call>" + body + "</tool_call>" + call({"count": "42"})
+    text += "After."
+    complete = RaonToolParser().extract_tool_calls(text, request)
+    assert complete.content == "Before.After."
+    assert [
+        (tc["name"], json.loads(tc["arguments"])) for tc in complete.tool_calls
+    ] == expected + [("run", {"count": 42})]
+
+    for chunks in [[text], list(text)] + [
+        [text[:offset], text[offset:]] for offset in range(len(text) + 1)
+    ]:
+        parser = RaonToolParser()
+        deltas = [
+            parser.extract_tool_calls_streaming("", "", chunk, request=request)
+            for chunk in chunks
+        ]
+        deltas.append(parser.finalize_legacy_raw_stream(text, request))
+        assert "".join((d or {}).get("content", "") for d in deltas) == (
+            complete.content
+        ), chunks
+        calls = {}
+        for delta in deltas:
+            for tc in (delta or {}).get("tool_calls", []):
+                current = calls.setdefault(tc["index"], {"name": "", "arguments": ""})
+                for key in current:
+                    current[key] += tc.get("function", {}).get(key, "")
+        assert list(calls.values()) == [
+            {"name": tc["name"], "arguments": tc["arguments"]}
+            for tc in complete.tool_calls
+        ], chunks
+        assert parser.finish_streaming() is None
+
+
 class TokenFixture:
     """Small detokenizer with real marker IDs and controllable decoded gaps."""
 
@@ -447,8 +835,14 @@ def test_token_alignment_uses_detokenized_text(text, ids, expected):
     "value,schema,expected",
     [
         ({"n": "2"}, {"properties": {"n": {"type": "integer"}}}, {"n": 2}),
+        (
+            '{"n":"2"}',
+            {"type": "object", "properties": {"n": {"type": "integer"}}},
+            {"n": 2},
+        ),
         ({"n": 2}, {}, {"n": 2}),
         (["2", "3"], {"items": {"type": "integer"}}, [2, 3]),
+        ('["2", "3"]', {"type": "array", "items": {"type": "integer"}}, [2, 3]),
         ([1], {}, [1]),
         (True, {"type": "integer"}, True),
         ("0", {"type": "boolean"}, False),

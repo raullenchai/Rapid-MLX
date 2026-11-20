@@ -117,18 +117,20 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|app-menu|select-menu-item|key|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|status-menu|dump-status-menu|press-status-menu|press|app-menu|select-menu-item|key|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
 let application = AXUIElementCreateApplication(pid)
+let statusMenuCommand = ["status-menu", "dump-status-menu", "press-status-menu"].contains(command)
+let isDump = command == "dump" || command == "dump-status-menu"
 
 // A semantic action should model an actual user interacting with the app.
 // On unattended runners AXPress can return success for a background SwiftUI
 // window without dispatching the Button closure. Bring the target app forward
 // before reading its tree, then resolve the post-activation elements so the
 // action never holds a reference across the activation/layout transition.
-if command != "dump" {
+if !isDump && !statusMenuCommand {
     guard let running = NSRunningApplication(processIdentifier: pid) else {
         fail("target application is no longer running")
     }
@@ -213,7 +215,7 @@ func walk(_ element: AXUIElement, depth: Int) {
         match = element
         return
     }
-    if command != "dump", match == nil, identifier == wanted {
+    if !isDump, match == nil, identifier == wanted {
         match = element
         return
     }
@@ -242,6 +244,8 @@ func walk(_ element: AXUIElement, depth: Int) {
     if let description = string(element, kAXDescriptionAttribute as CFString), !description.isEmpty { record["description"] = description }
     if let help = string(element, kAXHelpAttribute as CFString), !help.isEmpty { record["help"] = help }
     if let value = jsonValue(attribute(element, kAXValueAttribute as CFString)) { record["value"] = value }
+    if let minimum = jsonValue(attribute(element, kAXMinValueAttribute as CFString)) { record["min_value"] = minimum }
+    if let maximum = jsonValue(attribute(element, kAXMaxValueAttribute as CFString)) { record["max_value"] = maximum }
     if let origin = point(element, kAXPositionAttribute as CFString),
        let extent = size(element, kAXSizeAttribute as CFString),
        origin.x.isFinite, origin.y.isFinite,
@@ -281,7 +285,7 @@ func walk(_ element: AXUIElement, depth: Int) {
     }
     for child in children {
         walk(child, depth: depth + 1)
-        if command != "dump", match != nil { break }
+        if !isDump, match != nil { break }
     }
 }
 
@@ -309,7 +313,47 @@ if let rootChildren = attribute(application, kAXChildrenAttribute as CFString) a
     windowListComplete = false
 }
 
-walk(application, depth: 0)
+// Tray content belongs to the app's extras menu bar, outside its windows.
+// Restrict this explicit mode to that surface; ordinary dumps stay window-only.
+if statusMenuCommand {
+    guard let extras = attribute(application, "AXExtrasMenuBar" as CFString) else {
+        fail("application has no accessible status menu bar")
+    }
+    let bar = extras as! AXUIElement
+    if command == "status-menu" {
+        let items = attribute(bar, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? []
+        guard let item = items.first(where: {
+            string($0, kAXTitleAttribute as CFString) == "Rapid-MLX"
+                || string($0, kAXDescriptionAttribute as CFString) == "Rapid-MLX"
+        }) else { fail("Rapid-MLX status item not found") }
+        // The status item's AXPress returns cannotComplete on the CI host.
+        // Use the same AX-bounds click as native popup
+        // menus, once only: retrying could close a menu that already opened.
+        // The caller verifies the freshly opened menu's contents separately.
+        guard let origin = point(item, kAXPositionAttribute as CFString),
+              let extent = size(item, kAXSizeAttribute as CFString),
+              origin.x.isFinite, origin.y.isFinite,
+              extent.width.isFinite, extent.height.isFinite,
+              extent.width > 0, extent.height > 0
+        else { fail("status item has no usable AX bounds") }
+        let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: center, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                               mouseCursorPosition: center, mouseButton: .left)
+        else { fail("could not create status item click events") }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        usleep(150_000)
+        print("{\"success\":true,\"action\":\"status-menu\"}")
+        exit(0)
+    }
+    // Preserve the depth-zero application root expected by ax-baseline.py.
+    windowElements = [bar]
+    walk(application, depth: 0)
+} else {
+    walk(application, depth: 0)
+}
 elementWalkComplete = elementWalkComplete && windowListComplete
 
 if command == "close-window" {
@@ -373,7 +417,7 @@ if command == "set-window-size" {
     exit(0)
 }
 
-if command == "dump" {
+if isDump {
     let payload: [String: Any] = [
         "success": true,
         "data": [
@@ -468,7 +512,7 @@ guard let identifier = wanted, let target = match else {
 }
 
 switch command {
-case "press":
+case "press", "press-status-menu":
     let result = AXUIElementPerformAction(target, kAXPressAction as CFString)
     guard result == .success else { fail("AXPress \(identifier) failed: \(result.rawValue)") }
 case "click-center":

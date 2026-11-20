@@ -367,3 +367,29 @@ def test_explicit_empty_cli_cors_overrides_wildcard_env(monkeypatch):
         .status_code
         == 403
     )
+
+
+@pytest.mark.parametrize(
+    "host,shown",
+    [
+        ("EVIL.example:8123", "evil.example"),
+        ("[2001:db8::1]:8123", "2001:db8::1"),
+        ("evil.example/path?secret", "<invalid>"),
+        ("user:secret@evil.example", "<invalid>"),
+        ("evil.example\r\nsecret", "<invalid>"),
+        ("evil.example%secret", "<invalid>"),
+        ("[::1%secret]:8123", "<invalid>"),
+        ("--secret", "<invalid>"),
+        ("[gg::1]:8123", "<invalid>"),
+    ],
+)
+def test_host_rejection_is_actionable_and_sanitized(local_app, caplog, host, shown):
+    app, calls = local_app
+    response = TestClient(app).get("/probe", headers={"Host": host})
+    expected = f"Invalid host header: {shown}. Configure --trusted-hosts <name> to allow this hostname."
+    assert response.status_code == 400
+    assert response.text == expected
+    assert [
+        (r.levelname, r.message) for r in caplog.records if r.name == security.__name__
+    ] == [("WARNING", expected)]
+    assert not calls

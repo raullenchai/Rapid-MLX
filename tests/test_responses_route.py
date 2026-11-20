@@ -5,6 +5,7 @@ Same lightweight-engine harness shape as ``test_anthropic_route_auth.py``
 (no MLX import) so the tests stay fast and CI-portable.
 """
 
+import hashlib
 import http.client
 import json
 import math
@@ -260,6 +261,167 @@ def _payload(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "text",
+        "tool",
+        "structured",
+        "empty_calls",
+        "malformed",
+        "parser_error",
+        "repair",
+        "channels",
+    ],
+)
+def test_strict_tools_reuses_parse_without_changing_wire_payload(
+    responses_client, monkeypatch, stream, outcome
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from rapid_mlx.routes import responses as route
+
+    harness = responses_client
+    monkeypatch.setattr(route.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(route.uuid, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "on")
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "on")
+    harness.engine.supports_guided_generation = outcome == "repair"
+    harness.cfg.enable_auto_tool_choice = False
+    harness.cfg.tool_call_parser = None
+
+    text = '{"value":42}'
+    calls = None
+    if outcome in {"tool", "parser_error", "channels"}:
+        text = "Checking. [Calling tool: noop({})]"
+    elif outcome == "structured":
+        text = "Checking."
+        calls = [{"id": "call_exact", "name": "noop", "arguments": "{}"}]
+    elif outcome in {"malformed", "repair"}:
+        text = '[Calling tool: noop({"broken":)]'
+        if outcome == "malformed":
+            monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "off")
+
+    @dataclass
+    class Output(_GenerationOutput):
+        cached_tokens: int = 0
+        prompt_compression: Any = None
+        execution_host: Any = None
+        execution_reference: Any = None
+
+    async def chat(**kwargs):
+        harness.engine.calls.append(kwargs)
+        return Output(text=text, prompt_tokens=3, completion_tokens=2, tool_calls=calls)
+
+    async def repair(**kwargs):
+        return Output(text='{"value":42}', prompt_tokens=5, completion_tokens=4)
+
+    monkeypatch.setattr(harness.engine, "chat", chat)
+    monkeypatch.setattr(harness.engine, "generate_with_schema", repair, raising=False)
+    if outcome == "parser_error":
+        from rapid_mlx.service import helpers
+
+        harness.cfg.enable_auto_tool_choice = True
+        harness.cfg.tool_call_parser = "hermes"
+        parser_class = helpers.ToolParserManager.get_tool_parser("hermes")
+        monkeypatch.setattr(
+            parser_class,
+            "extract_tool_calls",
+            Mock(side_effect=ValueError("malformed output")),
+        )
+    if outcome == "channels":
+        # Channel decoding changes both the text and the parser mode, so its
+        # final parse must still run even if the raw text was already parsed.
+        monkeypatch.setattr(
+            route,
+            "split_buffered",
+            lambda output, *args, **kwargs: (
+                replace(output, text="Decoded.", raw_text="Decoded.", tool_calls=calls),
+                True,
+            ),
+        )
+
+    parse = route._parse_tool_calls_with_parser
+
+    def parse_with_empty_list(*args, **kwargs):
+        cleaned, detected = parse(*args, **kwargs)
+        return cleaned, [] if detected is None else detected
+
+    parser = Mock(wraps=parse_with_empty_list if outcome == "empty_calls" else parse)
+    monkeypatch.setattr(route, "_parse_tool_calls_with_parser", parser)
+    response = harness.client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer test-secret"},
+        json=_payload(
+            stream=stream,
+            tools=[
+                {"type": "function", "name": "noop", "parameters": {"type": "object"}}
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "answer",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "integer"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+        ),
+    )
+    assert response.status_code == 200, response.text
+    # Whole-body digests captured before the fix, with time and IDs frozen:
+    # this also pins JSON serialization and every SSE event's bytes and order.
+    old_payload_digests = {
+        "text": (
+            "9667038f0017bc4877a68b3e083f115433c2f399ecf528a4027b96f1994658bd",
+            "012c296f44409789ddb530e2c69ee6a0019a1667fca9cc2e599ed2a972c5b6a7",
+        ),
+        "tool": (
+            "7d3d02e33fc731cc31efb2c38fd73d8746bcf8403f2736487a2601a37e9976da",
+            "8d8b8e0cb57e7764a16ea7a9e1f7efc6a8e2be0ef234c61d15ec3a4e75ba6d83",
+        ),
+        "structured": (
+            "38f4bae8c90dac9a95063af283fcec686b8fe05dad529a77c3bfaed4b634755e",
+            "19ba270625281502e625c1d112585eaafe18a1722bddb7a223fcd6aae2811948",
+        ),
+        "malformed": (
+            "bf67bb2d90fb8163a4f3ba97feda6a2312bc6552946afc8bf72476fe0757c72e",
+            "9486bf43edfe7af2e3ad7fe2ef9e6a100e9b81226e22b7d14f910e67c93b749a",
+        ),
+        "repair": (
+            "39f0625e915c05742631acec0ac32f555d0c0ac9e1b8af0debc95ff293c23907",
+            "71ed2f106274568c982edfae01c5087b44c93899029af588feaefc2cb235a715",
+        ),
+        "channels": (
+            "ea9e739e93e773010f9ed00a3818348fc1c65ebabb66eff5290ac6e88cfb3fed",
+            "ea4f4b517666ce33ae0b4cd79cbdc3f00d5c73c422fc4bf292d2672d4ea721dd",
+        ),
+    }
+    old_payload_digests["empty_calls"] = old_payload_digests["text"]
+    old_payload_digests["parser_error"] = old_payload_digests["tool"]
+    assert (
+        hashlib.sha256(response.content).hexdigest()
+        == old_payload_digests[outcome][stream]
+    )
+    # SSE replay parses the finalized wire items with a new request that has
+    # no response format. Count only parsing of the generated assistant output.
+    generation_parses = [
+        call for call in parser.call_args_list if call.args[1].response_format
+    ]
+    assert len(generation_parses) == (2 if outcome in {"repair", "channels"} else 1)
+    if outcome == "repair":
+        assert generation_parses[-1].args[0] == '{"value":42}'
+    elif outcome == "channels":
+        assert generation_parses[-1].args[0] == "Decoded."
+        assert generation_parses[-1].kwargs["channels_owned"] is True
 
 
 # ---------------------------------------------------------------------------

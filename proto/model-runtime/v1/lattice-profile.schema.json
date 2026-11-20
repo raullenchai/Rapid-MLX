@@ -239,10 +239,16 @@
             "dense_decode_fusion": {
               "type": "boolean"
             },
+            "gemma4_affine4": {
+              "type": "boolean"
+            },
             "qwen35_affine4": {
               "type": "boolean"
             },
             "qwen35_moe_router": {
+              "type": "boolean"
+            },
+            "lfm2moe_affine4": {
               "type": "boolean"
             },
             "moe_decode_fusion": {

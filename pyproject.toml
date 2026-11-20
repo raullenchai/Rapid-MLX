@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "1.0.4"
+version = "1.0.5"
 description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents; up to 4× faster decoding than Apple's MLX (mlx-lm) on the same weights."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -664,6 +664,8 @@ rapid_mlx = [
     "agents/profiles/*.yaml",
     "kernels/*.metal",
     "patches/qwen35_affine4_*.metal",
+    "patches/gemma4_affine4_*.metal",
+    "patches/lfm2moe_affine4_*.metal",
     "patches/QWEN35_AFFINE4_LICENSE",
     "chat_runtime/LICENSE-PROMPTS",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
