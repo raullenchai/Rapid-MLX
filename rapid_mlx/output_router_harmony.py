@@ -241,6 +241,7 @@ class HarmonyStreamingRouter:
         self.reset()
         name = "analysis" if channel == "reasoning" else "final"
         header = f"<|start|>assistant<|channel|>{name}<|message|>"
+        assert self._enc is not None, "Harmony encoding is required to seed a channel"
         for token_id in self._enc.encode(header, allowed_special="all"):
             self.feed(token_id)
 

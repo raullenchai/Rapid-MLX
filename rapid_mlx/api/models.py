@@ -2031,7 +2031,7 @@ class ChatCompletionRequest(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _validate_continuation(cls, data, handler) -> "ChatCompletionRequest":
-        self = handler(data)
+        self: ChatCompletionRequest = handler(data)
         if self.continue_final_message:
             if self.add_generation_prompt:
                 raise ValueError(

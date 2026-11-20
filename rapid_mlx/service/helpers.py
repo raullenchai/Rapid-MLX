@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -6014,6 +6014,7 @@ def _build_prompt_with_thinking_compat(
     """
     # Forward prompt controls independently, preserving legacy signatures only
     # when their default rendering semantics match the requested options.
+    parameters: Mapping[str, inspect.Parameter]
     try:
         parameters = inspect.signature(build_prompt).parameters
     except (TypeError, ValueError):
