@@ -17360,13 +17360,18 @@ def _dispatch_serve_control(args):
             from rapid_mlx.control.supervisor import supervise
             from rapid_mlx.server_exposure import normalize_bind_host
 
-            port = _resolve_serve_port(
-                normalize_bind_host(args.host),
-                args.port,
-                model=args.model or "retrieval",
-                port_explicit=port_explicit_for(args),
-                listen_fd=getattr(args, "listen_fd", None),
-            )
+            # The runner owns explicit-port validation after its telemetry
+            # lifecycle begins. The parent only selects automatic ports once
+            # so restarts keep the same listener address.
+            port = args.port
+            if port is None or getattr(args, "listen_fd", None) is not None:
+                port = _resolve_serve_port(
+                    normalize_bind_host(args.host),
+                    args.port,
+                    model=args.model or "retrieval",
+                    port_explicit=port_explicit_for(args),
+                    listen_fd=getattr(args, "listen_fd", None),
+                )
     except Exception as exc:
         from rapid_mlx.local_models import serve_startup_note
 
@@ -17386,8 +17391,11 @@ def _dispatch_serve_control(args):
             [
                 sys.executable,
                 *interpreter_flags,
-                "-m",
-                "rapid_mlx.cli",
+                # Use the same imported entry point as the console script.
+                # Running cli as __main__ creates a second module and bypasses
+                # startup instrumentation installed on rapid_mlx.cli.
+                "-c",
+                "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()",
                 *sys.argv[1:],
             ],
             port=port,

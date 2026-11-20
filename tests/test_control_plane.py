@@ -639,13 +639,15 @@ async def test_startup_errors_are_terminal_without_processes(
     assert instance.restarts == 0
 
 
-def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
+@pytest.mark.parametrize("port", [None, 0, 8123])
+def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch, port):
     from rapid_mlx import cli
     from rapid_mlx.control import supervisor
 
     for key in (RUNNER_ENV, "RAPID_MLX_WATCHDOG_PPID", "RAPID_MLX_SINGLE_PROCESS"):
         monkeypatch.delenv(key, raising=False)
     args = build_parser().parse_args(["serve", "qwen3.5-4b-4bit"])
+    args.port = port
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
     calls = []
 
@@ -660,8 +662,8 @@ def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
             "-u",
             "-X",
             "utf8",
-            "-m",
-            "rapid_mlx.cli",
+            "-c",
+            "from rapid_mlx.cli import cli_entrypoint; cli_entrypoint()",
             "serve",
             "qwen3.5-4b-4bit",
         ]
@@ -678,7 +680,9 @@ def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
     with pytest.raises(SystemExit) as exited:
         cli._dispatch_serve_control(args)
     assert exited.value.code == 13
-    assert calls == [("resolve", None), ("spawn", 8007)]
+    assert calls == (
+        [("resolve", None), ("spawn", 8007)] if port is None else [("spawn", port)]
+    )
 
 
 @pytest.mark.parametrize("console", [False, True])
