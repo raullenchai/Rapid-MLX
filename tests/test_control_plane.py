@@ -92,7 +92,7 @@ def fake(tmp_path, monkeypatch):
     import shutil
     import tempfile
 
-    base = Path(tempfile.mkdtemp(prefix="cp-", dir="/private/tmp"))
+    base = Path(tempfile.mkdtemp(prefix="cp-", dir="/tmp")).resolve()
     monkeypatch.setenv("TMPDIR", str(base))
     monkeypatch.setenv("HOME", str(base))
     runner = base / "fake.py"
