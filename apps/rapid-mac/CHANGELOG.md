@@ -17,6 +17,25 @@ can actually understand.
 
 ## [Unreleased]
 
+## [1.0.5] — 2026-11-19
+
+Desktop adds a menu bar resource card for resident models and server activity, keeps images across relaunch, and resumes interrupted downloads. Image progress, disk-space checks and memory admission on smaller Macs are fixed.
+
+### New features and improvements
+
+- **Menu bar resource card**: see resident models, memory use, active work and generation throughput without opening the main window. Unload eligible models individually or release the whole pool, with existing safeguards ([#5893](https://github.com/raullenchai/Rapid-MLX/pull/5893))
+- **Persistent Images gallery**: generated and edited images return after relaunch, newest first. Deleting an image also removes its stored file ([#5856](https://github.com/raullenchai/Rapid-MLX/pull/5856))
+- **Resumable downloads**: interrupted model downloads retain partial data and offer **Resume download**. Switching download sources reuses verified partial data ([#5841](https://github.com/raullenchai/Rapid-MLX/pull/5841))
+
+### Bug fixes
+
+- **Image download progress**: downloads started from the Images view show progress, transferred bytes and speed instead of staying on the starting message ([#5855](https://github.com/raullenchai/Rapid-MLX/pull/5855))
+- **Sidebar and agent setup**: the compact sidebar uses the same **Agent** label as the full sidebar, and agent connections honor the configured home directory. Reference-limit messages also use correct singular or plural wording ([#5855](https://github.com/raullenchai/Rapid-MLX/pull/5855))
+- **FLUX 3 Klein downloads**: disk-space checks and downloads include only the component files used by the image runtime, avoiding refusals caused by unused checkpoint variants ([#5853](https://github.com/raullenchai/Rapid-MLX/pull/5853))
+- **Image models on 16 GB Macs**: FLUX.2 Klein 4B and Z-Image Turbo use their catalog memory minimums for admission. FLUX 3 Klein remains unavailable on 16 GB Macs ([#5857](https://github.com/raullenchai/Rapid-MLX/pull/5857))
+- **Startup failure guidance**: the bundled engine records classified startup failure reasons and adds next steps to messages that lacked them ([#5854](https://github.com/raullenchai/Rapid-MLX/pull/5854))
+- **Forced tool-call recovery**: the bundled engine retries non-streaming required multi-tool responses that contain no calls and schema-invalid required or pinned calls with guided decoding. Failed recovery preserves the original error ([#5879](https://github.com/raullenchai/Rapid-MLX/pull/5879), [#5895](https://github.com/raullenchai/Rapid-MLX/pull/5895))
+
 ## [1.0.4] — 2026-11-16
 
 Desktop adds MiniMax-H3-Image and FLUX 3 Klein with multi-reference edits, and fixes conversation history in narrow windows and model names in onboarding. The bundled engine makes coding-agent launches reliable.
@@ -4652,7 +4671,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.4...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.5...HEAD
+[1.0.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.4...rapid-mac-v1.0.5
 [1.0.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.3...rapid-mac-v1.0.4
 [1.0.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.2...rapid-mac-v1.0.3
 [1.0.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...rapid-mac-v1.0.2
