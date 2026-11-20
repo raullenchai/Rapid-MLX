@@ -2,6 +2,7 @@
 """In-process lifecycle, delivery, privacy, storage and event contracts."""
 
 import asyncio
+import contextvars
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -645,18 +646,26 @@ def test_real_text_adapters_emit_usage(route, stream):
     assert "SECRET PROMPT" not in json.dumps(item)
 
 
+def _fake_batched():
+    # The conftest admission guard resets both contexts at teardown, before
+    # monkeypatch restores sys.modules, so the stub must expose both.
+    return SimpleNamespace(
+        _admission_engine_context=contextvars.ContextVar(
+            "fake_admission_engine", default=None
+        ),
+        _admission_token_context=contextvars.ContextVar(
+            "fake_admission_token", default=None
+        ),
+    )
+
+
 @pytest.mark.parametrize("stream", [False, True])
 async def test_adapter_disconnect_and_task_cancel(monkeypatch, stream):
     import sys
 
     from rapid_mlx.service import helpers
 
-    engine_context = SimpleNamespace(get=lambda: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "rapid_mlx.engine.batched",
-        SimpleNamespace(_admission_engine_context=engine_context),
-    )
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", _fake_batched())
     data = {}
     token = observer._current.set(data)
     raw_request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
@@ -882,11 +891,7 @@ async def test_nonstream_task_cancellation_metadata(monkeypatch):
 
     from rapid_mlx.service import helpers
 
-    monkeypatch.setitem(
-        sys.modules,
-        "rapid_mlx.engine.batched",
-        SimpleNamespace(_admission_engine_context=SimpleNamespace(get=lambda: None)),
-    )
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", _fake_batched())
 
     async def cancelled():
         raise asyncio.CancelledError()
