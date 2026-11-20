@@ -153,7 +153,9 @@ class Supervisor:
                     data = (
                         json.loads(await reader.readexactly(length)) if length else {}
                     )
-                    code, result = self.history.api(method, target, data)
+                    code, result = await asyncio.to_thread(
+                        self.history.api, method, target, data
+                    )
                 elif method == "POST" and target == "/startup":
                     data = json.loads(await reader.readexactly(length))
                     await self.spawn_ready.wait()
@@ -206,7 +208,7 @@ class Supervisor:
 
     async def open(self):
         index = private_directory(discovery_root())
-        from .history import History
+        from .history import HistoryWriter
 
         root = runtime_root()
         root.mkdir(mode=0o700, exist_ok=True)
@@ -222,14 +224,13 @@ class Supervisor:
         self.directory = Path(tempfile.mkdtemp(prefix="i-", dir=root))
         # Retained history/settings are separate from disposable discovery entries.
         with self.best_effort("history setup"):
-            history_root = private_directory(index.parent / "history")
-            self.history = History(
-                history_root,
+            self.history = await asyncio.to_thread(
+                HistoryWriter,
+                index.parent / "history",
                 instance=self.directory.name,
                 port=self.port,
                 disabled="--no-call-log" in self.argv,
             )
-            self.history.cleanup_legacy()
         path = self.directory / "control.sock"
         self.server = await asyncio.start_unix_server(
             self.handle, path=str(path), limit=MAX_BODY
@@ -398,6 +399,9 @@ class Supervisor:
             return 128 + self.stop_signal
         finally:
             self.emit("runner_stopped")
+            if self.history is not None:
+                self.history.close()
+                await asyncio.to_thread(self.history.thread.join, 0.2)
             if self.tree is not None:
                 self.tree.stop_tracking()
             if self.child is not None:

@@ -2140,9 +2140,9 @@ async def test_supervisor_lifecycle_in_process(monkeypatch, tmp_path, caplog, sc
     from rapid_mlx.control import supervisor as module
 
     instance = Supervisor(["runner"], port=8123, mode="text-vlm")
-    from rapid_mlx.control.history import History
+    from rapid_mlx.control.history import HistoryWriter
 
-    instance.history = History(tmp_path / "history")
+    instance.history = await asyncio.to_thread(HistoryWriter, tmp_path / "history")
     child = SimpleNamespace(pid=123, returncode=None)
     tree = Mock()
     tree.send.return_value = set()

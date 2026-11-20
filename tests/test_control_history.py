@@ -43,7 +43,12 @@ def test_storage_privacy_filters_rotation_and_settings(history):
         [record(prompt="SECRET PROMPT", Authorization="Bearer secret"), record()], 1, 2
     )
     assert history.status() == dict(
-        enabled=True, records=1, bytes=history.logs.stat().st_size, dropped=2, skipped=0
+        enabled=True,
+        records=1,
+        bytes=history.logs.stat().st_size,
+        dropped=2,
+        skipped=0,
+        malformed=0,
     )
     text = history.logs.read_text()
     assert all(
@@ -506,7 +511,7 @@ def test_settings_cap_shrink(history):
         history.append([record(str(i))], 1)
     assert history.status()["bytes"] > 4096
     history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 4096, "enabled": False})
-    assert 0 < history.status()["bytes"] <= 4096
+    assert history.status()["bytes"] <= 4096
 
 
 def test_cli_dispatch_and_flags(monkeypatch):
@@ -1061,11 +1066,10 @@ def test_shrink_enforces_each_file_even_below_total_cap(tmp_path):
     history.call_sequence = 26 * 1024
     assert history.status()["bytes"] == 26 * mib
     history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 30 * mib})
-    bound = (30 * mib - 512) * 3 // 8
-    assert history.old.stat().st_size == bound // 1024 * 1024
+    assert not history.old.exists()
     assert history.logs.stat().st_size == mib
     retained = list(history.records())
-    assert retained[0]["seq"] == 25 * 1024 - bound // 1024
+    assert retained[0]["seq"] == 25 * 1024
     assert retained[-1]["seq"] == 26 * 1024 - 1
     # Growth up to the active-file bound cannot exceed the new total cap.
     for i in range(40000, 40100):
@@ -1512,7 +1516,223 @@ async def test_supervisor_open_uses_shared_user_history(tmp_path, monkeypatch):
         finally:
             supervisor.server.close()
             await supervisor.server.wait_closed()
-    rows = list(stores[-1].records())
+    rows = (
+        await asyncio.to_thread(stores[-1].api, "GET", "/rapid/v1/log?after=0", {})
+    )[1]
+    for store in stores:
+        store.close()
     assert [r["port"] for r in rows] == [8000, 8001]
     assert len({r["instance"] for r in rows}) == 2
     assert not list(stores[-1].root.glob("i-*"))
+
+
+@pytest.mark.parametrize("tail", ['{"request_id":', "{broken}\n", "null\n"])
+def test_damaged_history_recovers_reads_appends_and_clear(history, tail):
+    history.append([record("before")], 1)
+    with history.logs.open("a") as stream:
+        stream.write(tail)
+    reopened = History(history.root)
+    assert [r["request_id"] for r in reopened.records()] == ["before"]
+    assert reopened.malformed > 0
+    reopened.append([record("after")], 1)
+    assert [r["request_id"] for r in reopened.records()] == ["before", "after"]
+    with reopened.logs.open("a") as stream:
+        stream.write('{"broken":')
+    assert reopened.api("DELETE", "/rapid/v1/log", {}) == (200, {})
+    assert list(reopened.records()) == []
+    reopened.append([record("recovered")], 1)
+    assert list(reopened.records())[0]["request_id"] == "recovered"
+
+
+def test_sequence_replace_fsyncs_file_then_directory(history, monkeypatch):
+    import os
+    import stat
+
+    from rapid_mlx.control.history import write_private
+
+    synced = []
+    real_sync = os.fsync
+
+    def sync(fd):
+        synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    write_private(history.cursor_path, "42")
+    assert synced == [False, True]
+    assert json.loads(history.cursor_path.read_text()) == 42
+
+
+async def test_populated_locked_history_keeps_supervisor_responsive(tmp_path):
+    import fcntl
+    import signal
+    import threading
+    import time
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    root = tmp_path / "history"
+    store = History(root)
+    row = json.dumps(record("fake") | {"seq": 1})
+    for path in (store.old, store.logs):
+        with path.open("w") as stream:
+            stream.write((row + " " * (1023 - len(row)) + "\n") * (16 * 1024))
+        path.chmod(0o600)
+    writer = await asyncio.to_thread(HistoryWriter, root)
+    supervisor = Supervisor([], port=8000, mode="lazy")
+    supervisor.history = writer
+    assert writer.status()["bytes"] >= 30 * 1024 * 1024
+    offline = await asyncio.to_thread(History, root, readonly=True)
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold_lock():
+        with (root / "history.lock").open("r+") as fd:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert await asyncio.to_thread(acquired.wait, 1)
+    try:
+        # An independent descriptor holds the cooperative lock, like another process.
+        writer.append([], 1, dropped=3)
+        assert writer.queue.empty()
+        writer.append([record("queued")], 1)
+        supervisor.emit("runner_ready")
+        query = asyncio.create_task(
+            asyncio.to_thread(writer.api, "GET", "/rapid/v1/log", {})
+        )
+        offline_query = asyncio.create_task(
+            asyncio.to_thread(offline.api, "GET", "/rapid/v1/log", {})
+        )
+        delays = []
+        for _ in range(15):
+            start = time.monotonic()
+            supervisor.status()
+            await asyncio.sleep(0.005)
+            delays.append(time.monotonic() - start)
+        assert max(delays) < 0.05
+        supervisor.stop(signal.SIGTERM)
+        assert supervisor.stopping.is_set()
+        with pytest.raises(TimeoutError, match="history lock timed out"):
+            await asyncio.wait_for(offline_query, 2.5)
+        code, payload = await asyncio.wait_for(query, 2.5)
+        assert code == 503 and "timed out" in payload["error"]
+        start = time.monotonic()
+        writer.close()
+        assert time.monotonic() - start < 0.05
+    finally:
+        release.set()
+        await asyncio.to_thread(holder.join, 1)
+        writer.close()
+        await asyncio.to_thread(writer.thread.join, 3)
+    assert not writer.thread.is_alive()
+
+
+async def test_history_writer_queue_drop_idle_and_shutdown(tmp_path, monkeypatch):
+    import threading
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    entered = threading.Event()
+    release = threading.Event()
+    original = History.append
+
+    def append(self, *args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(History, "append", append)
+    writer = await asyncio.to_thread(HistoryWriter, tmp_path / "history", queue_size=1)
+    try:
+        writer.append([], 1, 2)
+        assert not entered.is_set()
+        writer.append([record("one")], 1)
+        assert await asyncio.to_thread(entered.wait, 1)
+        writer.append([record("two")], 1)
+        writer.append([record("three"), record("four")], 1)
+        assert writer.status()["dropped"] == 4
+        assert writer.queue.qsize() == 1
+        assert writer.api("GET", "/rapid/v1/log", {})[0] == 503
+        writer.close()
+        assert writer.status()["dropped"] == 6
+        writer.event("closed")
+    finally:
+        release.set()
+        writer.close()
+        await asyncio.to_thread(writer.thread.join, 3)
+    assert not writer.thread.is_alive()
+
+
+def test_history_writes_never_parse_retained_records(history, monkeypatch):
+    history.append([record("existing")], 1)
+    monkeypatch.setattr(history, "read_rows", Mock(side_effect=AssertionError("scan")))
+    history.append([], 1)
+    history.append([record("new")], 1)
+    history.event("runner_ready")
+    assert history.status()["records"] == 2
+    history.api("PUT", "/rapid/v1/log/settings", {"max_bytes": 4096})
+    assert history.status()["records"] == 2
+
+
+def test_history_repair_long_incomplete_tail_and_bounded_dedup(history):
+    history.logs.write_bytes(b"{" + b"x" * 20000)
+    history.append([record("repaired")], 1)
+    assert list(history.records())[0]["request_id"] == "repaired"
+    assert history.malformed == 1
+    for i in range(9000):
+        history.remember(str(i))
+    assert len(history.seen) == 8192
+    assert "0" not in history.seen and "8999" in history.seen
+
+
+async def test_writer_close_handles_concurrent_consumer(tmp_path, monkeypatch):
+    import queue
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    writer = await asyncio.to_thread(HistoryWriter, tmp_path / "history")
+    put = writer.queue.put_nowait
+    calls = 0
+
+    def race(job):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise queue.Full  # The consumer empties it before get_nowait.
+        return put(job)
+
+    monkeypatch.setattr(writer.queue, "put_nowait", race)
+    writer.close()
+    writer.close()
+    writer.append([record()], 1)
+    await asyncio.to_thread(writer.thread.join, 1)
+    assert not writer.thread.is_alive()
+    assert writer.status()["dropped"] == 1
+
+
+def test_history_rejects_foreign_data_descriptors(history, monkeypatch):
+    import os
+
+    history.append([record()], 1)
+    original = os.fstat
+
+    def foreign(fd):
+        result = original(fd)
+        import stat
+
+        # Preserve lock-file checks; spoof only a nonempty history data file.
+        if stat.S_ISREG(result.st_mode) and result.st_size > 100:
+            values = list(result)
+            values[4] = os.getuid() + 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(os, "fstat", foreign)
+    with pytest.raises(OSError, match="owned regular file"):
+        History(history.root)
+    with pytest.raises(OSError, match="owned regular file"):
+        list(history.read_rows(history.logs))

@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Parent-owned metadata storage. All entry points run on the control loop."""
+"""Private metadata storage and a bounded, dedicated supervisor writer."""
 
 import collections
+import concurrent.futures
 import contextlib
 import fcntl
 import functools
 import json
 import os
+import queue
 import re
 import stat
 import threading
@@ -42,7 +44,14 @@ def write_private(path, data):
     with os.fdopen(fd, "w") as stream:
         os.fchmod(stream.fileno(), 0o600)
         stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
     temporary.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def serialized(method):
@@ -114,18 +123,40 @@ class History:
             if self.cursor_path.exists()
             else 0
         )
-        self.seen = set()
+        self.seen = collections.OrderedDict()
+        self.counts_path = root / "calls.counts.json"
+        self.counts = [0, 0]
+        self.malformed = 0
+        self.lock_timeout = 2.0
         self.dropped = 0
         self.runner_dropped = {}
         self.runner_skipped = {}
+        # Inspect only bounded tails at startup; explicit queries migrate legacy rows.
         with self.locked():
-            self.upgrade()
+            for path in (self.old, self.logs):
+                if not path.exists():
+                    continue
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                        raise OSError("history must be an owned regular file")
+                    start = max(0, info.st_size - 65536)
+                    stream.seek(start)
+                    lines = stream.read().splitlines()
+                for line in lines[1 if start else 0 :]:
+                    try:
+                        item = json.loads(line)
+                        self.remember(item["request_id"])
+                        self.call_sequence = max(self.call_sequence, item.get("seq", 0))
+                    except (ValueError, KeyError, TypeError):
+                        pass
 
     def upgrade(self):
         # Upgrade retained records once; cursors belong to the parent, never the runner.
         for path in (self.old, self.logs):
             if path.exists():
-                items = [json.loads(line) for line in read_private(path).splitlines()]
+                items = list(self.read_rows(path))
                 upgraded = False
                 for item in items:
                     if "seq" not in item:
@@ -163,7 +194,19 @@ class History:
                     raise OSError("history lock must be an owned regular file")
                 if not self.readonly:
                     os.fchmod(fd, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_SH if self.readonly else fcntl.LOCK_EX)
+                deadline = time.monotonic() + self.lock_timeout
+                while True:
+                    try:
+                        fcntl.flock(
+                            fd,
+                            (fcntl.LOCK_SH if self.readonly else fcntl.LOCK_EX)
+                            | fcntl.LOCK_NB,
+                        )
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("history lock timed out after 2 seconds")
+                        time.sleep(0.01)
                 self.depth += 1
                 if self.settings_path.exists():
                     self.settings.update(json.loads(read_private(self.settings_path)))
@@ -171,11 +214,12 @@ class History:
                     self.call_sequence = max(
                         self.call_sequence, json.loads(read_private(self.cursor_path))
                     )
+                if self.counts_path.exists():
+                    self.counts = json.loads(read_private(self.counts_path))
                 if self.event_cursor.exists():
                     self.sequence = max(
                         self.sequence, json.loads(read_private(self.event_cursor))
                     )
-                self.seen = {r["request_id"] for r in self._records()}
                 yield
             finally:
                 self.depth = 0
@@ -212,29 +256,76 @@ class History:
 
     def records(self):
         with self.locked():
+            self.upgrade()
             yield from self._records()
+
+    def read_rows(self, path):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise OSError("history must be an owned regular file")
+            for line in stream:
+                try:
+                    item = json.loads(line)
+                    if not isinstance(item, dict) or "request_id" not in item:
+                        raise ValueError("invalid history row")
+                    yield item
+                except ValueError:
+                    self.malformed += 1
+
+    def remember(self, rid):
+        self.seen[rid] = None
+        if len(self.seen) > 8192:
+            self.seen.popitem(last=False)
+
+    def repair_tail(self):
+        # Find the last newline backwards in bounded chunks, without parsing history.
+        if not self.logs.exists():
+            return
+        fd = os.open(self.logs, os.O_RDWR | os.O_NOFOLLOW)
+        with os.fdopen(fd, "r+b") as stream:
+            end = stream.seek(0, os.SEEK_END)
+            position = end
+            while position:
+                start = max(0, position - 8192)
+                stream.seek(start)
+                chunk = stream.read(position - start)
+                newline = chunk.rfind(b"\n")
+                if newline >= 0:
+                    position = start + newline + 1
+                    break
+                position = start
+            if position != end:
+                stream.truncate(position)
+                self.malformed += 1
 
     def _records(self):
         for path in (self.old, self.logs):
             if path.exists():
-                for line in read_private(path).splitlines():
-                    yield json.loads(line)
+                yield from self.read_rows(path)
 
-    @serialized
     def status(self):
         return {
             "enabled": self.enabled,
-            "records": sum(1 for _ in self.records()),
+            "records": sum(self.counts),
             "bytes": sum(p.stat().st_size for p in (self.logs, self.old) if p.exists()),
             "dropped": self.dropped + sum(self.runner_dropped.values()),
             "skipped": sum(self.runner_skipped.values()),
+            "malformed": self.malformed,
         }
 
-    @serialized
     def append(self, records, pid, dropped=0, *, retain=False):
         self.runner_dropped[pid] = max(self.runner_dropped.get(pid, 0), int(dropped))
+        if records:
+            self._append(records, retain=retain)
+
+    @serialized
+    def _append(self, records, *, retain=False):
         if not self.enabled and not retain:
             return
+        self.repair_tail()
+        self.enforce_cap((self.settings["max_bytes"] - 512) * 3 // 8)
         for record in records:
             # Rebuild from an allowlist: even a buggy runner cannot store content.
             item = {key: record.get(key) for key in FIELDS}
@@ -271,7 +362,7 @@ class History:
                 and self.logs.stat().st_size + len(line.encode()) > half
             ):
                 self.logs.replace(self.old)
-                self.seen = {r["request_id"] for r in self.records()}
+                self.counts = [self.counts[1], 0]
             self.call_sequence = item["seq"]
             write_private(self.cursor_path, json.dumps(self.call_sequence))
             fd = os.open(
@@ -280,7 +371,17 @@ class History:
             with os.fdopen(fd, "a") as stream:
                 os.fchmod(stream.fileno(), 0o600)
                 stream.write(line)
-            self.seen.add(rid)
+            self.remember(rid)
+            self.counts[1] += 1
+            write_private(self.counts_path, json.dumps(self.counts))
+
+    def enforce_cap(self, bound):
+        # Delete whole oversized segments; no retained-history reads on writes.
+        for index, path in enumerate((self.old, self.logs)):
+            if path.exists() and path.stat().st_size > bound:
+                path.unlink()
+                self.counts[index] = 0
+        write_private(self.counts_path, json.dumps(self.counts))
 
     @serialized
     def event(self, kind, **fields):
@@ -331,17 +432,7 @@ class History:
                 self.settings.update(data)
                 write_private(self.settings_path, json.dumps(self.settings))
                 half = (self.settings["max_bytes"] - 512) * 3 // 8
-                for path in (self.old, self.logs):
-                    if path.exists() and path.stat().st_size > half:
-                        retained = collections.deque()
-                        size = 0
-                        for line in read_private(path).splitlines(keepends=True):
-                            retained.append(line)
-                            size += len(line.encode())
-                            while size > half:
-                                size -= len(retained.popleft().encode())
-                        write_private(path, "".join(retained))
-                self.seen = {r["request_id"] for r in self.records()}
+                self.enforce_cap(half)
                 self.event("log_settings_changed", **self.settings)
             elif method != "GET":
                 return 404, {}
@@ -351,6 +442,8 @@ class History:
                 self.logs.unlink(missing_ok=True)
                 self.old.unlink(missing_ok=True)
                 self.seen.clear()
+                self.counts = [0, 0]
+                write_private(self.counts_path, json.dumps(self.counts))
                 return 200, {}
             if method == "GET":
                 limit = max(1, min(1000, int(query.get("limit", ["100"])[0])))
@@ -383,3 +476,102 @@ class History:
             )
             return 200, [e for e in events if e["id"] > since]
         return 404, {}
+
+
+class HistoryWriter:
+    """One daemon owns storage; the control loop only submits bounded work."""
+
+    def __init__(self, root, *, queue_size=128, **options):
+        self.root = root
+        self.port = options.get("port")
+        self.queue = queue.Queue(maxsize=queue_size)
+        self.admission = threading.Lock()
+        self.runner_skipped = {}
+        self.runner_dropped = {}
+        self.dropped = 0
+        self.snapshot = {}
+        self.closed = False
+        self.ready = concurrent.futures.Future()
+        self.thread = threading.Thread(
+            target=self.run, args=(root, options), name="call-history", daemon=True
+        )
+        self.thread.start()
+        self.ready.result()
+
+    def submit(self, method, *args, **kwargs):
+        result = concurrent.futures.Future()
+        with self.admission:
+            try:
+                if self.closed:
+                    raise queue.Full
+                self.queue.put_nowait((method, args, kwargs, self.port, result))
+            except queue.Full:
+                self.dropped += len(args[0]) if method == "append" else 1
+                result.set_exception(OSError("history writer queue is full or closed"))
+        return result
+
+    def run(self, root, options):
+        try:
+            store = History(root, **options)
+            store.cleanup_legacy()
+            self.snapshot = store.status()
+        except Exception as exc:
+            self.ready.set_exception(exc)
+            return
+        self.ready.set_result(None)
+        while True:
+            job = self.queue.get()
+            if job is None:
+                return
+            method, args, kwargs, port, result = job
+            try:
+                store.port = port
+                value = getattr(store, method)(*args, **kwargs)
+                self.snapshot = store.status()
+                result.set_result(value)
+            except Exception as exc:
+                self.dropped += len(args[0]) if method == "append" else 1
+                result.set_exception(exc)
+
+    def append(self, records, pid, dropped=0):
+        self.runner_dropped[pid] = max(self.runner_dropped.get(pid, 0), int(dropped))
+        if records:
+            self.submit("append", records, pid)
+
+    def event(self, kind, **fields):
+        self.submit("event", kind, **fields)
+
+    def status(self):
+        return {
+            **self.snapshot,
+            "dropped": self.snapshot.get("dropped", 0)
+            + self.dropped
+            + sum(self.runner_dropped.values()),
+            "skipped": sum(self.runner_skipped.values()),
+        }
+
+    def api(self, method, target, data):
+        try:
+            return self.submit("api", method, target, data).result(timeout=2.2)
+        except TimeoutError:
+            return 503, {"error": "history lock or writer timed out after 2 seconds"}
+        except OSError as exc:
+            return 503, {"error": str(exc)}
+
+    def close(self):
+        with self.admission:
+            if self.closed:
+                return
+            self.closed = True
+            # Drain healthy writers; never wait for a competing file-lock holder.
+            while True:
+                try:
+                    self.queue.put_nowait(None)
+                    return
+                except queue.Full:
+                    try:
+                        job = self.queue.get_nowait()
+                    except queue.Empty:
+                        continue  # The writer consumed it between the queue operations.
+                    job[-1].set_exception(OSError("history writer closed"))
+                    self.dropped += len(job[1][0]) if job[0] == "append" else 1
