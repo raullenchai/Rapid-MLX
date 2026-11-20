@@ -385,18 +385,16 @@ def _run_server(
     if os.environ.get("RAPID_MLX_CONTROL_RUNNER") == "1" and config.proxy_headers:
         from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-        # Preserve existing proxy behavior on every existing route. Only the
-        # local control endpoint must see the unmodified transport peer.
+        # Preserve the socket peer before proxy headers rewrite scope['client'].
+        # Control authorization must not depend on path/root_path matching here.
         original_app = config.app
         proxied_app = ProxyHeadersMiddleware(
             original_app, trusted_hosts=config.forwarded_allow_ips
         )
 
         async def transport_peer_status(scope, receive, send):
-            target = (
-                original_app if scope.get("path") == "/rapid/v1/status" else proxied_app
-            )
-            await target(scope, receive, send)
+            scope["_rapid_mlx_transport_peer"] = scope.get("client")
+            await proxied_app(scope, receive, send)
 
         config.app = transport_peer_status
         config.proxy_headers = False

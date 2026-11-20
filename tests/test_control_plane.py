@@ -363,6 +363,45 @@ def test_binary_logs_are_drained_verbatim(fake):
     assert stderr == b"y" * 262144 + b"\x00\xff"
 
 
+async def test_exit_burst_drains_to_eof_without_processes(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from rapid_mlx.control import supervisor as module
+
+    instance = Supervisor([], port=8000, mode="text-vlm")
+    stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
+    payloads = (b"x" * 1048576 + b"\x00\xff", b"y" * 1048576 + b"\x00\xff")
+    for source, payload in zip((stdout, stderr), payloads):
+        # Model the buffered final burst from an already-exited runner.
+        source.feed_data(payload)
+        source.feed_eof()
+    child = SimpleNamespace(pid=123, returncode=0, stdout=stdout, stderr=stderr)
+    output = {sys.stdout.buffer: bytearray(), sys.stderr.buffer: bytearray()}
+
+    def write(sink, chunk):
+        # A healthy but slower consumer takes longer than the old 0.3s grace.
+        time.sleep(0.04)
+        output[sink].extend(chunk)
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", Mock())
+    monkeypatch.setattr(loop, "remove_signal_handler", Mock())
+    monkeypatch.setattr(module.signal, "signal", Mock())
+    monkeypatch.setattr(
+        module.asyncio, "create_subprocess_exec", AsyncMock(return_value=child)
+    )
+    monkeypatch.setattr(module, "ProcessTree", Mock())
+    monkeypatch.setattr(instance, "open", AsyncMock())
+    monkeypatch.setattr(instance, "publish_index", Mock())
+    monkeypatch.setattr(instance, "close_pipes", Mock())
+    monkeypatch.setattr(instance, "signal_descendants", Mock())
+    monkeypatch.setattr(instance, "write", write)
+
+    assert await instance.run() == 0
+    assert tuple(bytes(data) for data in output.values()) == payloads
+
+
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
 def test_signal_forward_and_reap(fake, sig):
     base, launch = fake
@@ -713,7 +752,13 @@ def test_control_fallback_notice_waits_for_log_redirection(monkeypatch, capsys):
     )
 
 
-def test_forwarder_preserves_transport_peer_with_proxy_headers(monkeypatch):
+@pytest.mark.parametrize("root_path", ["", "/prefix"])
+@pytest.mark.parametrize(
+    "transport_peer,expected", [("192.168.1.2", 403), ("127.0.0.1", 200)]
+)
+def test_forwarder_preserves_transport_peer_with_proxy_headers(
+    monkeypatch, root_path, transport_peer, expected
+):
     from fastapi import Request
 
     from rapid_mlx import _uvicorn
@@ -744,11 +789,20 @@ def test_forwarder_preserves_transport_peer_with_proxy_headers(monkeypatch):
             pass
 
     monkeypatch.setattr(_uvicorn, "AcceptingConnectionsServer", Server)
-    _uvicorn._run_server(app, forwarded_allow_ips="*", proxy_headers=True)
-    with TestClient(captured[0], client=("192.168.1.2", 1234)) as client:
+    _uvicorn._run_server(
+        app, forwarded_allow_ips="*", proxy_headers=True, root_path=root_path
+    )
+    with TestClient(
+        captured[0], client=(transport_peer, 1234), root_path=root_path
+    ) as client:
         headers = {"X-Forwarded-For": "127.0.0.1"}
-        assert client.get("/rapid/v1/status", headers=headers).status_code == 403
-        assert client.get("/v1/peer", headers=headers).json() == {"peer": "127.0.0.1"}
+        assert (
+            client.get(f"{root_path}/rapid/v1/status", headers=headers).status_code
+            == expected
+        )
+        assert client.get(f"{root_path}/v1/peer", headers=headers).json() == {
+            "peer": "127.0.0.1"
+        }
 
 
 @pytest.mark.parametrize(

@@ -388,15 +388,25 @@ class Supervisor:
                 self.tree.stop_tracking()
                 self.signal_descendants(signal.SIGKILL)
                 code = await asyncio.wait_for(wait, 0.2)
+                # Drain normal exits to EOF, allowing buffered output to reach
+                # a healthy consumer. Bound inherited pipes/stalled consumers,
+                # and honor shutdown even if it starts during this drain.
+                drain_deadline = time.monotonic() + 5.0
+                pending = set(pumps)
+                while pending:
+                    if self.stop_started is not None:
+                        drain_deadline = min(drain_deadline, self.stop_started + 4.3)
+                    watched = pending if stopping.done() else pending | {stopping}
+                    done, _ = await asyncio.wait(
+                        watched,
+                        timeout=max(0, drain_deadline - time.monotonic()),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    pending.difference_update(done)
+                    if not done:
+                        break
                 stopping.cancel()
                 await asyncio.gather(stopping, return_exceptions=True)
-                # A runner's descendants must not hold shutdown open forever.
-                drain = (
-                    max(0, 4.3 - (time.monotonic() - self.stop_started))
-                    if self.stop_started is not None
-                    else 0.3
-                )
-                done, pending = await asyncio.wait(pumps, timeout=drain)
                 for task in pending:
                     task.cancel()
                 await asyncio.gather(*pumps, return_exceptions=True)

@@ -15,7 +15,7 @@ from rapid_mlx.middleware.auth import verify_api_key
 
 
 async def require_loopback(request: Request):
-    peer = request.scope.get("client")
+    peer = request.scope.get("_rapid_mlx_transport_peer", request.scope.get("client"))
     try:
         address = ipaddress.ip_address(peer[0]) if peer else None
         if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
