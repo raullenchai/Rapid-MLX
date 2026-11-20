@@ -558,7 +558,9 @@ def main():
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--slices", type=Path, required=True)
     parser.add_argument(
-        "--recipe", choices=("hy4-gptq-v1", "hy4-gptq-lowbit"), default="hy4-gptq-v1"
+        "--recipe",
+        choices=("hy4-gptq-v1", "hy4-gptq-lowbit", "hy4-gptq-engram8"),
+        default="hy4-gptq-v1",
     )
     parser.add_argument("--keep-embeddings-bf16", action="store_true")
     parser.add_argument("--gate-up-3bit-layers", default="")

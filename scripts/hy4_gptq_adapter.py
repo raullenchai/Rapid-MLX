@@ -30,7 +30,7 @@ class Recipe:
     gate_up_3bit_layers: tuple[int, ...] = ()
 
     def __post_init__(self):
-        if self.name not in ("hy4-gptq-v1", "hy4-gptq-lowbit"):
+        if self.name not in ("hy4-gptq-v1", "hy4-gptq-lowbit", "hy4-gptq-engram8"):
             raise ValueError("unknown Hy4 recipe")
         if type(self.keep_embeddings_bf16) is not bool or any(
             type(i) is not int or i < 0 for i in self.gate_up_3bit_layers
@@ -38,7 +38,7 @@ class Recipe:
             raise ValueError("invalid recipe override")
         if len(set(self.gate_up_3bit_layers)) != len(self.gate_up_3bit_layers):
             raise ValueError("duplicate promoted layers")
-        if self.name == "hy4-gptq-v1" and self.gate_up_3bit_layers:
+        if self.name != "hy4-gptq-lowbit" and self.gate_up_3bit_layers:
             raise ValueError("layer promotions apply only to lowbit")
 
     def spec(self, name):
@@ -47,7 +47,7 @@ class Recipe:
         if name is None or name.endswith("_scale_inv"):
             return None
         if ".switch_mlp." in name and name.endswith(".weight"):
-            if self.name == "hy4-gptq-v1":
+            if self.name != "hy4-gptq-lowbit":
                 bits = 4
             else:
                 layer = int(name.split(".")[2])
@@ -59,7 +59,7 @@ class Recipe:
                 )
             return bits, 64, "gptq"
         if name.endswith(".multi_head_embedding.embedding.weight"):
-            return 4, 32, "rtn"
+            return (8, 32, "rtn") if self.name == "hy4-gptq-engram8" else (4, 32, "rtn")
         if name in ("model.embed_tokens.weight", "lm_head.weight"):
             return None if self.keep_embeddings_bf16 else (8, 64, "rtn")
         if not name.endswith(".weight") or any(
@@ -111,7 +111,10 @@ class Hy4Adapter:
                 self.names[name] = original, half
                 spec = recipe.spec(name)
                 if spec and self.shape(name)[-1] % spec[1]:
-                    raise ValueError(f"nonintegral affine group: {name}")
+                    raise ValueError(
+                        f"nonintegral affine group: {name}: width {self.shape(name)[-1]} "
+                        f"is not divisible by group_size={spec[1]}"
+                    )
         self.block = tuple(
             self.config.get(
                 "quantization_config",
