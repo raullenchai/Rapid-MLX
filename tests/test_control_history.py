@@ -1741,3 +1741,79 @@ def test_history_rejects_foreign_data_descriptors(history, monkeypatch):
         History(history.root)
     with pytest.raises(OSError, match="owned regular file"):
         list(history.read_rows(history.logs))
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+@pytest.mark.parametrize("event_first", [False, True])
+def test_writer_retries_contended_appends(tmp_path, monkeypatch, shutdown, event_first):
+    import fcntl
+    import threading
+    import time
+
+    from rapid_mlx.control.history import HistoryWriter
+
+    original = History.__init__
+
+    def initialize(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.lock_timeout = 0.05
+
+    monkeypatch.setattr(History, "__init__", initialize)
+    batches = []
+    append = History.append
+
+    def track(self, records, *args, **kwargs):
+        batches.append(len(records))
+        return append(self, records, *args, **kwargs)
+
+    monkeypatch.setattr(History, "append", track)
+    root = tmp_path / "history"
+    writer = HistoryWriter(root)
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with (root / "history.lock").open("r+") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            acquired.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert acquired.wait(1)
+    try:
+        futures = [writer.submit("event", "runner_ready")] if event_first else []
+        futures.append(writer.submit("append", [record("first")], 1))
+        time.sleep(0.2)  # Longer than the store's lock timeout.
+        futures.extend(writer.submit("append", [record(str(i))], 1) for i in range(4))
+        if not event_first:
+            futures.append(writer.submit("event", "runner_ready"))
+        if shutdown:
+            start = time.monotonic()
+            writer.close()
+            writer.thread.join(2)
+            assert not writer.thread.is_alive()
+            assert time.monotonic() - start < 2
+            assert writer.status()["dropped"] == 6
+            assert all(f.exception(timeout=0) for f in futures)
+        else:
+            assert writer.status()["dropped"] == 0
+            release.set()
+            for future in futures:
+                future.result(timeout=3)
+            assert writer.status()["dropped"] == 0
+            assert batches == [5]
+            store = History(root)
+            assert [r["request_id"] for r in store.records()] == [
+                "first",
+                "0",
+                "1",
+                "2",
+                "3",
+            ]
+            assert [e["event"] for e in store.events] == ["runner_ready"]
+    finally:
+        release.set()
+        holder.join(1)
+        writer.close()
+        writer.thread.join(3)

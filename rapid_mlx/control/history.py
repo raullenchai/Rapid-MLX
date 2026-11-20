@@ -491,6 +491,7 @@ class HistoryWriter:
         self.dropped = 0
         self.snapshot = {}
         self.closed = False
+        self.close_deadline = float("inf")
         self.ready = concurrent.futures.Future()
         self.thread = threading.Thread(
             target=self.run, args=(root, options), name="call-history", daemon=True
@@ -519,19 +520,66 @@ class HistoryWriter:
             self.ready.set_exception(exc)
             return
         self.ready.set_result(None)
+        pending = collections.deque()
         while True:
-            job = self.queue.get()
+            job = pending.popleft() if pending else self.queue.get()
             if job is None:
                 return
             method, args, kwargs, port, result = job
+            results = [result]
+            count = len(args[0]) if method == "append" else 1
             try:
                 store.port = port
-                value = getattr(store, method)(*args, **kwargs)
+                if method in ("append", "event"):
+                    timeout = store.lock_timeout
+                    backoff = 0.05
+                    try:
+                        while True:
+                            remaining = self.close_deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise TimeoutError("history writer closed")
+                            store.lock_timeout = min(timeout, 0.05, remaining)
+                            try:
+                                with store.locked():
+                                    # Coalesce only after acquiring the lock: pending
+                                    # memory stays bounded while producers fill the queue.
+                                    if method == "append":
+                                        records = list(args[0])
+                                        for _ in range(self.queue.maxsize):
+                                            try:
+                                                following = self.queue.get_nowait()
+                                            except queue.Empty:
+                                                break
+                                            if (
+                                                following is None
+                                                or following[0] != method
+                                                or following[1][1:] != args[1:]
+                                                or following[2] != kwargs
+                                                or following[3] != port
+                                            ):
+                                                pending.append(following)
+                                                break
+                                            records.extend(following[1][0])
+                                            count += len(following[1][0])
+                                            results.append(following[-1])
+                                        args = (records, *args[1:])
+                                    value = getattr(store, method)(*args, **kwargs)
+                                break
+                            except TimeoutError:
+                                remaining = self.close_deadline - time.monotonic()
+                                time.sleep(max(0, min(backoff, remaining)))
+                                backoff = min(backoff * 2, 1.0)
+                    finally:
+                        store.lock_timeout = timeout
+                else:
+                    value = getattr(store, method)(*args, **kwargs)
                 self.snapshot = store.status()
-                result.set_result(value)
+                for future in results:
+                    future.set_result(value)
             except Exception as exc:
-                self.dropped += len(args[0]) if method == "append" else 1
-                result.set_exception(exc)
+                self.dropped += count
+                for future in results:
+                    future.set_exception(exc)
 
     def append(self, records, pid, dropped=0):
         self.runner_dropped[pid] = max(self.runner_dropped.get(pid, 0), int(dropped))
@@ -562,6 +610,7 @@ class HistoryWriter:
         with self.admission:
             if self.closed:
                 return
+            self.close_deadline = time.monotonic() + 1.0
             self.closed = True
             # Drain healthy writers; never wait for a competing file-lock holder.
             while True:
