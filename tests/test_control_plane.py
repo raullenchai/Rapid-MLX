@@ -136,6 +136,7 @@ else:
 if mode in ('uvicorn', 'uvicorn-slow'):
     import asyncio
     import uvicorn
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
     async def app(scope, receive, send):
         if scope['type'] == 'lifespan':
             while True:
@@ -154,7 +155,7 @@ if mode in ('uvicorn', 'uvicorn-slow'):
             await asyncio.sleep(30)
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
             await send({'type': 'http.response.body', 'body': b'ok'})
-    class Server(uvicorn.Server):
+    class Server(AcceptingConnectionsServer):
         async def startup(self, sockets=None):
             await super().startup(sockets=sockets)
             report('bound', port=listener.getsockname()[1])
@@ -1576,6 +1577,52 @@ def test_supervised_orphan_cleans_children_before_default_callback(
     process_tree.supervised_on_orphan(10, 1)
 
 
+@pytest.mark.parametrize(
+    "supervised,force", [(True, True), (True, False), (False, True)]
+)
+async def test_uvicorn_connection_close_wait_respects_force_exit(
+    monkeypatch, supervised, force
+):
+    import asyncio
+
+    import uvicorn
+
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+    monkeypatch.delenv(RUNNER_ENV, raising=False)
+    if supervised:
+        monkeypatch.setenv(RUNNER_ENV, "1")
+    server = AcceptingConnectionsServer(uvicorn.Config(FastAPI()))
+    waiting, closed, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_closed():
+        waiting.set()
+        try:
+            await closed.wait()
+        finally:
+            finished.set()
+
+    server.servers = [SimpleNamespace(wait_closed=wait_closed)]
+    drain = asyncio.create_task(server._wait_tasks_to_complete())
+    try:
+        await asyncio.wait_for(waiting.wait(), 0.5)
+        server.handle_exit(signal.SIGINT, None)
+        await asyncio.sleep(0.1)
+        assert not drain.done(), "first Ctrl-C must preserve graceful drain"
+        if force:
+            server.handle_exit(signal.SIGINT, None)
+            assert server.force_exit
+        if not (supervised and force):
+            await asyncio.sleep(0.1)
+            assert not drain.done()
+            closed.set()
+        await asyncio.wait_for(drain, 0.5)
+        assert finished.is_set(), "connection wait task leaked"
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+
+
 @pytest.mark.parametrize("delivery", ["group-int", "pid-term", "pid-int"])
 def test_real_uvicorn_graceful_lifespan_shutdown(fake, delivery):
     base, launch = fake
@@ -1613,9 +1660,25 @@ def test_real_uvicorn_second_ctrl_c_forces_during_request_drain(fake):
         )
         before = time.monotonic()
         os.killpg(proc.pid, signal.SIGINT)
-        _, stderr = proc.communicate(timeout=2)
-    assert time.monotonic() - before < 2
-    assert proc.returncode == 130, stderr.decode(errors="replace")
-    assert (base / "received-signals").read_text().splitlines() == ["2", "2"]
-    assert (base / "force-exit").read_text() == "True"
-    assert not (base / "lifespan-shutdown").exists()
+        try:
+            _, stderr = proc.communicate(timeout=1.5)
+        except subprocess.TimeoutExpired as exc:
+            details = {
+                name: (base / name).read_text() if (base / name).exists() else None
+                for name in ("received-signals", "force-exit", "count")
+            }
+            pytest.fail(
+                f"second Ctrl-C did not exit within 1.5s; "
+                f"supervisor returncode={proc.poll()}; {details}; "
+                f"stderr={(exc.stderr or b'').decode(errors='replace')}",
+                pytrace=False,
+            )
+    diagnostic = stderr.decode(errors="replace")
+    assert time.monotonic() - before < 1.5, diagnostic
+    assert proc.returncode == 130, diagnostic
+    assert (base / "received-signals").read_text().splitlines() == ["2", "2"], (
+        diagnostic
+    )
+    assert (base / "force-exit").read_text() == "True", diagnostic
+    assert not (base / "lifespan-shutdown").exists(), diagnostic
+    assert (base / "count").read_text() == "1", diagnostic

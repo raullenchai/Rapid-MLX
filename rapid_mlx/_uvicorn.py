@@ -143,6 +143,24 @@ def suppress_next_lifespan_traceback(exc: BaseException) -> None:
 class AcceptingConnectionsServer(uvicorn.Server):
     """Run a callback after Uvicorn has created every configured listener."""
 
+    async def _wait_tasks_to_complete(self) -> None:
+        if os.environ.get("RAPID_MLX_CONTROL_RUNNER") != "1":
+            await super()._wait_tasks_to_complete()
+            return
+        # Python 3.12's Server.wait_closed() also waits for active connections.
+        # Uvicorn checks force_exit before this await, but not during it. Keep
+        # second Ctrl-C effective even when an in-flight request holds it open.
+        drain = asyncio.create_task(super()._wait_tasks_to_complete())
+        try:
+            while not self.force_exit:
+                done, _ = await asyncio.wait((drain,), timeout=0.05)
+                if done:
+                    await drain
+                    return
+        finally:
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
     def run(self, sockets: list[socket.socket] | None = None) -> None:
         # Install after Uvicorn configures logging, including in spawned workers.
         # Scope the filter to serving so embedded callers retain their log setup.
