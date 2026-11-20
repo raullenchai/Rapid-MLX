@@ -2681,6 +2681,16 @@ def _add_alias_parser(
         action="store_true",
         help="Print schema-versioned server state as JSON",
     )
+    top = subparsers.add_parser("top", help="Watch a local server (read-only)")
+    top.add_argument(
+        "--port",
+        type=_port_arg,
+        default=8000,
+        help="Local server port (default: 8000)",
+    )
+    top.add_argument(
+        "--once", action="store_true", help="Print one plain-text snapshot and exit"
+    )
 
 
 def _add_upgrade_parser(

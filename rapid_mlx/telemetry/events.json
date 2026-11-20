@@ -367,7 +367,7 @@
       "values": [
         "system-one", "cua", "serve", "bench", "benchmark", "models",
         "recipe", "ls", "version", "help", "pull", "import", "rm", "alias",
-        "ps", "upgrade", "update", "chat", "run", "info", "agents", "start",
+        "ps", "top", "upgrade", "update", "chat", "run", "info", "agents", "start",
         "connect", "doctor", "telemetry", "feedback", "share", "launch",
         "service", "bare", "other"
       ]
