@@ -57,6 +57,12 @@ class Supervisor:
         self.stop_started = None
         self.history = None
 
+    def emit(self, kind, **fields):
+        # Optional diagnostics must never interrupt supervision or its cleanup.
+        with self.best_effort("event emission"):
+            if self.history is not None:
+                self.history.event(kind, **fields)
+
     def status(self):
         return {
             "log": self.history.status() if self.history else {},
@@ -125,10 +131,13 @@ class Supervisor:
                     if self.child is None or data["pid"] != self.child.pid:
                         code, result = 409, {}
                     else:
-                        self.history.append(
-                            data["records"], data["pid"], data["dropped"]
-                        )
-                        code, result = 200, {}
+                        if self.history is None:
+                            code, result = 503, {}
+                        else:
+                            self.history.append(
+                                data["records"], data["pid"], data["dropped"]
+                            )
+                            code, result = 200, {}
                 elif target.startswith("/rapid/v1/") and self.history:
                     data = (
                         json.loads(await reader.readexactly(length)) if length else {}
@@ -148,14 +157,14 @@ class Supervisor:
                             self.port = port
                             if not self.stopping.is_set() and data.get("ready", True):
                                 self.state = "ready"
-                                self.history.event("runner_ready")
+                                self.emit("runner_ready")
                         elif event == "bind_failed":
                             self.bind_failed = True
                         elif event == "startup_failed" and not self.stopping.is_set():
                             self.startup_failed = True
                             self.state = "failed"
                         elif event in ("model_loaded", "model_unloaded"):
-                            self.history.event(event, model=str(data["model"])[:256])
+                            self.emit(event, model=str(data["model"])[:256])
                         else:
                             raise ValueError("unknown startup report")
                         code, result = 200, {}
@@ -198,10 +207,13 @@ class Supervisor:
         from pathlib import Path
 
         self.directory = Path(tempfile.mkdtemp(prefix="i-", dir=root))
-        self.history = History(
-            private_directory(index / self.directory.name),
-            disabled="--no-call-log" in self.argv,
-        )
+        # Retained history/settings are separate from disposable discovery entries.
+        with self.best_effort("history setup"):
+            history_root = private_directory(index.parent / "history")
+            self.history = History(
+                private_directory(history_root / self.directory.name),
+                disabled="--no-call-log" in self.argv,
+            )
         path = self.directory / "control.sock"
         self.server = await asyncio.start_unix_server(
             self.handle, path=str(path), limit=MAX_BODY
@@ -296,7 +308,7 @@ class Supervisor:
                 self.bind_failed = False
                 self.startup_failed = False
                 self.started_at = time.time()
-                self.history.event("runner_starting")
+                self.emit("runner_starting")
                 self.spawn_ready.clear()
                 self.child = await asyncio.create_subprocess_exec(
                     *self.spawn_argv(),
@@ -339,9 +351,7 @@ class Supervisor:
                 self.tree.stop_tracking()
                 self.signal_descendants(signal.SIGKILL)
                 code = await asyncio.wait_for(wait, 0.2)
-                self.history.event(
-                    "runner_exited" if code == 0 else "runner_crashed", code=code
-                )
+                self.emit("runner_exited" if code == 0 else "runner_crashed", code=code)
                 stopping.cancel()
                 await asyncio.gather(stopping, return_exceptions=True)
                 if self.stopping.is_set():
@@ -355,7 +365,7 @@ class Supervisor:
                     self.state = "failed"
                     return exit_code(code) or 1
                 self.state = "restarting"
-                self.history.event("runner_restarting")
+                self.emit("runner_restarting")
                 delay = self.restart_delay()
                 try:
                     await asyncio.wait_for(self.stopping.wait(), delay)
@@ -364,8 +374,7 @@ class Supervisor:
                     self.state = "starting"
             return 128 + self.stop_signal
         finally:
-            if self.history is not None:
-                self.history.event("runner_stopped")
+            self.emit("runner_stopped")
             if self.tree is not None:
                 self.tree.stop_tracking()
             if self.child is not None:

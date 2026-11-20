@@ -380,7 +380,8 @@ class _TransportPeerConfig(uvicorn.Config):
         loaded_app: Any = self.loaded_app
 
         async def transport_peer_status(scope, receive, send):
-            scope["_rapid_mlx_transport_peer"] = scope.get("client")
+            if self.proxy_headers:
+                scope["_rapid_mlx_transport_peer"] = scope.get("client")
             await loaded_app(scope, receive, send)
 
         from rapid_mlx.control.observer import install

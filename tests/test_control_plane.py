@@ -796,6 +796,10 @@ def test_forwarder_preserves_transport_peer_with_proxy_headers(
     async def peer(request: Request):
         return {"peer": request.client.host}
 
+    # In-process config checks must not start a delivery thread using shared env.
+    from rapid_mlx.control import observer
+
+    monkeypatch.setattr(observer, "_delivery", observer.Delivery())
     captured = []
     factory_calls = []
 
@@ -1448,7 +1452,9 @@ json.dump = dump
         assert list(discovery_root().iterdir()) == []
 
 
-def test_pre_spawn_cleanup_failure_cannot_prevent_fallback(fake, monkeypatch, caplog):
+def test_pre_spawn_cleanup_failure_cannot_prevent_fallback(
+    fake, monkeypatch, caplog, capsys
+):
     from rapid_mlx import cli
     from rapid_mlx.control import supervisor
 
@@ -1464,9 +1470,8 @@ def test_pre_spawn_cleanup_failure_cannot_prevent_fallback(fake, monkeypatch, ca
         patch.setattr(supervisor.json, "dump", fail)
         patch.setattr(supervisor.shutil, "rmtree", fail)
         cli._dispatch_serve_control(args)
-    assert len(caplog.records) == 1
-    assert "serving in single process" in caplog.records[0].message
-    assert caplog.records[0].exc_info is None
+    assert not caplog.records
+    assert capsys.readouterr().err.count("serving in single process") == 1
     assert list(base.glob("rmlx-cp-*/i-*"))
 
 
@@ -2665,6 +2670,9 @@ async def test_uvicorn_lifespan_failure_without_system_exit(monkeypatch):
     async def peer(request: Request):
         return {"captured": "_rapid_mlx_transport_peer" in request.scope}
 
+    from rapid_mlx.control import observer
+
+    monkeypatch.setattr(observer, "_delivery", observer.Delivery())
     config = _uvicorn._TransportPeerConfig(app, proxy_headers=False)
     monkeypatch.setenv(RUNNER_ENV, "1")
     config.load()

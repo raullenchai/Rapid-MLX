@@ -840,3 +840,52 @@ def test_discovery_preserves_user_settings(history, monkeypatch):
     assert protocol.discover() == []
     assert history.settings_path.exists()
     assert not History(history.root).enabled
+
+
+def test_lifecycle_events_are_optional_and_best_effort(monkeypatch, caplog):
+    supervisor = Supervisor([], port=8000, mode="lazy")
+    supervisor.emit("runner_starting")
+    supervisor.history = SimpleNamespace(event=Mock(side_effect=OSError("disk full")))
+    supervisor.emit("runner_ready")
+    supervisor.child = SimpleNamespace(pid=42)
+    supervisor.emit("runner_stopped")
+    assert len(caplog.records) == 1
+    assert "event emission failed (OSError)" in caplog.text
+
+
+async def test_history_setup_failure_does_not_prevent_control_startup(
+    tmp_path, monkeypatch
+):
+    from rapid_mlx.control import history
+    from rapid_mlx.control import supervisor as module
+
+    monkeypatch.setattr(module, "runtime_root", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(module, "discovery_root", lambda: tmp_path / "control")
+    monkeypatch.setattr(history, "History", Mock(side_effect=OSError("unavailable")))
+    socket_server = SimpleNamespace()
+
+    async def start(handler, *, path, **kwargs):
+        from pathlib import Path
+
+        Path(path).touch()
+        return socket_server
+
+    monkeypatch.setattr(module.asyncio, "start_unix_server", start)
+    supervisor = Supervisor([], port=8000, mode="lazy")
+    await supervisor.open()
+    assert supervisor.server is socket_server
+    assert supervisor.history is None
+    supervisor.emit("runner_starting")
+    assert supervisor.status()["log"] == {}
+    supervisor.child = SimpleNamespace(pid=42)
+    reader = asyncio.StreamReader()
+    body = json.dumps({"pid": 42, "records": [], "dropped": 0}).encode()
+    reader.feed_data(
+        f"POST /records HTTP/1.1\r\nX-Rapid-Control-Secret: {supervisor.secret}\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+        + body
+    )
+    writer = SimpleNamespace(
+        write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock()
+    )
+    await supervisor.handle(reader, writer)
+    assert writer.write.call_args.args[0].startswith(b"HTTP/1.1 503")

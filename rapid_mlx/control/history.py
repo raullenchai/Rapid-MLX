@@ -7,6 +7,7 @@ import os
 import time
 from urllib.parse import parse_qs, urlsplit
 
+from . import CONTROL_PREFIX
 from .protocol import private_directory
 
 FIELDS = frozenset(
@@ -176,7 +177,7 @@ class History:
                     ):
                         result.append(record)
                 return 200, list(reversed(result))
-        if url.path == "/rapid/v1/events" and method == "GET":
+        if url.path == CONTROL_PREFIX + "/events" and method == "GET":
             since = int(query.get("since", ["0"])[0])
             return 200, [e for e in self.events if e["id"] > since]
         return 404, {}

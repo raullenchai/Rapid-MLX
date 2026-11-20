@@ -9,7 +9,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from rapid_mlx.control import RUNNER_ENV, SECRET_ENV, SOCKET_ENV
+from rapid_mlx.control import CONTROL_PREFIX, RUNNER_ENV, SECRET_ENV, SOCKET_ENV
 from rapid_mlx.control.protocol import MAX_BODY, TIMEOUT
 from rapid_mlx.control.protocol import request as control_request
 from rapid_mlx.middleware.auth import verify_api_key
@@ -87,7 +87,7 @@ def mount_status(app):
         except (TimeoutError, OSError, ValueError, http.client.HTTPException):
             raise HTTPException(503, "Control plane unavailable") from None
 
-    @router.get("/rapid/v1/events", dependencies=dependencies)
+    @router.get(CONTROL_PREFIX + "/events", dependencies=dependencies)
     async def events(request: Request):
         try:
             cursor = int(request.headers.get("last-event-id", "0"))
@@ -120,7 +120,10 @@ async def event_stream(path, secret, cursor):
     while True:
         try:
             batch = await asyncio.to_thread(
-                control_request, path, secret, target=f"/rapid/v1/events?since={cursor}"
+                control_request,
+                path,
+                secret,
+                target=f"{CONTROL_PREFIX}/events?since={cursor}",
             )
         except (OSError, ValueError, http.client.HTTPException):
             return
