@@ -92,6 +92,7 @@
     "help": "Show help for a subcommand",
     "import": "Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)",
     "info": "Show the per-model profile for a model name or alias",
+    "jobs": "Show serve jobs",
     "launch": "Launch coding agents with private local profiles or configure editors",
     "log": "Show recent serve API calls",
     "ls": "List models in the local HuggingFace cache (alias for `models --cached`)",
@@ -3460,6 +3461,169 @@
      ],
      "mutually_exclusive": [],
      "prog": "rapid-mlx info"
+    },
+    "jobs": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "port",
+       "help": "Select a serve by port",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--port"
+       ],
+       "required": false,
+       "type": "rapid_mlx.cli_parser._port_arg"
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "Print jobs as JSON",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "choices_help": {},
+       "class": "argparse._SubParsersAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "jobs_action",
+       "help": null,
+       "metavar": null,
+       "nargs": "A...",
+       "option_strings": [],
+       "subcommands": {
+        "cancel": {
+         "actions": [
+          {
+           "class": "argparse._HelpAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "help",
+           "help": "show this help message and exit",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": null,
+           "dest": "id",
+           "help": "Job ID",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [],
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "port",
+           "help": null,
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--port"
+           ],
+           "required": false,
+           "type": "rapid_mlx.cli_parser._port_arg"
+          }
+         ],
+         "allow_abbrev": true,
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+         "defaults": {},
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse.HelpFormatter",
+         "groups": [
+          {
+           "description": null,
+           "dests": [
+            "id"
+           ],
+           "title": "positional arguments"
+          },
+          {
+           "description": null,
+           "dests": [
+            "help",
+            "port"
+           ],
+           "title": "options"
+          }
+         ],
+         "mutually_exclusive": [],
+         "prog": "rapid-mlx jobs cancel"
+        }
+       },
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [
+        "jobs_action"
+       ],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "port",
+        "json"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx jobs"
     },
     "launch": {
      "actions": [
