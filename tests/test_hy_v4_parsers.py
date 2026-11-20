@@ -29,6 +29,25 @@ class Tokenizer:
         return self.vocab
 
 
+@pytest.mark.parametrize("token", ["<think:other>", "</arg_value:other>"])
+def test_ambiguous_structural_suffix_is_rejected(token):
+    from rapid_mlx.reasoning.hy4_parser import detect_token_suffix
+
+    tokenizer = Tokenizer()
+    tokenizer.vocab[token] = 99
+    with pytest.raises(RuntimeError, match="suffix"):
+        detect_token_suffix(tokenizer)
+
+
+def test_incomplete_structural_tokens_are_rejected():
+    from rapid_mlx.reasoning.hy4_parser import detect_token_suffix
+
+    tokenizer = Tokenizer()
+    del tokenizer.vocab["</tool_calls:opensource>"]
+    with pytest.raises(RuntimeError, match="suffix"):
+        detect_token_suffix(tokenizer)
+
+
 def call(pairs, suffix):
     args = "".join(
         f"<arg_key{suffix}>{k}</arg_key{suffix}><arg_value{suffix}>{v}</arg_value{suffix}>"

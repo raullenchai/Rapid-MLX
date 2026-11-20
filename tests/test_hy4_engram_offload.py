@@ -182,6 +182,47 @@ def test_bounded_groups_count_bytes_empty_and_oversized(loader, monkeypatch):
     assert len(batches) == 4
 
 
+@pytest.mark.parametrize("leaf", ["weight", "scales", "biases"])
+def test_table_byte_lengths_must_match_header(loader, checkpoint, leaf):
+    path, _, _, tensors = checkpoint
+    key = PREFIX + "." + leaf
+    dtype, value = tensors[key]
+    # Keep expected header shapes/dtypes but provide the wrong number of bytes.
+    tensors[key] = dtype, value.astype("u1")
+    write_shard(path / "table.safetensors", tensors)
+    assert not loader.supports_engram_ssd_offload(path)
+
+
+@pytest.mark.parametrize("leaf", ["weight", "scales", "biases"])
+@pytest.mark.parametrize("axis", [0, 1])
+def test_malformed_table_shapes_fall_back_to_resident(
+    loader, checkpoint, monkeypatch, leaf, axis
+):
+    path, _, mapping, tensors = checkpoint
+    key = PREFIX + "." + leaf
+    dtype, value = tensors[key]
+    shape = list(value.shape)
+    shape[axis] += 1
+    tensors[key] = dtype, np.zeros(shape, value.dtype)
+    write_shard(path / "table.safetensors", tensors)
+    assert not loader.supports_engram_ssd_offload(path)
+    fake_model(loader, monkeypatch)
+    opened = []
+
+    def load_shard(name, **kwargs):
+        opened.append(Path(name).name)
+        return {
+            k: tensors[k][1] if k in tensors else np.ones((2, 2))
+            for k, v in mapping.items()
+            if v == Path(name).name
+        }
+
+    monkeypatch.setattr(loader.mx, "load", load_shard, raising=False)
+    model, _ = loader.load(path)
+    assert set(opened) == {"table.safetensors", "model.safetensors"}
+    assert model.evaluated
+
+
 @pytest.mark.parametrize("dtype", ["F16", "F32"])
 @pytest.mark.parametrize("leaves", [("scales",), ("biases",), ("scales", "biases")])
 def test_non_bf16_affine_tables_load_resident(

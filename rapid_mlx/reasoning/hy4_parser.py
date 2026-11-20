@@ -34,7 +34,7 @@ def detect_token_suffix(tokenizer: Any) -> str:
     Raises:
         RuntimeError: The tokenizer declares the structural tokens through
             `model_specific_special_tokens`, which transformers 5 no longer
-            round-trips.
+            round-trips, or has incomplete/inconsistent structural suffixes.
 
     """
     init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
@@ -51,14 +51,23 @@ def detect_token_suffix(tokenizer: Any) -> str:
         )
 
     structural_token_re = re.compile(
-        r"<(?:think|tool_calls|tool_call|arg_key|arg_value)(:[^\s>]+)?>"
+        r"<(/?(?:think|tool_calls|tool_call|arg_key|arg_value))(:[^\s>]+)?>"
     )
+    suffixes = set()
+    names = set()
     for token in tokenizer.get_vocab():
         match = structural_token_re.fullmatch(token)
         if match:
-            return match.group(1) or ""
-
-    return ""
+            names.add(match.group(1))
+            suffixes.add(match.group(2) or "")
+    required = {
+        close + name
+        for name in ("think", "tool_calls", "tool_call", "arg_key", "arg_value")
+        for close in ("", "/")
+    }
+    if len(suffixes) > 1 or (names and names != required):
+        raise RuntimeError("HYV4 structural tokens must share exactly one suffix")
+    return next(iter(suffixes), "")
 
 
 class HYV4ReasoningExtractor:

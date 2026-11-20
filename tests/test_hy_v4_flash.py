@@ -605,31 +605,84 @@ def test_every_published_text_tensor_is_mapped(cpu_model):
             assert mapped in parameters, name
 
 
-def test_fp8_conversion_uses_standard_quantization_and_saver(
-    cpu_model, monkeypatch, tmp_path, caplog
-):
+def cpu_parameters(value, prefix=""):
+    """Walk the independent CPU model graph, including list parameters."""
+    if isinstance(value, np.ndarray):
+        return {prefix: value}
+    if isinstance(value, (list, tuple)):
+        children = enumerate(value)
+    elif hasattr(value, "__dict__"):
+        children = (
+            (k, v)
+            for k, v in vars(value).items()
+            if not k.startswith("_") and k != "args"
+        )
+    else:
+        return {}
+    result = {}
+    for key, child in children:
+        result.update(cpu_parameters(child, f"{prefix}.{key}" if prefix else str(key)))
+    return result
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        dict(sandwich_norm=False, n_shared_experts=0),
+        dict(
+            tie_word_embeddings=True, dsa_skip_attn_post_norm=True, n_shared_experts=2
+        ),
+    ],
+)
+def test_conversion_shapes_match_model_without_allocating_weights(cpu_model, overrides):
+    from rapid_mlx.models.hy_v4_flash_config import parameter_shapes
+
+    args = tiny(**overrides)
+    actual = cpu_parameters(cpu_model.Model(args))
+    if args.tie_word_embeddings:
+        actual.pop("lm_head.weight")
+    assert parameter_shapes(args) == {k: v.shape for k, v in actual.items()}
+
+
+@pytest.fixture
+def fp8_conversion(cpu_model, monkeypatch, tmp_path):
     from dataclasses import asdict
 
-    from rapid_mlx.models.hy_v4_flash_convert import convert_fp8
+    from safetensors.numpy import save_file
 
-    config = asdict(tiny())
+    from rapid_mlx.models import hy_v4_flash_convert as converter
+
+    args = tiny(
+        hidden_size=64,
+        intermediate_size=64,
+        routed_expert_hidden_size=64,
+        moe_intermediate_size=64,
+        engram_n_embed_per_ngram=64,
+    )
+    config = asdict(args)
     (tmp_path / "config.json").write_text(json.dumps(config))
-    arrays = {
-        "model.layers.1.mlp.experts.gate_up_proj": (
-            np.full((3, 8, 4), 56, np.uint8),
-            "F8_E4M3",
-        ),
-        "model.layers.1.mlp.experts.gate_up_proj_scale_inv": (
-            np.full((3, 1, 1), 2.0, np.float32),
-            "F32",
-        ),
-        "model.norm.weight": (np.ones(8, np.float32), "F32"),
-        "model.layers.1.engram_layer.lookup_table": (
-            np.arange(16, dtype=np.int64),
-            "I64",
-        ),
-        "vit.weight": (np.ones(2, np.float32), "F32"),
-    }
+    values = cpu_parameters(cpu_model.Model(args))
+    arrays = {k: (v.astype(np.float32), "F32") for k, v in values.items()}
+    arrays["model.layers.1.engram_layer.lookup_table"] = (
+        np.arange(16, dtype=np.int64),
+        "I64",
+    )
+    for projection in ("gate_proj", "up_proj"):
+        arrays.pop(f"model.layers.1.mlp.switch_mlp.{projection}.weight")
+    arrays.update(
+        {
+            "model.layers.1.mlp.experts.gate_up_proj": (
+                np.full((3, 128, 64), 56, np.uint8),
+                "F8_E4M3",
+            ),
+            "model.layers.1.mlp.experts.gate_up_proj_scale_inv": (
+                np.full((3, 1, 1), 2.0, np.float32),
+                "F32",
+            ),
+            "vit.weight": (np.ones(2, np.float32), "F32"),
+        }
+    )
 
     class Shard:
         @property
@@ -640,93 +693,170 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
             v, t = arrays[name]
             return np.frombuffer(v.tobytes(), dtype=np.uint8), t, list(v.shape)
 
-    shard = Shard()
     fp8 = ModuleType("rapid_mlx.fp8_repack")
-    fp8._open_shards = lambda _: ({k: "shard" for k in arrays}, {"shard": shard})
+    fp8._open_shards = lambda _: ({k: "shard" for k in arrays}, {"shard": Shard()})
     fp8._raw_to_mx = lambda raw, dtype, shape: raw.view(np.float32).reshape(shape)
     monkeypatch.setitem(sys.modules, "rapid_mlx.fp8_repack", fp8)
     monkeypatch.setitem(sys.modules, "rapid_mlx.models.hy_v4_flash", cpu_model)
-    utils = ModuleType("mlx.utils")
-    utils.tree_flatten = lambda x: list(x.items())
-    monkeypatch.setitem(sys.modules, "mlx.utils", utils)
     lm_utils = ModuleType("mlx_lm.utils")
-    expected, loaded, quantized, saved = {}, [], [], []
-    for projection in ("gate_proj", "up_proj"):
-        base = f"model.layers.1.mlp.switch_mlp.{projection}"
-        expected.update(
-            {base + "." + leaf: np.zeros(1) for leaf in ("weight", "scales", "biases")}
-        )
-    cpu_model.Model.parameters = lambda self: expected
-    cpu_model.Model.load_weights = lambda self, weights, strict: loaded.extend(weights)
-    cpu_model.Model.eval = lambda self: None
-    lm_utils.quantize_model = lambda model, config, group, bits, **kwargs: (
-        model,
-        {**config, "quantization": {"group_size": 64, "bits": bits}},
+    saved = []
+    lm_utils.load_tokenizer = lambda _: SimpleNamespace(
+        save_pretrained=lambda path: saved.append(("tokenizer", path))
     )
-    lm_utils.load_tokenizer = lambda _: "tokenizer"
-    lm_utils.save = lambda *args: saved.append(args)
+    lm_utils.save_config = lambda config, config_path: Path(config_path).write_text(
+        json.dumps(config)
+    )
+    lm_utils.create_model_card = lambda path, repo: saved.append(("card", path))
     monkeypatch.setitem(sys.modules, "mlx_lm.utils", lm_utils)
+
+    # Construction and whole-model loading/saving must never be used.
+    def forbidden(*args, **kwargs):
+        pytest.fail("Conversion must not allocate or load a model")
+
+    monkeypatch.setattr(cpu_model.Model, "__init__", forbidden)
     mx = sys.modules["mlx.core"]
+    quantized = []
 
     def quantize(value, **params):
         quantized.append((value.copy(), params))
-        return value, np.ones(1), np.zeros(1)
+        return (
+            np.zeros(
+                (*value.shape[:-1], value.shape[-1] * params["bits"] // 32), np.uint32
+            ),
+            np.ones(
+                (*value.shape[:-1], value.shape[-1] // params["group_size"]), np.float32
+            ),
+            np.zeros(
+                (*value.shape[:-1], value.shape[-1] // params["group_size"]), np.float32
+            ),
+        )
 
     mx.quantize = quantize
     mx.eval = lambda *args: None
-    # The typed load boundary wraps both MLX entry points, even though this
-    # test replaces model loading and quantization with NumPy stand-ins.
-    monkeypatch.setattr(
-        sys.modules["mlx.nn"], "quantize", lambda *a, **k: None, raising=False
+    mx.save_safetensors = lambda path, tensors, metadata: save_file(
+        tensors, path, metadata=metadata
     )
-    monkeypatch.setattr(
-        sys.modules["mlx.nn"].Module,
-        "load_weights",
-        lambda *a, **k: None,
-        raising=False,
-    )
+    return converter, arrays, quantized, saved
+
+
+def test_fp8_conversion_uses_standard_quantization_and_saver(
+    fp8_conversion, tmp_path, caplog
+):
+    from safetensors.numpy import load_file
+
+    converter, arrays, quantized, saved = fp8_conversion
+    (tmp_path / "generation_config.json").write_text('{"test": true}')
+    (tmp_path / "custom.py").write_text("# tokenizer code")
     with caplog.at_level("INFO"):
-        assert convert_fp8(tmp_path, tmp_path / "out", 4, 64)
+        assert converter.convert_fp8(tmp_path, tmp_path / "out", 4, 64)
     assert "text-only" in caplog.text
-    assert len(quantized) == 2
+    assert sum(v.shape == (3, 64, 64) and np.all(v == 2.0) for v, _ in quantized) == 2
     for value, params in quantized:
-        np.testing.assert_array_equal(value, np.full((3, 4, 4), 2.0))
-        assert params == {"group_size": 64, "bits": 4}
-    assert len(saved) == 1 and saved[0][3] == "tokenizer"
-    assert not any("vit" in key or "scale_inv" in key for key, value in loaded)
+        assert params == {"group_size": 32 if value.shape[-1] == 32 else 64, "bits": 4}
+    output = tmp_path / "out"
+    assert [kind for kind, _ in saved] == ["tokenizer", "card"]
+    index = json.loads((output / "model.safetensors.index.json").read_text())
+    assert not any("vit" in key or "scale_inv" in key for key in index["weight_map"])
+    for key, filename in index["weight_map"].items():
+        assert key in load_file(output / filename)
+    config = json.loads((output / "config.json").read_text())
+    assert config["quantization"]["model.layers.1.mlp.switch_mlp.gate_proj"] == dict(
+        group_size=64, bits=4, mode="affine"
+    )
+    assert (output / "generation_config.json").read_bytes() == (
+        tmp_path / "generation_config.json"
+    ).read_bytes()
+    assert (output / "custom.py").is_file()
     arrays["model.layers.1.engram_layer.lookup_table"] = (
         np.arange(16, dtype=np.int32),
         "I32",
     )
-    assert convert_fp8(tmp_path, tmp_path / "out2", 4, 64)
+    assert converter.convert_fp8(tmp_path, tmp_path / "out2", 4, 32)
     with pytest.raises(ValueError, match="already exists"):
-        convert_fp8(tmp_path, tmp_path, 4, 64)
-    # Per-expert layouts reach sanitize() as one complete bank per projection.
-    experts = config["n_routed_experts"]
-    for e in range(experts):
+        converter.convert_fp8(tmp_path, tmp_path, 4, 32)
+    arrays.pop("model.layers.1.mlp.switch_mlp.down_proj.weight")
+    for e in range(3):
         arrays[f"model.layers.1.mlp.experts.{e}.down_proj.weight"] = (
-            np.full((8, 4), e, np.float32),
+            np.full((64, 64), e, np.float32),
             "F32",
         )
-    base = "model.layers.1.mlp.switch_mlp.down_proj"
-    expected.update(
-        {base + "." + leaf: np.zeros(1) for leaf in ("weight", "scales", "biases")}
-    )
     quantized.clear()
-    assert convert_fp8(tmp_path, tmp_path / "out5", 4, 64)
-    stacked = [value for value, _ in quantized if value.shape == (experts, 8, 4)]
-    assert len(stacked) == 1
-    for e in range(experts):
-        np.testing.assert_array_equal(stacked[0][e], np.full((8, 4), e))
-    arrays.pop(f"model.layers.1.mlp.experts.{experts - 1}.down_proj.weight")
+    assert converter.convert_fp8(tmp_path, tmp_path / "out3", 4, 32)
+    stacked = [value for value, _ in quantized if value.shape == (3, 64, 64)]
+    assert any(np.array_equal(v[:, 0, 0], np.arange(3)) for v in stacked)
+    arrays.pop("model.layers.1.mlp.experts.2.down_proj.weight")
     with pytest.raises(ValueError, match="incomplete routed-expert banks"):
-        convert_fp8(tmp_path, tmp_path / "out6", 4, 64)
-    for e in range(experts - 1):
-        arrays.pop(f"model.layers.1.mlp.experts.{e}.down_proj.weight")
+        converter.convert_fp8(tmp_path, tmp_path / "out4", 4, 32)
     arrays.pop("model.layers.1.mlp.experts.gate_up_proj")
-    assert convert_fp8(tmp_path, tmp_path / "out3", 4, 64) is False
+    assert converter.convert_fp8(tmp_path, tmp_path / "out5", 4, 32) is False
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "other"}))
-    assert convert_fp8(tmp_path, tmp_path / "out4", 4, 64) is False
+    assert converter.convert_fp8(tmp_path, tmp_path / "out6", 4, 32) is False
+
+
+@pytest.mark.parametrize("mutation", ["missing", "shape", "unexpected", "duplicate"])
+def test_fp8_conversion_validates_parameters(fp8_conversion, tmp_path, mutation):
+    converter, arrays, _, _ = fp8_conversion
+    if mutation == "missing":
+        arrays.pop("model.norm.weight")
+    elif mutation == "shape":
+        arrays["model.norm.weight"] = np.ones(1, np.float32), "F32"
+    elif mutation == "unexpected":
+        arrays["unexpected.weight"] = np.ones(1, np.float32), "F32"
+    else:
+        arrays["language_model.model.norm.weight"] = arrays["model.norm.weight"]
+    with pytest.raises(ValueError, match="Missing|Unexpected|Duplicate"):
+        converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
+    assert not (tmp_path / "out/model.safetensors.index.json").exists()
+
+
+def test_fp8_output_shards_are_bounded_and_release_tensors(
+    fp8_conversion, monkeypatch, tmp_path
+):
+    import weakref
+
+    from safetensors import safe_open
+
+    converter, _, _, _ = fp8_conversion
+    writer_class = converter._ShardWriter
+    limit = 40_000
+    references = []
+    writers = []
+    release_checks = []
+
+    class Writer(writer_class):
+        def __init__(self, destination):
+            super().__init__(destination, max_bytes=limit)
+            writers.append(self)
+
+        def flush(self):
+            references.extend(weakref.ref(v) for v in self.pending.values())
+            super().flush()
+
+    monkeypatch.setattr(converter, "_ShardWriter", Writer)
+    # This recorder deliberately retains no converted arrays.
+    mx = sys.modules["mlx.core"]
+    original_quantize = mx.quantize
+
+    def quantize(*args, **kwargs):
+        result = original_quantize(*args, **kwargs)
+        fp8_conversion[2].clear()
+        # Previously flushed output must die during conversion, not just at exit.
+        if len(references) > 16:
+            assert all(ref() is None for ref in references[:-16])
+            release_checks.append(True)
+        return result
+
+    mx.quantize = quantize
+    assert converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
+    writer = writers[0]
+    assert not writer.pending
+    assert release_checks
+    assert all(ref() is None for ref in references)
+    assert writer.shards > 1
+    for shard in (tmp_path / "out").glob("*.safetensors"):
+        with safe_open(shard, framework="np") as f:
+            assert sum(f.get_tensor(k).nbytes for k in list(f.keys())) <= limit
+    assert writer.total > limit
 
 
 def test_moe_latent_clamp_bias_and_shared_reference(cpu_model):

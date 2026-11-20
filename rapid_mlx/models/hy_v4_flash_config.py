@@ -246,3 +246,113 @@ def validate_lookup(lookup, vocab_size):
     ):
         raise ValueError("Invalid frozen Engram token map")
     return lookup
+
+
+def parameter_shapes(a):
+    """Compute resident parameter shapes without allocating model weights."""
+    h, c = a.hidden_size, a.hc_mult
+    shapes = {
+        "model.embed_tokens.weight": (a.vocab_size, h),
+        "model.norm.weight": (h,),
+        "model.hc_head.hc_head_fn.weight": (c, c * h),
+        "model.hc_head.hc_head_scale": (1,),
+        "model.hc_head.hc_head_base": (c,),
+        "lm_head.weight": (a.vocab_size, h),
+    }
+    if a.tie_word_embeddings:
+        shapes.pop("lm_head.weight")
+
+    def mlp(prefix, hidden, intermediate):
+        for proj in ("gate_proj", "up_proj"):
+            shapes[prefix + proj + ".weight"] = (intermediate, hidden)
+        shapes[prefix + "down_proj.weight"] = (hidden, intermediate)
+
+    for i in range(a.num_hidden_layers):
+        p = f"model.layers.{i}."
+        for norm in ("input_layernorm", "post_attention_layernorm"):
+            shapes[p + norm + ".weight"] = (h,)
+        for hc in ("hc_attn_layer", "hc_mlp_layer"):
+            base = p + hc + ".hc_pre."
+            shapes[base + "hc_fn.weight"] = (2 * c, c * h)
+            shapes[base + "hc_scale"] = (2,)
+            shapes[base + "hc_base"] = (2 * c,)
+        window = a.layer_types[i] == "sliding_attention"
+        heads = a.swa_num_attention_heads if window else a.num_attention_heads
+        nope = a.swa_qk_nope_head_dim if window else a.qk_nope_head_dim
+        rope = a.swa_qk_rope_head_dim if window else a.qk_rope_head_dim
+        v = a.swa_v_head_dim if window else a.v_head_dim
+        attn = p + "self_attn."
+        for name, shape in {
+            "q_a_proj.weight": (a.q_lora_rank, h),
+            "q_a_layernorm.weight": (a.q_lora_rank,),
+            "q_b_proj.weight": (heads * (nope + rope), a.q_lora_rank),
+            "kv_a_proj_with_mqa.weight": (a.kv_lora_rank + rope, h),
+            "kv_a_layernorm.weight": (a.kv_lora_rank,),
+            "kv_b_proj.weight": (heads * (nope + v), a.kv_lora_rank),
+            "linear_gate.weight": (heads * v, h),
+            "o_proj.weight": (h, heads * v),
+            "learnable_sink_param": (heads,),
+        }.items():
+            shapes[attn + name] = shape
+        if a.sandwich_norm and (window or not a.dsa_skip_attn_post_norm):
+            shapes[attn + "post_proj_norm.weight"] = (h,)
+        if not window:
+            d, nh = (
+                a.compressed_indexer_head_dim,
+                a.compressed_indexer_num_attention_heads,
+            )
+            for name, shape in {
+                "query_projection.weight": (nh * d, a.q_lora_rank),
+                "head_weight_projection.weight": (nh, h),
+                "token_key_projection.weight": (d, h),
+                "token_key_norm.weight": (d,),
+                "key_value_projection.weight": (d, d),
+                "key_gate_projection.weight": (d, d),
+                "key_norm.weight": (d,),
+                "intra_group_ape": (a.compressed_indexer_compress_ratio, d),
+            }.items():
+                shapes[attn + "indexer." + name] = shape
+        m = p + "mlp."
+        if a.mlp_layer_types[i] == "dense":
+            mlp(m, h, a.intermediate_size)
+            if a.sandwich_norm:
+                shapes[m + "post_fc2_norm.weight"] = (h,)
+        else:
+            e, r, mid = (
+                a.n_routed_experts,
+                a.routed_expert_hidden_size,
+                a.moe_intermediate_size,
+            )
+            shapes[m + "gate.weight"] = (e, h)
+            shapes[m + "expert_bias"] = (e,)
+            shapes[m + "routed_expert_down_proj.weight"] = (r, h)
+            shapes[m + "routed_expert_up_proj.weight"] = (h, r)
+            for proj in ("gate_proj", "up_proj"):
+                shapes[m + "switch_mlp." + proj + ".weight"] = (e, mid, r)
+            shapes[m + "switch_mlp.down_proj.weight"] = (e, r, mid)
+            if a.n_shared_experts:
+                mlp(m + "shared_experts.", h, mid * a.n_shared_experts)
+            if a.sandwich_norm:
+                shapes[m + "combine_output_norm.weight"] = (h,)
+        if i + 1 in a.engram_layer_ids:
+            sizes = [
+                v
+                for order in a.engram_layer_head_vocab_sizes[str(i + 1)]
+                for v in order
+            ]
+            d = a.engram_n_embed_per_ngram // a.engram_n_head_per_ngram
+            width = len(sizes) * d
+            base = p + "engram_layer."
+            shapes[base + "lookup_table"] = (a.vocab_size,)
+            shapes[base + "multi_head_embedding.embedding.weight"] = (sum(sizes), d)
+            shapes[base + "unified_pre_gamma"] = (h,)
+            for j in range(len(sizes)):
+                shapes[base + f"lookup_per_head_norms.{j}.weight"] = (d,)
+            for proj in ("value_proj", *(f"key_projs.{j}" for j in range(c))):
+                shapes[base + proj + ".weight"] = (h, width)
+                shapes[base + proj + ".bias"] = (h,)
+            for j in range(c):
+                shapes[base + f"unified_per_hc_scales.{j}"] = (h,)
+                for norm in ("norm_key", "norm_query"):
+                    shapes[base + f"{norm}.{j}.weight"] = (h,)
+    return shapes

@@ -74,18 +74,27 @@ def supports_engram_ssd_offload(path: str | Path) -> bool:
     """Check metadata and shard containment without loading model parameters."""
     path = Path(path)
     try:
-        specs = _engram_specs(json.loads((path / "config.json").read_text()))
+        config = json.loads((path / "config.json").read_text())
+        args = ModelArgs.from_dict(config)
+        specs = _engram_specs(config)
         mapping = _index(path)
-        for prefix in specs:
-            for leaf, dtype in (
-                ("weight", "U32"),
-                ("scales", "BF16"),
-                ("biases", "BF16"),
+        for prefix, (layer, dim, group, bits) in specs.items():
+            rows = sum(
+                sum(order)
+                for order in args.engram_layer_head_vocab_sizes[str(layer + 1)]
+            )
+            for leaf, dtype, shape in (
+                ("weight", "U32", [rows, dim * bits // 32]),
+                ("scales", "BF16", [rows, dim // group]),
+                ("biases", "BF16", [rows, dim // group]),
             ):
                 key = f"{prefix}.{leaf}"
                 shard = resolve_indexed_shard(str(path), mapping[key])
                 with safe_open(str(shard), framework="np") as file:
-                    if file.get_slice(key).get_dtype() != dtype:
+                    # safe_open validates header offsets against dtype/shape byte
+                    # lengths and the file size, without materializing tensors.
+                    tensor = file.get_slice(key)
+                    if tensor.get_dtype() != dtype or tensor.get_shape() != shape:
                         return False
         return True
     except (OSError, TypeError, ValueError, KeyError, SafetensorError):
