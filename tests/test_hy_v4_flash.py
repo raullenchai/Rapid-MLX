@@ -555,6 +555,17 @@ def test_fp8_conversion_uses_standard_quantization_and_saver(
 
     mx.quantize = quantize
     mx.eval = lambda *args: None
+    # The typed load boundary wraps both MLX entry points, even though this
+    # test replaces model loading and quantization with NumPy stand-ins.
+    monkeypatch.setattr(
+        sys.modules["mlx.nn"], "quantize", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        sys.modules["mlx.nn"].Module,
+        "load_weights",
+        lambda *a, **k: None,
+        raising=False,
+    )
     with caplog.at_level("INFO"):
         assert convert_fp8(tmp_path, tmp_path / "out", 4, 64)
     assert "text-only" in caplog.text
@@ -627,8 +638,12 @@ def test_owned_registration_is_on_production_loader_path(cpu_model, monkeypatch)
     assert sys.modules["mlx_lm.models.hy_v4_flash"] is cpu_model
     assert "hy_v4_flash" in tokenizer._VENDORED_MODEL_TYPES
     assert cpu_model.ModelArgs is ModelArgs
+    # Registration must also repair membership when the module is already
+    # imported (e.g. after test isolation resets the runtime registry).
+    tokenizer._VENDORED_MODEL_TYPES.discard("hy_v4_flash")
     tokenizer._register_vendored_archs()
     assert sys.modules["mlx_lm.models.hy_v4_flash"] is cpu_model
+    assert "hy_v4_flash" in tokenizer._VENDORED_MODEL_TYPES
 
 
 def test_left_padded_rows_keep_independent_engram_and_indexpool_state(cpu_model):

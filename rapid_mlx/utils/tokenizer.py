@@ -704,6 +704,8 @@ def _register_vendored_archs() -> None:
             logger.debug(f"hy_v4_flash vendored module unavailable: {e}")
         else:
             _VENDORED_MODEL_TYPES.add("hy_v4_flash")
+    elif sys.modules.get("mlx_lm.models.hy_v4_flash") is not None:
+        _VENDORED_MODEL_TYPES.add("hy_v4_flash")
 
     if "mlx_lm.models.deepseek_v4" not in sys.modules:
         try:

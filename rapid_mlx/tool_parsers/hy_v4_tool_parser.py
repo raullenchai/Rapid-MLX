@@ -1197,6 +1197,7 @@ class HyV4ToolParser(ToolParser):
     def reset(self):
         super().reset()
         self._extractor = HYV4ToolExtractor(self._vocab, self._suffix, strict=True)
+        self._content_cursor_initialized = False
         self._mirror()
 
     def _mirror(self):
@@ -1240,6 +1241,16 @@ class HyV4ToolParser(ToolParser):
         request=None,
     ):
         # Text deltas may split structural tokens; use the reference string path.
+        if not self._content_cursor_initialized:
+            # Plain previous text may bypass the parser in the postprocessor.
+            # Match the Hy3 cursor contract, retaining any partial opener.
+            markers = (
+                self._extractor.tool_calls_start_token,
+                self._extractor.tool_call_start_token,
+            )
+            hold = max(partial_tag_overlap(previous_text, marker) for marker in markers)
+            self._extractor._guided_content_len = len(previous_text) - hold
+            self._content_cursor_initialized = True
         result = self._extractor.extract_tool_calls_streaming(
             previous_text,
             current_text,
