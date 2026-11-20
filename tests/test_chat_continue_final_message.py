@@ -736,6 +736,105 @@ async def test_generate_keeps_channel_words_as_continuation_content():
     assert not output.reasoning_text
 
 
+@pytest.mark.parametrize("guided_result", [None, '{"answer":"thought\\n42"}'])
+async def test_schema_continuation_preserves_mode_on_guided_fallback(
+    monkeypatch, guided_result
+):
+    eng = engine(tokenizer())
+    text = '{"answer":"thought\\n42"}'
+    prompts = []
+    monkeypatch.setattr("rapid_mlx.engine.batched.HAS_GUIDED", True)
+
+    def guided(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return guided_result
+
+    async def generate(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return SimpleNamespace(
+            output_text=text,
+            output_token_ids=[1, 2],
+            prompt_tokens=4,
+            completion_tokens=2,
+            cached_tokens=0,
+            finish_reason="stop",
+        )
+
+    def unexpected_router():
+        pytest.fail("Schema continuation must not enter new-turn channel routing")
+
+    eng._run_guided_generation = guided
+    eng._engine = SimpleNamespace(generate=generate)
+    eng._ensure_generation_admission = lambda: (None, False)
+    eng._create_output_router = unexpected_router
+    output = await eng.generate_with_schema(
+        MESSAGES,
+        json_schema={"type": "object", "properties": {"answer": {"type": "string"}}},
+        **OPTIONS,
+    )
+    assert output.text == text
+    assert not output.reasoning_text
+    assert len(prompts) == (2 if guided_result is None else 1)
+    assert all(
+        prompt == "user:Write a solution.<end>assistant:" + PREFILL
+        for prompt in prompts
+    )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_response_format_continuation_returns_only_new_guided_text(
+    client, monkeypatch, stream
+):
+    from tests.test_prompt_parse_context import Tokenizer as ByteTokenizer
+
+    class SchemaTokenizer(LegacyApplicator, ByteTokenizer):
+        pass
+
+    http, cfg = client
+    cfg.engine = eng = engine(SchemaTokenizer())
+    eng.check_admission = lambda: None
+    text = '{"answer": "thought\\n42"}'
+    prompts = []
+    monkeypatch.setattr("rapid_mlx.engine.batched.HAS_GUIDED", True)
+
+    def guided(**kwargs):
+        prompts.append(kwargs["prompt"])
+        return text
+
+    eng._run_guided_generation = guided
+    response = http.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": MESSAGES,
+            "response_format": {"type": "json_object"},
+            "enable_thinking": False,
+            "stream": stream,
+            **OPTIONS,
+        },
+    )
+    assert response.status_code == 200, response.text
+    packets = (
+        [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        if stream
+        else [response.json()]
+    )
+    deltas = [
+        choice.get("delta", choice.get("message", {}))
+        for packet in packets
+        for choice in packet.get("choices", [])
+    ]
+    assert "".join(delta.get("content") or "" for delta in deltas) == text
+    assert not any(delta.get("reasoning_content") for delta in deltas)
+    assert len(prompts) == 1
+    prompt = bytes(prompts[0]).decode() if isinstance(prompts[0], list) else prompts[0]
+    assert prompt.endswith("assistant:" + PREFILL)
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     "prefill,options,expected_reasoning",

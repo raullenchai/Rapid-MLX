@@ -3037,7 +3037,7 @@ class BatchedEngine(BaseEngine):
         num_images=0,
         continue_final_message=False,
     ):
-        from ..prompt_parse_context import prompt_parse_context
+        from ..prompt_parse_context import _initial_channel, prompt_parse_context
         from ..utils.chat_template import is_flint_chat_template
 
         # Native token-routed families keep their existing ownership contract.
@@ -3107,6 +3107,13 @@ class BatchedEngine(BaseEngine):
                         flint_template=flint,
                         forced_prefix=prefix or "",
                     )
+                suffix = prompt[len(header) :]
+                return replace(
+                    generation_context,
+                    assistant_suffix=suffix,
+                    initial_channel=_initial_channel(suffix, flint=flint),
+                    forced_assistant_prefix=prefix or "",
+                )
             if (
                 isinstance(history, str)
                 and rendered.startswith(history)
@@ -6187,6 +6194,8 @@ class BatchedEngine(BaseEngine):
             # path, not a defense-in-depth nit.
             if enable_thinking is not None:
                 kwargs["enable_thinking"] = enable_thinking
+            kwargs["add_generation_prompt"] = add_generation_prompt
+            kwargs["continue_final_message"] = continue_final_message
             return await self.chat(messages=messages, max_tokens=max_tokens, **kwargs)
 
         # Tokenize for completion count

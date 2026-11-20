@@ -126,6 +126,36 @@ def test_continuation_with_unproven_history_boundary_stays_unknown(
     assert context.assistant_suffix_ids is None
 
 
+@pytest.mark.parametrize(
+    "prefill,channel",
+    [("<think>Still thinking", "reasoning"), ("<think>Done</think>Answer:", "content")],
+)
+def test_continuation_boundary_excludes_nonempty_assistant_header(
+    engine, monkeypatch, prefill, channel
+):
+    history = "<|im_start|>user\nQuote <think>fake</think><|im_end|>"
+    header = history + "<|im_start|>assistant\n"
+    monkeypatch.setattr(
+        engine,
+        "_apply_chat_template",
+        lambda *a, **kw: (
+            header + "<think>\n" if kw["add_generation_prompt"] else history
+        ),
+    )
+    context = engine._prompt_parse_context(
+        header + prefill,
+        True,
+        None,
+        None,
+        None,
+        [{"role": "assistant", "content": prefill}],
+        continue_final_message=True,
+    )
+    assert context.template_contract == "chatml"
+    assert context.assistant_suffix == prefill
+    assert context.initial_channel == channel
+
+
 @pytest.mark.parametrize("external_event", [False, True])
 async def test_admitted_forced_prefix_context_precedes_model_output(
     engine, monkeypatch, external_event
