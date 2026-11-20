@@ -259,7 +259,7 @@ class AcceptingConnectionsServer(uvicorn.Server):
             failed("engine_start")
             raise SystemExit(STARTUP_FAILURE)
 
-        listeners = getattr(self, "servers", ())
+        listeners: Any = getattr(self, "servers", ())
         listener_created = bool(listeners) and all(
             getattr(server, "sockets", None) for server in listeners
         )

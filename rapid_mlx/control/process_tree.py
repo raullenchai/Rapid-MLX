@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -18,34 +19,38 @@ logger = logging.getLogger(__name__)
 class _ProcBsdInfo(ctypes.Structure):
     """Public libproc PROC_PIDTBSDINFO layout (136 bytes on macOS)."""
 
-    _fields_ = [
-        (name, ctypes.c_uint32)
-        for name in (
-            "flags",
-            "status",
-            "xstatus",
-            "pid",
-            "ppid",
-            "uid",
-            "gid",
-            "ruid",
-            "rgid",
-            "svuid",
-            "svgid",
-            "reserved",
-        )
-    ] + [
-        ("comm", ctypes.c_char * 16),
-        ("name", ctypes.c_char * 32),
-        ("nfiles", ctypes.c_uint32),
-        ("pgid", ctypes.c_uint32),
-        ("pjobc", ctypes.c_uint32),
-        ("tdev", ctypes.c_uint32),
-        ("tpgid", ctypes.c_uint32),
-        ("nice", ctypes.c_int32),
-        ("start_sec", ctypes.c_uint64),
-        ("start_usec", ctypes.c_uint64),
-    ]
+    _fields_ = cast(
+        Any,
+        [
+            (name, ctypes.c_uint32)
+            for name in (
+                "flags",
+                "status",
+                "xstatus",
+                "pid",
+                "ppid",
+                "uid",
+                "gid",
+                "ruid",
+                "rgid",
+                "svuid",
+                "svgid",
+                "reserved",
+            )
+        ]
+        + [
+            ("comm", ctypes.c_char * 16),
+            ("name", ctypes.c_char * 32),
+            ("nfiles", ctypes.c_uint32),
+            ("pgid", ctypes.c_uint32),
+            ("pjobc", ctypes.c_uint32),
+            ("tdev", ctypes.c_uint32),
+            ("tpgid", ctypes.c_uint32),
+            ("nice", ctypes.c_int32),
+            ("start_sec", ctypes.c_uint64),
+            ("start_usec", ctypes.c_uint64),
+        ],
+    )
 
 
 @functools.lru_cache(maxsize=1)
