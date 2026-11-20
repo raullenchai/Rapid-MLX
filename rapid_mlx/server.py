@@ -154,6 +154,7 @@ from .runtime.resident_models import (
     _release_allocator_cache,
     estimate_model_bytes,
 )
+from .server_exposure import _resolve_api_key  # noqa: F401 — compatibility re-export
 from .service.helpers import (  # noqa: F401 — re-export for backward compat
     _FALLBACK_TEMPERATURE,
     _FALLBACK_TOP_P,
@@ -334,37 +335,6 @@ _rerank_max_documents: int = 1000
 # API key authentication
 _api_key: str | None = None
 _auth_warning_logged: bool = False
-
-
-def _resolve_api_key(argv_value: str | None) -> str | None:
-    """Resolve the effective API key with env-var fallback.
-
-    Argv-inline (``--api-key X``) wins for backwards-compat with
-    existing scripts; otherwise we fall back to the ``RAPID_MLX_API_KEY``
-    env var. Explicit empty or whitespace-only values are invalid; only
-    absent values disable auth. The env-var form keeps keys out of ``argv``
-    (visible to ``ps -ef`` for any local user) — this is the path
-    rapid-desktop's sidecar shim uses to avoid the codex BLOCKER #3
-    "bearer-in-shell-history" leak.
-
-    Exposed at module scope (not buried inside ``main()``) so the
-    env-fallback contract is directly unit-testable without booting
-    a model — a regression here is the bug the dogfood-v0.8.2 finding
-    #3 exposed, so a test-via-the-real-code path matters.
-    """
-    key = argv_value if argv_value is not None else os.environ.get("RAPID_MLX_API_KEY")
-    if key is not None and not key.strip():
-        source = "--api-key" if argv_value is not None else "RAPID_MLX_API_KEY"
-        raise ValueError(
-            f"{source} must be a non-empty string; "
-            + (
-                "omit the flag"
-                if argv_value is not None
-                else "unset the environment variable"
-            )
-            + " to run without authentication"
-        )
-    return key
 
 
 # Per-request body size cap (DoS defense). 0 disables. Resolved from

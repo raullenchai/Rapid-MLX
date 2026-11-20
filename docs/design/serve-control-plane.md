@@ -29,6 +29,15 @@ v1 → v2 最大变化：**推理请求不再经过控制面转发。** runner �
 
 ## 3. 结构
 
+Supervision belongs to the console entry point (`rapid-mlx` and
+`python -m rapid_mlx.cli`). Programmatic `main()` and `serve_command()` calls
+remain in process. Local-search exposure validation runs before supervision
+and model resolution. Runner usage errors (exit 2), bind failures, and reported
+startup failures terminate the invocation with the runner's exit code; only
+unreported crashes enter the restart/backoff policy. Fallback notices use the
+existing serve startup-note buffer so `--log-file` captures them even when
+local-model preflight fails.
+
 ```
 rapid-mlx serve [model] [现有参数]
   └─ 控制面进程（父，rapid_mlx/control/，不 import MLX）

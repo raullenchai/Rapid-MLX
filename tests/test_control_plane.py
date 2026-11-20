@@ -123,6 +123,10 @@ if mode == 'bind':
 if mode == 'startup':
     report('startup_failed', reason='test')
     sys.exit(7)
+if mode == 'usage':
+    sys.exit(2)
+if mode == 'crash-before-report':
+    os._exit(7)
 if mode == 'logs':
     os.write(1, b'x' * 262144 + b'\\x00\\xff')
     os.write(2, b'y' * 262144 + b'\\x00\\xff')
@@ -557,6 +561,40 @@ def test_dispatch_fallback_preserves_namespace_environment_and_fds(
     )
 
 
+@pytest.mark.parametrize("code,reported", [(2, False), (7, True), (1, True)])
+async def test_startup_errors_are_terminal_without_processes(
+    monkeypatch, code, reported
+):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    from rapid_mlx.control import supervisor as module
+
+    instance = Supervisor([], port=8000, mode="text-vlm")
+
+    async def spawn(*a, **kw):
+        instance.startup_failed = reported
+        return SimpleNamespace(pid=123, returncode=code, stdout=None, stderr=None)
+
+    create = AsyncMock(side_effect=spawn)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", Mock())
+    monkeypatch.setattr(loop, "remove_signal_handler", Mock())
+    monkeypatch.setattr(module.signal, "signal", Mock())
+    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(module, "ProcessTree", Mock())
+    monkeypatch.setattr(instance, "open", AsyncMock())
+    monkeypatch.setattr(instance, "publish_index", Mock())
+    monkeypatch.setattr(instance, "pump", AsyncMock())
+    monkeypatch.setattr(instance, "close_pipes", Mock())
+    monkeypatch.setattr(instance, "signal_descendants", Mock())
+    monkeypatch.setattr(instance, "restart_delay", lambda: 0)
+
+    assert await instance.run() == code
+    assert create.await_count == 1
+    assert instance.restarts == 0
+
+
 def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
     from rapid_mlx import cli
     from rapid_mlx.control import supervisor
@@ -588,6 +626,91 @@ def test_dispatch_resolves_auto_port_once_before_spawn(monkeypatch):
         cli._dispatch_serve_control(args)
     assert exited.value.code == 13
     assert calls == [("resolve", None), ("spawn", 8007)]
+
+
+@pytest.mark.parametrize("console", [False, True])
+def test_only_console_entrypoint_supervises(monkeypatch, console):
+    from rapid_mlx import cli
+
+    class DispatchedError(Exception):
+        pass
+
+    def control(args):
+        assert console
+        assert args.model == "qwen3.5-4b-4bit"
+        raise DispatchedError
+
+    def in_process(args):
+        assert not console
+        raise DispatchedError
+
+    monkeypatch.setattr(cli, "_dispatch_serve_control", control)
+    monkeypatch.setattr(cli, "serve_command", in_process)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *a, **kw: None)
+    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "--disable-version-check", "serve", "qwen3.5-4b-4bit"],
+    )
+    with pytest.raises(DispatchedError):
+        (cli.cli_entrypoint if console else cli.main)()
+
+
+def test_console_exposure_gate_precedes_control_dispatch(monkeypatch, capsys):
+    import builtins
+
+    from rapid_mlx import cli
+
+    def forbidden(*a, **kw):
+        pytest.fail("invalid exposure must fail before supervision or resolution")
+
+    original_import = builtins.__import__
+
+    def lightweight_import(name, *a, **kw):
+        if name in ("server", "rapid_mlx.server", "mlx") or name.startswith("mlx."):
+            pytest.fail("exposure validation must not import the inference runtime")
+        return original_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", lightweight_import)
+    monkeypatch.setattr(cli, "_dispatch_serve_control", forbidden)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_model", forbidden)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "qwen3.5-4b-4bit",
+            "--host",
+            "0.0.0.0",
+            "--enable-local-search",
+        ],
+    )
+    with pytest.raises(SystemExit) as exited:
+        cli.cli_entrypoint()
+    assert exited.value.code == 2
+    assert "requires API-key authentication" in capsys.readouterr().err
+
+
+def test_control_fallback_notice_waits_for_log_redirection(monkeypatch, capsys):
+    from rapid_mlx import cli
+    from rapid_mlx.local_models import flush_serve_startup_notes
+
+    for key in (RUNNER_ENV, "RAPID_MLX_WATCHDOG_PPID", "RAPID_MLX_SINGLE_PROCESS"):
+        monkeypatch.delenv(key, raising=False)
+    args = build_parser().parse_args(
+        ["serve", "unknown/target", "--log-file", "serve.log"]
+    )
+    cli._dispatch_serve_control(args)
+    assert capsys.readouterr().err == ""
+    flush_serve_startup_notes(args)
+    assert (
+        capsys.readouterr().err
+        == "Control functionality is unavailable in this mode.\n"
+    )
 
 
 def test_forwarder_preserves_transport_peer_with_proxy_headers(monkeypatch):
@@ -640,9 +763,19 @@ def test_alternate_catalog_servers_fall_back(alias):
     assert supervised_mode(build_parser().parse_args(["serve", alias]), {}) is None
 
 
-def test_five_startup_failures_give_up_nonzero(fake):
+@pytest.mark.parametrize("mode,code", [("startup", 7), ("usage", 2)])
+def test_invalid_startup_never_restarts(fake, mode, code):
     base, launch = fake
-    proc = launch("startup", fast=True)
+    proc = launch(mode, fast=True)
+    proc.communicate(timeout=5)
+    assert proc.returncode == code
+    assert (base / "count").read_text() == "1"
+    assert not discover()
+
+
+def test_five_unreported_crashes_give_up_nonzero(fake):
+    base, launch = fake
+    proc = launch("crash-before-report", fast=True)
     proc.communicate(timeout=8)
     assert proc.returncode == 7
     assert (base / "count").read_text() == "5"

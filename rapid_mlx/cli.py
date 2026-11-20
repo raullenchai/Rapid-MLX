@@ -6639,7 +6639,7 @@ def _serve_cua_only_mode(args) -> None:
 
 def _validate_local_search_exposure_or_exit(args) -> None:
     from .local_search_runtime import validate_exposure
-    from .server import _resolve_api_key
+    from .server_exposure import _resolve_api_key
 
     try:
         validate_exposure(
@@ -13607,12 +13607,12 @@ def _scan_running_servers(
             cmd = proc.info["cmdline"] or []
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        if proc.info["pid"] in supervisors:
-            continue
-        instance = runners.get(proc.info["pid"])
         serve_index = serve_subcommand_index(cmd)
         if serve_index is None:
             continue
+        if proc.info["pid"] in supervisors:
+            continue
+        instance = runners.get(proc.info["pid"])
 
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
@@ -17391,7 +17391,9 @@ def _dispatch_serve_control(args):
     ):
         # Continue directly into the exact legacy path, preserving argv,
         # environment, watchdog ownership and inherited descriptors.
-        print("Control functionality is unavailable in this mode.", file=sys.stderr)
+        from rapid_mlx.local_models import serve_startup_note
+
+        serve_startup_note(args, "Control functionality is unavailable in this mode.")
     elif os.environ.get(RUNNER_ENV) == "1":
         from rapid_mlx._parent_watchdog import install_parent_watchdog
         from rapid_mlx.control.process_tree import (
@@ -17410,7 +17412,8 @@ def _dispatch_serve_control(args):
 
 
 @_capture_start_failures
-def main():
+def main(*, _supervise=False):
+    """Dispatch in process; only the console entry point owns supervision."""
     from ._hf_logging import (
         quiet_hf_progress_bars_off_terminal,
         quiet_transport_loggers,
@@ -17505,7 +17508,10 @@ def main():
 
         raise SystemExit(status_command(args))
     if args.command == "serve":
-        _dispatch_serve_control(args)
+        if getattr(args, "enable_local_search", False):
+            _validate_local_search_exposure_or_exit(args)
+        if _supervise:
+            _dispatch_serve_control(args)
     if args.command == "top":
         from rapid_mlx.top import top_command
 
@@ -17547,10 +17553,6 @@ def main():
         if hasattr(args, "log_level")
         else "INFO"
     )
-    if getattr(args, "command", None) == "serve" and getattr(
-        args, "enable_local_search", False
-    ):
-        _validate_local_search_exposure_or_exit(args)
     from rapid_mlx import model_downloads
 
     model_downloads.configure(getattr(args, "disable_model_downloads", False))
@@ -17859,6 +17861,9 @@ def main():
                 except log_file.LogFileError as log_exc:
                     print(f"error: {log_exc}", file=sys.stderr)
                     _serve_usage_exit(cause=log_exc)
+                from rapid_mlx.local_models import flush_serve_startup_notes
+
+                flush_serve_startup_notes(args)
                 if isinstance(exc, InvalidModelConfig):
                     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
@@ -18347,7 +18352,7 @@ def _run_front_door(parser, args, version: str) -> int:
 def cli_entrypoint() -> None:
     """Console entry point with normal Unix broken-pipe semantics."""
     try:
-        main()
+        main(_supervise=True)
     except BrokenPipeError:
         # Unix consumers commonly stop reading early (for example,
         # ``rapid-mlx models | head``).  Treat EPIPE as normal completion

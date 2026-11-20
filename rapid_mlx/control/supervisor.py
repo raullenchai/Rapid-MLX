@@ -48,6 +48,7 @@ class Supervisor:
         self.restarts = 0
         self.state = "starting"
         self.bind_failed = False
+        self.startup_failed = False
         self.stopping = asyncio.Event()
         self.stop_signal = None
         self.failures = collections.deque()
@@ -137,6 +138,7 @@ class Supervisor:
                         elif event == "bind_failed":
                             self.bind_failed = True
                         elif event == "startup_failed" and not self.stopping.is_set():
+                            self.startup_failed = True
                             self.state = "failed"
                         else:
                             raise ValueError("unknown startup report")
@@ -336,6 +338,7 @@ class Supervisor:
             await self.open()
             while not self.stopping.is_set():
                 self.bind_failed = False
+                self.startup_failed = False
                 self.started_at = time.time()
                 self.spawn_ready.clear()
                 self.child = await asyncio.create_subprocess_exec(
@@ -400,7 +403,9 @@ class Supervisor:
                 self.close_pipes()
                 if self.stopping.is_set():
                     return 128 + self.stop_signal
-                if self.bind_failed or code == 0:
+                # Retrying the same invalid invocation cannot repair startup.
+                # Exit 2 also covers usage errors before startup reporting is wired.
+                if self.bind_failed or self.startup_failed or code in (0, 2):
                     return exit_code(code)
                 now = time.monotonic()
                 if self.record_failure(now):
