@@ -373,8 +373,11 @@ def _get_schema_options(arg_schema: dict[str, Any]) -> list[dict[str, Any]]:
     - anyOf / oneOf → recursively expand union branches
     - fallback → [{"type": "string"}]
 
-    Note: single `type` has the highest priority.
+    Note: single `type` has the highest priority. Boolean schemas (`true`/
+    `false`) and other non-object branches carry no type and fall back too.
     """
+    if not isinstance(arg_schema, dict):
+        return [{"type": "string"}]
     if "type" in arg_schema:
         type_val = arg_schema["type"]
         # JSON Schema allows "type" to be an array to represent union types,
@@ -386,7 +389,7 @@ def _get_schema_options(arg_schema: dict[str, Any]) -> list[dict[str, Any]]:
             return [{"type": t} for t in type_val]
         return [arg_schema]
     for union_key in ("anyOf", "oneOf"):
-        if union_key in arg_schema:
+        if union_key in arg_schema and isinstance(arg_schema[union_key], list):
             # A resolved reference may itself expose a union or type array.
             return [
                 option

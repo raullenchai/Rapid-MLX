@@ -697,3 +697,16 @@ def test_whole_prefix_and_literal_partial_marker_flush():
         assert not calls
         assert content + parser.flush_held_content(text) == text
         assert parser.flush_held_content(text) == ""
+
+
+def test_boolean_schema_branches_do_not_break_type_inference():
+    from rapid_mlx.tool_parsers.hy_v4_tool_parser import (
+        _allows_null,
+        _get_schema_options,
+        _get_types,
+    )
+
+    schema = {"anyOf": [True, {"type": "integer"}, False, {"type": "null"}]}
+    assert _get_types(schema) == {"string", "integer"}
+    assert _allows_null(schema)
+    assert _get_schema_options(True) == [{"type": "string"}]
