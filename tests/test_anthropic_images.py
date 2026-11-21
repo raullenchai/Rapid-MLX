@@ -482,3 +482,35 @@ def test_url_scheme_is_normalized_for_image_loader():
     source = {"type": "url", "url": "HTTPS://example.com/screenshot.png"}
     converted = _convert_message(AnthropicMessage(role="user", content=[image(source)]))
     assert extract_multimodal_content(converted)[1] == [URL]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["image", "document"])
+def test_direct_media_rejection_telemetry_distinguishes_documents(
+    make_client, monkeypatch, stream, kind
+):
+    from rapid_mlx.telemetry import inference, registry
+
+    calls = []
+    monkeypatch.setattr(
+        inference,
+        "emit_capability_rejected",
+        lambda capability, **kwargs: calls.append(capability),
+    )
+    client, engine = make_client(vision=False)
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 20,
+            "stream": stream,
+            "messages": [
+                {"role": "user", "content": [{"type": kind, "source": BASE64_SOURCE}]}
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert not engine.calls
+    assert calls == [f"{kind}_input_unsupported"]
+    props = {"capability": calls[0], "model_type": "llm"}
+    assert registry.validate("capability_rejected", props) == props
