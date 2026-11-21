@@ -1088,12 +1088,12 @@ class Qwen3CoderToolParser(ToolParser):
             # Counting already-emitted content/calls is speculative: extraction
             # mutates response flags and undeclared-drop counters. Keep all of
             # that state isolated from the authoritative full-response parse.
-            prefix = type(self)(self.model_tokenizer).extract_tool_calls(
-                model_output[:start], request=request
-            )
+            prefix_result: ExtractedToolCallInformation = type(self)(
+                self.model_tokenizer
+            ).extract_tool_calls(model_output[:start], request=request)
             result = self.extract_tool_calls(model_output, request=request)
             return {
-                "content": (result.content or "")[len(prefix.content or "") :],
+                "content": (result.content or "")[len(prefix_result.content or "") :],
                 # Adapters may have suppressed post-call content in the prefix.
                 # Let them reconcile against what they actually forwarded.
                 "deferred_full_content": result.content or "",
@@ -1108,8 +1108,8 @@ class Qwen3CoderToolParser(ToolParser):
                         },
                     }
                     for index, call in enumerate(
-                        result.tool_calls[len(prefix.tool_calls) :],
-                        start=len(prefix.tool_calls),
+                        result.tool_calls[len(prefix_result.tool_calls) :],
+                        start=len(prefix_result.tool_calls),
                     )
                 ],
             }
