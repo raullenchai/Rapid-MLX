@@ -1094,9 +1094,6 @@ class Qwen3CoderToolParser(ToolParser):
             result = self.extract_tool_calls(model_output, request=request)
             return {
                 "content": (result.content or "")[len(prefix_result.content or "") :],
-                # Adapters may have suppressed post-call content in the prefix.
-                # Let them reconcile against what they actually forwarded.
-                "deferred_full_content": result.content or "",
                 "tool_calls": [
                     {
                         "index": index,

@@ -9,6 +9,7 @@ from rapid_mlx.config import get_config
 from rapid_mlx.service import helpers
 from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 from tests.qwen3coder_stream_harness import deltas, non_stream, stream
+from tests.test_postprocessor import _make_cfg, _make_output
 from tests.test_tool_choice_enforcement import _make_client, _RecordingEngine
 
 CALL = (
@@ -113,7 +114,9 @@ def test_real_calls_on_both_sides_of_inline_example(size, quote):
         ("get_weather", '{"city": "Rome"}'),
         ("get_weather", '{"city": "Oslo"}'),
     ]
-    assert content == example
+    # Chunked streaming suppresses the lead-in before the example's marker
+    # triggers deferral. Finalization must not bring that lead-in back.
+    assert content == (example if size in (None, 0) else CALL + quote + ".\n")
 
 
 @pytest.mark.parametrize("size", [0, 1, 2, 7, 13])
@@ -131,7 +134,41 @@ def test_deferred_example_does_not_repeat_pre_call_content(size):
             ("get_weather", '{"city": "Rome"}'),
             ("get_weather", '{"city": "Oslo"}'),
         ],
-        prefix + example,
+        prefix + (example if size == 0 else CALL + "`.\n"),
+    )
+
+
+@pytest.mark.parametrize("size", [0, 1, 2, 7, 13])
+@pytest.mark.parametrize("prefix", ["", "Checking the weather.\n"])
+def test_deferred_example_does_not_restore_suppressed_post_tool_text(size, prefix):
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    call = CALL.replace("Paris", '"Rome"')
+    suppressed = "Ordinary post-tool text must stay suppressed.\n"
+    example = f"Use `{CALL}`.\n"
+    pp = StreamingPostProcessor(
+        _make_cfg(enable_auto_tool_choice=True, tool_call_parser="qwen3_coder_xml"),
+        request=REQUEST,
+    )
+    pp.reset()
+    events = pp.process_chunk(_make_output(prefix)) if prefix else []
+    for piece in deltas(call, size):
+        events.extend(pp.process_chunk(_make_output(piece)))
+    assert any(event.type == "tool_call" for event in events)
+    # This separate delta takes the ordinary post-tool suppression branch.
+    assert pp.process_chunk(_make_output(suppressed)) == []
+    events.extend(pp.process_chunk(_make_output(example, finished=True)))
+    events.extend(pp.finalize())
+    content = "".join(event.content or "" for event in events)
+    assert suppressed not in content
+    assert content == prefix + example
+    # The held example itself matches non-stream extraction. Full-response
+    # content parity is intentionally unavailable here: non-stream extraction
+    # preserves the ordinary post-tool text that the adapter suppresses.
+    assert content == non_stream(prefix + example, REQUEST)[1]
+    assert non_stream(prefix + call + suppressed + example, REQUEST) == (
+        [("get_weather", '{"city": "Rome"}')],
+        prefix + suppressed + example,
     )
 
 
