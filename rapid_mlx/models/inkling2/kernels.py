@@ -1,6 +1,7 @@
 # Copyright © 2026 Apple Inc.
 # SPDX-License-Identifier: MIT
 
+import math
 from collections.abc import Callable
 from typing import cast
 
@@ -12,6 +13,111 @@ __all__ = [
     "depth_attention",
     "relative_attention",
 ]
+
+
+# One thread owns a channel, including its FP32 history. Do not contract the
+# dynamic multiply/reduce: the reference materializes the products before sum.
+# Static Conv1d, in contrast, accumulates with FMA then rounds to weight dtype.
+_SHORT_CONVOLUTION_SOURCE = """
+    #pragma clang fp contract(off)
+    uint i = thread_position_in_grid.x;
+    const int C = x_shape[2];
+    const int b = i / C;
+    const int c = i % C;
+    if (b >= x_shape[0]) return;
+    float history[K];
+    for (int j = 0; j < K - 1; ++j) {
+        history[j] = HAS_STATE
+            ? float(state[b * state_strides[0] + j * state_strides[1]
+                          + c * state_strides[2]]) : 0.0f;
+    }
+    const float residual = float(x[b * x_strides[0] + c * x_strides[2]]);
+    history[K - 1] = HAS_MASK && !mask[b * mask_strides[0]] ? 0.0f : residual;
+
+    float acc = 0.0f;
+    if (DYNAMIC) {
+        const int h = c / (C / H);
+        for (int lag = 0; lag < K; ++lag) {
+            float w = float(weight[lag * weight_strides[0] + c * weight_strides[1]])
+                + float(dynamic[b * dynamic_strides[0]
+                                + (h * K + lag) * dynamic_strides[2]]);
+            float product = history[K - 1 - lag] * w;
+            acc = acc + product;
+        }
+    } else {
+        for (int j = 0; j < K; ++j) {
+            float sample = float(W(history[j]));
+            acc = metal::fma(sample, float(weight[c * weight_strides[0]
+                                                   + j * weight_strides[1]]), acc);
+        }
+        acc = float(W(acc));
+    }
+    out[i] = T((acc + residual) / divisor);
+
+    // A length <= 0 retains the old state, as _conv_state's clipped gather
+    // does. The mask only zeros the new conv input; the residual is unmasked.
+    const int start = HAS_LENGTHS && lengths[b * lengths_strides[0]] <= 0 ? 0 : 1;
+    for (int j = 0; j < K - 1; ++j) {
+        next_state[(b * (K - 1) + j) * C + c] = history[start + j];
+    }
+"""
+
+_short_convolution_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_short_convolution_decode",
+        input_names=["x", "state", "weight", "dynamic", "mask", "lengths", "divisor"],
+        output_names=["out", "next_state"],
+        source=_SHORT_CONVOLUTION_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def short_convolution_decode(
+    x: mx.array,
+    state: mx.array | None,
+    weight: mx.array,
+    mask: mx.array | None,
+    kernel_size: int,
+    *,
+    dynamic: mx.array | None = None,
+    num_heads: int = 1,
+    lengths: mx.array | None = None,
+) -> tuple[mx.array, mx.array]:
+    """Single-token convolution and retained FP32 state, without input copies."""
+    B, _, C = x.shape
+    K = kernel_size
+    # Shaped, cached placeholders let either specialization use strided loads
+    # without allocating zero history/masks on every layer visit.
+    empty = scalar(0.0).reshape(1, 1, 1)
+    out, state = _short_convolution_kernel(
+        inputs=[
+            x,
+            state if state is not None else empty,
+            weight,
+            dynamic if dynamic is not None else empty,
+            mask if mask is not None else empty,
+            lengths if lengths is not None else empty,
+            scalar(math.sqrt((2 * K if dynamic is not None else K) + 1)),
+        ],
+        template=[
+            ("T", x.dtype),
+            ("W", weight.dtype),
+            ("K", K),
+            ("H", num_heads),
+            ("DYNAMIC", dynamic is not None),
+            ("HAS_STATE", state is not None),
+            ("HAS_MASK", mask is not None),
+            ("HAS_LENGTHS", lengths is not None),
+        ],
+        grid=(B * C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[x.shape, (B, K - 1, C)],
+        output_dtypes=[x.dtype, mx.float32],
+    )
+    return out, state
 
 
 # Attention of learned queries over the depth sources of each token, in one
