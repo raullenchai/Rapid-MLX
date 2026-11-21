@@ -1267,7 +1267,7 @@ def _detect_metadata_config(
         )
     )
 
-    if "inkling2_loop" in model_types or "inkling2_loop_text" in model_types:
+    if "inkling2_loop" in model_types:
         settings.update(
             tool_call_parser=None,
             reasoning_parser=None,
@@ -1486,7 +1486,6 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         if metadata is not None and {
             "flint",
             "inkling2_loop",
-            "inkling2_loop_text",
         }.intersection(_metadata_model_types(metadata.config or {})):
             # These wire contracts belong to the checkpoint, even when a
             # renamed directory or parent matches another parser family.
