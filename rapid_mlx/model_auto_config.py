@@ -1267,7 +1267,16 @@ def _detect_metadata_config(
         )
     )
 
-    if "inkling2_loop" in model_types:
+    if "hy_v4_flash" in model_types:
+        settings.update(
+            tool_call_parser="hy_v4",
+            reasoning_parser="hy_v4",
+            is_moe=True,
+            supports_spec_decode=False,
+            is_text_only=True,
+        )
+        reasons.append("Hy4 Flash text runtime")
+    elif "inkling2_loop" in model_types:
         settings.update(
             tool_call_parser="inkling",
             reasoning_parser="inkling",
@@ -1483,10 +1492,11 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     metadata_cfg = _detect_metadata_config(model_path, log_resolution=False)
     if metadata_cfg is not None:
         metadata = read_model_metadata(model_path)
-        if metadata is not None and {
+        if metadata is not None and _metadata_model_types(metadata.config or {}) & {
             "flint",
+            "hy_v4_flash",
             "inkling2_loop",
-        }.intersection(_metadata_model_types(metadata.config or {})):
+        }:
             # These wire contracts belong to the checkpoint, even when a
             # renamed directory or parent matches another parser family.
             return metadata_cfg

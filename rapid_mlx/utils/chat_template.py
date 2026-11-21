@@ -2841,6 +2841,18 @@ def _render_chat_template(
         if key not in template_kwargs:
             template_kwargs[key] = value
 
+    # Hy4's nested validation does not expose a generic effort vocabulary.
+    # Recognize its native envelope so an off request reaches the template.
+    if enable_thinking is False and any(
+        "<tool_calls{}>" in source
+        and "</tool_call{}>" in source
+        and "'no_think'" in source
+        for source in _chat_template_strings(
+            getattr(template_applicator, "chat_template", None), tools=tools
+        )
+    ):
+        template_kwargs.setdefault("reasoning_effort", "no_think")
+
     # GPT-OSS / Harmony-style templates do not expose an on/off
     # ``enable_thinking`` switch; they expose ``reasoning_effort`` and default
     # it to ``medium``. When a route already resolved ``enable_thinking=False``

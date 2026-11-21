@@ -6746,6 +6746,7 @@
         "raon_1",
         "qwen3",
         "hy_v3",
+        "hy_v4",
         "hy3",
         "k2_horizon",
         "deepseek_r1",
@@ -6767,7 +6768,7 @@
        "const": null,
        "default": null,
        "dest": "reasoning_parser",
-       "help": "Enable reasoning content extraction with specified parser. Extracts <think>...</think> tags into reasoning_content field. Options: inkling, gemma4, raon_1, qwen3, hy_v3, hy3, k2_horizon, deepseek_r1, deepseek_r1_distill, deepseek_v4, vibethinker, glm4, glm5, gpt_oss, harmony, minimax, muse, ui_tars, cohere_command4, north.",
+       "help": "Enable reasoning content extraction with specified parser. Extracts <think>...</think> tags into reasoning_content field. Options: inkling, gemma4, raon_1, qwen3, hy_v3, hy_v4, hy3, k2_horizon, deepseek_r1, deepseek_r1_distill, deepseek_v4, vibethinker, glm4, glm5, gpt_oss, harmony, minimax, muse, ui_tars, cohere_command4, north.",
        "metavar": null,
        "nargs": null,
        "option_strings": [

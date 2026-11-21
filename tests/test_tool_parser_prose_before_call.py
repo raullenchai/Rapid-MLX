@@ -16,6 +16,7 @@ OPENERS = {
     "qwen3_coder_xml": "<tool_call>",
     "raon_1": "<tool_call>",
     "hy_v3": "<tool_call:opensource>",
+    "hy_v4": "<tool_call:opensource>",
     "ui_tars": "Action:",
     "lfm": "[get_current_weather(",
     "deepseek_v4_flash": "<｜DSML｜tool_calls>",

@@ -209,6 +209,7 @@ _FIDELITY_EXEMPT: dict[str, str] = {
     "meetkai": "alias of functionary",
     "hy3": "alias of hy_v3",
     "hy_v3": "hy3_native, renderer TODO",
+    "hy_v4": "hy4_native: schema-typed arg_key/arg_value pairs; dedicated value contracts in test_hy_v4_parsers.py",
     "llama": "llama_python_tag, renderer TODO",
     "llama3": "alias of llama",
     "llama4": "alias of llama",

@@ -42,13 +42,14 @@ from pathlib import Path
 from typing import Any
 
 from rapid_mlx.byom import preflight as pf
+from rapid_mlx.models.hy_v4_flash_config import checkpoint_quantization
 
 MANIFEST = "rapid-mlx-import.json"
 GROUP_SIZE = 64
 SUPPORTED_BITS = (2, 3, 4, 6, 8)
 # Text converters registered by the worker before mlx_lm.convert. Keep this
 # metadata-only: tokenizer's mutable registry requires runtime MLX patches.
-_RAPID_TEXT_CONVERTERS = frozenset({"flint"})
+_RAPID_TEXT_CONVERTERS = frozenset({"flint", "hy_v4_flash"})
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SOURCE_PATTERNS = [
     "*.json",
@@ -231,8 +232,14 @@ def plan_import(
             error_class="unsupported_format",
         )
     config = inspection.config
-    quant = config.get("quantization") or config.get("quantization_config")
-    if quant:
+    quant = checkpoint_quantization(config)
+    hy4_fp8 = (
+        config.get("model_type") == "hy_v4_flash"
+        and isinstance(quant, dict)
+        and quant.get("quant_method") == "fp8"
+        and quant.get("weight_block_size", [128, 128]) == [128, 128]
+    )
+    if quant and not hy4_fp8:
         raise ImportRefusedError(
             f"{source} is already quantized; serve it directly: "
             f"rapid-mlx serve {source}",
@@ -264,9 +271,13 @@ def plan_import(
         )
     dtype = (inspection.dtype or "bf16").lower().replace("bfloat16", "bf16")
     bytes_per_param = 4 if dtype in ("f32", "float32") else 2
+    if config.get("model_type") == "hy_v4_flash":
+        # Mixed FP8/dense tensors and g32 hash tables need a conservative bound.
+        bytes_per_param = 1
     params = inspection.weight_bytes / bytes_per_param
     # Affine quantization stores a scale and bias per group of 64 weights.
-    output_bytes = int(params * (bits + 32 / GROUP_SIZE) / 8)
+    sizing_group = 32 if model_type == "hy_v4_flash" else GROUP_SIZE
+    output_bytes = int(params * (bits + 32 / sizing_group) / 8)
     revision = inspection.revision
     if inspection.is_local:
         revision = _local_revision(Path(source))

@@ -682,7 +682,7 @@ _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
 # still rely on checkpoint-specific loading behavior and must not inherit the
 # stricter "weights/tokenizer only" trust boundary implicitly.
 _RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset(
-    {"k2_horizon", "lfm3", "raon1_nano", "inkling2_loop"}
+    {"hy_v4_flash", "inkling2_loop", "k2_horizon", "lfm3", "raon1_nano"}
 )
 
 
@@ -694,6 +694,18 @@ def _register_vendored_archs() -> None:
     sys.modules under that path lets it find them transparently. Idempotent.
     """
     import sys
+
+    if "mlx_lm.models.hy_v4_flash" not in sys.modules:
+        try:
+            from ..models import hy_v4_flash
+
+            sys.modules.setdefault("mlx_lm.models.hy_v4_flash", hy_v4_flash)
+        except Exception as e:
+            logger.debug(f"hy_v4_flash vendored module unavailable: {e}")
+        else:
+            _VENDORED_MODEL_TYPES.add("hy_v4_flash")
+    elif sys.modules.get("mlx_lm.models.hy_v4_flash") is not None:
+        _VENDORED_MODEL_TYPES.add("hy_v4_flash")
 
     if "mlx_lm.models.deepseek_v4" not in sys.modules:
         try:
@@ -2366,7 +2378,23 @@ def _load_with_tokenizer_fallback(
     # ``rapid_mlx/fp8_repack.py``).
     from ..fp8_repack import is_fp8_block_checkpoint, load_fp8_model_online
 
-    if is_fp8_block_checkpoint(model_path):
+    if (_read_model_config_json(str(model_path)) or {}).get(
+        "model_type"
+    ) == "hy_v4_flash":
+        from ..models.hy_v4_flash_config import checkpoint_quantization
+
+        quant = checkpoint_quantization(_read_model_config_json(str(model_path)) or {})
+        if quant.get("quant_method") == "fp8":
+            raise IncompatibleWeights(
+                "Hy4 Flash FP8 weights require offline conversion before serving. "
+                f"Run: rapid-mlx import {model_path} --quantize 4 --name hy4-4bit; "
+                "then rapid-mlx serve hy4-4bit. "
+                "See docs/development/hy4-flash.md."
+            )
+        from ..models.hy_v4_flash_load import load as load_hy4
+
+        model, _ = load_hy4(model_path)
+    elif is_fp8_block_checkpoint(model_path):
         logger.info("fp8 block checkpoint detected — online mxfp8 repack")
         model = load_fp8_model_online(model_path)
     else:

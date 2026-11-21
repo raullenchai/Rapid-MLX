@@ -109,6 +109,9 @@ def _register_builtin_parsers():
     # ``hy_v3`` — Tencent Hunyuan 3 suffix-tolerant ``<think:opensource>``
     # variant of qwen3. Aliased as ``hy3`` for CLI convenience.
     register_parser("hy_v3", Hy3ReasoningParser)
+    from .hy4_parser import HyV4ReasoningParser
+
+    register_parser("hy_v4", HyV4ReasoningParser)
     register_parser("hy3", Hy3ReasoningParser)
     register_parser("k2_horizon", K2HorizonReasoningParser)
     register_parser("deepseek_r1", DeepSeekR1ReasoningParser)

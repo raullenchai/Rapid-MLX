@@ -149,6 +149,15 @@ def _extract_stream(parser_name: str, text: str) -> list:
 # --------------------------------------------------------------------------
 PARITY_FIXTURES: list = [
     (
+        "hy_v4",
+        "hy4_native",
+        "<tool_calls:opensource><tool_call:opensource>search"
+        "<arg_key:opensource>query</arg_key:opensource>"
+        "<arg_value:opensource>hi</arg_value:opensource>"
+        "</tool_call:opensource></tool_calls:opensource>",
+        [("search", {"query": "hi"})],
+    ),
+    (
         "inkling",
         "inkling_native",
         '<|message_model|>run<|content_invoke_tool_json|>{"name":"run","args":{"text":"hello"}}<|end_message|>',

@@ -1778,6 +1778,12 @@ def _extract_thinking_from_request(request) -> bool | None:
                 return True
             if lowered == "false":
                 return False
+    if (
+        getattr(request, "enable_thinking", None) is None
+        and isinstance(ctk, dict)
+        and ctk.get("reasoning_effort") == "no_think"
+    ):
+        return False
     return getattr(request, "enable_thinking", None)
 
 

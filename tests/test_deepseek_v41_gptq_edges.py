@@ -67,11 +67,11 @@ def test_invalid_packing_and_factors():
     weight, h = mx.ones((2, 32)), mx.eye(32)
     c = q.QuantConfig(group_size=32)
     with pytest.raises(ValueError, match="supports"):
-        q.gptq(weight, h, 6, c)
+        q.gptq(weight, h, 7, c)
     with pytest.raises(ValueError, match="shape"):
         q.gptq(weight, mx.eye(16), 2, c)
     with pytest.raises(ValueError, match="supports"):
-        q.gptq_batched(weight[None], h[None], 6, c)
+        q.gptq_batched(weight[None], h[None], 7, c)
     with pytest.raises(ValueError, match="weights"):
         q.gptq_batched(weight, h, 2, c)
     with pytest.raises(ValueError, match="shape"):

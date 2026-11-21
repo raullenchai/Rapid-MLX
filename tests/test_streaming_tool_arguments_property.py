@@ -974,6 +974,12 @@ CANONICAL_WIRES = {
         + _ARGS
         + "<end_of_tool_call:opensource>"
     ),
+    "hy_v4": (
+        "<tool_calls:opensource><tool_call:opensource>lookup"
+        "<arg_key:opensource>text</arg_key:opensource>"
+        "<arg_value:opensource>hello</arg_value:opensource>"
+        "</tool_call:opensource></tool_calls:opensource>"
+    ),
     "inkling": (
         '<|message_model|>lookup<|content_invoke_tool_json|>{"name":"lookup","args":'
         + _ARGS

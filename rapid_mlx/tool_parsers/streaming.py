@@ -41,6 +41,7 @@ WIRE_OPENERS = {
     "qwen3_coder_xml_named": ("<tool_call>", "<function="),
     "ui_tars_action": ("Action:",),
     "hy3_native": ("<tool_call:", "<tool_call>"),
+    "hy4_native": ("<tool_calls:", "<tool_call:", "<tool_calls>", "<tool_call>"),
     "minicpm_native": ("<function ",),
     "muse_atem": ("<atem:function_calls>",),
     "k2_ifm": ("<ifm|tool_calls>",),

@@ -664,7 +664,7 @@ def test_convertible_model_types_include_rapid_text_only(monkeypatch):
     monkeypatch.setattr(
         pf, "_installed_types", lambda pkg, dirs: {"llama"} if pkg == "mlx_lm" else None
     )
-    assert im.convertible_model_types() == frozenset({"llama", "flint"})
+    assert im.convertible_model_types() == frozenset({"llama", "flint", "hy_v4_flash"})
     monkeypatch.setattr(pf, "_installed_types", lambda pkg, dirs: None)
     assert im.convertible_model_types() is None
 

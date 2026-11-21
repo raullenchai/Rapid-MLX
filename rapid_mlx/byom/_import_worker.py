@@ -8,6 +8,8 @@ temporary directory and removes it. Nothing here touches the import cache.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def convert(source: str, out: str, bits: int, group_size: int) -> None:
     from ..utils.tokenizer import _register_vendored_archs
@@ -31,6 +33,21 @@ def convert(source: str, out: str, bits: int, group_size: int) -> None:
     validate_model_code(config or {}, trust_remote_code=trust)
     validate_local_model_file(source_path)
 
+    conversion_kwargs: dict[str, Any] = {}
+    if config and config.get("model_type") == "hy_v4_flash":
+        from ..models.hy_v4_flash_convert import convert_fp8
+
+        if convert_fp8(source_path, out, bits, group_size):
+            return
+        from functools import partial
+
+        from ..models.hy_v4_flash_config import quantization_policy
+
+        conversion_kwargs["quant_predicate"] = partial(
+            quantization_policy, group_size=group_size, bits=bits
+        )
+        group_size = 32
+
     mlx_convert(
         hf_path=str(source_path),
         mlx_path=out,
@@ -38,6 +55,7 @@ def convert(source: str, out: str, bits: int, group_size: int) -> None:
         q_bits=bits,
         q_group_size=group_size,
         trust_remote_code=trust,
+        **conversion_kwargs,
     )
 
 
