@@ -15,6 +15,7 @@ from importlib.metadata import PackageNotFoundError, version
 from packaging.version import InvalidVersion, Version
 
 from ..model_aliases import resolve_profile
+from ..model_auto_config import _metadata_model_types
 from ..model_metadata import (
     checkpoint_has_multimodal_weights,
     config_indicates_multimodal,
@@ -1336,7 +1337,7 @@ def is_mllm_model(model_name: str) -> bool:
     metadata = read_model_metadata(model_name)
     config = metadata.config if metadata is not None else None
     if config is not None:
-        if config.get("model_type") == "hy_v4_flash":
+        if "hy_v4_flash" in _metadata_model_types(config):
             return False
         # Spark 2.5 is a causal text checkpoint whose MLX implementation
         # currently lives only in mlx-vlm. Route it through that loader even

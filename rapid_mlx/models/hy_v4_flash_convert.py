@@ -223,9 +223,6 @@ def convert_fp8(source, destination, bits, group_size):
                     key.replace(".gate_up_proj.", f".{projection}.")
                     for projection in ("gate_proj", "up_proj")
                 ]
-                for target in targets:
-                    if target in mapped:
-                        raise ValueError(f"Duplicate Hy4 Flash weight: {target}")
                 gate, up = mx.split(mapped.pop(key), 2, axis=-2)
                 mapped[targets[0]] = gate
                 mapped[targets[1]] = up

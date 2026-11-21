@@ -746,3 +746,38 @@ def test_literal_fallback_keeps_non_json_values_as_raw_text(raw, expected):
     assert stream(HyV4ToolParser(Tokenizer("")), list(wire), request)[1] == [
         {"x": expected}
     ]
+
+
+@pytest.mark.parametrize(
+    "wire,message",
+    [
+        ("<tool_calls><tool_calls></tool_calls>", "Malformed tool block wrapper"),
+        ("<tool_calls>  </tool_calls>", "No valid tool calls extracted"),
+        (
+            "<tool_calls><tool_call><tool_call>x</tool_call></tool_call></tool_calls>",
+            "Unparsed tool call payload remains",
+        ),
+    ],
+)
+def test_strict_rejects_nested_and_empty_wrappers(wire, message):
+    parser = HyV4ToolParser(Tokenizer(""))
+    with pytest.raises(ValueError, match=message):
+        parser._extractor._extract_tool_calls_strict(wire, None)
+    assert not parser.extract_tool_calls(wire).tools_called
+
+
+def test_flush_incomplete_next_call_after_completed_call():
+    parser = HyV4ToolParser(Tokenizer(""))
+    tail = "<tool_call>unfinished"
+    wire = "<tool_calls>" + call([], "") + tail
+    content, calls, names = stream(parser, list(wire), None)
+    assert (content, calls, names) == ("", [{}], [(0, "record")])
+    assert parser.flush_held_content(wire) == tail
+    assert parser.flush_held_content(wire) == ""
+
+
+def test_flush_does_not_release_incomplete_first_tool_name():
+    parser = HyV4ToolParser(Tokenizer(""))
+    wire = "<tool_calls><tool_call>unfinished"
+    assert stream(parser, list(wire), None) == ("", [], [])
+    assert parser.flush_held_content(wire) == ""

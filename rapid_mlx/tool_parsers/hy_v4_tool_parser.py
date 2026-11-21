@@ -705,9 +705,6 @@ class HYV4ToolExtractor:
         function_calls = self.tool_call_regex.findall(tool_block)
         if self.tool_call_regex.sub("", tool_block).strip():
             raise ValueError("Unparsed tool call payload remains.")
-        if tool_block.count(self.tool_call_start_token) != len(function_calls):
-            raise ValueError("Malformed tool_call body.")
-
         for tool_call_body in function_calls:
             arg_start = tool_call_body.find(self.arg_key_start_token)
             if arg_start == -1:

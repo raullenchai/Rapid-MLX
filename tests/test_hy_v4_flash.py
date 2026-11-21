@@ -1242,16 +1242,27 @@ def test_import_worker_dispatches_hy4_conversion(monkeypatch, tmp_path, fp8):
         )
 
 
-def test_phase_one_text_lane_wins_over_vision_metadata(tmp_path):
+@pytest.mark.parametrize("outer_type", ["hy_v4_flash", None, "wrapper"])
+def test_phase_one_text_lane_wins_over_vision_metadata(
+    tmp_path, monkeypatch, outer_type
+):
+    from rapid_mlx.api import utils
     from rapid_mlx.api.utils import is_mllm_model
 
+    # Exercise checkpoint routing even when no curated profile is available.
+    monkeypatch.setattr(utils, "resolve_profile", lambda _: None)
     fixture = Path(__file__).parent / "fixtures/hy_v4_flash"
-    (tmp_path / "config.json").write_text((fixture / "config.json").read_text())
+    config = json.loads((fixture / "config.json").read_text())
+    if outer_type != "hy_v4_flash":
+        config = {"text_config": config, "vision_config": {"hidden_size": 8}}
+        if outer_type is not None:
+            config["model_type"] = outer_type
+    (tmp_path / "config.json").write_text(json.dumps(config))
     (tmp_path / "model.safetensors.index.json").write_text(
         json.dumps(
             {
                 "weight_map": {
-                    "vit.weight": "absent",
+                    "vision_tower.weight": "absent",
                     "model.embed_tokens.weight": "absent",
                 }
             }
@@ -1466,3 +1477,61 @@ def test_checkpoint_quantization_prefers_top_level(key):
     assert checkpoint_quantization(config) is outer
     del config[key]
     assert checkpoint_quantization(config) is nested
+
+
+def test_fp8_empty_writer_flush_is_a_noop(fp8_conversion, tmp_path):
+    converter, _, _, _ = fp8_conversion
+    writer = converter._ShardWriter(tmp_path / "out")
+    writer.flush()
+    assert writer.shards == writer.size == 0
+    assert not list(writer.destination.iterdir())
+
+
+def test_fp8_conversion_reads_indexed_shard(fp8_conversion, tmp_path):
+    converter, arrays, _, _ = fp8_conversion
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": dict.fromkeys(arrays, "model.safetensors")})
+    )
+    assert converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
+    index = json.loads((tmp_path / "out/model.safetensors.index.json").read_text())
+    assert "model.embed_tokens.weight" in index["weight_map"]
+
+
+def test_fp8_conversion_rejects_invalid_affine_dimensions(fp8_conversion, tmp_path):
+    converter, _, _, _ = fp8_conversion
+    with pytest.raises(ValueError, match="Invalid affine dimensions"):
+        converter.convert_fp8(tmp_path, tmp_path / "out", 4, 96)
+    assert not (tmp_path / "out").exists()
+
+
+def test_fp8_conversion_omits_tied_head(fp8_conversion, tmp_path):
+    converter, _, _, _ = fp8_conversion
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config["tie_word_embeddings"] = True
+    config_path.write_text(json.dumps(config))
+    assert converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
+    index = json.loads((tmp_path / "out/model.safetensors.index.json").read_text())
+    assert "lm_head.weight" not in index["weight_map"]
+    assert "model.embed_tokens.weight" in index["weight_map"]
+
+
+def test_fp8_conversion_rejects_inconsistent_lookup_maps(fp8_conversion, tmp_path):
+    converter, arrays, _, _ = fp8_conversion
+    arrays["model.layers.0.engram_layer.lookup_table"] = (
+        np.zeros(16, np.int64),
+        "I64",
+    )
+    with pytest.raises(ValueError, match="Engram layers must share the same token map"):
+        converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
+    assert not (tmp_path / "out").exists()
+
+
+def test_fp8_conversion_rejects_duplicate_expert_aliases(fp8_conversion, tmp_path):
+    converter, arrays, _, _ = fp8_conversion
+    name = "model.layers.1.mlp.experts.0.down_proj.weight"
+    arrays[name] = np.ones((64, 64), np.float32), "F32"
+    arrays["language_model." + name] = arrays[name]
+    with pytest.raises(ValueError, match="Duplicate Hy4 Flash weight: .*0.down_proj"):
+        converter.convert_fp8(tmp_path, tmp_path / "out", 4, 32)
+    assert not (tmp_path / "out").exists()
