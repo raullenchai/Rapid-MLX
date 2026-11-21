@@ -1267,7 +1267,18 @@ def _detect_metadata_config(
         )
     )
 
-    if "raon1_nano" in model_types:
+    if "inkling2_loop" in model_types:
+        settings.update(
+            tool_call_parser=None,
+            reasoning_parser=None,
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            is_moe=True,
+            is_text_only=True,
+            supports_spec_decode=False,
+        )
+        reasons.append("Inkling 2 looped text architecture with convolution state")
+    elif "raon1_nano" in model_types:
         settings.update(
             tool_call_parser="raon_1",
             reasoning_parser="raon_1",
@@ -1423,7 +1434,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
        (``mlx-community/Qwen3.5-4B-MLX-4bit``), return that profile's
        config directly. This guarantees per-alias granularity for any
        optimization that varies by size/quant within a family.
-    Flint checkpoint metadata takes precedence over name-family fallbacks;
+    Flint and Inkling checkpoint metadata precede name-family fallbacks;
     alias profiles above remain authoritative. Other architectures retain
     the existing family-first precedence.
 
@@ -1472,10 +1483,11 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     metadata_cfg = _detect_metadata_config(model_path, log_resolution=False)
     if metadata_cfg is not None:
         metadata = read_model_metadata(model_path)
-        if metadata is not None and "flint" in _metadata_model_types(
-            metadata.config or {}
-        ):
-            # Flint's wire contract belongs to the checkpoint, even when a
+        if metadata is not None and {
+            "flint",
+            "inkling2_loop",
+        }.intersection(_metadata_model_types(metadata.config or {})):
+            # These wire contracts belong to the checkpoint, even when a
             # renamed directory or parent matches another parser family.
             return metadata_cfg
 

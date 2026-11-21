@@ -1,4 +1,18 @@
 {
+  "inkling-2-mini-4bit": {
+    "hf_path": "mlx-community/Inkling-2-Mini-4bit",
+    "revision": "9856dc53edead71405f8348930937c3638ff21a2",
+    "model_type": "inkling2_loop",
+    "modality": "text",
+    "is_text_only": true,
+    "is_moe": true,
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "tool_call_parser": null,
+    "reasoning_parser": null
+  },
   "raon-1-nano": {
     "hf_path": "KRAFTON/Raon-1-nano-mlx",
     "revision": "81e25155d3332c261ba503c0ae63eb65ad868398",
