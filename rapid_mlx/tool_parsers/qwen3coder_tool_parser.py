@@ -1071,7 +1071,12 @@ class Qwen3CoderToolParser(ToolParser):
         if self._markdown_held_start is not None:
             start = self._markdown_held_start
             self._markdown_held_start = None
-            prefix = self.extract_tool_calls(model_output[:start], request=request)
+            # Counting already-emitted content/calls is speculative: extraction
+            # mutates response flags and undeclared-drop counters. Keep all of
+            # that state isolated from the authoritative full-response parse.
+            prefix = type(self)(self.model_tokenizer).extract_tool_calls(
+                model_output[:start], request=request
+            )
             result = self.extract_tool_calls(model_output, request=request)
             return {
                 "content": (result.content or "")[len(prefix.content or "") :],

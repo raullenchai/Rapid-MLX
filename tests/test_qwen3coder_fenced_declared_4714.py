@@ -8,7 +8,7 @@ import pytest
 from rapid_mlx.config import get_config
 from rapid_mlx.service import helpers
 from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
-from tests.qwen3coder_stream_harness import non_stream, stream
+from tests.qwen3coder_stream_harness import deltas, non_stream, stream
 from tests.test_tool_choice_enforcement import _make_client, _RecordingEngine
 
 CALL = (
@@ -266,6 +266,69 @@ def test_deferred_forced_choice_keeps_already_admitted_call(size):
     )
     calls, _ = stream(text, request, size)
     assert calls == [("get_weather", '{"city": "Rome"}')]
+
+
+@pytest.mark.parametrize("genuine_deferred", [True, False])
+def test_deferred_finalize_does_not_parse_prefix_on_live_state(
+    genuine_deferred, monkeypatch
+):
+    request = {
+        **REQUEST,
+        "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+    }
+    unknown = CALL.replace("get_weather", "unavailable")
+    genuine = CALL.replace("Paris", '"Rome"')
+    prefix = (unknown if genuine_deferred else genuine) + "\nExample: `"
+    example = CALL + "`\n"
+    text = prefix + example + (genuine if genuine_deferred else unknown)
+    parser = Qwen3CoderToolParser(None)
+    # Drive the real streaming transitions: the first block is either dropped
+    # as undeclared or emitted; the inline example then holds the remaining text.
+    previous = ""
+    for piece in deltas(prefix, 7):
+        current = previous + piece
+        parser.extract_tool_calls_streaming(previous, current, piece, request=request)
+        previous = current
+    held = prefix + "<tool_call>"
+    assert (
+        parser.extract_tool_calls_streaming(
+            prefix, held, "<tool_call>", request=request
+        )
+        is None
+    )
+    assert parser._markdown_held_start == len(prefix)
+    assert (
+        parser.extract_tool_calls_streaming(
+            held, text, text[len(held) :], request=request
+        )
+        is None
+    )
+    assert parser._undeclared_dropped == int(genuine_deferred)
+
+    live_inputs = []
+    extract = parser.extract_tool_calls
+
+    def observe_live_parse(model_output, request=None):
+        live_inputs.append(model_output)
+        if model_output == text:
+            assert vars(parser) == expected_state
+        return extract(model_output, request=request)
+
+    monkeypatch.setattr(parser, "extract_tool_calls", observe_live_parse)
+    expected_state = {**vars(parser), "_markdown_held_start": None}
+    result = parser.finalize_legacy_raw_stream(text, request=request)
+    # A speculative prefix parse must never mutate the response's parser.
+    assert live_inputs == [text]
+    assert result is not None
+    assert [call["function"] for call in result["tool_calls"]] == (
+        [{"name": "get_weather", "arguments": '{"city": "Rome"}'}]
+        if genuine_deferred
+        else []
+    )
+    assert [call["index"] for call in result["tool_calls"]] == (
+        [0] if genuine_deferred else []
+    )
+    assert result["content"] == example + ("" if genuine_deferred else unknown)
 
 
 def test_first_visible_opener_without_markup():
