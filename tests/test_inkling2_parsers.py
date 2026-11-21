@@ -128,6 +128,118 @@ def test_special_tokens_reach_parser():
     assert get_parser("inkling")().extract_reasoning(text) == ("Secret", "Answer")
 
 
+@pytest.mark.parametrize("thinking", [None, False, True])
+@pytest.mark.parametrize("width", [1, 3])
+def test_chat_token_stream_reasoning_parity(thinking, width):
+    """Typed specials must reach reasoning parsing even after auto-disable."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.routes.chat import router
+    from tests.parser_migration.harness import norm
+
+    pieces = [M, R, "The user wants ", "17 times 23.", E, M, T, "391", E, S]
+    token_ids = list(range(len(pieces)))
+
+    class Tokenizer:
+        def decode(self, ids, *, skip_special_tokens=True):
+            return "".join(
+                pieces[i]
+                for i in ids
+                if not skip_special_tokens or not pieces[i].startswith("<|")
+            )
+
+    class Engine:
+        tokenizer = Tokenizer()
+        preserve_native_tool_format = True
+        is_mllm = False
+        supports_guided_generation = False
+
+        def build_prompt(self, *args, **kwargs):
+            return "prompt"
+
+        async def chat(self, **kwargs):
+            raw = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+            return GenerationOutput(
+                text=raw,
+                raw_text=raw,
+                finished=True,
+                finish_reason="stop",
+                prompt_tokens=1,
+                completion_tokens=len(token_ids),
+            )
+
+        async def stream_chat(self, **kwargs):
+            # Same incremental decoder used by the scheduler; default HF
+            # decoding above deliberately strips all typed special tokens.
+            decoder = IncrementalDecoder(self.tokenizer)
+            for start in range(0, len(token_ids), width):
+                ids = token_ids[start : start + width]
+                delta = "".join(decoder.add_token(i) for i in ids)
+                yield GenerationOutput(
+                    text=decoder.get_full_text(),
+                    new_text=delta,
+                    tokens=ids,
+                    finished=False,
+                    prompt_tokens=1,
+                    completion_tokens=start + len(ids),
+                )
+            yield GenerationOutput(
+                text=decoder.get_full_text(),
+                finished=True,
+                finish_reason="stop",
+                prompt_tokens=1,
+                completion_tokens=len(token_ids),
+            )
+
+    cfg = reset_config()
+    cfg.model_name = "inkling-2-mini-4bit"
+    cfg.reasoning_parser_name = "inkling"
+    cfg.reasoning_parser = get_parser("inkling")()
+    cfg.tool_call_parser = "inkling"
+    cfg.enable_auto_tool_choice = True
+    cfg.engine = Engine()
+    app = FastAPI()
+    app.include_router(router)
+    body = {
+        "model": cfg.model_name,
+        "messages": [{"role": "user", "content": "What is 17 times 23?"}],
+        "temperature": 0,
+        "max_tokens": 128,
+    }
+    if thinking is not None:
+        body["chat_template_kwargs"] = {"enable_thinking": thinking}
+    try:
+        with TestClient(app) as client:
+            buffered = client.post("/v1/chat/completions", json=body)
+            streamed = client.post(
+                "/v1/chat/completions", json={**body, "stream": True}
+            )
+        assert buffered.status_code == streamed.status_code == 200
+        packets = [
+            json.loads(line[6:])
+            for line in streamed.text.splitlines()
+            if line.startswith("data: {")
+        ]
+        expected = {
+            "reasoning": "The user wants 17 times 23.",
+            "content": "391",
+            "calls": [],
+        }
+        assert norm([buffered.json()], "chat", False) == expected
+        assert norm(packets, "chat", True) == expected, streamed.text
+        assert any(
+            choice.get("delta", {}).get("reasoning_content")
+            for packet in packets
+            for choice in packet.get("choices", [])
+        )
+        assert "<|" not in streamed.text
+    finally:
+        reset_config()
+
+
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
 def test_routes(surface, stream):

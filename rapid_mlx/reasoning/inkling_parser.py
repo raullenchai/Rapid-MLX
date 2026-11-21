@@ -63,6 +63,10 @@ class InklingBlocks:
 
 
 class InklingReasoningParser(ReasoningParser):
+    # Typed channels remain authoritative when a request disables thinking.
+    # Keep parsing before the standard stream sanitizer strips their markers.
+    sanitize_when_thinking_disabled = True
+
     def __init__(self, tokenizer=None, **kwargs):
         super().__init__(tokenizer)
         self.reset_state()
