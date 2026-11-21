@@ -251,7 +251,8 @@ def test_pull_error_classes_are_type_based():
     assert model_events.pull_error_class(wrapped) == "network"
     contextual = RuntimeError("outer private detail")
     contextual.__context__ = requests.ReadTimeout("inner private detail")
-    assert model_events.pull_error_class(contextual) == "network"
+    assert model_events.pull_error_class(contextual) == "other"
+    assert model_events.pull_error_class(contextual, follow_context=True) == "network"
     cyclic = RuntimeError("cycle")
     cyclic.__cause__ = cyclic
     assert model_events.pull_error_class(cyclic) == "other"
@@ -2676,28 +2677,64 @@ def test_pull_failure_subtypes_are_closed_and_emitted(
     assert "secret" not in json.dumps(calls)
 
 
-def test_pull_chain_is_bounded_and_cycle_safe():
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+def test_pull_chain_is_bounded_and_cycle_safe(link):
     failure = RuntimeError("private")
-    failure.__context__ = failure
+    setattr(failure, link, failure)
     assert model_events.pull_error_class(failure) == "other"
+    assert model_events.pull_error_class(failure, follow_context=True) == "other"
     assert model_events.pull_failure_subtype(failure) == "unknown"
     failure = TimeoutError("private")
     for _ in range(model_events._EXCEPTION_CHAIN_LIMIT):
         outer = RuntimeError("private")
-        outer.__context__ = failure
+        setattr(outer, link, failure)
         failure = outer
     assert model_events.pull_error_class(failure) == "other"
+    assert model_events.pull_error_class(failure, follow_context=True) == "other"
     assert model_events.pull_failure_subtype(failure) == "unknown"
 
 
 @pytest.mark.parametrize("reason", ["unsupported_format", "unsupported_architecture"])
 @pytest.mark.parametrize("link", ["__cause__", "__context__"])
-def test_wrapped_pull_preflight_keeps_existing_class(reason, link):
+def test_wrapped_pull_preflight_only_refines_telemetry(reason, link):
     from rapid_mlx.byom.preflight import PreflightRejectedError
 
     failure = RuntimeError("private")
     setattr(failure, link, PreflightRejectedError(reason))
-    assert model_events.pull_error_class(failure) == reason
+    assert model_events.pull_error_class(failure) == "other"
+    assert model_events.pull_error_class(failure, follow_context=True) == reason
+
+
+@pytest.mark.parametrize("link", ["__cause__", "__context__"])
+@pytest.mark.parametrize("suppress_context", [False, True])
+@pytest.mark.parametrize("kind", ["timeout", "invalid_ref"])
+def test_pull_telemetry_follows_visible_chains(
+    monkeypatch, link, suppress_context, kind
+):
+    from huggingface_hub.errors import HFValidationError
+
+    inner = (
+        TimeoutError("private") if kind == "timeout" else HFValidationError("private")
+    )
+    failure = RuntimeError("wrapper")
+    setattr(failure, link, inner)
+    failure.__suppress_context__ = suppress_context
+    visible = link == "__cause__" or not suppress_context
+    error_class = "network" if kind == "timeout" and visible else "other"
+    subtype = "invalid_model_ref" if kind == "invalid_ref" and visible else "unknown"
+
+    assert model_events.pull_error_class(failure, follow_context=True) == error_class
+    assert model_events.pull_failure_subtype(failure) == subtype
+    calls = []
+    monkeypatch.setattr(
+        track_module, "track", lambda event, props: calls.append((event, props))
+    )
+    model_events.emit_model_pull_failed(failure)
+    props = {"error_class": error_class}
+    if error_class == "other":
+        props["failure_subtype"] = subtype
+    assert calls == [("model_pull_failed", props)]
+    assert registry.validate("model_pull_failed", props) == props
 
 
 def test_pull_exception_chain_stops_when_cause_access_raises():

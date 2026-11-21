@@ -79,6 +79,29 @@ def test_retry_reuses_same_cache_and_stops_after_success(monkeypatch, capsys):
     assert "private URL" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("suppress_context", [False, True])
+def test_contextual_timeout_is_not_retried(monkeypatch, capsys, suppress_context):
+    calls = []
+    sleeps = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+
+    def transfer():
+        calls.append(1)
+        try:
+            raise TimeoutError("private timeout")
+        except TimeoutError:
+            if suppress_context:
+                raise RuntimeError("wrapper") from None
+            raise RuntimeError("wrapper")
+
+    with pytest.raises(RuntimeError, match="wrapper") as raised:
+        cli._retry_hub_download(transfer, "owner/repo")
+    assert not cli._is_transient_hub_error(raised.value)
+    assert calls == [1]
+    assert sleeps == []
+    assert "retrying" not in capsys.readouterr().err
+
+
 def test_retry_is_bounded_for_network_and_server_errors(monkeypatch):
     import requests
     from huggingface_hub.errors import HfHubHTTPError, LocalEntryNotFoundError

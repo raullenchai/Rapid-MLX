@@ -119,8 +119,10 @@ def _exception_text(exc: BaseException) -> str:
 _PULL_PREFLIGHT_CLASSES = frozenset({"unsupported_format", "unsupported_architecture"})
 
 
-def _pull_exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Follow explicit causes, falling back to context, with a bounded walk."""
+def _pull_exception_chain(
+    exc: BaseException, *, follow_context: bool = False
+) -> Iterator[BaseException]:
+    """Follow causes, optionally including unsuppressed context for telemetry."""
     current: BaseException | None = exc
     seen: set[int] = set()
     for _ in range(_EXCEPTION_CHAIN_LIMIT):
@@ -129,7 +131,12 @@ def _pull_exception_chain(exc: BaseException) -> Iterator[BaseException]:
         seen.add(id(current))
         yield current
         try:
-            current = current.__cause__ or current.__context__
+            cause = current.__cause__
+            current = (
+                current.__context__
+                if cause is None and follow_context and not current.__suppress_context__
+                else cause
+            )
         except BaseException:
             break
 
@@ -144,7 +151,7 @@ def pull_failure_subtype(exc: BaseException) -> str:
     from rapid_mlx._mirror import MirrorOnlyPullError, ResumableDownloadError
     from rapid_mlx.byom.preflight import PreflightRejectedError
 
-    for current in _pull_exception_chain(exc):
+    for current in _pull_exception_chain(exc, follow_context=True):
         if isinstance(current, PreflightRejectedError):
             return (
                 "insufficient_memory"
@@ -173,12 +180,14 @@ def pull_failure_subtype(exc: BaseException) -> str:
     return "unknown"
 
 
-def pull_error_class(exc: BaseException) -> str:
+def pull_error_class(exc: BaseException, *, follow_context: bool = False) -> str:
     """Classify a pull exception without putting its message on the wire.
 
     An ``HfHubHTTPError`` for a 401/403 response is ``gated``; other HTTP
     responses, including 5xx, are ``other`` because the server answered.
     ``network`` is reserved for failures to obtain a response.
+    Behavioral callers follow explicit causes only; telemetry may opt into
+    unsuppressed context with ``follow_context=True``.
     """
     import httpx
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
@@ -191,8 +200,10 @@ def pull_error_class(exc: BaseException) -> str:
 
     from rapid_mlx.byom.preflight import PreflightRejectedError
 
-    for current in _pull_exception_chain(exc):
-        if isinstance(current, PreflightRejectedError):
+    for current in _pull_exception_chain(exc, follow_context=follow_context):
+        if isinstance(current, PreflightRejectedError) and (
+            current is exc or follow_context
+        ):
             return (
                 current.failure_class
                 if current.failure_class in _PULL_PREFLIGHT_CLASSES
@@ -629,7 +640,7 @@ def emit_model_pull_failed(
     from rapid_mlx.telemetry.model_id import telemetry_model_id
     from rapid_mlx.telemetry.track import track
 
-    error_class = pull_error_class(exc)
+    error_class = pull_error_class(exc, follow_context=True)
     props: dict[str, object] = {"error_class": error_class}
     if error_class == "other":
         props["failure_subtype"] = pull_failure_subtype(exc)
