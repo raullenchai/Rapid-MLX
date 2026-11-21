@@ -1,12 +1,34 @@
 """Offline trust-boundary checks for installer target validation."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 INSTALLER = Path(__file__).resolve().parents[2] / "install.sh"
+
+
+@pytest.mark.parametrize(
+    "shell", [("/bin/sh",), ("dash",), ("zsh", "--emulate", "sh"), ("bash", "--posix")]
+)
+def test_piped_installer_requires_bash(shell):
+    if shutil.which(shell[0]) is None:
+        pytest.skip(f"{shell[0]} unavailable")
+    result = subprocess.run(
+        shell,
+        input=INSTALLER.read_text(),
+        env={**os.environ, "RAPID_INSTALL_LIB": "1"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "install.sh needs bash. Run: curl -fsSL https://rapidmlx.com/install.sh | bash\n"
+    )
 
 
 @pytest.mark.parametrize(
