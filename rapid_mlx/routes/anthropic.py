@@ -621,8 +621,12 @@ async def create_anthropic_message(
                             model_type_token,
                         )
 
+                        if _block_type == "image":
+                            _media_capability = "image_input_unsupported"
+                        else:
+                            _media_capability = "document_input_unsupported"
                         emit_capability_rejected(
-                            "image_input_unsupported",
+                            _media_capability,
                             model_type=model_type_token(engine),
                             model=_served_telemetry_id,
                             caller_agent=_caller_agent,
