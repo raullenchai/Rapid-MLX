@@ -40,12 +40,14 @@ class InklingToolParser(ToolParser):
                 (parsed[k] for k in ("args", "arguments", "parameters") if k in parsed),
                 {},
             )
+            if isinstance(args, str):
+                args = json.loads(args)
+            if not isinstance(args, dict):
+                return None
             return {
                 "id": "call_" + uuid.uuid4().hex[:24],
                 "name": parsed["name"],
-                "arguments": args
-                if isinstance(args, str)
-                else json.dumps(args, ensure_ascii=False),
+                "arguments": json.dumps(args, ensure_ascii=False),
             }
         except (ValueError, TypeError):
             return None

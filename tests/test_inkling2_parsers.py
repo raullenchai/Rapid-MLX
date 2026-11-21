@@ -106,6 +106,62 @@ def test_malformed(payload):
     assert out.content == payload + "Answer"
 
 
+@pytest.mark.parametrize("key", ["args", "arguments", "parameters"])
+@pytest.mark.parametrize(
+    "args",
+    ["not-json", '{"x":', "{} trailing", "[]", "null", "1", "true", '"text"', []],
+)
+@pytest.mark.parametrize("width", [1, 7, 1000])
+@pytest.mark.parametrize("close", [E + T + "Answer", ""])
+def test_invalid_arguments_fall_back_to_text(key, args, width, close):
+    parser = ToolParserManager.get_tool_parser("inkling")()
+    payload = json.dumps({"name": "f", key: args})
+    raw = M + C + payload + close
+    expected = payload + ("Answer" if close else "")
+    complete = parser.extract_tool_calls(raw)
+    assert not complete.tools_called
+    assert complete.tool_calls == []
+    assert complete.content == expected
+
+    content = ""
+    for pos in range(0, len(raw), width):
+        chunk = raw[pos : pos + width]
+        out = parser.extract_tool_calls_streaming(raw[:pos], raw[:pos] + chunk, chunk)
+        if out:
+            assert not out.get("tool_calls")
+            content += out.get("content", "")
+    out = parser.finalize_legacy_raw_stream(raw)
+    if out:
+        assert not out.get("tool_calls")
+        content += out.get("content", "")
+    assert content == expected
+
+
+@pytest.mark.parametrize("key", ["args", "arguments", "parameters"])
+@pytest.mark.parametrize("args", ["{}", '{"text":"é", "nested":{"x":[1,true,null]}}'])
+@pytest.mark.parametrize("width", [1, 7, 1000])
+def test_json_object_string_arguments(key, args, width):
+    parser = ToolParserManager.get_tool_parser("inkling")()
+    raw = M + C + json.dumps({"name": "f", key: args}) + E
+    complete = parser.extract_tool_calls(raw)
+    assert complete.tools_called
+    assert complete.content is None
+    assert len(complete.tool_calls) == 1
+    assert json.loads(complete.tool_calls[0]["arguments"]) == json.loads(args)
+
+    calls = []
+    for pos in range(0, len(raw), width):
+        chunk = raw[pos : pos + width]
+        out = parser.extract_tool_calls_streaming(raw[:pos], raw[:pos] + chunk, chunk)
+        if out:
+            assert not out.get("content")
+            calls.extend(out.get("tool_calls", []))
+    assert parser.finalize_legacy_raw_stream(raw) is None
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "f"
+    assert json.loads(calls[0]["function"]["arguments"]) == json.loads(args)
+
+
 @pytest.mark.parametrize("width", [1, 3, 7, 1000])
 @pytest.mark.parametrize("marker", [M, R, T, C, E, S])
 def test_marker_inside_tool_argument(marker, width):
