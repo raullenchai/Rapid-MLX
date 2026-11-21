@@ -56,6 +56,7 @@ LOGGER = "rapid_mlx.tool_parsers.qwen3coder_tool_parser"
 # These historical streams lost whitespace inside code; now every byte stays.
 # Keep the captured origin/main fixture unchanged as the negative baseline.
 MARKDOWN_WHITESPACE_4714 = {
+    "lone_undeclared_in_inline_code": {1, 2},
     "lone_undeclared_in_code_fence": {1, 2},
     "lone_undeclared_in_tilde_fence": {1, 2, 3},
     "lone_undeclared_in_unclosed_fence": {1, 2},

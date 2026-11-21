@@ -654,6 +654,34 @@ class TestStreamingPostProcessorToolCalls:
         events = pp.finalize()
         assert [e for e in events if e.type == "content"] == []
 
+    @pytest.mark.parametrize(
+        "raw_content",
+        [
+            None,
+            42,
+            {"unexpected": "value"},
+            ["unexpected"],
+            MagicMock(),
+            "held example",
+        ],
+        ids=["none", "integer", "mapping", "list", "mock", "string"],
+    )
+    def test_finalize_raw_hook_emits_only_string_content(self, raw_content):
+        tool_parser = self._make_tool_parser()
+        tool_parser.finalize_legacy_raw_stream.return_value = {
+            "content": raw_content,
+            "tool_calls": [],
+        }
+        pp = StreamingPostProcessor(
+            _make_cfg(enable_auto_tool_choice=True, tool_parser_instance=tool_parser)
+        )
+        pp.reset()
+        pp.tool_accumulated_text = "ordinary prose"
+
+        events = pp.finalize()
+        content = [event.content for event in events if event.type == "content"]
+        assert content == ([raw_content] if isinstance(raw_content, str) else [])
+
 
 class TestStreamingPostProcessorGemma4StrippedForm:
     """Tests for the gemma4 stripped-wire-form fast-path regression

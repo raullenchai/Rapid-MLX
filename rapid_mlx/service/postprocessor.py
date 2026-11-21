@@ -3967,10 +3967,18 @@ class StreamingPostProcessor:
                 self.tool_accumulated_text or self.accumulated_text,
                 request=self.request,
             )
+            raw_content = raw_delta.get("content") if raw_delta else None
+            # The parser returns only the held segment. Re-slicing full
+            # response content by forwarded characters would resurrect text
+            # deliberately suppressed after an earlier streamed tool call.
+            if isinstance(raw_content, str) and raw_content:
+                events.append(StreamEvent(type="content", content=raw_content))
             if raw_delta and raw_delta.get("tool_calls"):
                 allowed = self._apply_parallel_cap(
-                    self._filter_declared_calls(
-                        raw_delta["tool_calls"], incremental=True
+                    self._apply_forced_tool_choice_filter(
+                        self._filter_declared_calls(
+                            raw_delta["tool_calls"], incremental=True
+                        )
                     )
                 )
                 if allowed:
