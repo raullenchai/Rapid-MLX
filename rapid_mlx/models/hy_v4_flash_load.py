@@ -157,6 +157,7 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
             readers.append(reader)
             embedding.embedding = reader
         weights = {}
+        shard_keys: dict[Path, set[str] | None]
         if mapping is None:
             shard_keys = {
                 Path(resolve_indexed_shard(str(path), shard.name)): None
