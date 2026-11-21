@@ -2701,10 +2701,10 @@ def test_wrapped_pull_preflight_keeps_existing_class(reason, link):
 
 
 def test_pull_exception_chain_stops_when_cause_access_raises():
-    class HostileCause(Exception):
+    class HostileCauseError(Exception):
         @property
         def __cause__(self):  # type: ignore[override]
             raise RuntimeError("hostile")
 
-    failure = HostileCause()
+    failure = HostileCauseError()
     assert list(model_events._pull_exception_chain(failure)) == [failure]
