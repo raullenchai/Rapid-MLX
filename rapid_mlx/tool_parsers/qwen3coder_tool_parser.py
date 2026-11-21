@@ -28,7 +28,7 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple, cast
 
@@ -49,6 +49,20 @@ _INTEGER_LITERAL_RE = re.compile(r"[+-]?[0-9]+")
 # Integral decimals past the float range (for example ``1e999``) stay strings,
 # as they did before exact decimal parsing, rather than becoming huge ints.
 _MAX_INTEGER_EXPONENT = 308
+
+_STREAM_TOOL_MARKERS = ("<tool_call>", "<function=")
+# Include every unfinished opener, even a lone '<', before the XML state
+# machine can claim it. Complete markers may appear anywhere in the delta.
+_STREAM_TOOL_CANDIDATE_RE = re.compile(
+    "|".join(re.escape(marker) for marker in _STREAM_TOOL_MARKERS)
+    + "|(?:"
+    + "|".join(
+        re.escape(marker[:length])
+        for marker in _STREAM_TOOL_MARKERS
+        for length in range(1, len(marker))
+    )
+    + r")\Z"
+)
 
 # Longest call block to an undeclared tool that is dropped (#4038). Streaming
 # must hold the block back until it closes; a longer one is released as
@@ -78,6 +92,10 @@ _StepResult = dict[str, Any] | _Continue | None
 
 
 _MARKDOWN_FENCE_RE = re.compile(r"[ ]{0,3}(`{3,}|~{3,})")
+_MARKDOWN_LINE_END_RE = re.compile(r"\r\n?|\n")
+_MARKDOWN_PARAGRAPH_END_RE = re.compile(
+    r"(?:\r\n|\r(?!\n)|\n)[ \t]*(?:\r\n|\r(?!\n)|\n)"
+)
 
 
 class _MarkdownCodeTracker:
@@ -94,6 +112,106 @@ class _MarkdownCodeTracker:
 
     _OPEN = "<tool_call>"
     _CLOSE = "</tool_call>"
+
+    @staticmethod
+    def code_ranges(
+        text: str, protocol_end: Callable[[int], int], *, pending: bool = False
+    ) -> list[tuple[int, int]]:
+        """Locate complete inline spans and fences, including blockquotes.
+
+        Recognized call arguments are opaque outside code. In particular a
+        backtick in a real call's arguments cannot close a stray prose opener.
+        Streaming may also request unmatched inline tails, whose interpretation
+        must wait for the rest of the response.
+        """
+        ranges: list[tuple[int, int]] = []
+        if "`" not in text and "~" not in text:
+            return ranges
+        fence: str | None = None
+        fence_start = 0
+        quote_depth = 0
+        cursor = 0
+        line_start = True
+        while cursor < len(text):
+            if line_start:
+                newline = _MARKDOWN_LINE_END_RE.search(text, cursor)
+                end = newline.end() if newline else len(text)
+                line = text[cursor:end]
+                quote = re.match(r"(?: {0,3}>[ \t]?)*", line)
+                assert quote is not None
+                depth = quote.group().count(">")
+                if fence is not None and depth < quote_depth:
+                    ranges.append((fence_start, cursor))
+                    fence = None
+                body = line[quote.end() :]
+                match = _MARKDOWN_FENCE_RE.match(body)
+                if fence is not None:
+                    if (
+                        depth == quote_depth
+                        and match
+                        and match.group(1)[0] == fence[0]
+                        and len(match.group(1)) >= len(fence)
+                        and not body[match.end() :].strip()
+                    ):
+                        ranges.append((fence_start, end))
+                        fence = None
+                    cursor = end
+                    continue
+                if match and (
+                    match.group(1)[0] == "~" or "`" not in body[match.end() :]
+                ):
+                    fence = match.group(1)
+                    quote_depth = depth
+                    fence_start = cursor
+                    cursor = end
+                    continue
+                line_start = False
+            end = protocol_end(cursor)
+            if end > cursor:
+                cursor = end
+                continue
+            if text[cursor] == "`":
+                run_end = cursor + 1
+                while run_end < len(text) and text[run_end] == "`":
+                    run_end += 1
+                back = cursor
+                while back > 0 and text[back - 1] == "\\":
+                    back -= 1
+                if (cursor - back) % 2:
+                    cursor = run_end
+                    continue
+                boundary = _MARKDOWN_PARAGRAPH_END_RE.search(text, run_end)
+                limit = boundary.start() if boundary else len(text)
+                look = run_end
+                close = -1
+                while look < limit:
+                    end = protocol_end(look)
+                    if end > look:
+                        look = end
+                        continue
+                    if text[look] != "`":
+                        look += 1
+                        continue
+                    end = look + 1
+                    while end < limit and text[end] == "`":
+                        end += 1
+                    if end - look == run_end - cursor:
+                        close = end
+                        break
+                    look = end
+                if close >= 0:
+                    ranges.append((cursor, close))
+                    cursor = close
+                    continue
+                if pending:
+                    ranges.append((cursor, limit))
+                cursor = run_end
+                continue
+            line_start = text[cursor] in "\r\n"
+            cursor += 1
+        if fence is not None:
+            ranges.append((fence_start, len(text)))
+        return ranges
 
     def __init__(self) -> None:
         self._committed = 0
@@ -819,6 +937,7 @@ class Qwen3CoderToolParser(ToolParser):
         # opener outside dropped blocks) (#4038).
         self._undeclared_blocked = False
         self._code_tracker = _MarkdownCodeTracker()
+        self._markdown_held_start: int | None = None
 
     def reset(self) -> None:
         """Reset for a new request, including the per-response #4038 state
@@ -963,6 +1082,37 @@ class Qwen3CoderToolParser(ToolParser):
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> dict | None:
         """Return un-emitted JSON after ambiguous raw or incomplete quoted XML."""
+        if self._markdown_held_start is not None:
+            start = self._markdown_held_start
+            self._markdown_held_start = None
+            # Counting already-emitted content/calls is speculative: extraction
+            # mutates response flags and undeclared-drop counters. Keep all of
+            # that state isolated from the authoritative full-response parse.
+            prefix = type(self)(self.model_tokenizer).extract_tool_calls(
+                model_output[:start], request=request
+            )
+            result = self.extract_tool_calls(model_output, request=request)
+            return {
+                "content": (result.content or "")[len(prefix.content or "") :],
+                # Adapters may have suppressed post-call content in the prefix.
+                # Let them reconcile against what they actually forwarded.
+                "deferred_full_content": result.content or "",
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    }
+                    for index, call in enumerate(
+                        result.tool_calls[len(prefix.tool_calls) :],
+                        start=len(prefix.tool_calls),
+                    )
+                ],
+            }
         pending_quote = self.in_function and not self.json_closed
         if not self._legacy_raw_stream and not pending_quote:
             return None
@@ -1813,6 +1963,8 @@ class Qwen3CoderToolParser(ToolParser):
         param_open_len = len(self.parameter_prefix)
         param_close_len = len(self.parameter_end_token)
         code = _MarkdownCodeTracker()
+        code_ranges = iter(self._markdown_code_ranges(text))
+        code_range = next(code_ranges, None)
         next_func = text.find(self.tool_call_prefix)
         next_param = text.find(self.parameter_prefix)
         while i < n:
@@ -1820,6 +1972,13 @@ class Qwen3CoderToolParser(ToolParser):
             if not candidates:
                 return positions
             next_marker = min(candidates)
+            while code_range is not None and code_range[1] <= next_marker:
+                code_range = next(code_ranges, None)
+            if code_range is not None and code_range[0] <= next_marker < code_range[1]:
+                i = next_marker + 1
+                next_func = text.find(self.tool_call_prefix, i)
+                next_param = text.find(self.parameter_prefix, i)
+                continue
             if code.inside_fence(text, next_marker):
                 i = next_marker + 1
                 if next_marker == next_func:
@@ -1850,32 +2009,48 @@ class Qwen3CoderToolParser(ToolParser):
             next_func = text.find(self.tool_call_prefix, i)
         return positions
 
-    @staticmethod
-    def mask_markdown_fenced_regions(text: str) -> str:
-        """Mask fenced examples before cross-format recovery."""
-        masked: list[str] = []
-        fence: str | None = None
-        for line in text.splitlines(keepends=True):
-            match = _MARKDOWN_FENCE_RE.match(line)
-            in_fence = fence is not None
-            if fence is None and match:
-                marker = match.group(1)
-                info = line[match.end() :]
-                if marker[0] == "~" or "`" not in info:
-                    fence = marker
-                    in_fence = True
-            elif (
-                fence is not None
-                and match
-                and match.group(1)[0] == fence[0]
-                and len(match.group(1)) >= len(fence)
-                and not line[match.end() :].strip()
-            ):
-                fence = None
-            if in_fence:
-                masked.append("".join(char if char in "\r\n" else " " for char in line))
-            else:
-                masked.append(line)
+    def _markdown_code_ranges(
+        self, text: str, *, pending: bool = False
+    ) -> list[tuple[int, int]]:
+        def protocol_end(start: int) -> int:
+            if text.startswith(self.tool_call_prefix, start):
+                close = self._top_level_function_close(text, start)
+                return close + len(self.function_end_token) if close >= 0 else start
+            payload = start
+            framed = False
+            if text.startswith(self.tool_call_start_token, start):
+                payload = start + len(self.tool_call_start_token)
+                framed = True
+                while payload < len(text) and text[payload].isspace():
+                    payload += 1
+            elif text.startswith("Calling tool:", start):
+                header = re.match(r"Calling tool:\s*[\w.-]+\s*\(\s*", text[start:])
+                if header:
+                    payload = start + header.end()
+                    framed = True
+            if payload < len(text) and text[payload] == "{":
+                try:
+                    value, length = json.JSONDecoder().raw_decode(text[payload:])
+                    if framed or (
+                        isinstance(value, dict)
+                        and isinstance(value.get("name"), str)
+                        and ("arguments" in value or "parameters" in value)
+                    ):
+                        return payload + length
+                except ValueError:
+                    pass
+            return start
+
+        return _MarkdownCodeTracker.code_ranges(text, protocol_end, pending=pending)
+
+    @classmethod
+    def mask_markdown_fenced_regions(cls, text: str) -> str:
+        """Mask Markdown code examples before cross-format recovery."""
+        masked = list(text)
+        for start, end in cls(None)._markdown_code_ranges(text):
+            masked[start:end] = [
+                char if char in "\r\n" else " " for char in text[start:end]
+            ]
         return "".join(masked)
 
     def extract_tool_calls_streaming(
@@ -1905,6 +2080,36 @@ class Qwen3CoderToolParser(ToolParser):
             # No executable tool exists for this request. Bypass the XML state
             # machine entirely so protocol examples stream byte-for-byte.
             return {"content": delta_text}
+
+        if self._markdown_held_start is not None:
+            return None
+        if not self.in_function and not self.is_tool_call_started:
+            # Only a new tool candidate needs the full Markdown context.
+            # Re-scanning prose on every token makes ordinary code spans
+            # quadratic even though no executable syntax was produced.
+            # Revisit enough of the previous delta to include any opener
+            # whose partial spelling crossed the chunk boundary.
+            candidates = list(
+                _STREAM_TOOL_CANDIDATE_RE.finditer(
+                    current_text,
+                    max(
+                        0,
+                        len(previous_text) - max(map(len, _STREAM_TOOL_MARKERS)) + 1,
+                    ),
+                )
+            )
+            ranges = (
+                self._markdown_code_ranges(current_text, pending=True)
+                if candidates
+                else []
+            )
+            for match in candidates:
+                pos = match.start()
+                if any(
+                    start <= pos < end for start, end in ranges
+                ) and not self._code_tracker.inside_fence(current_text, pos):
+                    self._markdown_held_start = len(previous_text)
+                    return None
 
         # Drain a chunk that closes the active function and contains another
         # complete function. The single-call state machine returns after the

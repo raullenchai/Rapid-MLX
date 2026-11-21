@@ -690,6 +690,10 @@ def test_streaming_unchanged_against_base():
                                 "_finish_fence_line",
                                 "_fence_result",
                                 "mask_markdown_fenced_regions",
+                                # Matched inline spans and blockquote fences
+                                # are pinned by test_qwen3coder_fenced_declared_4714.
+                                "code_ranges",
+                                "_markdown_code_ranges",
                                 "flush_held_content",
                                 "_streaming_step_once",
                                 # #4788 treats CR and CRLF as line boundaries.
@@ -715,6 +719,15 @@ def test_streaming_unchanged_against_base():
             # The opt-in buffered Markdown query leaves the original streaming
             # methods unchanged. Normalize its new dispatch before comparison.
             for node in tree.body:
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "collections.abc"
+                ):
+                    # The quote-range callback adds Callable; retain every
+                    # pre-existing import in this historical comparison.
+                    node.names = [
+                        alias for alias in node.names if alias.name != "Callable"
+                    ]
                 if (
                     isinstance(node, ast.ClassDef)
                     and node.name == "_MarkdownCodeTracker"
@@ -755,7 +768,17 @@ def test_streaming_unchanged_against_base():
                     isinstance(node, ast.Assign)
                     and any(
                         isinstance(target, ast.Name)
-                        and target.id == "_MAX_INTEGER_EXPONENT"
+                        and target.id
+                        in {
+                            "_MAX_INTEGER_EXPONENT",
+                            # Quote guards share CR/LF and paragraph boundaries.
+                            "_MARKDOWN_LINE_END_RE",
+                            "_MARKDOWN_PARAGRAPH_END_RE",
+                            # Split-opener guards are pinned at every offset by
+                            # test_qwen3coder_fenced_declared_4714.
+                            "_STREAM_TOOL_MARKERS",
+                            "_STREAM_TOOL_CANDIDATE_RE",
+                        }
                         for target in node.targets
                     )
                 )
