@@ -7,6 +7,8 @@ import json
 import os
 import socket
 import stat
+import sys
+import time
 from pathlib import Path
 
 from . import RUNNER_ENV, SECRET_ENV, SECRET_HEADER, SOCKET_ENV
@@ -168,3 +170,86 @@ def install_startup_report():
 def report_startup_failure(reason):
     if not _startup_terminal:
         report("startup_failed", reason=reason[:512])
+
+
+def serve_http(args, endpoint, method="get", **kwargs):
+    import httpx
+
+    statuses = discover(getattr(args, "port", None))
+    if not statuses:
+        print("No running serve.", file=sys.stderr)
+        return None
+    port = statuses[0]["port"]
+    key = os.environ.get("RAPID_MLX_API_KEY")
+    try:
+        response = getattr(httpx, method)(
+            f"http://127.0.0.1:{port}/rapid/v1/{endpoint}",
+            **kwargs,
+            headers={"Authorization": f"Bearer {key}"} if key else {},
+            trust_env=False,
+            timeout=2,
+        )
+    except httpx.RequestError:
+        print(f"could not reach serve on port {port}", file=sys.stderr)
+        return None
+    if not response.is_success:
+        message = (
+            "serve requires an API key: set RAPID_MLX_API_KEY"
+            if response.status_code in (401, 403)
+            else f"serve returned HTTP {response.status_code}"
+        )
+        print(message, file=sys.stderr)
+        return None
+    return response.json(), port
+
+
+def log_command(args):
+    result = serve_http(args, "log", params={"limit": getattr(args, "limit", 50)})
+    if result is None:
+        return 1
+    data, port = result
+    if args.json:
+        print(json.dumps(data))
+    else:
+        layout = "{:<8} {:<40.40} {:<7.7} {:<40.40} {:>6} {:>8}"
+        print(
+            layout.format("TIME", "CLIENT", "METHOD", "PATH", "STATUS", "MS")
+            + f"  serve :{port}"
+        )
+        for call in data["calls"]:
+            stamp = time.strftime("%H:%M:%S", time.localtime(call["ts"]))
+            print(
+                layout.format(
+                    stamp,
+                    *(
+                        call[k]
+                        for k in ("client", "method", "path", "status", "duration_ms")
+                    ),
+                )
+            )
+    return 0
+
+
+def jobs_command(args):
+    from urllib.parse import quote
+
+    cancelling = args.jobs_action == "cancel"
+    endpoint = f"jobs/{quote(args.id, safe='')}/cancel" if cancelling else "jobs"
+    result = serve_http(args, endpoint, "post" if cancelling else "get")
+    if result is None:
+        return 1
+    data, _ = result
+    if cancelling or args.json:
+        print(json.dumps(data))
+    else:
+        layout = "{:<36} {:<8} {:<20} {:>8}  {}"
+        print(layout.format("ID", "KIND", "STATUS", "AGE", "SUMMARY"))
+        for job in data["jobs"]:
+            created = job["created"]
+            age = "-" if created is None else f"{max(0, int(time.time() - created))}s"
+            print(
+                layout.format(
+                    job["id"], job["kind"], job["status"], age, job["summary"]
+                )
+            )
+    return 0

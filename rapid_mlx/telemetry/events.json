@@ -222,6 +222,14 @@
         "unsupported_format", "unsupported_architecture", "other"
       ]
     },
+    "pull_failure_subtype": {
+      "_about": "Refines other pull failures using exception types, closed HTTP status ranges, and closed preflight reasons. Never messages, URLs, or model references.",
+      "values": [
+        "http_server_error", "http_client_error", "http_error",
+        "invalid_model_ref", "mirror_only", "resumable_download",
+        "insufficient_memory", "preflight_rejected", "unknown"
+      ]
+    },
     "serve_error_class": {
       "_about": [
         "Closed serve/startup categories. local_path_missing distinguishes a",
@@ -369,7 +377,7 @@
         "recipe", "ls", "version", "help", "pull", "import", "rm", "alias",
         "ps", "top", "upgrade", "update", "chat", "run", "info", "agents", "start",
         "connect", "doctor", "telemetry", "feedback", "share", "launch",
-        "service", "status", "bare", "other"
+        "service", "status", "log", "jobs", "bare", "other"
       ]
     },
     "agent_failure_cause": {
@@ -401,6 +409,7 @@
       "_about": [
         "Design sec 1.3: 'enum from real rejection sites'. Every value below is",
         "backed by a live rejection in the engine; nothing is aspirational.",
+        "document_input_unsupported     -> routes/anthropic.py (document guard)",
         "image_input_unsupported        -> api/utils.py:1804, routes/anthropic.py:719",
         "video_input_unsupported        -> api/utils.py:1810",
         "audio_input_unsupported        -> api/utils.py:1810/1848/2068",
@@ -429,6 +438,7 @@
       ],
       "values": [
         "image_input_unsupported",
+        "document_input_unsupported",
         "video_input_unsupported",
         "audio_input_unsupported",
         "embeddings_unavailable",
@@ -736,6 +746,10 @@
         "source": {"kind": "enum", "enum": "pull_source", "required": false},
         "size_bucket": {"kind": "enum", "enum": "size_bucket", "required": false},
         "error_class": {"kind": "enum", "enum": "pull_error_class", "required": true},
+        "failure_subtype": {
+          "kind": "enum", "enum": "pull_failure_subtype", "required": false,
+          "only_when": {"error_class": ["other"]}
+        },
         "preflight": {"kind": "enum", "enum": "byom_preflight", "required": false},
         "via_suggestion": {"kind": "bool", "required": false},
         "suggestion": {

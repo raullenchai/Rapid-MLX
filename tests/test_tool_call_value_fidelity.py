@@ -92,6 +92,14 @@ def _render_raw_json(name: str, key: str, value: str) -> str:
     return json.dumps({"name": name, "arguments": {key: value}})
 
 
+def _render_inkling(name: str, key: str, value: str) -> str:
+    return (
+        f"<|message_model|>{name}<|content_invoke_tool_json|>"
+        + json.dumps({"name": name, "args": {key: value}})
+        + "<|end_message|>"
+    )
+
+
 def _render_raw_json_array(name: str, key: str, value: str) -> str:
     # xLAM emits a JSON *array* of calls; the single-object shape above is
     # not recognised by it. Kept separate rather than making one renderer
@@ -127,6 +135,7 @@ def _render_muse_atem(name: str, key: str, value: str) -> str:
 
 
 RENDERERS = {
+    "inkling_native": _render_inkling,
     "json_body": _render_json_body,
     "raw_json": _render_raw_json,
     "raw_json_array": _render_raw_json_array,
@@ -139,6 +148,7 @@ RENDERERS = {
 # (parser_name, wire_format) pairs this file exercises. Parser names are the
 # registered ones; the format decides the renderer.
 COVERED: list[tuple[str, str]] = [
+    ("inkling", "inkling_native"),
     ("hermes", "json_body"),
     ("hermes", "xml_body"),
     ("qwen", "json_body"),
@@ -257,6 +267,11 @@ def _known_broken(parser_name: str, wire_format: str, case: str) -> str | None:
 # tool calls from these models, since the scanner is the fallback. Pre-dates
 # this change and is out of its scope, but it should be visible.
 _SCANNER_BLIND: dict[tuple[str, str], str] = {
+    (
+        "inkling",
+        "inkling_native",
+    ): "parse_tool_calls does not recognise Inkling typed JSON blocks; "
+    "Inkling models require the dedicated parser",
     (
         "pythonic",
         "pythonic_bracket",

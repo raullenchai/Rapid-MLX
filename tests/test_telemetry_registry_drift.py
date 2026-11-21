@@ -321,7 +321,7 @@ def test_failed_twins_exist_and_mirror_their_success_event(registry):
                 # identity. ``extra``/``extra_recovery`` describe a missing
                 # optional runtime, ``failure_stage`` the startup boundary,
                 # and ``failure_subtype`` the unclassified exception type
-                # (model_serve_failed only). ``suggestion``/``support_request``
+                # (pull/serve failures). ``suggestion``/``support_request``
                 # describe a BYOM preflight refusal (preflight=refused only).
                 "extra",
                 "extra_recovery",
@@ -651,3 +651,13 @@ def test_start_failure_enums_and_disclosure_match_code(registry):
     subtype_text = disclosure.split("(`failure_subtype`):", 1)[1].split("; never", 1)[0]
     assert set(re.findall(r"`([a-z_]+)`", reason_text)) == reasons
     assert set(re.findall(r"`([a-z_]+)`", subtype_text)) == subtypes
+
+
+def test_pull_failure_subtypes_match_disclosure(registry):
+    disclosure = (MAC_APP / "PRIVACY.md").read_text()
+    subtype_text = disclosure.split("closed pull\n    `failure_subtype`:", 1)[1].split(
+        ". These identify", 1
+    )[0]
+    assert set(re.findall(r"`([a-z_]+)`", subtype_text)) == set(
+        registry["enums"]["pull_failure_subtype"]["values"]
+    )

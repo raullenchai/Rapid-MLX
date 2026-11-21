@@ -29,6 +29,8 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "alias",
             "ps",
             "status",
+            "log",
+            "jobs",
             "top",
             "info",
             "upgrade",

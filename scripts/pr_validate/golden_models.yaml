@@ -227,6 +227,8 @@ families:
 # ``--tool-call-parser hermes`` is redundant with the registry today
 # but documents intent at the validation surface.
 overrides:
+  "mlx-community/Inkling-2-Mini-4bit":
+    args: ["--enable-auto-tool-choice", "--tool-call-parser", "inkling", "--reasoning-parser", "inkling"]
   "KRAFTON/Raon-1-nano-mlx":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "raon_1", "--reasoning-parser", "raon_1"]
   "mlx-community/Qwen3.5-35B-A3B-8bit":

@@ -117,6 +117,14 @@ service:
   * A rejected capability can include the privacy-safe served model identity
     and a normalized, closed-set caller label. It never includes the model
     string supplied by the request.
+  * A failed model pull classified as `other` can include a closed pull
+    `failure_subtype`: `http_server_error`, `http_client_error`, `http_error`,
+    `invalid_model_ref`, `mirror_only`, `resumable_download`,
+    `insufficient_memory`, `preflight_rejected`, or `unknown`. These identify
+    HTTP status ranges, exception types, or fixed preflight reasons; no
+    messages, URLs, repository names, or paths are added.
+    Unsupported document inputs use `document_input_unsupported`; unsupported
+    images keep `image_input_unsupported`.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
   * A failed server start may include one closed cause (`exit_reason`):

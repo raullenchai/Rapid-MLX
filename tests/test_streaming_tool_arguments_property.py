@@ -980,6 +980,11 @@ CANONICAL_WIRES = {
         "<arg_value:opensource>hello</arg_value:opensource>"
         "</tool_call:opensource></tool_calls:opensource>"
     ),
+    "inkling": (
+        '<|message_model|>lookup<|content_invoke_tool_json|>{"name":"lookup","args":'
+        + _ARGS
+        + "}<|end_message|>"
+    ),
     "k2_horizon": (
         "<ifm|tool_calls><ifm|tool_call>lookup"
         "<ifm|arg_key>text</ifm|arg_key>"

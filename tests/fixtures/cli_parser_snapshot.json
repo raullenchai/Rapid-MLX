@@ -92,7 +92,9 @@
     "help": "Show help for a subcommand",
     "import": "Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)",
     "info": "Show the per-model profile for a model name or alias",
+    "jobs": "Show serve jobs",
     "launch": "Launch coding agents with private local profiles or configure editors",
+    "log": "Show recent serve API calls",
     "ls": "List models in the local HuggingFace cache (alias for `models --cached`)",
     "models": "List available model aliases",
     "ps": "List running rapid-mlx servers",
@@ -3460,6 +3462,169 @@
      "mutually_exclusive": [],
      "prog": "rapid-mlx info"
     },
+    "jobs": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "port",
+       "help": "Select a serve by port",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--port"
+       ],
+       "required": false,
+       "type": "rapid_mlx.cli_parser._port_arg"
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "Print jobs as JSON",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "choices_help": {},
+       "class": "argparse._SubParsersAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "jobs_action",
+       "help": null,
+       "metavar": null,
+       "nargs": "A...",
+       "option_strings": [],
+       "subcommands": {
+        "cancel": {
+         "actions": [
+          {
+           "class": "argparse._HelpAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "help",
+           "help": "show this help message and exit",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": null,
+           "dest": "id",
+           "help": "Job ID",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [],
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "port",
+           "help": null,
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--port"
+           ],
+           "required": false,
+           "type": "rapid_mlx.cli_parser._port_arg"
+          }
+         ],
+         "allow_abbrev": true,
+         "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+         "defaults": {},
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse.HelpFormatter",
+         "groups": [
+          {
+           "description": null,
+           "dests": [
+            "id"
+           ],
+           "title": "positional arguments"
+          },
+          {
+           "description": null,
+           "dests": [
+            "help",
+            "port"
+           ],
+           "title": "options"
+          }
+         ],
+         "mutually_exclusive": [],
+         "prog": "rapid-mlx jobs cancel"
+        }
+       },
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [
+        "jobs_action"
+       ],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "port",
+        "json"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx jobs"
+    },
     "launch": {
      "actions": [
       {
@@ -3771,6 +3936,96 @@
      ],
      "mutually_exclusive": [],
      "prog": "rapid-mlx launch"
+    },
+    "log": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "port",
+       "help": "Select a serve by port",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--port"
+       ],
+       "required": false,
+       "type": "rapid_mlx.cli_parser._port_arg"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 50,
+       "dest": "limit",
+       "help": "Calls (max 1000)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--limit"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "Print calls as JSON",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "port",
+        "limit",
+        "json"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx log"
     },
     "ls": {
      "actions": [
@@ -6486,6 +6741,7 @@
       },
       {
        "choices": [
+        "inkling",
         "gemma4",
         "raon_1",
         "qwen3",
@@ -6512,7 +6768,7 @@
        "const": null,
        "default": null,
        "dest": "reasoning_parser",
-       "help": "Enable reasoning content extraction with specified parser. Extracts <think>...</think> tags into reasoning_content field. Options: gemma4, raon_1, qwen3, hy_v3, hy_v4, hy3, k2_horizon, deepseek_r1, deepseek_r1_distill, deepseek_v4, vibethinker, glm4, glm5, gpt_oss, harmony, minimax, muse, ui_tars, cohere_command4, north.",
+       "help": "Enable reasoning content extraction with specified parser. Extracts <think>...</think> tags into reasoning_content field. Options: inkling, gemma4, raon_1, qwen3, hy_v3, hy_v4, hy3, k2_horizon, deepseek_r1, deepseek_r1_distill, deepseek_v4, vibethinker, glm4, glm5, gpt_oss, harmony, minimax, muse, ui_tars, cohere_command4, north.",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -10660,7 +10916,7 @@
  "allow_abbrev": true,
  "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
  "defaults": {},
- "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple\nSilicon, built on MLX, focused on reliable tool calling for coding agents.\n\nGET STARTED\n  chat (run)        Interactive chat REPL with a model\n  serve             Start OpenAI-compatible server\n  pull              Download a model to the HuggingFace cache (no server)\n  models            List available model aliases\n  recipe            Recommend the smart and fast models for this Mac\n  import            Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)\n\nCODING AGENTS\n  agents            List, configure, and test agent integrations\n  launch            Launch coding agents with private local profiles or configure editors\n  start             Start an AI agent with a local model in one command\n  connect           Show the server's connection info and wire up a tool\n  share             Expose a local model behind a public URL via rapidmlx.com\n\nMANAGE\n  ls                List models in the local HuggingFace cache (alias for `models --cached`)\n  rm                Remove a cached model from the HuggingFace cache\n  alias             Manage user-owned model aliases\n  ps                List running rapid-mlx servers\n  status            Show local serve control status\n  top               Watch a local server (read-only)\n  info              Show the per-model profile for a model name or alias\n  upgrade (update)  Upgrade rapid-mlx to the latest version (brew / pip / install.sh)\n  doctor            Check environment health (Python, packages, HF cache, network, ...)\n  telemetry         Manage anonymous usage telemetry\n  feedback          Tell us what you want from Rapid-MLX (opens the community Discord)\n  version           Show version number\n  help              Show help for a subcommand\n\nADVANCED / EXPERIMENTAL\n  bench             Run benchmark\n  benchmark         Run or inspect reproducible local benchmarks\n  service           Headless macOS service lifecycle (system LaunchDaemon)\n  system-one        Serve a typed decision model\n  cua               Native-accessibility computer-use agent with configurable planner",
+ "description": "Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple\nSilicon, built on MLX, focused on reliable tool calling for coding agents.\n\nGET STARTED\n  chat (run)        Interactive chat REPL with a model\n  serve             Start OpenAI-compatible server\n  pull              Download a model to the HuggingFace cache (no server)\n  models            List available model aliases\n  recipe            Recommend the smart and fast models for this Mac\n  import            Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)\n\nCODING AGENTS\n  agents            List, configure, and test agent integrations\n  launch            Launch coding agents with private local profiles or configure editors\n  start             Start an AI agent with a local model in one command\n  connect           Show the server's connection info and wire up a tool\n  share             Expose a local model behind a public URL via rapidmlx.com\n\nMANAGE\n  ls                List models in the local HuggingFace cache (alias for `models --cached`)\n  rm                Remove a cached model from the HuggingFace cache\n  alias             Manage user-owned model aliases\n  ps                List running rapid-mlx servers\n  status            Show local serve control status\n  log               Show recent serve API calls\n  jobs              Show serve jobs\n  top               Watch a local server (read-only)\n  info              Show the per-model profile for a model name or alias\n  upgrade (update)  Upgrade rapid-mlx to the latest version (brew / pip / install.sh)\n  doctor            Check environment health (Python, packages, HF cache, network, ...)\n  telemetry         Manage anonymous usage telemetry\n  feedback          Tell us what you want from Rapid-MLX (opens the community Discord)\n  version           Show version number\n  help              Show help for a subcommand\n\nADVANCED / EXPERIMENTAL\n  bench             Run benchmark\n  benchmark         Run or inspect reproducible local benchmarks\n  service           Headless macOS service lifecycle (system LaunchDaemon)\n  system-one        Serve a typed decision model\n  cua               Native-accessibility computer-use agent with configurable planner",
  "epilog": "Examples:\n  rapid-mlx                                   # guided start for this Mac\n  rapid-mlx chat qwen3.5-4b-4bit              # chat in the terminal\n  rapid-mlx serve qwen3.5-9b-4bit --port 8000 # OpenAI/Anthropic-compatible server\n  rapid-mlx launch claude-code --model qwen3.5-9b-4bit\n  rapid-mlx recipe                            # best smart + fast models for this Mac\n\nRun `rapid-mlx <command> --help` for a command's options.\nDocs: https://rapidmlx.com/docs/\nCommunity: https://discord.gg/nZcXkUjY5R\n",
  "formatter_class": "argparse.RawDescriptionHelpFormatter",
  "groups": [

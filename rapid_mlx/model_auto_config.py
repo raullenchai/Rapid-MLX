@@ -1276,6 +1276,17 @@ def _detect_metadata_config(
             is_text_only=True,
         )
         reasons.append("Hy4 Flash text runtime")
+    elif "inkling2_loop" in model_types:
+        settings.update(
+            tool_call_parser="inkling",
+            reasoning_parser="inkling",
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            is_moe=True,
+            is_text_only=True,
+            supports_spec_decode=False,
+        )
+        reasons.append("Inkling 2 looped text architecture with convolution state")
     elif "raon1_nano" in model_types:
         settings.update(
             tool_call_parser="raon_1",
@@ -1432,7 +1443,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
        (``mlx-community/Qwen3.5-4B-MLX-4bit``), return that profile's
        config directly. This guarantees per-alias granularity for any
        optimization that varies by size/quant within a family.
-    Flint checkpoint metadata takes precedence over name-family fallbacks;
+    Flint and Inkling checkpoint metadata precede name-family fallbacks;
     alias profiles above remain authoritative. Other architectures retain
     the existing family-first precedence.
 
@@ -1484,6 +1495,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         if metadata is not None and _metadata_model_types(metadata.config or {}) & {
             "flint",
             "hy_v4_flash",
+            "inkling2_loop",
         }:
             # These wire contracts belong to the checkpoint, even when a
             # renamed directory or parent matches another parser family.

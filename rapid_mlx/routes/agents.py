@@ -44,6 +44,12 @@ def active_agent_runs() -> int:
         return 0 if _service is None else _service.active_run_count()
 
 
+def list_agent_runs() -> list[dict]:
+    """List summaries without creating the process-local service."""
+    with _service_lock:
+        return [] if _service is None else _service.list_runs()
+
+
 def get_agent_service() -> AgentServerService:
     global _service
     with _service_lock:

@@ -66,6 +66,7 @@ from .harmony_tool_parser import HarmonyToolParser
 from .hermes_tool_parser import HermesToolParser
 from .hy_v3_tool_parser import HyV3ToolParser
 from .hy_v4_tool_parser import HyV4ToolParser
+from .inkling_tool_parser import InklingToolParser
 from .k2_horizon_tool_parser import K2HorizonToolParser
 from .kimi_tool_parser import KimiToolParser
 from .lfm_tool_parser import LfmToolParser
@@ -108,6 +109,7 @@ __all__ = [
     "HyV3ToolParser",
     "HyV4ToolParser",
     "RaonToolParser",
+    "InklingToolParser",
     "MiniCPMToolParser",
     "MiniMaxToolParser",
     "MuseToolParser",

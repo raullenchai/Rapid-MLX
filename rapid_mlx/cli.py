@@ -17526,6 +17526,14 @@ def main(*, _supervise=False):
             ):
                 _print_next_step()
         raise
+    if args.command == "jobs":
+        from rapid_mlx.control.protocol import jobs_command
+
+        raise SystemExit(jobs_command(args))
+    if args.command == "log":
+        from rapid_mlx.control.protocol import log_command
+
+        raise SystemExit(log_command(args))
     if args.command == "status":
         from rapid_mlx.control.protocol import status_command
 

@@ -93,12 +93,14 @@ def _register_builtin_parsers():
     from .gpt_oss_parser import GptOssReasoningParser
     from .harmony_parser import HarmonyReasoningParser
     from .hy3_parser import Hy3ReasoningParser
+    from .inkling_parser import InklingReasoningParser
     from .k2_horizon_parser import K2HorizonReasoningParser
     from .minimax_parser import MiniMaxReasoningParser
     from .muse_parser import MuseReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
     from .ui_tars_parser import UiTarsReasoningParser
 
+    register_parser("inkling", InklingReasoningParser)
     register_parser("gemma4", Gemma4ReasoningParser)
     from .raon_1_parser import RaonReasoningParser
 

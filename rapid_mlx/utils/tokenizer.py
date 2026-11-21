@@ -682,7 +682,7 @@ _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
 # still rely on checkpoint-specific loading behavior and must not inherit the
 # stricter "weights/tokenizer only" trust boundary implicitly.
 _RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset(
-    {"k2_horizon", "lfm3", "raon1_nano", "hy_v4_flash"}
+    {"hy_v4_flash", "inkling2_loop", "k2_horizon", "lfm3", "raon1_nano"}
 )
 
 
@@ -812,6 +812,15 @@ def _register_vendored_archs() -> None:
                 _VENDORED_MODEL_TYPES.add("muse_glimmer")
         else:
             _VENDORED_MODEL_TYPES.add("muse_glimmer")
+
+    try:
+        from ..models import inkling2 as _inkling2
+
+        sys.modules["mlx_lm.models.inkling2_loop"] = _inkling2
+    except Exception as e:
+        logger.warning("inkling2_loop vendored module failed to register: %s", e)
+    else:
+        _VENDORED_MODEL_TYPES.add("inkling2_loop")
 
     # Raon's checkpoint declares model_file. Always own the architecture and
     # suppress that selector through _rapid_owned_model_config, even if an

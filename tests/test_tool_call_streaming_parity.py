@@ -158,6 +158,12 @@ PARITY_FIXTURES: list = [
         [("search", {"query": "hi"})],
     ),
     (
+        "inkling",
+        "inkling_native",
+        '<|message_model|>run<|content_invoke_tool_json|>{"name":"run","args":{"text":"hello"}}<|end_message|>',
+        [("run", {"text": "hello"})],
+    ),
+    (
         "raon_1",
         "tool_call_xml_body",
         "<tool_call>\n<function=run>\n<parameter=text>\nhello\nworld\n</parameter>\n</function>\n</tool_call>",

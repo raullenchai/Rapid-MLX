@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "1.0.5"
+version = "1.1.0"
 description = "Rapid-MLX is an open-source (Apache 2.0) OpenAI- and Anthropic-compatible LLM inference server for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents; up to 4× faster decoding than Apple's MLX (mlx-lm) on the same weights."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -724,6 +724,8 @@ rapid_mlx = [
     "models/embedding_gemma2/LICENSE",
     "models/embedding_gemma2/NOTICE",
     "models/NOTICE-RAON",
+    "models/inkling2/LICENSE",
+    "models/inkling2/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 # Vendored LTX-2.5 runtime (scripts/vendor_ltx25.py). The provenance file and

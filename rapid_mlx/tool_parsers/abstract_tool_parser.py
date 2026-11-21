@@ -161,6 +161,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "minicpm_native",
         "muse_atem",
         "k2_ifm",
+        "inkling_native",
     }
 )
 

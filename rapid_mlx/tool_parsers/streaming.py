@@ -22,6 +22,7 @@ WIRE_OPENERS = {
     "pythonic_bracket": (),
     "gemma4_native": ("<|tool_call>", "call:"),
     "harmony_commentary": ("<|start|>", "<|channel|>"),
+    "inkling_native": ("<|message_model|>", "<|content_invoke_tool_json|>"),
     "mistral_tool_calls": ("[TOOL_CALLS]",),
     "llama_python_tag": ("<|python_tag|>",),
     "glm_named_tool_call": ("<tool_call>",),

@@ -8,6 +8,7 @@ from tests.test_tool_call_streaming_parity import PARITY_FIXTURES
 
 PROSE = "Working on it. "
 OPENERS = {
+    "inkling": "<|message_model|>",
     "minicpm": "<function name=",
     "muse": "<atem:function_calls>",
     "hermes": "<tool_call>",

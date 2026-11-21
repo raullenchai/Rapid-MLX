@@ -1458,6 +1458,7 @@ app = FastAPI(
 )
 
 from .middleware.activity import ActivityMiddleware  # noqa: E402
+from .middleware.priority import PriorityMiddleware  # noqa: E402
 
 # SECURITY: bound the request body of /v1/audio/transcriptions at the
 # ASGI layer so honest-Content-Length DoS attempts are rejected before
@@ -1511,6 +1512,7 @@ install_request_body_limit_middleware(app)
 # Count uploads before the body defenses buffer them, through response completion.
 # The size gate still wraps the depth gate and all route/admission work.
 app.add_middleware(ActivityMiddleware)
+app.add_middleware(PriorityMiddleware)
 
 # R8-H6: ASGI fast-path for ``GET /healthz`` + ``GET /livez``.
 #
