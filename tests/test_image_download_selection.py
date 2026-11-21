@@ -74,16 +74,24 @@ def test_klein_missing_bytes_match_selected_download(monkeypatch, klein_info, al
     assert cli._download_disk_space_status(size)[0] is True
 
 
-@pytest.mark.parametrize("mirror", [False, True])
 @pytest.mark.parametrize("alias", ["flux3-klein", "flux3-klein-base"])
-def test_pull_uses_klein_selection_for_transfer_and_verification(
-    tmp_path, monkeypatch, alias, mirror
+def test_unmirrored_klein_pull_uses_hub_selection_and_verification(
+    tmp_path, monkeypatch, klein_info, alias
 ):
+    from rapid_mlx import _mirror
     from rapid_mlx.model_aliases import resolve_revision
 
     repo = resolve_hub_model(alias)
     pin = resolve_revision(alias)
     patterns = subfolder_allow_patterns(alias)
+    klein_info.sha = pin
+    monkeypatch.setattr(_mirror, "_mirror_base", lambda: _mirror.MIRROR_DEFAULT)
+    monkeypatch.setattr(
+        _mirror, "fetch_catalog_with_status", lambda *a: ({"models": []}, 200)
+    )
+    monkeypatch.setattr(
+        _mirror, "_do_r2_download", lambda *a, **kw: pytest.fail("R2 transfer")
+    )
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(
         "rapid_mlx._version_check.print_staleness_warning_if_any", lambda: None
@@ -93,13 +101,14 @@ def test_pull_uses_klein_selection_for_transfer_and_verification(
     monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
     seen = []
 
-    def transfer(*a, **kw):
-        assert kw["allow_patterns"] == patterns
-        assert kw["revision"] == pin
-        seen.append("mirror")
-        return mirror
+    def metadata(repo_id, **kw):
+        assert repo_id == repo
+        assert kw == {"revision": pin, "files_metadata": True}
+        seen.append("metadata")
+        return klein_info
 
     def snapshot(*a, **kw):
+        assert a == (repo,)
         assert kw == {"revision": pin, "allow_patterns": patterns}
         seen.append("hf")
         return str(tmp_path / "snapshots" / pin)
@@ -110,7 +119,7 @@ def test_pull_uses_klein_selection_for_transfer_and_verification(
         seen.append("verify")
         return False
 
-    monkeypatch.setattr("rapid_mlx._mirror.download_with_mirror_fallback", transfer)
+    monkeypatch.setattr("huggingface_hub.model_info", metadata)
     monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot)
     monkeypatch.setattr(cli, "_verify_pulled_snapshot", verify)
     cli._pull_repository(
@@ -118,35 +127,55 @@ def test_pull_uses_klein_selection_for_transfer_and_verification(
         revision_override=pin,
         emit_lifecycle_event=False,
     )
-    assert seen == (["mirror", "verify"] if mirror else ["mirror", "hf", "verify"])
+    assert seen == ["metadata", "hf", "verify"]
 
 
 @pytest.mark.parametrize("alias", ["flux3-klein", "flux3-klein-base"])
-def test_klein_packaged_inventory_and_live_size_agree(monkeypatch, alias):
+def test_unmirrored_klein_pinned_hub_inventory_keeps_narrowed_size(
+    monkeypatch, klein_info, alias
+):
     from rapid_mlx import _download_gate as gate
     from rapid_mlx import _mirror
     from rapid_mlx.model_aliases import resolve_revision
     from rapid_mlx.model_sizes import size_bytes
 
     repo = resolve_hub_model(alias)
+    pin = resolve_revision(alias)
     patterns = subfolder_allow_patterns(alias)
-    info = _mirror._packaged_digest_info(repo, resolve_revision(alias), patterns)
-    assert info is not None  # Retain offline metadata and integrity verification.
+    assert _mirror._packaged_digest_info(repo, pin, patterns) is None
+    klein_info.sha = pin
+    calls = []
+
+    def metadata(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        return klein_info
+
+    monkeypatch.setattr("huggingface_hub.model_info", metadata)
     monkeypatch.setattr(
-        "huggingface_hub.model_info", lambda *a, **k: pytest.fail("network")
+        "huggingface_hub.HfApi.model_info", lambda self, *a, **kw: metadata(*a, **kw)
     )
     monkeypatch.setattr(
-        gate, "_model_info_with_timeout", lambda *a: pytest.fail("network")
+        _mirror, "_do_r2_download", lambda *a, **kw: pytest.fail("R2 transfer")
     )
     monkeypatch.setattr(gate, "mflux_missing_weights", lambda *a: None)
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     selected = [
-        s for s in info.siblings if any(fnmatchcase(s.rfilename, p) for p in patterns)
+        s
+        for s in klein_info.siblings
+        if any(fnmatchcase(s.rfilename, p) for p in patterns)
     ]
+    assert 43.3e9 < sum(s.size for s in klein_info.siblings) < 43.4e9
+    assert not any(s.rfilename.startswith("variants/") for s in selected)
+    assert not any(
+        s.rfilename in {"model.safetensors", "ae.safetensors", "launch-gallery.jpg"}
+        for s in selected
+    )
     missing = cli._missing_download_bytes(alias)
     assert missing == sum(s.size for s in selected)
+    assert 20.3e9 < missing < 20.4e9
     assert missing == pytest.approx(size_bytes(repo), rel=0.002)
     assert gate.estimate_repo_size_bytes(alias) == pytest.approx(missing, abs=100_000)
+    assert calls == [(repo, {"revision": pin, "files_metadata": True})] * 2
 
 
 @pytest.mark.parametrize("alias", ["flux3-klein", "flux3-klein-base"])

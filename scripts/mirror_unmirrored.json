@@ -320,6 +320,16 @@
       "hf_path": "MiniMaxAI/MiniMax-H3-Image",
       "reason": "license: MiniMax-H3-Image Community License restricts redistribution by territory; serve from the upstream Hub only",
       "since": "2026-11-14"
+    },
+    {
+      "hf_path": "black-forest-labs/flux-3-image-klein",
+      "reason": "Gated upstream under the FLUX Kommunity license; redistribution through the public mirror is not permitted, clients pull from Hugging Face after accepting the license.",
+      "since": "2026-11-21"
+    },
+    {
+      "hf_path": "black-forest-labs/flux-3-image-klein-base",
+      "reason": "Gated upstream under the FLUX Kommunity license; redistribution through the public mirror is not permitted, clients pull from Hugging Face after accepting the license.",
+      "since": "2026-11-21"
     }
   ]
 }
