@@ -3,6 +3,12 @@
 # Usage: curl -fsSL https://rapidmlx.com/install.sh | bash
 #        curl ... | bash -s -- 0.12.15     # specific version
 #        RAPID_MLX_GIT_COMMIT=<full SHA> bash install.sh latest # reviewed source
+# Bash invoked as sh still sets BASH_VERSION, but disables process substitution.
+if [ -z "${BASH_VERSION:-}" ] || shopt -oq posix; then
+    printf '%s\n' "install.sh needs bash. Run: curl -fsSL https://rapidmlx.com/install.sh | bash" >&2
+    exit 1
+fi
+
 set -euo pipefail
 
 TARGET="${1:-stable}"  # stable (PyPI) | latest (explicit Git commit) | x.y.z (specific version)
