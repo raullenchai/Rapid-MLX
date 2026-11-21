@@ -4,12 +4,17 @@
 # rapid_mlx/models/inkling2/NOTICE, under its accompanying MIT license.
 """Text-only catalog, loop/cache, quantization and loader regressions."""
 
+import hashlib
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
+import numpy as np
 import pytest
 
 from rapid_mlx.model_aliases import resolve_model, resolve_profile, resolve_revision
@@ -62,6 +67,227 @@ CONFIG["text_config"]["loop_config"] = {
     "gate_rank": 8,
     "is_varloop": False,
 }
+
+
+# Complete reviewed source of the five numerical-core files omitted by
+# .coveragerc. See NOTICE for provenance. Review edits before updating pins;
+# this contract reads bytes only and requires neither MLX nor Metal.
+_NUMERICAL_CORE_SHA256 = {
+    "layers.py": "a05bb4dfa45f9533e3c0c244bcf57689b773035147887f986f82599e8c5cc772",
+    "kernels.py": "9f5fbf99563ada812a3f264eb18268b6fa8ad02fdc8ef6109e53edfb967d82c9",
+    "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
+    "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
+    "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
+}
+
+
+def test_numerical_core_source_contract():
+    import configparser
+
+    root = Path(__file__).parents[1]
+    coverage = configparser.ConfigParser()
+    coverage.read(root / ".coveragerc")
+    prefix = "rapid_mlx/models/inkling2/"
+    omitted = {
+        path.strip().removeprefix(prefix)
+        for path in coverage["run"]["omit"].splitlines()
+        if path.strip().startswith(prefix)
+    }
+    assert omitted == _NUMERICAL_CORE_SHA256.keys()
+    for filename, expected in _NUMERICAL_CORE_SHA256.items():
+        assert hashlib.sha256((root / prefix / filename).read_bytes()).hexdigest() == (
+            expected
+        ), filename
+
+
+@pytest.fixture
+def glue_loader(monkeypatch):
+    """Execute glue in isolation with CPU array/import doubles, even with MLX installed.
+
+    No production package import (which initializes Metal kernels), distributed
+    process group, or GPU is needed. All sys.modules changes are scoped to a test.
+    """
+    import rapid_mlx
+
+    def module(name, **attributes):
+        result = ModuleType(name)
+        result.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, result)
+        return result
+
+    class Array(np.ndarray):
+        def __new__(cls, value, dtype=None):
+            return np.asarray(value, dtype=dtype).view(cls)
+
+    mx = module(
+        "mlx.core",
+        array=Array,
+        Dtype=np.dtype,
+        float32=np.float32,
+        float16=np.float16,
+        contiguous=Mock(side_effect=np.ascontiguousarray),
+        eval=Mock(),
+        concatenate=Mock(side_effect=np.concatenate),
+        distributed=SimpleNamespace(Group=object, all_gather=Mock()),
+    )
+    module("mlx", core=mx, nn=SimpleNamespace(Module=object))
+    shim = module("rapid_mlx._mlx_compat", install=Mock())
+    monkeypatch.setattr(rapid_mlx, "_mlx_compat", shim, raising=False)
+    module("mlx_lm", __path__=[])
+    module("mlx_lm.models", __path__=[])
+    module("mlx_lm.kernels", __path__=[])
+
+    def load(filename):
+        name = f"rapid_mlx.models.inkling2.{filename}"
+        path = (
+            Path(__file__).parents[1] / "rapid_mlx/models/inkling2" / f"{filename}.py"
+        )
+        spec = importlib.util.spec_from_file_location(name, path)
+        result = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, result)
+        spec.loader.exec_module(result)
+        return result
+
+    return SimpleNamespace(load=load, module=module, mx=mx, shim=shim)
+
+
+@pytest.fixture
+def compat_loader(glue_loader):
+    def load(*, global_scale=True, routing=True):
+        class Native:
+            if global_scale:
+
+                def to_quantized(self, *, global_scale=False):
+                    pass
+            else:
+
+                def to_quantized(self):
+                    pass
+
+        native = glue_loader.module(
+            "mlx_lm.models.switch_layers",
+            SwitchLinear=Native,
+            _gather_sort=object(),
+            _scatter_unsort=object(),
+        )
+        fallback = glue_loader.module(
+            "rapid_mlx.models.inkling2.switch_layers",
+            SwitchLinear=object(),
+            _gather_sort=object(),
+            _scatter_unsort=object(),
+        )
+        if routing:
+            router = glue_loader.module(
+                "mlx_lm.kernels.expert_routing", expert_routing=object()
+            ).expert_routing
+        else:
+            # Missing export forces ImportError even if the real helper was loaded.
+            glue_loader.module("mlx_lm.kernels.expert_routing")
+            router = None
+        result = glue_loader.load("compat")
+        selected = native if global_scale else fallback
+        for name in ("SwitchLinear", "_gather_sort", "_scatter_unsort"):
+            assert getattr(result, name) is getattr(selected, name)
+        assert result.expert_routing is router
+        glue_loader.shim.install.assert_called_once_with()
+        return result
+
+    return load
+
+
+@pytest.mark.parametrize("global_scale", [False, True])
+@pytest.mark.parametrize("routing", [False, True])
+def test_compat_version_fallbacks(compat_loader, global_scale, routing):
+    compat_loader(global_scale=global_scale, routing=routing)
+
+
+def test_compat_scalar_and_row_threads(compat_loader):
+    compat = compat_loader()
+    value = compat.scalar(1.5)
+    assert value.shape == () and value.dtype == np.float32 and value.item() == 1.5
+    assert compat.scalar(1.5) is value
+    assert compat.scalar(1.5, np.float16).dtype == np.float16
+    for dim, expected in [(1, 32), (511, 32), (512, 64), (8192, 1024), (16384, 1024)]:
+        assert compat.row_threads(dim) == expected
+
+
+def test_compat_gather_rank_order(compat_loader, glue_loader):
+    compat = compat_loader()
+    x = glue_loader.mx.array(np.arange(12).reshape(2, 3, 2))
+    group = SimpleNamespace(size=lambda: 2)
+    glue_loader.mx.distributed.all_gather.return_value = np.concatenate(
+        [x.reshape(-1, 2), x.reshape(-1, 2) + 100], axis=0
+    )
+    actual = compat.gather_last_axis(x, group)
+    np.testing.assert_array_equal(actual, np.concatenate([x, x + 100], axis=-1))
+    args, kwargs = glue_loader.mx.distributed.all_gather.call_args
+    np.testing.assert_array_equal(args[0], x.reshape(-1, 2))
+    assert kwargs == {"group": group}
+
+
+@pytest.mark.parametrize("sharding", ["all-to-sharded", "sharded-to-all"])
+@pytest.mark.parametrize("rank", [0, 1])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_compat_shard_experts(compat_loader, glue_loader, sharding, rank, chunked):
+    compat = compat_loader()
+    mx = glue_loader.mx
+
+    class LargeArray(mx.array):
+        # Report a large logical allocation to exercise the chunk budget with
+        # tiny storage. Slicing/concatenation still operate on real CPU values.
+        @property
+        def size(self):
+            return self.shape[0] * (1 << 30)
+
+    weights = mx.array(np.arange(3 * 4 * 6).reshape(3, 4, 6))
+    if chunked:
+        weights = weights.view(LargeArray)
+    scales = mx.array([1.0, 2.0, 3.0])
+    nested = {"weight": weights}
+    module = SimpleNamespace(
+        parameters=lambda: {"weight": weights, "scales": scales, "nested": nested},
+        update=Mock(),
+    )
+    group = SimpleNamespace(size=lambda: 2, rank=lambda: rank)
+    compat.shard_experts_inplace(module, sharding, group)
+    updates = module.update.call_args.args[0]
+    assert set(updates) == {"weight"}
+    expected = (
+        weights[:, rank * 2 : (rank + 1) * 2]
+        if sharding == "all-to-sharded"
+        else weights[..., rank * 3 : (rank + 1) * 3]
+    )
+    np.testing.assert_array_equal(updates["weight"], expected)
+    assert mx.eval.call_count == mx.contiguous.call_count == (3 if chunked else 1)
+    assert mx.concatenate.call_count == int(chunked)
+
+
+@pytest.mark.parametrize("loop", [None, {}, {"core_start": 3, "core_end": 6}])
+@pytest.mark.parametrize("vision", [None, {"hidden_size": 1024}])
+def test_config_optional_fields(glue_loader, loop, vision):
+    class BaseModelArgs:
+        @classmethod
+        def from_dict(cls, config):
+            return cls(**config)
+
+    glue_loader.module("mlx_lm.models.base", BaseModelArgs=BaseModelArgs)
+    config = glue_loader.load("config")
+    text = {**CONFIG["text_config"], "loop_config": loop}
+    args = config.ModelArgs(
+        model_type="inkling2_loop", text_config=text, vision_config=vision
+    )
+    assert isinstance(args.text, config.TextArgs)
+    assert args.text.hidden_size == 64
+    assert list(args.text.loop_core) == ([3, 4, 5] if loop else [])
+    assert args.text.loop_config == loop
+    assert args.vision is None
+    assert args.vision_config == vision
+    assert args.image_token_id == 200054
+    # Exercise omission of all optional fields, including loop_config.
+    text.pop("loop_config")
+    defaults = config.ModelArgs("inkling2_loop", text, image_token_id=127)
+    assert defaults.text.loop_config is None and list(defaults.text.loop_core) == []
+    assert defaults.vision_config is None and defaults.image_token_id == 127
 
 
 @pytest.fixture(scope="module")

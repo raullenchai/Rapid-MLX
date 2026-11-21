@@ -32,6 +32,13 @@ omit =
     # compatibility/load-boundary/batch-guard inventory fail closed in
     # test_raon_1_model.py; Rapid-owned loader and parser glue stay measured.
     rapid_mlx/models/raon1_nano.py
+    # Pinned Inkling numerical core. Complete-source hashes fail closed in
+    # test_inkling2_model.py; Rapid-owned compat/config and loader stay measured.
+    rapid_mlx/models/inkling2/layers.py
+    rapid_mlx/models/inkling2/kernels.py
+    rapid_mlx/models/inkling2/model.py
+    rapid_mlx/models/inkling2/switch_layers.py
+    rapid_mlx/models/inkling2/checkpoint.py
     # Pinned upstream cache implementation. Keep this file-specific: the
     # Rapid-owned compatibility seam and future vendored modules remain gated.
     rapid_mlx/models/mlx_vlm_vendored/cache.py
