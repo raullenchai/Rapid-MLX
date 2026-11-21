@@ -21,11 +21,17 @@ from rapid_mlx.models.inkling2.compat import (
     _gather_sort,
     _scatter_unsort,
     expert_routing,
+    scalar,
 )
 from rapid_mlx.models.inkling2.config import TextArgs
 from rapid_mlx.models.inkling2.kernels import (
+    attention_mask_decode,
     depth_attention,
+    l2_clip_decode,
+    message_mix_decode,
     relative_attention,
+    route_weights_decode,
+    row_norm_decode,
     short_convolution_decode,
 )
 
@@ -85,7 +91,8 @@ def unweighted_rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
 
 
 def _norm_cast(x, weight, eps, dtype):
-    # Dtype objects are not valid mx.compile arguments. Cast outside the graph.
+    if x.shape[1] == 1 and _fast_decode_enabled() and _use_kernels():
+        return row_norm_decode(x, weight, eps, dtype)[0]
     return _norm(x, weight, eps).astype(dtype)
 
 
@@ -94,8 +101,9 @@ def _norm(x, weight, eps):
     return mx.fast.rms_norm(x, weight, eps)
 
 
-@_decode_only
 def _value_norm(x, eps):
+    if x.shape[1] == 1 and _fast_decode_enabled() and _use_kernels():
+        return row_norm_decode(x, None, eps, x.dtype)[0]
     return unweighted_rms_norm(x.astype(mx.float32), eps).astype(x.dtype)
 
 
@@ -111,8 +119,22 @@ def _gate_attention(x, gate):
     )
 
 
-@partial(_decode_only, shapeless=False)
 def _route_weights(scores, bias, k, route_scale):
+    if scores.shape[1] == 1 and _fast_decode_enabled() and _use_kernels():
+        indices = mx.argpartition(_routing_order(scores, bias), kth=k - 1, axis=-1)[
+            ..., :k
+        ]
+        return indices, route_weights_decode(scores, indices, route_scale)
+    return _route_weights_reference(scores, bias, k, route_scale)
+
+
+@_decode_only
+def _routing_order(scores, bias):
+    return -(scores + bias)
+
+
+@partial(_decode_only, shapeless=False)
+def _route_weights_reference(scores, bias, k, route_scale):
     # Slice bounds include batch dimensions, so specialize this small graph
     # by shape. Keep the original view-based selection for prefill as well.
     indices = mx.argpartition(-(scores + bias), kth=k - 1, axis=-1)[..., :k]
@@ -127,6 +149,8 @@ def _combine_experts(states, weights):
 
 
 def _message_input(states, message, dtype):
+    if states.shape[1] == 1 and _fast_decode_enabled() and _use_kernels():
+        return row_norm_decode(states, None, 1e-6, dtype, other=message, pair=True)[0]
     return _normalized_message_input(states, message).astype(dtype)
 
 
@@ -140,6 +164,30 @@ def _normalized_message_input(states, message):
 @_decode_only
 def _message_mix(states, message, forget, gain):
     return (1 - mx.tanh(forget)) * states + mx.tanh(gain) * message
+
+
+@_decode_only
+def _residual_output(states, residual):
+    return (residual + states.astype(mx.float32)).astype(states.dtype)
+
+
+def _residual_norm(states, residual=None):
+    if states.shape[1] == 1 and _fast_decode_enabled() and _use_kernels():
+        normed, added = row_norm_decode(
+            states, None, 1e-6, mx.float32, other=residual, add=residual is not None
+        )
+        return normed, added if residual is not None else states.astype(mx.float32)
+    states = states.astype(mx.float32)
+    if residual is not None:
+        states = residual.astype(mx.float32) + states
+    return unweighted_rms_norm(states), states
+
+
+@partial(mx.compile, shapeless=True)
+def _decode_log_scale(offset, floor, alpha):
+    return 1.0 + alpha * mx.log(
+        mx.maximum((offset.astype(mx.float32) + 1) / floor, 1.0)
+    )
 
 
 @partial(mx.compile, shapeless=True)
@@ -427,13 +475,22 @@ class Attention(nn.Module):
         key_states = key_states.reshape(B, L, self.num_key_value_heads, -1)
         value_states = value_states.reshape(B, L, self.num_key_value_heads, -1)
         relative_states = relative_states.reshape(B, L, self.num_heads, -1)
-        query_states = self.q_l2_clip(query_states)
-        key_states = self.k_l2_clip(key_states)
+        if L == 1 and _fast_decode_enabled() and _use_kernels():
+            query_states = l2_clip_decode(
+                query_states, self.q_l2_clip.scale, self.q_l2_clip.threshold, tau
+            )
+            key_states = l2_clip_decode(key_states, 1.0, self.k_l2_clip.threshold)
+            relative_states = l2_clip_decode(
+                relative_states, self.rel_l2_clip.scale, self.rel_l2_clip.threshold, tau
+            )
+        else:
+            query_states = self.q_l2_clip(query_states)
+            key_states = self.k_l2_clip(key_states)
+            relative_states = self.rel_l2_clip(relative_states)
+            if tau is not None:
+                query_states = _scale_states(query_states, tau)
+                relative_states = _scale_states(relative_states, tau)
         value_states = _value_norm(value_states, self.eps)
-        relative_states = self.rel_l2_clip(relative_states)
-        if tau is not None:
-            query_states = _scale_states(query_states, tau)
-            relative_states = _scale_states(relative_states, tau)
         position_bias = self.rel_logits_proj(relative_states)
 
         query_states = query_states.transpose(0, 2, 1, 3)
@@ -466,20 +523,19 @@ class Attention(nn.Module):
                 key_start=key_start,
             )
 
-        query_positions = _positions(end - L, L)
-        key_positions = _key_positions(cache, S, L, end)
         if L == 1 and _fast_decode_enabled() and _use_kernels():
             # SDPA's sink vector is shared across rows. Fold batch into heads
             # so each row retains its own learned sinks and GQA head grouping,
             # without appending/copying a dummy key and value to the KV bank.
-            distance = query_positions[..., :, None] - key_positions[..., None, :]
-            visible = (distance >= 0) & (key_positions[..., None, :] >= 0)
-            if self.sliding_window:
-                visible = visible & (distance < self.sliding_window)
-            distance = mx.broadcast_to(distance, (B, 1, S))[:, None]
-            visible = mx.broadcast_to(visible, (B, 1, S))[:, None]
-            mask = _decode_attention_mask(
-                position_bias, distance, visible, query.dtype, position_bias.shape[-1]
+            rotating = isinstance(cache, (RotatingKVCache, BatchRotatingKVCache))
+            mask = attention_mask_decode(
+                position_bias,
+                end,
+                cache._idx if rotating else 0,
+                S,
+                self.sliding_window,
+                query.dtype,
+                rotating=rotating,
             )
             Hq, Hkv, D = query.shape[1], key.shape[1], query.shape[-1]
             attn_output = mx.fast.scaled_dot_product_attention(
@@ -500,8 +556,8 @@ class Attention(nn.Module):
             sinks,
             scale=self.scaling,
             window=self.sliding_window,
-            query_positions=query_positions,
-            key_positions=key_positions,
+            query_positions=_positions(end - L, L),
+            key_positions=_key_positions(cache, S, L, end),
         )
 
 
@@ -582,10 +638,19 @@ class FullAttention(Attention):
         )
 
         offset = kv_cache.offset if kv_cache is not None else 0
-        position_ids = _positions(offset, hidden_states.shape[1]).astype(mx.float32)
-        tau = 1.0 + self.log_scaling_alpha * mx.log(
-            mx.maximum((position_ids + 1) / self.log_scaling_n_floor, 1.0)
-        )
+        if hidden_states.shape[1] == 1 and _fast_decode_enabled():
+            tau = _decode_log_scale(
+                (
+                    offset if isinstance(offset, mx.array) else scalar(offset, mx.int32)
+                ).reshape(-1, 1),
+                scalar(self.log_scaling_n_floor),
+                scalar(self.log_scaling_alpha),
+            )
+        else:
+            position_ids = _positions(offset, hidden_states.shape[1]).astype(mx.float32)
+            tau = 1.0 + self.log_scaling_alpha * mx.log(
+                mx.maximum((position_ids + 1) / self.log_scaling_n_floor, 1.0)
+            )
         return self._attend(
             hidden_states,
             self.q_proj(hidden_states),
@@ -735,6 +800,23 @@ class MessageGate(nn.Module):
     def __call__(self, hidden_states: mx.array, message: mx.array) -> mx.array:
         states = _message_input(hidden_states, message, self.down_proj.weight.dtype)
         states = self.down_proj(states)
+        if (
+            hidden_states.shape[1] == 1
+            and _fast_decode_enabled()
+            and _use_kernels()
+            and self.forget_gate_proj.weight.dtype
+            == self.message_gate_proj.weight.dtype
+            == mx.float32
+            and "bias" not in self.forget_gate_proj
+            and "bias" not in self.message_gate_proj
+        ):
+            return message_mix_decode(
+                hidden_states,
+                message,
+                states,
+                self.forget_gate_proj.weight,
+                self.message_gate_proj.weight,
+            )
         states = states.astype(mx.float32)
         return _message_mix(
             hidden_states,
@@ -803,7 +885,7 @@ class DecoderLayer(nn.Module):
             list(conv.cache) if conv is not None else [None] * 4
         )
         block_residual = hidden_states
-        normed_residual = unweighted_rms_norm(block_residual.astype(mx.float32))
+        normed_residual, _ = _residual_norm(block_residual)
 
         attention_inputs = None
         if self.attention_input is not None:
@@ -819,17 +901,15 @@ class DecoderLayer(nn.Module):
             lengths=conv.lengths if conv is not None else None,
         )
 
-        residual = hidden_states = hidden_states.astype(mx.float32)
         if self.is_block_boundary:
             block = normed_residual[None]
             if block_states is None:
                 block_states = block
             else:
                 block_states = mx.concatenate([block_states, block])
-        else:
-            residual = hidden_states = block_residual.astype(mx.float32) + hidden_states
-
-        normed_states = unweighted_rms_norm(hidden_states)
+        normed_states, residual = _residual_norm(
+            hidden_states, None if self.is_block_boundary else block_residual
+        )
         assert block_states is not None
         hidden_states = self.mlp_input(block_states, normed_states)[..., 0, :]
         if messages is not None:
@@ -855,8 +935,7 @@ class DecoderLayer(nn.Module):
                 assert window is not None
                 conv[i] = _conv_state(window, conv.lengths, n)
             conv.advance(block_residual.shape[1])
-        hidden_states = residual + hidden_states.astype(mx.float32)
-        return hidden_states.astype(dtype), block_states
+        return _residual_output(hidden_states, residual), block_states
 
 
 class SlidingDecoderLayer(DecoderLayer):

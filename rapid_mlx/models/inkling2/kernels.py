@@ -15,6 +15,347 @@ __all__ = [
 ]
 
 
+# Each row uses four adjacent channels per lane, like the native RMS reduction.
+# PAIR normalizes the state and message independently, writing directly into
+# the concatenated projection input. ADD retains the FP32 residual as well.
+_ROW_NORM_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint tid = thread_position_in_threadgroup.x;
+    const uint lane = thread_index_in_simdgroup;
+    const uint sg = simdgroup_index_in_threadgroup;
+    const uint group = threadgroup_position_in_grid.x;
+    const uint row = PAIR ? group / 2 : group;
+    const bool second = PAIR && group % 2;
+    threadgroup float sums[32];
+    threadgroup float inv;
+    float values[N];
+    float acc = 0.0f;
+    for (uint j = 0; j < N; ++j) {
+        const uint d = tid * 4 + (j / 4) * TG * 4 + j % 4;
+        float v = 0.0f;
+        if (d < D) {
+            v = second ? float(other[row * other_strides[0] + d * other_strides[1]])
+                       : float(x[row * x_strides[0] + d * x_strides[1]]);
+            if (ADD) v += float(other[row * other_strides[0] + d * other_strides[1]]);
+            if (ADD) residual[row * D + d] = v;
+        }
+        values[j] = v;
+        acc = metal::fma(v, v, acc);
+    }
+    if (sg == 0) sums[lane] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    acc = simd_sum(acc);
+    if (lane == 0) sums[sg] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float total = simd_sum(sums[lane]);
+        if (lane == 0) inv = metal::precise::rsqrt(total / D + eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint j = 0; j < N; ++j) {
+        const uint d = tid * 4 + (j / 4) * TG * 4 + j % 4;
+        if (d < D) {
+            float v = values[j] * inv;
+            if (PAIR) {
+                // The unweighted norms round in their own input dtypes before
+                // the concatenation is cast to the down-projection dtype.
+                v = second ? float(M(v)) : float(X(v));
+            } else {
+                v = float(R(v));
+                if (WEIGHTED) v = float(R(v * float(R(weight[d * weight_strides[0]]))));
+            }
+            out[group * D + d] = O(v);
+        }
+    }
+"""
+
+_row_norm_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_row_norm_decode",
+        input_names=["x", "other", "weight", "eps"],
+        output_names=["out", "residual"],
+        source=_ROW_NORM_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def row_norm_decode(x, weight, eps, dtype, *, other=None, pair=False, add=False):
+    """RMS norm + output cast, optionally paired or with an FP32 residual add."""
+    D = x.shape[-1]
+    rows = x.size // D
+    tg = min(1024, ((D + 127) // 128) * 32)
+    empty = scalar(0.0).reshape(1, 1)
+    # Native weighted RMSNorm promotes both operands before normalizing, then
+    # rounds before and after the weight multiply. Unweighted FP32 callers
+    # (value/depth normalization) need no materialized input cast.
+    norm_dtype = mx.result_type(x.dtype, weight.dtype) if weight is not None else dtype
+    return _row_norm_kernel(
+        inputs=[
+            x.reshape(-1, D),
+            other.reshape(-1, D) if other is not None else empty,
+            weight if weight is not None else scalar(1.0).reshape(1),
+            scalar(eps),
+        ],
+        template=[
+            ("X", x.dtype),
+            ("M", other.dtype if other is not None else x.dtype),
+            ("R", norm_dtype),
+            ("O", dtype),
+            ("D", D),
+            ("TG", tg),
+            ("N", ((D + tg * 4 - 1) // (tg * 4)) * 4),
+            ("PAIR", pair),
+            ("ADD", add),
+            ("WEIGHTED", weight is not None),
+        ],
+        grid=(rows * (2 if pair else 1) * tg, 1, 1),
+        threadgroup=(tg, 1, 1),
+        output_shapes=[
+            x.shape[:-1] + (D * (2 if pair else 1),),
+            x.shape if add else (1,),
+        ],
+        output_dtypes=[dtype, mx.float32],
+    )
+
+
+# One SIMD group computes both low-rank expansion dot products for a channel.
+# The projection results and mixing stay FP32, matching the controller's eager
+# up projections. No normalized input or learned weight is captured or cached.
+_MESSAGE_MIX_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint lane = thread_index_in_simdgroup;
+    const uint i = thread_position_in_grid.x / 32;
+    const uint b = i / D;
+    const uint d = i % D;
+    if (b >= x_shape[0]) return;
+    float f = 0.0f, g = 0.0f;
+    for (uint r = lane; r < RANK; r += 32) {
+        const float s = float(low[b * low_strides[0] + r * low_strides[1]]);
+        f = metal::fma(s, float(forget[d * forget_strides[0] + r * forget_strides[1]]), f);
+        g = metal::fma(s, float(gain[d * gain_strides[0] + r * gain_strides[1]]), g);
+    }
+    f = simd_sum(f);
+    g = simd_sum(g);
+    if (lane == 0) {
+        const float a = (1.0f - metal::tanh(f)) * float(x[b * x_strides[0] + d * x_strides[1]]);
+        const float m = metal::tanh(g) * float(message[b * message_strides[0] + d * message_strides[1]]);
+        out[i] = a + m;
+    }
+"""
+
+_message_mix_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_message_mix_decode",
+        input_names=["x", "message", "low", "forget", "gain"],
+        output_names=["out"],
+        source=_MESSAGE_MIX_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def message_mix_decode(x, message, low, forget, gain):
+    D = x.shape[-1]
+    return _message_mix_kernel(
+        inputs=[
+            x.reshape(-1, D),
+            message.reshape(-1, D),
+            low.reshape(x.shape[0], -1),
+            forget,
+            gain,
+        ],
+        template=[("D", D), ("RANK", low.shape[-1])],
+        grid=(x.size * 32, 1, 1),
+        threadgroup=(128, 1, 1),
+        output_shapes=[x.shape],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+_DECODE_MASK_SOURCE = """
+    const uint i = thread_position_in_grid.x;
+    if (i >= B * H * S) return;
+    const int k = i % S;
+    const int h = (i / S) % H;
+    const int b = i / (S * H);
+    const int end = ends[(ends_shape[0] == 1 ? 0 : b) * ends_strides[0]];
+    const int shifted = ROTATING ? ((k - int(index) % S + S) % S) : k;
+    const int pos = end - S + shifted;
+    const int distance = S - 1 - shifted;
+    float v = -INFINITY;
+    if (pos >= 0 && (WINDOW == 0 || distance < WINDOW)) {
+        v = distance < R ? float(bias[b * bias_strides[0] + h * bias_strides[2]
+                                     + distance * bias_strides[3]]) : 0.0f;
+    }
+    out[i] = T(v);
+"""
+
+_decode_mask_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_attention_mask_decode",
+        input_names=["bias", "ends", "index"],
+        output_names=["out"],
+        source=_DECODE_MASK_SOURCE,
+        ensure_row_contiguous=False,
+    ),
+)
+
+
+def attention_mask_decode(bias, end, index, size, window, dtype, *, rotating):
+    B, _, H, R = bias.shape
+    return _decode_mask_kernel(
+        inputs=[
+            bias,
+            (end if isinstance(end, mx.array) else scalar(end, mx.int32)).reshape(-1),
+            scalar(index, mx.int32),
+        ],
+        template=[
+            ("T", dtype),
+            ("B", B),
+            ("H", H),
+            ("S", size),
+            ("R", R),
+            ("WINDOW", window),
+            ("ROTATING", rotating),
+        ],
+        grid=(B * H * size, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(B, H, 1, size)],
+        output_dtypes=[dtype],
+    )[0]
+
+
+_L2_CLIP_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint row = threadgroup_position_in_grid.x;
+    const uint tid = thread_position_in_threadgroup.x;
+    const uint lane = thread_index_in_simdgroup;
+    const uint sg = simdgroup_index_in_threadgroup;
+    threadgroup float sums[32];
+    threadgroup float factor;
+    float values[N];
+    float acc = 0.0f;
+    for (uint j = 0; j < N; ++j) {
+        const uint d = tid + j * TG;
+        float v = 0.0f;
+        if (d < D) {
+            v = float(x[row * x_strides[0] + d * x_strides[1]])
+                * float(scale[(SCALED ? (row % H) * D + d : 0) * scale_strides[0]]);
+        }
+        values[j] = v;
+        acc += v * v;
+    }
+    if (sg == 0) sums[lane] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    acc = simd_sum(acc);
+    if (lane == 0) sums[sg] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0) {
+        float total = simd_sum(sums[lane]);
+        if (lane == 0) factor = min(float(threshold) / (metal::precise::sqrt(total) + 1e-6f), 1.0f);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint j = 0; j < N; ++j) {
+        const uint d = tid + j * TG;
+        if (d < D) {
+            // Clipping rounds before log scaling; retain this BF16 boundary.
+            T v = T(values[j] * factor);
+            out[row * D + d] = TAU ? T(float(v) * tau[(tau_shape[0] == 1 ? 0 : row / H) * tau_strides[0]]) : v;
+        }
+    }
+"""
+
+_l2_clip_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_l2_clip_decode",
+        input_names=["x", "scale", "threshold", "tau"],
+        output_names=["out"],
+        source=_L2_CLIP_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def l2_clip_decode(x, scale, threshold, tau=None):
+    D, H = x.shape[-1], x.shape[-2]
+    tg = min(1024, ((D + 31) // 32) * 32)
+    return _l2_clip_kernel(
+        inputs=[
+            x.reshape(-1, D),
+            (scale if isinstance(scale, mx.array) else scalar(scale)).reshape(-1),
+            scalar(threshold),
+            (tau if tau is not None else scalar(1.0)).reshape(-1),
+        ],
+        template=[
+            ("T", x.dtype),
+            ("D", D),
+            ("H", H),
+            ("TG", tg),
+            ("N", (D + tg - 1) // tg),
+            ("SCALED", isinstance(scale, mx.array)),
+            ("TAU", tau is not None),
+        ],
+        grid=(x.size // D * tg, 1, 1),
+        threadgroup=(tg, 1, 1),
+        output_shapes=[x.shape],
+        output_dtypes=[x.dtype],
+    )[0]
+
+
+_ROUTE_WEIGHTS_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint row = threadgroup_position_in_grid.x;
+    const uint lane = thread_index_in_simdgroup;
+    float total = 0.0f;
+    for (uint j = lane; j < K; j += 32) {
+        total += scores[row * scores_strides[0]
+                        + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
+    }
+    total = simd_sum(total) + 1e-20f;
+    for (uint j = lane; j < K; j += 32) {
+        const float s = scores[row * scores_strides[0]
+                        + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
+        out[row * K + j] = (s / total) * route_scale;
+    }
+"""
+
+_route_weights_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_route_weights_decode",
+        input_names=["scores", "indices", "route_scale"],
+        output_names=["out"],
+        source=_ROUTE_WEIGHTS_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def route_weights_decode(scores, indices, route_scale):
+    K = indices.shape[-1]
+    return _route_weights_kernel(
+        inputs=[
+            scores.reshape(-1, scores.shape[-1]),
+            indices.reshape(-1, K),
+            scalar(route_scale),
+        ],
+        template=[("K", K)],
+        grid=(scores.shape[0] * 32, 1, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[indices.shape],
+        output_dtypes=[scores.dtype],
+    )[0]
+
+
 # One thread owns a channel, including its FP32 history. Do not contract the
 # dynamic multiply/reduce: the reference materializes the products before sum.
 # Static Conv1d, in contrast, accumulates with FMA then rounds to weight dtype.
