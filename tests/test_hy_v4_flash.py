@@ -197,6 +197,53 @@ def test_engram_uint32_inputs_keep_signed_padding_and_history(cpu_model):
     np.testing.assert_array_equal(prior, [[-1, -1], [1, 2]])
 
 
+def test_hy4_index_ignores_unreferenced_shard_without_offload(
+    cpu_model, monkeypatch, tmp_path
+):
+    from contextlib import nullcontext
+
+    from safetensors.numpy import load_file, save_file
+
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.hy_v4_flash", cpu_model)
+    utils = ModuleType("mlx.utils")
+    utils.tree_flatten = lambda values: list(values.items())
+    monkeypatch.setitem(sys.modules, "mlx.utils", utils)
+    spec = importlib.util.spec_from_file_location(
+        "rapid_mlx.models._hy4_index_cpu",
+        Path(__file__).parents[1] / "rapid_mlx/models/hy_v4_flash_load.py",
+    )
+    loader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loader)
+    monkeypatch.setattr(loader, "typed_mlx_load_boundaries", nullcontext)
+    values = {}
+    model = SimpleNamespace(
+        sanitize=lambda weights: weights,
+        load_weights=lambda weights, strict: values.update(weights),
+        parameters=lambda: values,
+        eval=lambda: None,
+    )
+    monkeypatch.setattr(loader, "Model", lambda args: model)
+    monkeypatch.setattr(loader, "ubc_evict", lambda path: None)
+    monkeypatch.setattr(loader.mx, "cpu", "cpu", raising=False)
+    monkeypatch.setattr(loader.mx, "eval", lambda batch: None, raising=False)
+    opened = []
+
+    def load_shard(path, **kwargs):
+        opened.append(Path(path).name)
+        return load_file(path)
+
+    monkeypatch.setattr(loader.mx, "load", load_shard, raising=False)
+    (tmp_path / "config.json").write_text("{}")
+    save_file({"weight": np.ones(1, np.float32)}, tmp_path / "model.safetensors")
+    save_file({"stale": np.zeros(1, np.float32)}, tmp_path / "extra.safetensors")
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"weight": "model.safetensors"}})
+    )
+    loader.load(tmp_path, engram_ssd_offload=False)
+    assert opened == ["model.safetensors"]
+    assert set(values) == {"weight"}
+
+
 def test_auxiliary_payloads_only_store_keys_that_are_read(cpu_model, monkeypatch):
     model = cpu_model.Model(tiny())
     cache = model.make_cache()

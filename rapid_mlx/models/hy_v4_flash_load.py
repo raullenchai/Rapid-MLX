@@ -122,7 +122,11 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
         engram_ssd_offload = os.environ.get(
             "HY4_ENGRAM_SSD_OFFLOAD", "1"
         ) != "0" and supports_engram_ssd_offload(path)
-    mapping = _index(path) if engram_ssd_offload else None
+    mapping = (
+        _index(path)
+        if engram_ssd_offload or (path / "model.safetensors.index.json").exists()
+        else None
+    )
     specs = _engram_specs(config) if engram_ssd_offload else {}
     disk_keys = {
         f"{prefix}.{leaf}"
