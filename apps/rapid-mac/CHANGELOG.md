@@ -17,6 +17,16 @@ can actually understand.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-20
+
+Desktop's bundled engine adds native Inkling 2 Mini support and continuation of a partial assistant message. The Desktop app itself is unchanged in this release.
+
+### New features and improvements
+
+- **Inkling 2 Mini**: the bundled engine serves Inkling 2 Mini natively, text only, with reasoning separated from the answer and OpenAI-style tool calls ([#5907](https://github.com/raullenchai/Rapid-MLX/pull/5907), [#5908](https://github.com/raullenchai/Rapid-MLX/pull/5908)).
+- **Assistant prefill**: chat completions accept `continue_final_message`, so the model continues a trailing assistant message ([#5898](https://github.com/raullenchai/Rapid-MLX/pull/5898)).
+- **Privacy notice**: anonymous telemetry from the bundled engine now sorts model download failures into fixed categories and counts document inputs separately from images; the privacy notice describes both ([#5903](https://github.com/raullenchai/Rapid-MLX/pull/5903)).
+
 ## [1.0.5] — 2026-11-19
 
 Desktop adds a menu bar resource card for resident models and server activity, keeps images across relaunch, and resumes interrupted downloads. Image progress, disk-space checks and memory admission on smaller Macs are fixed.
@@ -4671,7 +4681,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.5...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.0...HEAD
+[1.1.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.5...rapid-mac-v1.1.0
 [1.0.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.4...rapid-mac-v1.0.5
 [1.0.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.3...rapid-mac-v1.0.4
 [1.0.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.2...rapid-mac-v1.0.3
