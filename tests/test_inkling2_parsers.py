@@ -1,6 +1,7 @@
 """Inkling typed blocks retain their channels across arbitrary stream chunks."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,7 +96,7 @@ def test_tools(width, count):
 
 
 @pytest.mark.parametrize(
-    "payload", ["oops", '{"name":"f","args":', "[]", '{"args":{}}']
+    "payload", ["oops", '{"name":"f","args":', "[]", '{"args":{}}', '{"name":""}']
 )
 def test_malformed(payload):
     parser = ToolParserManager.get_tool_parser("inkling")()
@@ -227,3 +228,78 @@ def test_malformed_streaming(payload):
             assert not out.get("tool_calls")
             content += out.get("content", "")
     assert content == payload
+
+
+def test_reasoning_request_preserves_delimiters():
+    parser = get_parser("inkling")()
+    assert parser.reasoning_start_str == R
+    assert parser.reasoning_end_str == E
+    request = SimpleNamespace(skip_special_tokens=True)
+    assert parser.adjust_request(request) is request
+    assert request.skip_special_tokens is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Plain prose.", False),
+        (M + R + "Unfinished", True),
+        (R + "Thought" + E, False),
+        (R + "Thought" + S, False),
+        (R + "Thought" + T + "Answer", False),
+        (R + "Thought" + E + M + R + "Again", True),
+    ],
+)
+def test_open_thinking_block(raw, expected):
+    assert get_parser("inkling")().is_open_in_think(raw) is expected
+
+
+def test_streaming_json_member_whitespace():
+    parser = ToolParserManager.get_tool_parser("inkling")()
+    payload = '{ "name" \t: \n"f", "args" \n: \t{"x": 1}}'
+    raw = C + payload
+    out = parser.extract_tool_calls_streaming("", raw, raw)
+    call = out["tool_calls"][0]
+    assert call["index"] == 0
+    assert call["function"] == {"name": "f", "arguments": '{"x": 1}'}
+    assert parser.extract_tool_calls_streaming(raw, raw + E, E) is None
+    assert parser.finalize_legacy_raw_stream(raw + E) is None
+
+
+@pytest.mark.parametrize("close", [E, S, C, ""])
+def test_malformed_close_after_streamed_arguments(close):
+    parser = ToolParserManager.get_tool_parser("inkling")()
+    raw = C + '{"name":"broken","args":{"x":'
+    out = parser.extract_tool_calls_streaming("", raw, raw)
+    first = out["tool_calls"][0]
+    assert first["index"] == 0
+    assert first["function"] == {"name": "broken", "arguments": '{"x":'}
+    if close:
+        assert parser.extract_tool_calls_streaming(raw, raw + close, close) is None
+    else:
+        assert parser.finalize_legacy_raw_stream(raw) is None
+    following = parser.extract_tool_calls_streaming(
+        raw + close, raw + close + CALL, CALL
+    )
+    second = following["tool_calls"][0]
+    assert "content" not in following
+    assert second["index"] == 1
+    assert second["id"] != first["id"]
+    assert second["function"]["name"] == "read_file"
+    assert json.loads(second["function"]["arguments"]) == {"path": "sample.txt"}
+
+
+def test_argument_fragments_merge_within_one_chunk():
+    parser = ToolParserManager.get_tool_parser("inkling")()
+    payload = '{"name":"f","args":{"text":"a<b<c"}}'
+    raw = C + payload + E + T + "Done"
+    out = parser.extract_tool_calls_streaming("", raw, raw)
+    assert out["content"] == "Done"
+    assert out["preserve_post_tool_content"] is True
+    assert len(out["tool_calls"]) == 1
+    call = out["tool_calls"][0]
+    assert call["index"] == 0
+    assert call["type"] == "function"
+    assert call["id"].startswith("call_")
+    assert call["function"] == {"name": "f", "arguments": '{"text":"a<b<c"}'}
+    assert parser.finalize_legacy_raw_stream(raw) is None
