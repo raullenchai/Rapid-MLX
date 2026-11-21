@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
@@ -73,8 +74,8 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "8a45abad44e03a190f73659a636c09e01b48f7550995110d921b990dcf185c30",
-    "kernels.py": "15491d14c4458e0bce9731098255896bb44f29fcc42fb17b8f53ee955796a16e",
+    "layers.py": "82bfc42dce501a6de106c52de869f6e15bc78ef49d9d0c50518af79d93972f46",
+    "kernels.py": "27dd2203fdf5243b243d8ead4afaff98f07518fcd197cf111319071a1ba8f747",
     "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
     "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -211,6 +212,91 @@ def test_compat_scalar_and_row_threads(compat_loader):
         assert compat.row_threads(dim) == expected
 
 
+def test_kernel_templates_ignore_decode_sizes(glue_loader, compat_loader):
+    """Exercise every launch wrapper without needing Metal or model weights."""
+    compat_loader()
+    mx = glue_loader.mx
+    mx.int32 = np.int32
+    mx.result_type = np.result_type
+    calls = {}
+
+    def factory(*, name, **kwargs):
+        calls[name] = []
+
+        def launch(**kwargs):
+            calls[name].append(kwargs)
+            return [
+                mx.array(np.zeros(shape, dtype=dtype))
+                for shape, dtype in zip(
+                    kwargs["output_shapes"], kwargs["output_dtypes"]
+                )
+            ]
+
+        return launch
+
+    mx.fast = SimpleNamespace(metal_kernel=factory)
+    kernels = glue_loader.load("kernels")
+
+    def zeros(shape):
+        return mx.array(np.zeros(shape, dtype=np.float32))
+
+    for step in range(40):
+        for batch in (1, 2, 3):
+            size, length = step + 7, step + 1
+            x = zeros((batch, 1, 64))
+            kernels.row_norm_decode(x, zeros((64,)), 1e-6, mx.float32)
+            kernels.message_mix_decode(
+                x, x, zeros((batch, 1, 8)), zeros((64, 8)), zeros((64, 8))
+            )
+            kernels.attention_mask_decode(
+                zeros((batch, 1, 4, 8)),
+                mx.array(np.arange(batch) + size, dtype=mx.int32),
+                step,
+                size,
+                0,
+                mx.float32,
+                rotating=False,
+            )
+            kernels.l2_clip_decode(x.reshape(batch, 1, 4, 16), 1.0, 3.0)
+            kernels.route_weights_decode(
+                zeros((batch, 1, 4)), zeros((batch, 1, 2)), 2.0
+            )
+            kernels.short_convolution_decode(
+                x, zeros((batch, 3, 64)), zeros((64, 4)), None, 4
+            )
+            kernels.depth_attention(
+                zeros((2, batch, 1, 64)), x, zeros((4, 64)), scale=0.125
+            )
+            kernels.relative_attention(
+                zeros((batch, 4, length, 16)),
+                zeros((batch, 2, size, 16)),
+                zeros((batch, 2, size, 16)),
+                zeros((batch, length, 4, 8)),
+                zeros((batch, length, 4)),
+                scale=0.25,
+                window=8,
+                key_start=mx.array(np.arange(batch), dtype=mx.int32),
+            )
+
+    assert len(calls) == 8
+    for name, launches in calls.items():
+        assert len(launches) == 120
+        assert len({tuple(call["template"]) for call in launches}) == 1, name
+    # The changing dimensions must reach the device as int32 data, while the
+    # dispatch grid and output shape still follow the current batch and cache.
+    for step in range(40):
+        for batch in (1, 2, 3):
+            size = step + 7
+            call = calls["inkling2_attention_mask_decode"][step * 3 + batch - 1]
+            args = dict(zip(["bias", "ends", "index", "sizes"], call["inputs"]))
+            np.testing.assert_array_equal(args["sizes"], [batch, size])
+            assert args["sizes"].dtype == np.int32
+            assert args["index"].dtype == np.int32 and args["index"].item() == step
+            np.testing.assert_array_equal(args["ends"], np.arange(batch) + size)
+            assert call["grid"] == (batch * 4 * size, 1, 1)
+            assert call["output_shapes"] == [(batch, 4, 1, size)]
+
+
 def test_compat_gather_rank_order(compat_loader, glue_loader):
     compat = compat_loader()
     x = glue_loader.mx.array(np.arange(12).reshape(2, 3, 2))
@@ -306,6 +392,79 @@ def metal_runtime(runtime, monkeypatch):
     mx.set_default_device(mx.gpu)
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
     return runtime
+
+
+@pytest.fixture
+def compile_traces(runtime):
+    """Count Python graph traces, rather than calls to compiled wrappers."""
+    from rapid_mlx.models.inkling2 import layers
+
+    names = {
+        name for name, fn in vars(layers).items() if hasattr(fn, "__wrapped__")
+    } | {"_decode_log_scale", "_l2_clip", "_softcapped_swiglu"}
+    traces = Counter()
+    previous = sys.getprofile()
+
+    def profile(frame, event, arg):
+        code = frame.f_code
+        if (
+            event == "call"
+            and code.co_filename == layers.__file__
+            and code.co_name in names
+        ):
+            traces[code.co_name] += 1
+        if previous is not None:
+            previous(frame, event, arg)
+
+    sys.setprofile(profile)
+    try:
+        yield traces
+    finally:
+        sys.setprofile(previous)
+
+
+@pytest.mark.requires_mlx
+def test_compiled_helpers_ignore_batch_and_offsets(metal_runtime, compile_traces):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    # Include the CPU/fallback router even on machines with a fused router.
+    # k=7 and these dimensions keep this independent of other tests' warmups.
+    expected_traces = None
+    for step in range(40):
+        for batch in (1, 2, 3):
+            x = mx.ones((batch, 1, 24))
+            experts = mx.ones((batch, 1, 7, 24))
+            weights = mx.ones((batch, 1, 7))
+            offsets = mx.full((batch, 1), step, dtype=mx.int32)
+            indices, routes = layers._route_weights_reference(
+                x, mx.zeros((24,)), 7, 2.0
+            )
+            outputs = [
+                layers._norm(x, mx.ones((24,)), 1e-6),
+                layers._scale_states(x, mx.array(1.13)),
+                layers._gate_attention(x, x),
+                layers._routing_order(x, mx.zeros((24,))),
+                layers._combine_experts(experts, weights),
+                layers._normalized_message_input(x, x),
+                layers._message_mix(x, x, x, x),
+                layers._residual_output(x, x),
+                layers._depth_attention_reference(
+                    x, mx.ones((2, batch, 1, 24)), mx.ones((4, 24)), 0.2
+                ),
+                layers._decode_log_scale(offsets, mx.array(4.0), mx.array(0.1)),
+                layers._l2_clip(x, 1.0, 3.0),
+                layers._softcapped_swiglu(x, x, 4.0, 25.0),
+                indices,
+                routes,
+            ]
+            mx.eval(outputs)
+            assert indices.shape == routes.shape == (batch, 1, 7)
+            assert mx.allclose(routes, mx.full(routes.shape, 2 / 7)).item()
+            assert [out.shape[0] for out in outputs] == [batch] * len(outputs)
+            if expected_traces is None:
+                expected_traces = compile_traces.copy()
+            assert compile_traces == expected_traces
 
 
 def _assert_conv_close(mx, actual, expected):
@@ -898,6 +1057,56 @@ def test_fast_decode_model_parity(metal_runtime, monkeypatch, batch, loop, seed)
                 assert mx.allclose(fast_state, slow_state, atol=1e-4, rtol=1e-4).item()
             for fast_state, slow_state in zip(fast[1].cache, slow[1].cache):
                 assert mx.allclose(fast_state, slow_state, atol=1e-4, rtol=1e-4).item()
+
+
+@pytest.mark.requires_mlx
+def test_fast_decode_specializations_stay_bounded(
+    metal_runtime, monkeypatch, compile_traces
+):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    # Exercise all local decode kernels, including the routing fallback used
+    # when the optional upstream fused routing helper is unavailable.
+    monkeypatch.setattr(layers, "expert_routing", None)
+    model = create_model(metal_runtime, dtype=mx.float32, loop=True)
+    tokens = [mx.random.randint(0, 120, (batch, 46)) for batch in (1, 2, 3)]
+    caches = [model.make_cache() for _ in tokens]
+    for ids, cache in zip(tokens, caches):
+        mx.eval(model(ids[:, :6], cache=cache))
+
+    keys = {}
+
+    def record(name, kernel):
+        keys[name] = set()
+
+        def launch(**kwargs):
+            keys[name].add(tuple(kwargs["template"]))
+            return kernel(**kwargs)
+
+        return launch
+
+    for name, kernel in vars(kernels).copy().items():
+        if name.endswith("_kernel"):
+            monkeypatch.setattr(kernels, name, record(name, kernel))
+
+    expected_keys = expected_traces = None
+    for step in range(6, 46):
+        for ids, cache in zip(tokens, caches):
+            logits = model(ids[:, step : step + 1], cache=cache)
+            mx.eval(logits)
+            assert mx.all(mx.isfinite(logits)).item()
+            assert all(c[0].offset == step + 1 for c in cache)
+            if expected_keys is None:
+                expected_keys = {name: seen.copy() for name, seen in keys.items()}
+                expected_traces = compile_traces.copy()
+            # A single warmed decode step covers every model-constant layer
+            # variant. Neither growing KV banks nor changing B adds a key.
+            assert keys == expected_keys
+            assert compile_traces == expected_traces
+    assert all(
+        seen for name, seen in keys.items() if name != "_relative_attention_kernel"
+    )
 
 
 @pytest.mark.parametrize("batch", [1, 2])

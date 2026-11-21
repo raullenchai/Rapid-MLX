@@ -65,13 +65,14 @@ def _fast_decode_enabled() -> bool:
     return os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0"
 
 
-def _decode_only(fn, *, shapeless=True):
+def _decode_only(fn):
     """Compile stateless helpers only for (B, 1, ...) decode inputs.
 
     Keep the Python function available through __wrapped__ for parity tests.
-    No module, weight or cache is captured in the compiled closure.
+    No module, weight or cache is captured in the compiled closure. Helpers
+    must support shapeless compilation as server batch sizes change at runtime.
     """
-    compiled = mx.compile(fn, shapeless=shapeless)
+    compiled = mx.compile(fn, shapeless=True)
 
     @wraps(fn)
     def call(x, *args, **kwargs):
@@ -133,11 +134,15 @@ def _routing_order(scores, bias):
     return -(scores + bias)
 
 
-@partial(_decode_only, shapeless=False)
+@_decode_only
 def _route_weights_reference(scores, bias, k, route_scale):
-    # Slice bounds include batch dimensions, so specialize this small graph
-    # by shape. Keep the original view-based selection for prefill as well.
-    indices = mx.argpartition(-(scores + bias), kth=k - 1, axis=-1)[..., :k]
+    # Gather only along the expert axis: a slice would capture the traced
+    # batch dimensions as static bounds. k is fixed by the model configuration.
+    indices = mx.take(
+        mx.argpartition(-(scores + bias), kth=k - 1, axis=-1),
+        mx.arange(k),
+        axis=-1,
+    )
     weights = mx.take_along_axis(scores, indices, axis=-1)
     weights = weights / (weights.sum(axis=-1, keepdims=True) + _ROUTER_SCORE_EPS)
     return indices, weights * route_scale

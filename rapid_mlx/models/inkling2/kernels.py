@@ -178,6 +178,8 @@ def message_mix_decode(x, message, low, forget, gain):
 
 
 _DECODE_MASK_SOURCE = """
+    const int B = sizes[0];
+    const int S = sizes[1];
     const uint i = thread_position_in_grid.x;
     if (i >= B * H * S) return;
     const int k = i % S;
@@ -199,7 +201,7 @@ _decode_mask_kernel = cast(
     Callable[..., list[mx.array]],
     mx.fast.metal_kernel(
         name="inkling2_attention_mask_decode",
-        input_names=["bias", "ends", "index"],
+        input_names=["bias", "ends", "index", "sizes"],
         output_names=["out"],
         source=_DECODE_MASK_SOURCE,
         ensure_row_contiguous=False,
@@ -214,12 +216,11 @@ def attention_mask_decode(bias, end, index, size, window, dtype, *, rotating):
             bias,
             (end if isinstance(end, mx.array) else scalar(end, mx.int32)).reshape(-1),
             scalar(index, mx.int32),
+            mx.array([B, size], dtype=mx.int32),
         ],
         template=[
             ("T", dtype),
-            ("B", B),
             ("H", H),
-            ("S", size),
             ("R", R),
             ("WINDOW", window),
             ("ROTATING", rotating),
