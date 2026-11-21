@@ -50,6 +50,20 @@ _INTEGER_LITERAL_RE = re.compile(r"[+-]?[0-9]+")
 # as they did before exact decimal parsing, rather than becoming huge ints.
 _MAX_INTEGER_EXPONENT = 308
 
+_STREAM_TOOL_MARKERS = ("<tool_call>", "<function=")
+# Include every unfinished opener, even a lone '<', before the XML state
+# machine can claim it. Complete markers may appear anywhere in the delta.
+_STREAM_TOOL_CANDIDATE_RE = re.compile(
+    "|".join(re.escape(marker) for marker in _STREAM_TOOL_MARKERS)
+    + "|(?:"
+    + "|".join(
+        re.escape(marker[:length])
+        for marker in _STREAM_TOOL_MARKERS
+        for length in range(1, len(marker))
+    )
+    + r")\Z"
+)
+
 # Longest call block to an undeclared tool that is dropped (#4038). Streaming
 # must hold the block back until it closes; a longer one is released as
 # content (origin/main behaviour) in both paths, well before the
@@ -1080,6 +1094,9 @@ class Qwen3CoderToolParser(ToolParser):
             result = self.extract_tool_calls(model_output, request=request)
             return {
                 "content": (result.content or "")[len(prefix.content or "") :],
+                # Adapters may have suppressed post-call content in the prefix.
+                # Let them reconcile against what they actually forwarded.
+                "deferred_full_content": result.content or "",
                 "tool_calls": [
                     {
                         "index": index,
@@ -2070,10 +2087,16 @@ class Qwen3CoderToolParser(ToolParser):
             # Only a new tool candidate needs the full Markdown context.
             # Re-scanning prose on every token makes ordinary code spans
             # quadratic even though no executable syntax was produced.
+            # Revisit enough of the previous delta to include any opener
+            # whose partial spelling crossed the chunk boundary.
             candidates = list(
-                re.compile(
-                    r"<(?:tool_call>|function=|f(?:u(?:n(?:c(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?\Z)",
-                ).finditer(current_text, len(previous_text))
+                _STREAM_TOOL_CANDIDATE_RE.finditer(
+                    current_text,
+                    max(
+                        0,
+                        len(previous_text) - max(map(len, _STREAM_TOOL_MARKERS)) + 1,
+                    ),
+                )
             )
             ranges = (
                 self._markdown_code_ranges(current_text, pending=True)

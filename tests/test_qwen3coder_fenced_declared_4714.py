@@ -113,8 +113,73 @@ def test_real_calls_on_both_sides_of_inline_example(size, quote):
         ("get_weather", '{"city": "Rome"}'),
         ("get_weather", '{"city": "Oslo"}'),
     ]
-    if size is None or size == 0:
-        assert content == example
+    assert content == example
+
+
+@pytest.mark.parametrize("size", [0, 1, 2, 7, 13])
+def test_deferred_example_does_not_repeat_pre_call_content(size):
+    prefix = "Checking the weather.\n"
+    example = f"\nUse `{CALL}`.\n"
+    text = (
+        prefix
+        + CALL.replace("Paris", '"Rome"')
+        + example
+        + CALL.replace("Paris", '"Oslo"')
+    )
+    assert stream(text, REQUEST, size) == (
+        [
+            ("get_weather", '{"city": "Rome"}'),
+            ("get_weather", '{"city": "Oslo"}'),
+        ],
+        prefix + example,
+    )
+
+
+@pytest.mark.parametrize(
+    "wire,offset",
+    [
+        (wire, offset)
+        for wire, marker in [(CALL, "<tool_call>"), (BARE, "<function=")]
+        for offset in range(len(marker) + 1)
+    ],
+)
+@pytest.mark.parametrize("quote", ["`", "``", "```"])
+@pytest.mark.parametrize("real_call", [False, True])
+def test_inline_marker_split_at_every_offset(wire, offset, quote, real_call):
+    example = f"Use {quote}{wire}{quote}.\n"
+    text = example + (CALL.replace("Paris", '"Rome"') if real_call else "")
+    split = len(f"Use {quote}") + offset
+    marker = "<tool_call>" if wire.startswith("<tool_call>") else "<function="
+    marker_end = len(f"Use {quote}") + len(marker)
+    wire_end = len(f"Use {quote}") + len(wire)
+    parser = Qwen3CoderToolParser(None)
+    results = []
+    previous = ""
+    # Drive the parser directly: the postprocessor's marker buffer can join
+    # partial markers and conceal a missed Markdown candidate in the parser.
+    # Finish the example's body before its closing backticks arrive, so an
+    # incorrectly admitted opener has time to emit an irreversible call.
+    for piece in [
+        text[:split],
+        text[split:marker_end],
+        text[marker_end:wire_end],
+        text[wire_end:],
+    ]:
+        current = previous + piece
+        results.append(
+            parser.extract_tool_calls_streaming(
+                previous, current, piece, request=REQUEST
+            )
+        )
+        previous = current
+    results.append(parser.finalize_legacy_raw_stream(text, request=REQUEST))
+    calls = [
+        call for result in results if result for call in result.get("tool_calls", [])
+    ]
+    assert [
+        (call["function"]["name"], call["function"]["arguments"]) for call in calls
+    ] == ([("get_weather", '{"city": "Rome"}')] if real_call else [])
+    assert "".join(result.get("content", "") for result in results if result) == example
 
 
 @pytest.mark.parametrize("size", [None, 0, 1, 2, 7, 13])

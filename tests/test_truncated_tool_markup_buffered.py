@@ -774,6 +774,10 @@ def test_streaming_unchanged_against_base():
                             # Quote guards share CR/LF and paragraph boundaries.
                             "_MARKDOWN_LINE_END_RE",
                             "_MARKDOWN_PARAGRAPH_END_RE",
+                            # Split-opener guards are pinned at every offset by
+                            # test_qwen3coder_fenced_declared_4714.
+                            "_STREAM_TOOL_MARKERS",
+                            "_STREAM_TOOL_CANDIDATE_RE",
                         }
                         for target in node.targets
                     )

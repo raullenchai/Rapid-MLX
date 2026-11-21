@@ -462,6 +462,9 @@ class StreamingPostProcessor:
         )
         self._content_sanitizer_accumulates = False
         self.tool_accumulated_text = ""
+        # Count source characters forwarded to the content pipeline, before
+        # sanitization, so deferred full-response extraction can resume there.
+        self._tool_parser_content_chars = 0
         # Accumulated reasoning content (split out by the reasoning parser
         # from the raw model output). Surfaced on the streaming Usage
         # chunk so clients see ``completion_tokens_details.reasoning_tokens``
@@ -2503,6 +2506,7 @@ class StreamingPostProcessor:
         )
         self._content_sanitizer_accumulates = False
         self.tool_accumulated_text = ""
+        self._tool_parser_content_chars = 0
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         self._preserve_post_tool_content = False
@@ -3968,6 +3972,12 @@ class StreamingPostProcessor:
                 request=self.request,
             )
             raw_content = raw_delta.get("content") if raw_delta else None
+            if raw_delta and "deferred_full_content" in raw_delta:
+                # A full-response parse cannot infer which prefix content
+                # this adapter suppressed after an earlier streamed call.
+                raw_content = raw_delta["deferred_full_content"][
+                    self._tool_parser_content_chars :
+                ]
             if isinstance(raw_content, str) and raw_content:
                 events.append(StreamEvent(type="content", content=raw_content))
             if raw_delta and raw_delta.get("tool_calls"):
@@ -4463,6 +4473,17 @@ class StreamingPostProcessor:
         )
 
     def _detect_tool_calls(self, content: str) -> dict | None:
+        tools_seen = self.tool_calls_detected
+        result = self._detect_tool_calls_incremental(content)
+        if result and (
+            result.get("tool_calls")
+            or not tools_seen
+            or self._preserve_post_tool_content
+        ):
+            self._tool_parser_content_chars += len(result.get("content") or "")
+        return result
+
+    def _detect_tool_calls_incremental(self, content: str) -> dict | None:
         """Run incremental tool call detection.
 
         Returns None if content is suppressed (inside tool markup).
