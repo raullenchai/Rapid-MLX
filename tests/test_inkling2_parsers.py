@@ -106,6 +106,54 @@ def test_malformed(payload):
     assert out.content == payload + "Answer"
 
 
+@pytest.mark.parametrize("width", [1, 3, 7, 1000])
+@pytest.mark.parametrize("marker", [M, R, T, C, E, S])
+def test_marker_inside_tool_argument(marker, width):
+    # Escaped quotes and odd/even backslash runs must survive delta boundaries.
+    text = 'before "' + marker + "\\" + marker + '\\"' + marker + " after"
+    payload = json.dumps({"name": "f", "args": {"text": text}})
+    raw = M + C + payload + E + M + T + "Done" + E
+    from tests.parser_migration.harness import norm
+
+    reasoning = get_parser("inkling")()
+    parser = ToolParserManager.get_tool_parser("inkling")()
+    _, content = reasoning.extract_reasoning(raw)
+    complete = parser.extract_tool_calls(content)
+    assert complete.content == "Done"
+    assert json.loads(complete.tool_calls[0]["arguments"]) == {"text": text}
+    assert len(complete.tool_calls) == 1
+    previous = tool_text = ""
+    packets = []
+    for pos in range(0, len(raw), width):
+        chunk = raw[pos : pos + width]
+        msg = reasoning.extract_reasoning_streaming(previous, previous + chunk, chunk)
+        previous += chunk
+        if msg and msg.content:
+            delta = msg.content
+            out = parser.extract_tool_calls_streaming(
+                tool_text, tool_text + delta, delta
+            )
+            tool_text += delta
+            if out:
+                packets.append({"choices": [{"delta": out}]})
+    tail = reasoning.finish_stream()
+    if tail and tail.content:
+        out = parser.extract_tool_calls_streaming(
+            tool_text, tool_text + tail.content, tail.content
+        )
+        tool_text += tail.content
+        if out:
+            packets.append({"choices": [{"delta": out}]})
+    out = parser.finalize_legacy_raw_stream(tool_text)
+    if out:
+        packets.append({"choices": [{"delta": out}]})
+    assert norm(packets, "chat", True) == {
+        "reasoning": "",
+        "content": "Done",
+        "calls": [["f", {"text": text}]],
+    }
+
+
 def test_partial_delimiter_and_reset():
     parser = get_parser("inkling")()
     assert (
@@ -284,8 +332,7 @@ def test_argument_deltas(payload):
     args = "".join(d["function"].get("arguments", "") for d in deltas)
     assert json.loads(args) == json.loads(payload).get("args", {})
     assert all(d["index"] == 0 for d in deltas)
-    if "nested" in payload:
-        assert len(deltas) > 4
+    assert len(deltas) == 1
 
 
 def test_token_stream_and_repeated_blocks():
@@ -303,7 +350,11 @@ def test_token_stream_and_repeated_blocks():
 def test_tool_finalize_and_reset():
     parser = ToolParserManager.get_tool_parser("inkling")()
     raw = CALL[: -len(E)]
-    parser.extract_tool_calls_streaming("", raw, raw)
+    assert parser.extract_tool_calls_streaming("", raw, raw) is None
+    final = parser.finalize_legacy_raw_stream(raw)
+    assert json.loads(final["tool_calls"][0]["function"]["arguments"]) == {
+        "path": "sample.txt"
+    }
     assert parser.finalize_legacy_raw_stream(raw) is None
     assert parser.payload is None
     parser.reset()
@@ -370,35 +421,49 @@ def test_streaming_json_member_whitespace():
     parser = ToolParserManager.get_tool_parser("inkling")()
     payload = '{ "name" \t: \n"f", "args" \n: \t{"x": 1}}'
     raw = C + payload
-    out = parser.extract_tool_calls_streaming("", raw, raw)
+    assert parser.extract_tool_calls_streaming("", raw, raw) is None
+    out = parser.extract_tool_calls_streaming(raw, raw + E, E)
     call = out["tool_calls"][0]
     assert call["index"] == 0
     assert call["function"] == {"name": "f", "arguments": '{"x": 1}'}
-    assert parser.extract_tool_calls_streaming(raw, raw + E, E) is None
     assert parser.finalize_legacy_raw_stream(raw + E) is None
 
 
 @pytest.mark.parametrize("close", [E, S, C, ""])
-def test_malformed_close_after_streamed_arguments(close):
+@pytest.mark.parametrize("width", [1, 7, 1000])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"name":"broken","args":{"x":',
+        '{"name":"broken","args":{"x":1,}}',
+        '{"name":"broken","args":{"x":1}} trailing',
+        '{"name":"broken","args":{"x":1},"extra":oops}',
+    ],
+)
+def test_malformed_close_after_partial_arguments(close, width, payload):
     parser = ToolParserManager.get_tool_parser("inkling")()
-    raw = C + '{"name":"broken","args":{"x":'
-    out = parser.extract_tool_calls_streaming("", raw, raw)
-    first = out["tool_calls"][0]
-    assert first["index"] == 0
-    assert first["function"] == {"name": "broken", "arguments": '{"x":'}
-    if close:
-        assert parser.extract_tool_calls_streaming(raw, raw + close, close) is None
-    else:
-        assert parser.finalize_legacy_raw_stream(raw) is None
-    following = parser.extract_tool_calls_streaming(
-        raw + close, raw + close + CALL, CALL
-    )
-    second = following["tool_calls"][0]
+    raw = C + payload + close
+    complete = parser.extract_tool_calls(raw)
+    assert not complete.tools_called
+    assert complete.content == payload
+    content = ""
+    for pos in range(0, len(raw), width):
+        chunk = raw[pos : pos + width]
+        out = parser.extract_tool_calls_streaming(raw[:pos], raw[:pos] + chunk, chunk)
+        if out:
+            assert not out.get("tool_calls")
+            content += out.get("content", "")
+    out = parser.finalize_legacy_raw_stream(raw)
+    if out:
+        assert not out.get("tool_calls")
+        content += out.get("content", "")
+    assert content == complete.content
+    following = parser.extract_tool_calls_streaming(raw, raw + CALL, CALL)
+    call = following["tool_calls"][0]
     assert "content" not in following
-    assert second["index"] == 1
-    assert second["id"] != first["id"]
-    assert second["function"]["name"] == "read_file"
-    assert json.loads(second["function"]["arguments"]) == {"path": "sample.txt"}
+    assert call["index"] == 0
+    assert call["function"]["name"] == "read_file"
+    assert json.loads(call["function"]["arguments"]) == {"path": "sample.txt"}
 
 
 def test_argument_fragments_merge_within_one_chunk():
@@ -413,5 +478,6 @@ def test_argument_fragments_merge_within_one_chunk():
     assert call["index"] == 0
     assert call["type"] == "function"
     assert call["id"].startswith("call_")
-    assert call["function"] == {"name": "f", "arguments": '{"text":"a<b<c"}'}
+    assert call["function"]["name"] == "f"
+    assert json.loads(call["function"]["arguments"]) == {"text": "a<b<c"}
     assert parser.finalize_legacy_raw_stream(raw) is None

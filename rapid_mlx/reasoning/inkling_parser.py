@@ -32,12 +32,19 @@ class InklingBlocks:
     def __init__(self):
         self.state = "content"
         self.buffer = ""
+        self.tool_quoted = False
+        self.tool_escaped = False
 
     def feed(self, text, final=False):
         self.buffer += text
         events = []
         while self.buffer:
-            marker = next((m for m in MARKERS if self.buffer.startswith(m)), None)
+            framing = self.state != "tool" or not self.tool_quoted
+            marker = (
+                next((m for m in MARKERS if self.buffer.startswith(m)), None)
+                if framing
+                else None
+            )
             if marker:
                 self.buffer = self.buffer[len(marker) :]
                 if marker == MESSAGE:
@@ -46,18 +53,35 @@ class InklingBlocks:
                     self.state = "reasoning"
                 elif marker == TOOL:
                     self.state = "tool"
+                    self.tool_quoted = False
+                    self.tool_escaped = False
                 elif marker in (END, SAMPLING_END):
                     self.state = "content"
                 else:
                     self.state = "content"
                 events.append(("marker", marker))
                 continue
-            if not final and any(m.startswith(self.buffer) for m in MARKERS):
+            if (
+                framing
+                and not final
+                and any(m.startswith(self.buffer) for m in MARKERS)
+            ):
                 break
             end = 1
             while end < len(self.buffer) and self.buffer[end] != "<":
                 end += 1
-            events.append((self.state, self.buffer[:end]))
+            value = self.buffer[:end]
+            if self.state == "tool":
+                # Carry string/escape state across deltas, including a delta
+                # ending with a backslash immediately before a quote.
+                for char in value:
+                    if self.tool_escaped:
+                        self.tool_escaped = False
+                    elif self.tool_quoted and char == "\\":
+                        self.tool_escaped = True
+                    elif char == '"':
+                        self.tool_quoted = not self.tool_quoted
+            events.append((self.state, value))
             self.buffer = self.buffer[end:]
         return events
 

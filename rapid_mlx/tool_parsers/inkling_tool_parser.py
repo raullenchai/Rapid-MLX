@@ -12,52 +12,6 @@ from .abstract_tool_parser import (
 )
 
 
-def _members(raw):
-    """Read complete wrapper members and a prefix-stable args object span."""
-    decoder = json.JSONDecoder()
-    pos = 0
-    name, args = None, ""
-    try:
-        pos = len(raw) - len(raw.lstrip())
-        if raw[pos : pos + 1] != "{":
-            return name, args
-        pos += 1
-        while pos < len(raw):
-            while pos < len(raw) and raw[pos] in " \t\r\n,":
-                pos += 1
-            key, pos = decoder.raw_decode(raw, pos)
-            while pos < len(raw) and raw[pos].isspace():
-                pos += 1
-            if raw[pos : pos + 1] != ":":
-                break
-            pos += 1
-            while pos < len(raw) and raw[pos].isspace():
-                pos += 1
-            start = pos
-            if key == "args" and raw[start : start + 1] == "{":
-                depth, quoted, escaped = 0, False, False
-                end = start
-                for end in range(start, len(raw)):
-                    char = raw[end]
-                    if escaped:
-                        escaped = False
-                    elif quoted and char == "\\":
-                        escaped = True
-                    elif char == '"':
-                        quoted = not quoted
-                    elif not quoted:
-                        depth += (char == "{") - (char == "}")
-                        if depth == 0:
-                            break
-                args = raw[start : end + 1]
-            value, pos = decoder.raw_decode(raw, pos)
-            if key == "name" and isinstance(value, str):
-                name = value
-    except ValueError:
-        pass
-    return name, args
-
-
 class InklingToolParser(ToolParser):
     SUPPORTS_NATIVE_TOOL_FORMAT = True
     EXPECTED_WIRE_FORMATS = ("inkling_native",)
@@ -71,8 +25,6 @@ class InklingToolParser(ToolParser):
         self.blocks = InklingBlocks()
         self.payload = None
         self.index = 0
-        self.sent = ""
-        self.call_id = None
         self.streaming = False
         self.pending_deltas = []
 
@@ -108,14 +60,9 @@ class InklingToolParser(ToolParser):
                     calls.append(call)
                     if self.streaming:
                         self._stream_call(call)
-                elif self.call_id is None:
+                else:
                     content.append(self.payload)
-                elif self.streaming:
-                    # A malformed close cannot retract arguments already sent.
-                    self.index += 1
                 self.payload = None
-                self.sent = ""
-                self.call_id = None
 
         for kind, value in events:
             if kind == "marker":
@@ -126,8 +73,6 @@ class InklingToolParser(ToolParser):
                     close()
             elif kind == "tool" and self.payload is not None:
                 self.payload += value
-                if self.streaming:
-                    self._stream_call()
             elif kind == "content":
                 content.append(value)
         if final:
@@ -141,26 +86,18 @@ class InklingToolParser(ToolParser):
         )
         return ExtractedToolCallInformation(bool(calls), calls, content or None)
 
-    def _stream_call(self, complete=None):
-        name, args = _members(self.payload)
-        if complete:
-            name = complete["name"]
-            args = args or complete["arguments"]
-        if not name or (complete is None and not args):
-            return
-        function = {}
-        delta = {"index": self.index, "function": function}
-        if self.call_id is None:
-            self.call_id = "call_" + uuid.uuid4().hex[:24]
-            delta.update(id=self.call_id, type="function")
-            function["name"] = name
-        if args.startswith(self.sent) and args != self.sent:
-            function["arguments"] = args[len(self.sent) :]
-            self.sent = args
-        if function:
-            self.pending_deltas.append(delta)
-        if complete:
-            self.index += 1
+    def _stream_call(self, call):
+        # Wait for the entire block to validate: a valid argument prefix can
+        # still end in malformed JSON, and emitted calls cannot be retracted.
+        self.pending_deltas.append(
+            {
+                "index": self.index,
+                "id": call["id"],
+                "type": "function",
+                "function": {"name": call["name"], "arguments": call["arguments"]},
+            }
+        )
+        self.index += 1
 
     def _wire(self, content):
         deltas, self.pending_deltas = self.pending_deltas, []
@@ -168,18 +105,7 @@ class InklingToolParser(ToolParser):
         if content:
             result["content"] = content
         if deltas:
-            # Merge fragments from a single input chunk by call index.
-            merged = {}
-            for delta in deltas:
-                index = delta["index"]
-                if index not in merged:
-                    merged[index] = delta
-                    continue
-                function = merged[index]["function"]
-                function["arguments"] = function.get("arguments", "") + delta[
-                    "function"
-                ].get("arguments", "")
-            result["tool_calls"] = list(merged.values())
+            result["tool_calls"] = deltas
             result["preserve_post_tool_content"] = True
         return result or None
 
