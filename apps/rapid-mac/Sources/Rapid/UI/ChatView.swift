@@ -381,13 +381,36 @@ struct ChatView: View {
         return .init(id: message.id, text: message.content)
     }
 
+    @State private var nextStepHint = ChatNextStepHint.shared
+
     var body: some View {
         VStack(spacing: 0) {
             transcript
+            if nextStepHint.isVisible {
+                HStack {
+                    Button("Connect an agent or client") {
+                        nextStepHint.dismiss()
+                        onOpenAgentSetup()
+                    }
+                    .buttonStyle(.link)
+                    .accessibilityIdentifier("Chat.NextStep.OpenLaunch")
+                    Spacer()
+                    QuietIconButton(symbol: "xmark", label: String(localized: "Dismiss connection hint")) {
+                        nextStepHint.dismiss()
+                    }
+                    .accessibilityIdentifier("Chat.NextStep.Dismiss")
+                }
+                .font(RapidFont.caption)
+                .padding(.horizontal, RapidTheme.Space.md)
+                .padding(.vertical, RapidTheme.Space.xs)
+            }
             Divider()
             composeBar
         }
         .background(RapidTheme.surfaceCanvas)
+        .onChange(of: viewModel.successfulReplyCount, initial: true) { _, count in
+            if count > 0 { nextStepHint.replySucceeded() }
+        }
         // Drop a stale error banner once the server is provably ready.
         .onChange(of: server.state) { _, newState in
             if case .ready = newState { viewModel.clearStaleErrorBanner() }

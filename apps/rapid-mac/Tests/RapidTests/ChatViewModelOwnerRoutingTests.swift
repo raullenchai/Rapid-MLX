@@ -15,6 +15,23 @@ struct ChatViewModelOwnerRoutingTests {
         await client.enableTurnSubstitution()
         return client
     }
+    @Test("Only a successful non-empty owner reply advances the connection hint", arguments: ["Hi", "", "   ", "failure"])
+    func connectionHintReplySignal(text: String) async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let events = OwnerChatSessionTests()
+        await client.setFrames([
+            events.frame(#"{"type":"text.delta","part_id":"p","text":"\#(text)"}"#, 1),
+            events.frame(text == "failure"
+                ? #"{"type":"turn.terminal","outcome":"error","error_code":"internal"}"#
+                : #"{"type":"turn.terminal","outcome":"completed"}"#, 2)
+        ])
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        #expect(model.successfulReplyCount == 0)
+        model.send("hello", alias: "model")
+        await model._testingWaitForCurrentTurn()
+        #expect(model.successfulReplyCount == (text == "Hi" ? 1 : 0))
+    }
     @Test func fileAttachmentsUploadBeforeTurn() async throws {
         let config = config(); config.chatBackend = .ownerV1
         let client = try await fake()

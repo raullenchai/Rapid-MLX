@@ -16,6 +16,9 @@ import Observation
 @MainActor
 @Observable
 final class ChatViewModel {
+    /// Advances only for a completed, non-empty live reply, never restored history.
+    private(set) var successfulReplyCount = 0
+
     /// The ACTIVE conversation's live message buffer. All streaming /
     /// append / update goes through here; ``persistActive()`` snapshots it
     /// into ``conversations`` + disk at each turn boundary (M3 history).
@@ -1685,6 +1688,10 @@ final class ChatViewModel {
                 messages.replaceSubrange(index..<messages.count, with: rows)
                 treeShapeVersion += 1
                 if snapshot.state == .finished {
+                    if !Task.isCancelled,
+                       rows.contains(where: { $0.role == .assistant && $0.status == .complete && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                        successfulReplyCount += 1
+                    }
                     if let row = rows.last(where: { $0.role == .assistant && $0.status == .complete && !$0.content.isEmpty }),
                        let reader = await session.completedGenerationReader() { completedGeneration = (reader, row.id) }
                     break
@@ -2940,6 +2947,7 @@ final class ChatViewModel {
                    let delivered = currentMessage(index: currentPlaceholder),
                    delivered.status == .complete,
                    !delivered.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    successfulReplyCount += 1
                     if usedImageInput { onImageReplyDelivered() }
                     else { onProductValueDelivered(.chatReply) }
                 }

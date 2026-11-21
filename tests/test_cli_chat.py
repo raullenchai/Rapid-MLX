@@ -725,51 +725,103 @@ def test_chat_attach_with_explicit_model_does_not_override_it(monkeypatch):
 # ----------------------------------------------------------------------
 # First-run guide (P0-3): one-time "connect your agent" tip on chat exit
 # ----------------------------------------------------------------------
-def test_chat_exit_agent_tip_fires_once_after_response(monkeypatch, tmp_path, capsys):
-    """After a session that produced a response, the one-time agent tip prints
-    on exit — and does NOT re-appear on the next session (marker claimed)."""
-    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
-    # Force the interactive path so the TTY-gated tip runs under capsys.
-    monkeypatch.setattr(
-        "rapid_mlx.chat_render.supports_rich_output", lambda *_a, **_k: True
-    )
+@pytest.mark.parametrize("agents", [[], ["codex", "claude-code"]])
+def test_chat_exit_agent_tip_fires_once_after_response(monkeypatch, tmp_path, agents):
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: agents)
+    events = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track.track", lambda *a: events.append(a))
 
-    canned = [_delta("Hi there!")]
-    with _fake_server(canned) as (port, _payloads):
-        inputs = iter(["hello", "exit"])
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    for attempt in range(2):
+        out = Terminal()
+        with _fake_server([_delta("Hi there!")]) as (port, _):
+            inputs = iter(["hello", "exit"])
+            monkeypatch.setattr(
+                "builtins.input", lambda _p="", inputs=inputs: next(inputs)
+            )
+            with patch.object(sys, "stdout", out):
+                cli.chat_command(_ns_for_chat(port))
+        output = out.getvalue()
+        assert ("This tip appears only once" in output) == (attempt == 0)
+        if attempt == 0:
+            assert output.index("Hi there!") < output.index("Next:")
+            if agents:
+                assert "rapid-mlx launch codex ; rapid-mlx launch claude-code" in output
+            else:
+                assert "Start a stable server: rapid-mlx serve <model>" in output
+                assert "rapid-mlx agents" in output
+    assert events == [("onboarding_next_step_shown", {})]
+    assert (tmp_path / "serve_next_tip_shown").exists()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "no_reply",
+        "empty",
+        "failure",
+        "stdout",
+        "stdin",
+        "ci",
+        "github",
+        "integrated",
+        "serve_seen",
+        "unwritable",
+    ],
+)
+def test_chat_exit_connection_hint_suppressed(monkeypatch, tmp_path, reason):
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: reason != "stdin")
+    monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: [])
+    events = []
+    monkeypatch.setattr("rapid_mlx.telemetry.track.track", lambda *a: events.append(a))
+    if reason in {"ci", "github"}:
+        monkeypatch.setenv("CI" if reason == "ci" else "GITHUB_ACTIONS", "1")
+    if reason in {"integrated", "serve_seen"}:
+        (
+            tmp_path
+            / (
+                "first_integration_seen"
+                if reason == "integrated"
+                else "serve_next_tip_shown"
+            )
+        ).touch()
+    if reason == "unwritable":
+
+        def fail():
+            raise OSError("unavailable")
+
+        monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", fail)
+
+    class Output(io.StringIO):
+        def isatty(self):
+            return reason != "stdout"
+
+    out = Output()
+    with _fake_server([_delta(None if reason == "empty" else "ok")]) as (port, _):
+        inputs = iter(["exit"] if reason == "no_reply" else ["hello", "exit"])
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
-        cli.chat_command(_ns_for_chat(port))
-    # Both detected-agent and generic tips point to a persistent server and
-    # the agent setup commands; neither depends on runner-installed agents.
-    first_output = capsys.readouterr().out
-    assert "rapid-mlx serve <model>; then rapid-mlx agents" in first_output
-
-    with _fake_server(canned) as (port2, _payloads2):
-        inputs2 = iter(["hey", "exit"])
-        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs2))
-        cli.chat_command(_ns_for_chat(port2))
-    assert (
-        "rapid-mlx serve <model>; then rapid-mlx agents" not in capsys.readouterr().out
-    )
-
-
-def test_chat_exit_agent_tip_skipped_when_no_response(monkeypatch, tmp_path, capsys):
-    """Immediate exit (no response produced) → no tip, and the one-time marker
-    is NOT consumed, so a later real session can still show it."""
-    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(
-        "rapid_mlx.chat_render.supports_rich_output", lambda *_a, **_k: True
-    )
-
-    with _fake_server([_delta("unused")]) as (port, _payloads):
-        inputs = iter(["exit"])
-        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
-        cli.chat_command(_ns_for_chat(port))
-    assert (
-        "rapid-mlx serve <model>; then rapid-mlx agents" not in capsys.readouterr().out
-    )
-    # Marker never created → the one-time chance is intact.
-    assert not (tmp_path / "state" / "chat_agent_tip_shown").exists()
+        if reason == "failure":
+            monkeypatch.setattr(
+                cli,
+                "_stream_chat_response",
+                lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("failed")),
+            )
+        with patch.object(sys, "stdout", out):
+            cli.chat_command(_ns_for_chat(port))
+    assert "This tip appears only once" not in out.getvalue()
+    assert not events
+    if reason != "serve_seen":
+        assert not (tmp_path / "serve_next_tip_shown").exists()
 
 
 def test_chat_command_system_prompt_prepended(monkeypatch):
