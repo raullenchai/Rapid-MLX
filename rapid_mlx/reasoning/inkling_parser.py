@@ -106,6 +106,7 @@ class InklingReasoningParser(ReasoningParser):
     def reset_state(self):
         self.blocks = InklingBlocks()
         self.tool = False
+        self.tool_view_noncontent = False
         self.reasoning_whitespace = ""
 
     def adjust_request(self, request):
@@ -118,12 +119,15 @@ class InklingReasoningParser(ReasoningParser):
             if kind == "marker":
                 if value != THINKING:
                     self.reasoning_whitespace = ""
-                if value == TOOL:
-                    self.tool = True
+                # Preserve any boundary closing a tool block so the second
+                # parser pass can validate it before consuming the next block.
+                if self.tool or self.tool_view_noncontent or value == TOOL:
                     segments.append(("content", value))
-                elif self.tool and value in (END, SAMPLING_END):
-                    segments.append(("content", value))
-                    self.tool = False
+                    # If the forwarded closer enters a header or reasoning
+                    # block, also forward its exit: its body is stripped here,
+                    # but the tool pass still needs to return to content.
+                    self.tool_view_noncontent = value in (MESSAGE, THINKING)
+                self.tool = value == TOOL
                 continue
             if kind == "reasoning":
                 value = self.reasoning_whitespace + value

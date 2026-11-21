@@ -4,7 +4,7 @@
 import json
 import uuid
 
-from ..reasoning.inkling_parser import END, SAMPLING_END, TOOL, InklingBlocks
+from ..reasoning.inkling_parser import TOOL, InklingBlocks
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -68,11 +68,9 @@ class InklingToolParser(ToolParser):
 
         for kind, value in events:
             if kind == "marker":
+                close()
                 if value == TOOL:
-                    close()
                     self.payload = ""
-                elif value in (END, SAMPLING_END):
-                    close()
             elif kind == "tool" and self.payload is not None:
                 self.payload += value
             elif kind == "content":

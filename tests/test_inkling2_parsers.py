@@ -95,6 +95,78 @@ def test_tools(width, count):
     )
 
 
+@pytest.mark.parametrize("width", [1, 7, 31, 1000])
+@pytest.mark.parametrize("through_reasoning", [False, True])
+@pytest.mark.parametrize(
+    "following,secret,count",
+    [
+        (T + "Done", "", 1),
+        (R + "Secret" + T + "Done", "Secret", 1),
+        (M + "header" + T + "Done", "", 1),
+        (
+            C + '{"name":"read_file","args":{"path":"sample.txt"}}' + E + T + "Done",
+            "",
+            2,
+        ),
+        (E + T + "Done", "", 1),
+        (S + T + "Done", "", 1),
+        ("<|content_invoke_tool_text|>" + "Done", "", 1),
+        ("<|content_tool_error|>" + "Done", "", 1),
+    ],
+)
+def test_new_block_closes_tool(width, through_reasoning, following, secret, count):
+    from tests.parser_migration.harness import norm
+
+    raw = CALL[: -len(E)] + following
+    reasoning = get_parser("inkling")() if through_reasoning else None
+    tool = ToolParserManager.get_tool_parser("inkling")()
+    if reasoning:
+        r, c = reasoning.extract_reasoning(raw)
+        assert (r or "") == secret
+    else:
+        c = raw
+    complete = tool.extract_tool_calls(c)
+    expected_calls = [["read_file", {"path": "sample.txt"}]] * count
+    assert complete.content == "Done"
+    assert [
+        [v["name"], json.loads(v["arguments"])] for v in complete.tool_calls
+    ] == expected_calls
+
+    tool_text = streamed_reasoning = ""
+    packets = []
+
+    def consume(msg):
+        nonlocal tool_text, streamed_reasoning
+        if not msg:
+            return
+        streamed_reasoning += msg.reasoning or ""
+        delta = msg.content or ""
+        out = tool.extract_tool_calls_streaming(tool_text, tool_text + delta, delta)
+        tool_text += delta
+        if out:
+            packets.append({"choices": [{"delta": out}]})
+
+    for pos in range(0, len(raw), width):
+        chunk = raw[pos : pos + width]
+        consume(
+            reasoning.extract_reasoning_streaming(raw[:pos], raw[: pos + width], chunk)
+            if reasoning
+            else SimpleNamespace(reasoning=None, content=chunk)
+        )
+    if reasoning:
+        consume(reasoning.finish_stream())
+        assert reasoning.tool is False
+    # The new block closes and validates the call before stream finalization.
+    assert tool.payload is None
+    assert tool.finalize_legacy_raw_stream(tool_text) is None
+    assert streamed_reasoning == (secret if through_reasoning else "")
+    assert norm(packets, "chat", True) == {
+        "reasoning": "",
+        "content": "Done",
+        "calls": expected_calls,
+    }
+
+
 @pytest.mark.parametrize(
     "payload", ["oops", '{"name":"f","args":', "[]", '{"args":{}}', '{"name":""}']
 )
