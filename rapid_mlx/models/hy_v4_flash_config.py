@@ -128,6 +128,8 @@ class ModelArgs:
             raise ValueError("Hy4 Flash requires multiple residual streams")
         if any(i < 1 or i > args.num_hidden_layers for i in args.engram_layer_ids):
             raise ValueError("Invalid one-based Engram layer id")
+        if args.engram_layer_ids and not 0 <= args.engram_pad_id < args.vocab_size:
+            raise ValueError("Hy4 Flash engram_pad_id is outside the vocabulary")
         return args
 
 

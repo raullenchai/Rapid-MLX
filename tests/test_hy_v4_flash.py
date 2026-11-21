@@ -536,6 +536,8 @@ def test_config_defaults_nested_and_rejection():
         dict(sliding_window=0),
         dict(hc_mult=1),
         dict(engram_layer_ids=[0]),
+        dict(engram_layer_ids=[1], engram_pad_id=-1),
+        dict(engram_layer_ids=[1], vocab_size=16, engram_pad_id=16),
     ]
     for config in cases:
         with pytest.raises(ValueError):
