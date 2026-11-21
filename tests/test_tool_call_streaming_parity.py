@@ -149,6 +149,12 @@ def _extract_stream(parser_name: str, text: str) -> list:
 # --------------------------------------------------------------------------
 PARITY_FIXTURES: list = [
     (
+        "inkling",
+        "inkling_native",
+        '<|message_model|>run<|content_invoke_tool_json|>{"name":"run","args":{"text":"hello"}}<|end_message|>',
+        [("run", {"text": "hello"})],
+    ),
+    (
         "raon_1",
         "tool_call_xml_body",
         "<tool_call>\n<function=run>\n<parameter=text>\nhello\nworld\n</parameter>\n</function>\n</tool_call>",

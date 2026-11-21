@@ -1269,8 +1269,8 @@ def _detect_metadata_config(
 
     if "inkling2_loop" in model_types:
         settings.update(
-            tool_call_parser=None,
-            reasoning_parser=None,
+            tool_call_parser="inkling",
+            reasoning_parser="inkling",
             is_hybrid=True,
             is_hybrid_explicit=True,
             is_moe=True,

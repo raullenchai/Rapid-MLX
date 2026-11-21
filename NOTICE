@@ -274,3 +274,12 @@ in `rapid_mlx/chat_runtime/LICENSE-PROMPTS`.
   in that package's LICENSE/NOTICE.
   Model weights are separate and subject to the MiniMax-H3-Image Community
   License; products using them must prominently display "MiniMax-H3-Image".
+
+Inkling typed-content parsers
+============================
+
+rapid_mlx/reasoning/inkling_parser.py and
+rapid_mlx/tool_parsers/inkling_tool_parser.py adapt the typed-block transition
+semantics and JSON argument conversion from vLLM vllm/parser/inkling.py.
+Copyright contributors to the vLLM project. Licensed under Apache-2.0.
+Modified for Rapid-MLX parser interfaces, incremental text framing, and lifecycle.
