@@ -137,7 +137,8 @@ def test_supported_load_skips_table_and_bounds_eval(loader, checkpoint, monkeypa
     seen = fake_model(loader, monkeypatch)
     opened, evaluated = [], []
 
-    def load_shard(name, **kwargs):
+    def load_shard(name, *, format, stream):
+        assert format == "safetensors" and stream == loader.mx.cpu
         opened.append(Path(name).name)
         return {"dense.weight": np.ones((2, 2))}
 
@@ -165,6 +166,53 @@ def test_supported_load_skips_table_and_bounds_eval(loader, checkpoint, monkeypa
     )
     model, _ = loader.load(path, engram_ssd_offload=True)
     model.layers[1].engram_layer.multi_head_embedding.embedding.close()
+
+
+@pytest.fixture(scope="module")
+def native_mx():
+    return pytest.importorskip("mlx.core", exc_type=ImportError)
+
+
+@pytest.mark.parametrize("hub_cache", [False, True])
+@pytest.mark.parametrize("offload", [False, True])
+def test_load_extensionless_hub_blobs(
+    native_mx, checkpoint, monkeypatch, request, hub_cache, offload
+):
+    # Capture native MLX before the portable loader fixture replaces its modules.
+    load_shard, cpu = native_mx.load, native_mx.cpu
+    loader = request.getfixturevalue("loader")
+    path, _, _, _ = checkpoint
+    if hub_cache:
+        import hashlib
+
+        repository = path / "models--org--name"
+        blobs = repository / "blobs"
+        snapshot = repository / "snapshots" / "rev"
+        blobs.mkdir(parents=True)
+        snapshot.mkdir(parents=True)
+        for source in list(path.iterdir()):
+            if source.is_file():
+                digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                source.replace(blobs / digest)
+                (snapshot / source.name).symlink_to("../../blobs/" + digest)
+        path = snapshot
+    fake_model(loader, monkeypatch)
+
+    def native_load(name, **kwargs):
+        assert Path(name) == Path(name).resolve()
+        assert bool(Path(name).suffix) is not hub_cache
+        return load_shard(name, **kwargs)
+
+    monkeypatch.setattr(loader.mx, "load", native_load, raising=False)
+    monkeypatch.setattr(loader.mx, "cpu", cpu)
+    model, _ = loader.load(path, engram_ssd_offload=offload)
+    try:
+        np.testing.assert_array_equal(
+            np.array(model.values["dense.weight"]), np.ones((2, 2))
+        )
+    finally:
+        if offload:
+            model.layers[1].engram_layer.multi_head_embedding.embedding.close()
 
 
 def test_bounded_groups_count_bytes_empty_and_oversized(loader, monkeypatch):
