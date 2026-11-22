@@ -271,13 +271,15 @@ struct DictationTests {
     // MARK: - Hotkey
 
     @MainActor
+    // The activation case broadcasts to controllers in sibling cases.
     @Test("launch catalog unavailability preserves intent and retries without a toggle",
+          .serialized,
           arguments: ["ready", "idle", "revalidate", "activation", "stopped", "crashed", "missing"])
     func launchCatalogRecovery(recovery: String) async {
-        let defaults = UserDefaults.standard
-        let saved = defaults.object(forKey: "dictation.enabled")
+        let suiteName = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(true, forKey: "dictation.enabled")
-        defer { defaults.set(saved, forKey: "dictation.enabled") }
         var available = false
         var catalogLoads = 0
         var prewarms = 0
@@ -287,6 +289,7 @@ struct DictationTests {
                 testingState: recovery == "missing" ? .missing : .idle,
                 binaryPath: recovery == "missing" ? nil : Self.tempDirectory().appendingPathComponent("rapid-mlx")
             ),
+            defaults: defaults,
             testingModelAlias: "whisper-small",
             testingPermissions: { (true, true) },
             testingPrewarm: { prewarms += 1; return true },
@@ -354,16 +357,17 @@ struct DictationTests {
     @Test("only a confirmed absent model clears launch intent",
           arguments: [false, true], ["none", "stopped", "crashed"])
     func launchPrerequisiteIntent(modelAbsent: Bool, terminal: String) async {
-        let defaults = UserDefaults.standard
-        let saved = defaults.object(forKey: "dictation.enabled")
+        let suiteName = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(true, forKey: "dictation.enabled")
-        defer { defaults.set(saved, forKey: "dictation.enabled") }
         var registrations = 0
         @MainActor final class Permissions { var accessibility = false }
         let permissions = Permissions()
         permissions.accessibility = modelAbsent
         let controller = DictationController(
             server: ServerManager(testingState: .idle, binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")),
+            defaults: defaults,
             testingModelAlias: "whisper-small",
             testingPermissions: { (true, permissions.accessibility) },
             testingHotkeyStart: { registrations += 1; return true },

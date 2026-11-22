@@ -66,7 +66,7 @@ final class DictationController {
     var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
-            UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
+            defaults.set(isEnabled, forKey: Keys.enabled)
             if isEnabled {
                 scheduleModelPreparation()
             } else {
@@ -78,7 +78,7 @@ final class DictationController {
     var trigger: DictationHotkey.Trigger {
         didSet {
             guard trigger != oldValue else { return }
-            UserDefaults.standard.set(trigger.rawValue, forKey: Keys.trigger)
+            defaults.set(trigger.rawValue, forKey: Keys.trigger)
             hotkey.trigger = trigger
         }
     }
@@ -86,7 +86,7 @@ final class DictationController {
     var modelAlias: String {
         didSet {
             guard modelAlias != oldValue else { return }
-            UserDefaults.standard.set(modelAlias, forKey: Keys.model)
+            defaults.set(modelAlias, forKey: Keys.model)
             // `modelSelected` is part of readiness, so the snapshot the UI
             // renders from has to move with it — otherwise picking a model
             // leaves the Enable switch stuck until something else refreshes.
@@ -107,7 +107,7 @@ final class DictationController {
     var archiveAudio: Bool {
         didSet {
             guard archiveAudio != oldValue else { return }
-            UserDefaults.standard.set(archiveAudio, forKey: Keys.archiveAudio)
+            defaults.set(archiveAudio, forKey: Keys.archiveAudio)
         }
     }
 
@@ -118,6 +118,7 @@ final class DictationController {
         static let archiveAudio = "dictation.archiveAudio"
     }
 
+    private let defaults: UserDefaults
     private let server: ServerManager
     private let client: AudioClient
     private let hotkey = DictationHotkey()
@@ -236,6 +237,7 @@ final class DictationController {
     init(
         server: ServerManager,
         client: AudioClient = AudioClient(),
+        defaults: UserDefaults = .standard,
         vocabulary: DictationVocabulary? = nil,
         history: DictationHistory? = nil,
         testingEnabled: Bool? = nil,
@@ -257,6 +259,7 @@ final class DictationController {
             await ModelCatalog.audioEntriesIfAvailable(binary: $0)
         }
     ) {
+        self.defaults = defaults
         self.modelCacheRoot = modelCacheRoot
         self.server = server
         self.client = client
@@ -274,7 +277,6 @@ final class DictationController {
         self.testingTranscribeCancel = testingTranscribeCancel
         self.onProductValueDelivered = onProductValueDelivered
 
-        let defaults = UserDefaults.standard
         let restoredIsEnabled = testingEnabled ?? defaults.bool(forKey: Keys.enabled)
         self.isEnabled = restoredIsEnabled
         // Persisted enabled intent is a launch-time fact. Establish the same
