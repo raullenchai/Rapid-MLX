@@ -74,7 +74,7 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
+    "layers.py": "4f9ab870f5607f1af50d3d9c2cc5f89b76543003ffedb86f4921d384bfc883dd",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
     "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
@@ -399,14 +399,7 @@ def compile_traces(runtime):
 
     names = {
         name for name, fn in vars(layers).items() if hasattr(fn, "__wrapped__")
-    } | {
-        "_decode_log_scale",
-        "_l2_clip",
-        "_softcapped_swiglu",
-        "_forward",
-        "_mlp_states",
-        "_attention_states",
-    }
+    } | {"_decode_log_scale", "_l2_clip", "_softcapped_swiglu"}
     traces = Counter()
     previous = sys.getprofile()
 
@@ -984,116 +977,6 @@ def test_cached_decode_matches_full(runtime, batch, loop):
 
 
 @pytest.mark.requires_mlx
-@pytest.mark.parametrize("batch", [1, 2])
-@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
-@pytest.mark.parametrize("tie_delta", [0.0, 2**-20, -(2**-20)])
-def test_compiled_router_preserves_cutoff_ties(
-    metal_runtime, monkeypatch, batch, dtype, tie_delta
-):
-    mx, inkling2 = metal_runtime
-    from rapid_mlx.models.inkling2 import layers
-
-    # Exercise the production fallback even when the optional helper exists.
-    monkeypatch.setattr(layers, "expert_routing", None)
-    router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
-    mx.random.seed(17)
-    weight = 0.1 * mx.random.normal(router.weight.shape)
-    # Duplicate rows make the logits identical for experts 1 and 2 for every
-    # token, including after bf16 input rounding. Biases force expert 0 above
-    # and expert 3 below them, placing the tie at the top-2 cutoff.
-    router.weight = mx.concatenate([weight[:2], weight[1:2], weight[3:]], axis=0)
-    router.e_score_correction_bias = mx.array([2.0, 0.125, 0.125 + tie_delta, -2.0])
-    hidden = mx.random.normal((batch, 1, router.weight.shape[-1])).astype(
-        getattr(mx, dtype)
-    )
-    mx.eval(router.parameters(), hidden)
-
-    corrected = (
-        mx.sigmoid(hidden.astype(mx.float32) @ router.weight.T)
-        + router.e_score_correction_bias
-    )
-    if tie_delta == 0:
-        assert mx.array_equal(corrected[..., 1], corrected[..., 2]).item()
-    else:
-        gap = corrected[..., 2] - corrected[..., 1]
-        assert mx.all(gap * tie_delta > 0).item()
-        assert mx.all(mx.abs(gap) < 2**-18).item()
-    assert mx.all(corrected[..., 0] > corrected[..., 1:3].max(axis=-1)).item()
-    assert mx.all(corrected[..., 3] < corrected[..., 1:3].min(axis=-1)).item()
-
-    eager_indices, eager_weights = router(hidden)
-    mx.eval(eager_indices, eager_weights)
-    compiled = mx.compile(lambda x: router(x), inputs=router.state, shapeless=False)
-    compiled_indices, compiled_weights = compiled(hidden)
-    mx.eval(compiled_indices, compiled_weights)
-    assert mx.array_equal(compiled_indices, eager_indices).item()
-    assert compiled_weights.dtype == eager_weights.dtype == mx.float32
-    assert mx.array_equal(
-        compiled_weights.view(mx.uint32), eager_weights.view(mx.uint32)
-    ).item()
-
-
-@pytest.mark.requires_mlx
-@pytest.mark.parametrize("batch", [1, 2])
-@pytest.mark.parametrize("loop", [False, True])
-def test_block_compile_decode_parity(metal_runtime, monkeypatch, batch, loop):
-    mx, _ = metal_runtime
-    from mlx.utils import tree_flatten, tree_unflatten
-
-    from rapid_mlx.models.inkling2 import layers
-
-    monkeypatch.setattr(layers, "expert_routing", None)
-    model = create_model(metal_runtime, dtype=mx.float32, loop=loop)
-    tokens = mx.random.randint(0, 120, (batch, 16))
-    reference_cache, compiled_cache = model.make_cache(), model.make_cache()
-
-    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
-    reference = model(tokens[:, :6], cache=reference_cache)
-    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
-    actual = model(tokens[:, :6], cache=compiled_cache)
-    assert mx.array_equal(actual, reference).item()
-    decoder_layers = model.model.language_model.layers
-    assert all(
-        not hasattr(layer.mlp, "_block_compiled__forward") for layer in decoder_layers
-    )
-
-    # Cross the rotating KV window and exercise messages on repeated layer visits.
-    for step in range(6, 16):
-        if step == 10:
-            # Same shapes, new arrays: warmed graphs must read live weights,
-            # including nested expert weights, rather than frozen trace values.
-            model.update(
-                tree_unflatten(
-                    [
-                        (name, weight * 1.01)
-                        for name, weight in tree_flatten(model.parameters())
-                    ]
-                )
-            )
-            mx.eval(model.parameters())
-        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
-        reference = model(tokens[:, step : step + 1], cache=reference_cache)
-        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
-        actual = model(tokens[:, step : step + 1], cache=compiled_cache)
-        assert mx.allclose(actual, reference, atol=1e-4, rtol=1e-4).item()
-        for compiled, eager in zip(compiled_cache, reference_cache):
-            assert compiled[0].offset == eager[0].offset == step + 1
-            for compiled_state, eager_state in zip(compiled[0].state, eager[0].state):
-                assert mx.allclose(
-                    compiled_state, eager_state, atol=1e-4, rtol=1e-4
-                ).item()
-            for compiled_state, eager_state in zip(compiled[1].cache, eager[1].cache):
-                assert mx.allclose(
-                    compiled_state, eager_state, atol=1e-4, rtol=1e-4
-                ).item()
-
-    for layer in decoder_layers:
-        assert hasattr(layer.mlp, "_block_compiled__forward")
-        assert hasattr(layer, "_block_compiled__mlp_states")
-        assert hasattr(layer, "_block_compiled__attention_states")
-
-
-@pytest.mark.requires_mlx
 @pytest.mark.parametrize("batch", [1, 3])
 def test_fast_decode_model_parity(metal_runtime, monkeypatch, batch):
     mx, _ = metal_runtime
@@ -1159,14 +1042,11 @@ def test_fast_decode_specializations_stay_bounded(
             assert all(c[0].offset == step + 1 for c in cache)
             if expected_keys is None:
                 expected_keys = {name: seen.copy() for name, seen in keys.items()}
+                expected_traces = compile_traces.copy()
+            # A single warmed decode step covers every model-constant layer
+            # variant. Neither growing KV banks nor changing B adds a key.
             assert keys == expected_keys
-            traces = compile_traces.copy()
-            if expected_traces is not None:
-                assert traces == expected_traces
-        if expected_traces is None:
-            # Warm every batch size once: block graphs trace per input shape.
-            # Growing KV banks and revisiting these sizes must add no traces.
-            expected_traces = traces.copy()
+            assert compile_traces == expected_traces
     assert all(
         seen for name, seen in keys.items() if name != "_relative_attention_kernel"
     )

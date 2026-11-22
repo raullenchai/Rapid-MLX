@@ -59,38 +59,6 @@ __all__ = [
 _ROUTER_SCORE_EPS = 1e-20
 
 
-def _block_decode_only(fn):
-    """Compile stateless module methods for fast single-token decode.
-
-    The live state dictionary supplies weights as compile inputs, including
-    weights replaced by loading or quantization after module construction.
-    Python configuration attributes (scaling factors, eps, activation choices)
-    and kernel/backend choices are fixed at trace time per shape. Changing them
-    after warm-up requires clearing the cached _block_compiled_* attributes;
-    no current serving path mutates these configuration attributes.
-    Only call this on methods without cache access or Python state mutation.
-    """
-    name = f"_block_compiled_{fn.__name__}"
-
-    @wraps(fn)
-    def call(self, hidden_states, *args):
-        if not (
-            hidden_states.shape[1] == 1 and _fast_decode_enabled() and _use_kernels()
-        ):
-            return fn(self, hidden_states, *args)
-        compiled = getattr(self, name, None)
-        if compiled is None:
-            # Each batch size gets its own trace to avoid stale broadcast
-            # shapes from shapeless compilation.
-            compiled = mx.compile(partial(fn, self), inputs=self.state, shapeless=False)
-            # Wrapper setup happens outside the traced function. Private
-            # attributes are excluded from nn.Module's parameter traversal.
-            setattr(self, name, compiled)
-        return compiled(hidden_states, *args)
-
-    return call
-
-
 def _fast_decode_enabled() -> bool:
     return os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0"
 
@@ -740,9 +708,8 @@ class TopKRouter(nn.Module):
         return cast(
             tuple[mx.array, mx.array],
             _route_weights(
-                # Fast decode runs this sigmoid inside the compiled MoE block.
-                # Metal routing tests guard identical compiled/eager expert
-                # selection and bitwise weights, including top-k cutoff ties.
+                # Keep sigmoid eager: tiny compiler exp differences can change
+                # expert selection at ties, rather than merely round the output.
                 mx.sigmoid(logits),
                 self.e_score_correction_bias,
                 self.top_k,
@@ -762,18 +729,14 @@ class SparseMoeBlock(nn.Module):
         group = self.sharding_group
         if group is not None:
             hidden_states = sum_gradients(group)(hidden_states)
-        final_hidden_states = self._forward(hidden_states)
+        selected_experts, routing_weights = self.gate(hidden_states)
+        expert_states = self.experts(hidden_states, selected_experts)
+        final_hidden_states = _combine_experts(expert_states, routing_weights)
         if group is not None:
             final_hidden_states = mx.distributed.all_sum(
                 final_hidden_states, group=group
             )
         return final_hidden_states.astype(hidden_states.dtype)
-
-    @_block_decode_only
-    def _forward(self, hidden_states):
-        selected_experts, routing_weights = self.gate(hidden_states)
-        expert_states = self.experts(hidden_states, selected_experts)
-        return _combine_experts(expert_states, routing_weights)
 
 
 class BlockAttentionResidual(nn.Module):
@@ -889,19 +852,6 @@ class DecoderLayer(nn.Module):
             self.v_message_gate(v_states, messages[..., 2, :]),
         )
 
-    @_block_decode_only
-    def _mlp_states(self, hidden_states, block_states, messages, dtype_source):
-        normed_states = unweighted_rms_norm(hidden_states)
-        hidden_states = self.mlp_input(block_states, normed_states)[..., 0, :]
-        if messages is not None:
-            hidden_states = self.mlp_message_gate(hidden_states, messages[..., 3, :])
-        return _norm_cast(
-            hidden_states,
-            self.post_attention_layernorm.weight,
-            self.post_attention_layernorm.eps,
-            dtype_source.dtype,
-        )
-
     def __call__(
         self,
         hidden_states: mx.array,
@@ -911,6 +861,7 @@ class DecoderLayer(nn.Module):
         conv_mask: mx.array | None = None,
         messages: mx.array | None = None,
     ) -> tuple[mx.array, mx.array]:
+        dtype = hidden_states.dtype
         conv = cache[1] if cache is not None else None
         conv_states: list[mx.array | None] = (
             list(conv.cache) if conv is not None else [None] * 4
@@ -942,9 +893,18 @@ class DecoderLayer(nn.Module):
         else:
             residual = hidden_states = block_residual.astype(mx.float32) + hidden_states
 
+        normed_states = unweighted_rms_norm(hidden_states)
         assert block_states is not None
+        hidden_states = self.mlp_input(block_states, normed_states)[..., 0, :]
+        if messages is not None:
+            hidden_states = self.mlp_message_gate(hidden_states, messages[..., 3, :])
         hidden_states = self.mlp(
-            self._mlp_states(hidden_states, block_states, messages, block_residual)
+            _norm_cast(
+                hidden_states,
+                self.post_attention_layernorm.weight,
+                self.post_attention_layernorm.eps,
+                dtype,
+            )
         )
         hidden_states, conv_states[3] = self.post_mlp_convolution(
             hidden_states,
@@ -977,15 +937,6 @@ class SlidingDecoderLayer(DecoderLayer):
         conv_mask: mx.array | None,
         messages: mx.array | None,
     ) -> mx.array:
-        return self.self_attn(
-            *self._attention_states(hidden_states, attention_inputs, messages),
-            cache=cache,
-            conv_states=conv_states,
-            conv_mask=conv_mask,
-        )
-
-    @_block_decode_only
-    def _attention_states(self, hidden_states, attention_inputs, messages):
         dtype = hidden_states.dtype
         if attention_inputs is not None:
             hidden_states = attention_inputs[..., 0, :]
@@ -1006,7 +957,12 @@ class SlidingDecoderLayer(DecoderLayer):
                 )
                 for s in states
             ]
-        return tuple(states)
+        return self.self_attn(
+            *states,
+            cache=cache,
+            conv_states=conv_states,
+            conv_mask=conv_mask,
+        )
 
 
 class FullDecoderLayer(DecoderLayer):
@@ -1027,15 +983,6 @@ class FullDecoderLayer(DecoderLayer):
         conv_mask: mx.array | None,
         messages: mx.array | None,
     ) -> mx.array:
-        return self.self_attn(
-            *self._attention_states(hidden_states, attention_inputs, messages),
-            cache=cache,
-            conv_states=conv_states,
-            conv_mask=conv_mask,
-        )
-
-    @_block_decode_only
-    def _attention_states(self, hidden_states, attention_inputs, messages):
         dtype = hidden_states.dtype
         if attention_inputs is None:
             query_states = key_states = value_states = hidden_states
@@ -1047,7 +994,7 @@ class FullDecoderLayer(DecoderLayer):
             query_states, key_states, value_states = self._mix_messages(
                 (query_states, key_states, value_states), messages
             )
-        return (
+        return self.self_attn(
             _norm_cast(
                 query_states,
                 self.q_input_layernorm.weight,
@@ -1066,4 +1013,7 @@ class FullDecoderLayer(DecoderLayer):
                 self.v_input_layernorm.eps,
                 dtype,
             ),
+            cache=cache,
+            conv_states=conv_states,
+            conv_mask=conv_mask,
         )
