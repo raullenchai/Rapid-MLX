@@ -272,13 +272,14 @@ struct DictationTests {
 
     @MainActor
     @Test("launch catalog unavailability preserves intent and retries without a toggle",
-          arguments: ["ready", "idle", "revalidate", "activation", "stopped", "missing"])
+          arguments: ["ready", "idle", "revalidate", "activation", "stopped", "crashed", "missing"])
     func launchCatalogRecovery(recovery: String) async {
         let defaults = UserDefaults.standard
         let saved = defaults.object(forKey: "dictation.enabled")
         defaults.set(true, forKey: "dictation.enabled")
         defer { defaults.set(saved, forKey: "dictation.enabled") }
         var available = false
+        var catalogLoads = 0
         var prewarms = 0
         var registrations = 0
         let controller = DictationController(
@@ -287,10 +288,13 @@ struct DictationTests {
                 binaryPath: recovery == "missing" ? nil : Self.tempDirectory().appendingPathComponent("rapid-mlx")
             ),
             testingModelAlias: "whisper-small",
-            testingReadiness: .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: false),
+            testingPermissions: { (true, true) },
             testingPrewarm: { prewarms += 1; return true },
             testingHotkeyStart: { registrations += 1; return true },
-            audioCatalogLoader: { _ in available ? [cachedAudioEntry(alias: "whisper-small")] : nil }
+            audioCatalogLoader: { _ in
+                catalogLoads += 1
+                return available ? [cachedAudioEntry(alias: "whisper-small")] : nil
+            }
         )
         defer { controller.disable() }
 
@@ -306,19 +310,20 @@ struct DictationTests {
         #expect(defaults.bool(forKey: "dictation.enabled"))
         #expect(controller.lastError == nil)
         #expect(prewarms == 0)
+        #expect(catalogLoads == (recovery == "missing" ? 0 : 2))
         guard recovery != "missing" else { return }
 
         available = true
-        controller.testingReadiness = .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: true)
-        if recovery == "stopped" {
-            controller.serverStateDidChange(.stopped)
+        if recovery == "stopped" || recovery == "crashed" {
+            controller.serverStateDidChange(recovery == "stopped" ? .stopped : .crashed(alias: "chat-model", message: "fixture crash"))
+            controller.serverStateDidChange(.idle)
             controller.revalidate()
             await controller._testingWaitForLifecycleTask()
-            #expect(prewarms == 0, "foregrounding after Stop must not launch an audio sidecar")
+            #expect(catalogLoads == 2)
+            #expect(prewarms == 0, "foregrounding after Stop/crash must not launch an audio sidecar")
             #expect(controller.isHotkeyArmed)
-            return
-        }
-        if recovery == "activation" {
+            controller.toggleFromUI()
+        } else if recovery == "activation" {
             NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
             await waitUntil { prewarms == 1 }
         } else if recovery == "revalidate" {
@@ -332,6 +337,8 @@ struct DictationTests {
         #expect(controller.isHotkeyArmed)
         #expect(controller.phase == .idle)
         #expect(controller.lastError == nil)
+        #expect(catalogLoads == 3)
+        #expect(controller.readinessSnapshot.modelOnDisk)
         #expect(prewarms == 1)
         #expect(registrations == 1)
         if recovery == "activation" {
@@ -344,17 +351,21 @@ struct DictationTests {
     }
 
     @MainActor
-    @Test("only a confirmed absent model clears launch intent", arguments: [false, true])
-    func launchPrerequisiteIntent(modelAbsent: Bool) async {
+    @Test("only a confirmed absent model clears launch intent",
+          arguments: [false, true], ["none", "stopped", "crashed"])
+    func launchPrerequisiteIntent(modelAbsent: Bool, terminal: String) async {
         let defaults = UserDefaults.standard
         let saved = defaults.object(forKey: "dictation.enabled")
         defaults.set(true, forKey: "dictation.enabled")
         defer { defaults.set(saved, forKey: "dictation.enabled") }
         var registrations = 0
+        @MainActor final class Permissions { var accessibility = false }
+        let permissions = Permissions()
+        permissions.accessibility = modelAbsent
         let controller = DictationController(
             server: ServerManager(testingState: .idle, binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")),
             testingModelAlias: "whisper-small",
-            testingReadiness: .init(microphone: true, accessibility: modelAbsent, modelSelected: true, modelOnDisk: false),
+            testingPermissions: { (true, permissions.accessibility) },
             testingHotkeyStart: { registrations += 1; return true },
             audioCatalogLoader: { _ in
                 modelAbsent ? [ModelEntry(
@@ -366,6 +377,11 @@ struct DictationTests {
         )
         defer { controller.disable() }
         await controller.bootstrap(deferModelPreparation: true)
+        await controller.finishDeferredBootstrap()
+        if terminal != "none" {
+            controller.serverStateDidChange(terminal == "stopped" ? .stopped : .crashed(alias: "chat-model", message: "fixture crash"))
+            controller.serverStateDidChange(.idle)
+        }
         controller.revalidate()
         #expect(controller.isEnabled == !modelAbsent)
         #expect(defaults.bool(forKey: "dictation.enabled") == !modelAbsent)
@@ -375,7 +391,7 @@ struct DictationTests {
         if modelAbsent {
             #expect(controller.lastError == DictationEnablePolicy.modelNotDownloadedMessage(alias: "whisper-small"))
         } else {
-            controller.testingReadiness = .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: false)
+            permissions.accessibility = true
             controller.revalidate()
             await controller._testingWaitForLifecycleTask()
             #expect(controller.isEnabled)

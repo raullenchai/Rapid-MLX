@@ -158,8 +158,9 @@ final class DictationController {
     /// Keeping those states distinct prevents a transient CLI failure from
     /// masquerading as the user deleting every cached audio model.
     private let audioCatalogLoader: @MainActor (URL) async -> [ModelEntry]?
-    /// Mutable so state-only tests can model catalog and permission recovery.
-    internal var testingReadiness: Readiness?
+    private let testingReadiness: Readiness?
+    /// Override TCC without bypassing catalog-derived model readiness.
+    private let testingPermissions: (@MainActor () -> (microphone: Bool, accessibility: Bool))?
     private let testingPrewarm: (@MainActor () async -> Bool)?
     private let testingWarmup: (@MainActor () async -> Bool)?
     private let testingHotkeyStart: (@MainActor () -> Bool)?
@@ -241,6 +242,7 @@ final class DictationController {
         testingModelAlias: String? = nil,
         testingPhase: Phase? = nil,
         testingReadiness: Readiness? = nil,
+        testingPermissions: (@MainActor () -> (microphone: Bool, accessibility: Bool))? = nil,
         testingPrewarm: (@MainActor () async -> Bool)? = nil,
         testingWarmup: (@MainActor () async -> Bool)? = nil,
         testingHotkeyStart: (@MainActor () -> Bool)? = nil,
@@ -262,6 +264,7 @@ final class DictationController {
         self.history = history ?? DictationHistory()
         self.audioCatalogLoader = audioCatalogLoader
         self.testingReadiness = testingReadiness
+        self.testingPermissions = testingPermissions
         self.testingPrewarm = testingPrewarm
         self.testingWarmup = testingWarmup
         self.testingHotkeyStart = testingHotkeyStart
@@ -311,9 +314,10 @@ final class DictationController {
 
     var readiness: Readiness {
         if let testingReadiness { return testingReadiness }
+        let permissions = testingPermissions?()
         return Readiness(
-            microphone: DictationRecorder.microphoneAuthorization == .authorized,
-            accessibility: DictationHotkey.hasAccessibilityPermission,
+            microphone: permissions?.microphone ?? (DictationRecorder.microphoneAuthorization == .authorized),
+            accessibility: permissions?.accessibility ?? DictationHotkey.hasAccessibilityPermission,
             modelSelected: !modelAlias.isEmpty,
             modelOnDisk: catalogByAlias[modelAlias]?.cached == true
         )
@@ -433,6 +437,8 @@ final class DictationController {
             transition(to: .preparingModel, alias: modelAlias)
             scheduleModelPreparation(replacingCurrentPrewarm: true)
         case .crashed, .stopped, .idle, .missing:
+            // Activation must not resume a pending launch-time audio start
+            // after Stop/crash; the hotkey or a later `.ready` owns that retry.
             if case .stopped = newState { waitingForCatalog = false }
             if case .crashed = newState { waitingForCatalog = false }
             cancelActiveSessionForModelChange()
