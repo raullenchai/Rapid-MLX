@@ -74,8 +74,8 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "06fba1b2e3d780698575a40b3f589b509ae6c571daa2a9dcf2766eee5f55aa6f",
-    "kernels.py": "528f3396a1f46c6abd0ff65ceb99deacba9b69253eb5475674df01fd42b9f169",
+    "layers.py": "4f9ab870f5607f1af50d3d9c2cc5f89b76543003ffedb86f4921d384bfc883dd",
+    "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
     "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -244,6 +244,21 @@ def test_kernel_templates_ignore_decode_sizes(glue_loader, compat_loader):
         for batch in (1, 2, 3):
             size, length = step + 7, step + 1
             x = zeros((batch, 1, 64))
+            kernels.message_mix_decode(
+                x, x, zeros((batch, 1, 8)), zeros((64, 8)), zeros((64, 8))
+            )
+            kernels.attention_mask_decode(
+                zeros((batch, 1, 4, 8)),
+                mx.array(np.arange(batch) + size, dtype=mx.int32),
+                step,
+                size,
+                0,
+                mx.float32,
+                rotating=False,
+            )
+            kernels.route_weights_decode(
+                zeros((batch, 1, 4)), zeros((batch, 1, 2)), 2.0
+            )
             kernels.short_convolution_decode(
                 x, zeros((batch, 3, 64)), zeros((64, 4)), None, 4
             )
@@ -261,10 +276,23 @@ def test_kernel_templates_ignore_decode_sizes(glue_loader, compat_loader):
                 key_start=mx.array(np.arange(batch), dtype=mx.int32),
             )
 
-    assert len(calls) == 3
+    assert len(calls) == 6
     for name, launches in calls.items():
         assert len(launches) == 120
         assert len({tuple(call["template"]) for call in launches}) == 1, name
+    # The changing dimensions must reach the device as int32 data, while the
+    # dispatch grid and output shape still follow the current batch and cache.
+    for step in range(40):
+        for batch in (1, 2, 3):
+            size = step + 7
+            call = calls["inkling2_attention_mask_decode"][step * 3 + batch - 1]
+            args = dict(zip(["bias", "ends", "index", "sizes"], call["inputs"]))
+            np.testing.assert_array_equal(args["sizes"], [batch, size])
+            assert args["sizes"].dtype == np.int32
+            assert args["index"].dtype == np.int32 and args["index"].item() == step
+            np.testing.assert_array_equal(args["ends"], np.arange(batch) + size)
+            assert call["grid"] == (batch * 4 * size, 1, 1)
+            assert call["output_shapes"] == [(batch, 4, 1, size)]
 
 
 def test_compat_gather_rank_order(compat_loader, glue_loader):
@@ -371,7 +399,7 @@ def compile_traces(runtime):
 
     names = {
         name for name, fn in vars(layers).items() if hasattr(fn, "__wrapped__")
-    } | {"_l2_clip", "_softcapped_swiglu"}
+    } | {"_decode_log_scale", "_l2_clip", "_softcapped_swiglu"}
     traces = Counter()
     previous = sys.getprofile()
 
@@ -416,7 +444,7 @@ def test_compiled_helpers_ignore_batch_and_offsets(metal_runtime, compile_traces
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import layers
 
-    # Exercise the eager router alongside the compiled helpers.
+    # Include the CPU/fallback router even on machines with a fused router.
     # k=7 and these dimensions keep this independent of other tests' warmups.
     expected_traces = None
     for step in range(40):
@@ -424,7 +452,10 @@ def test_compiled_helpers_ignore_batch_and_offsets(metal_runtime, compile_traces
             x = mx.ones((batch, 1, 24))
             experts = mx.ones((batch, 1, 7, 24))
             weights = mx.ones((batch, 1, 7))
-            indices, routes = layers._route_weights(x, mx.zeros((24,)), 7, 2.0)
+            offsets = mx.full((batch, 1), step, dtype=mx.int32)
+            indices, routes = layers._route_weights_reference(
+                x, mx.zeros((24,)), 7, 2.0
+            )
             outputs = [
                 layers._norm(x, mx.ones((24,)), 1e-6),
                 layers._value_norm(x[..., None, :], 1e-6),
@@ -436,12 +467,15 @@ def test_compiled_helpers_ignore_batch_and_offsets(metal_runtime, compile_traces
                 ),
                 layers._scale_states(x, mx.array(1.13)),
                 layers._gate_attention(x, x),
+                layers._routing_order(x, mx.zeros((24,))),
                 layers._combine_experts(experts, weights),
                 layers._normalized_message_input(x, x),
                 layers._message_mix(x, x, x, x),
+                layers._residual_output(x, x),
                 layers._depth_attention_reference(
                     x, mx.ones((2, batch, 1, 24)), mx.ones((4, 24)), 0.2
                 ),
+                layers._decode_log_scale(offsets, mx.array(4.0), mx.array(0.1)),
                 layers._l2_clip(x, 1.0, 3.0),
                 layers._softcapped_swiglu(x, x, 4.0, 25.0),
                 indices,
@@ -626,6 +660,78 @@ def test_compiled_decode_helpers(metal_runtime, monkeypatch, dtype):
 
 
 @pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
+def test_decode_message_controller(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2.layers import MessageGate
+
+    dtype = getattr(mx, dtype)
+    mx.random.seed(38)
+    for batch, dims, rank in [(1, 17, 7), (3, 64, 8), (2, 2304, 64)]:
+        gate = MessageGate(dims, rank)
+        gate.down_proj.weight = (
+            mx.random.normal((rank, 2 * dims)) / (2 * dims) ** 0.5
+        ).astype(dtype)
+        # Strided FP32 expansion weights, as retained by cast_predicate.
+        gate.forget_gate_proj.weight = (mx.random.normal((dims, 2 * rank)) / rank**0.5)[
+            :, ::2
+        ]
+        gate.message_gate_proj.weight = (
+            mx.random.normal((dims, 2 * rank)) / rank**0.5
+        )[:, ::2]
+        for state_dtype in (mx.float32, dtype):
+            x = mx.random.normal((batch, 1, 2 * dims)).astype(state_dtype)[..., ::2]
+            message = mx.random.normal((batch, 1, 2 * dims)).astype(state_dtype)[
+                ..., ::2
+            ]
+            monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+            expected = gate(x, message)
+            monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+            actual = gate(x, message)
+            assert actual.dtype == expected.dtype == mx.float32
+            np.testing.assert_allclose(actual, expected, atol=5e-6, rtol=5e-6)
+
+
+@pytest.mark.requires_mlx
+def test_decode_router_and_positions(metal_runtime, monkeypatch):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    mx.random.seed(67)
+    for batch, experts, k in [(1, 128, 8), (3, 16, 2), (2, 65, 33)]:
+        scores = mx.sigmoid(mx.random.normal((batch, 1, experts)))
+        for bias in (mx.zeros((experts,)), mx.random.normal((experts,))):
+            monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+            expected_idx, expected = layers._route_weights(scores, bias, k, 2.3)
+            monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+            actual_idx, actual = layers._route_weights(scores, bias, k, 2.3)
+            assert mx.array_equal(actual_idx, expected_idx).item()
+            _assert_conv_close(mx, actual, expected)
+        # Every expert ties: preserve argpartition's choice and ordering.
+        tied = mx.full((batch, 1, experts), 0.5)
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+        expected_idx, expected = layers._route_weights(
+            tied, mx.zeros((experts,)), k, 2.3
+        )
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+        actual_idx, actual = layers._route_weights(tied, mx.zeros((experts,)), k, 2.3)
+        assert mx.array_equal(actual_idx, expected_idx).item()
+        _assert_conv_close(mx, actual, expected)
+
+    # All values that change between tokens are array inputs to the trace.
+    for offset in (0, 3, 5, 8192, 100000):
+        for offsets in (mx.array([[offset]]), mx.array([[offset], [offset + 19]])):
+            for floor, alpha in [(4.0, 0.1), (8192.0, 0.25)]:
+                expected = 1 + alpha * mx.log(
+                    mx.maximum((offsets.astype(mx.float32) + 1) / floor, 1)
+                )
+                actual = layers._decode_log_scale(
+                    offsets, mx.array(floor), mx.array(alpha)
+                )
+                _assert_conv_close(mx, actual, expected)
+
+
+@pytest.mark.requires_mlx
 @pytest.mark.parametrize("batch", [1, 3])
 @pytest.mark.parametrize("sliding", [False, True])
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
@@ -697,6 +803,48 @@ def test_decode_sdpa_ragged_ring(metal_runtime, monkeypatch, batch, sliding, dty
 
 
 @pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_decode_mask_exact(metal_runtime, dtype):
+    mx, _ = metal_runtime
+    from mlx_lm.models.cache import BatchRotatingKVCache
+
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    mx.random.seed(71)
+    dtype = getattr(mx, dtype)
+    for batch, size, extent in [(1, 13, 4), (3, 8, 16), (2, 1024, 128)]:
+        # Bias may be strided and have a different dtype from Q/K/V.
+        bias = mx.random.normal((batch, 1, 4, 2 * extent))[..., ::2]
+        for rotating in (False, True):
+            cache = BatchRotatingKVCache(max_size=size, left_padding=[0] * batch)
+            for idx in (0, 1, size):
+                for end in (3, 29, mx.array([0] + [29] * (batch - 1))):
+                    cache._idx = idx
+                    positions = layers._key_positions(
+                        cache if rotating else None, size, 1, end
+                    )
+                    queries = layers._positions(end - 1, 1)
+                    distance = queries[..., :, None] - positions[..., None, :]
+                    for window in (0, 4):
+                        visible = (distance >= 0) & (positions[..., None, :] >= 0)
+                        if window:
+                            visible &= distance < window
+                        distance_rows = mx.broadcast_to(distance, (batch, 1, size))[
+                            :, None
+                        ]
+                        visible_rows = mx.broadcast_to(visible, (batch, 1, size))[
+                            :, None
+                        ]
+                        expected = layers._decode_attention_mask(
+                            bias, distance_rows, visible_rows, dtype, extent
+                        )
+                        actual = kernels.attention_mask_decode(
+                            bias, end, idx, size, window, dtype, rotating=rotating
+                        )
+                        assert mx.array_equal(actual, expected).item()
+
+
+@pytest.mark.requires_mlx
 def test_decode_kill_switch_and_prefill(metal_runtime, monkeypatch):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import layers
@@ -704,7 +852,14 @@ def test_decode_kill_switch_and_prefill(metal_runtime, monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("decode convolution called for prefill or with kill switch off")
 
-    monkeypatch.setattr(layers, "short_convolution_decode", unexpected)
+    for name in (
+        "short_convolution_decode",
+        "message_mix_decode",
+        "attention_mask_decode",
+        "route_weights_decode",
+        "_decode_log_scale",
+    ):
+        monkeypatch.setattr(layers, name, unexpected)
     for conv in (
         layers.ShortConvolution(16, 4),
         layers.DynamicShortConvolution(16, 16, 2, 4),

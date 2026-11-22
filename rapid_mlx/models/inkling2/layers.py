@@ -21,11 +21,15 @@ from rapid_mlx.models.inkling2.compat import (
     _gather_sort,
     _scatter_unsort,
     expert_routing,
+    scalar,
 )
 from rapid_mlx.models.inkling2.config import TextArgs
 from rapid_mlx.models.inkling2.kernels import (
+    attention_mask_decode,
     depth_attention,
+    message_mix_decode,
     relative_attention,
+    route_weights_decode,
     short_convolution_decode,
 )
 
@@ -113,6 +117,20 @@ def _gate_attention(x, gate):
 
 
 def _route_weights(scores, bias, k, route_scale):
+    if scores.shape[1] == 1 and _fast_decode_enabled() and _use_kernels():
+        indices = mx.argpartition(_routing_order(scores, bias), kth=k - 1, axis=-1)[
+            ..., :k
+        ]
+        return indices, route_weights_decode(scores, indices, route_scale)
+    return _route_weights_reference(scores, bias, k, route_scale)
+
+
+@_decode_only
+def _routing_order(scores, bias):
+    return -(scores + bias)
+
+
+def _route_weights_reference(scores, bias, k, route_scale):
     # Not shape-agnostically compiled: argpartition's traced output shape is
     # reused across batch sizes, which returned batch-1 routes for batch 2.
     # This is the non-kernel fallback, so plain eager ops cost nothing on GPU.
@@ -145,6 +163,18 @@ def _normalized_message_input(states, message):
 @_decode_only
 def _message_mix(states, message, forget, gain):
     return (1 - mx.tanh(forget)) * states + mx.tanh(gain) * message
+
+
+@_decode_only
+def _residual_output(states, residual):
+    return (residual + states.astype(mx.float32)).astype(states.dtype)
+
+
+@partial(mx.compile, shapeless=True)
+def _decode_log_scale(offset, floor, alpha):
+    return 1.0 + alpha * mx.log(
+        mx.maximum((offset.astype(mx.float32) + 1) / floor, 1.0)
+    )
 
 
 @partial(mx.compile, shapeless=True)
@@ -472,20 +502,19 @@ class Attention(nn.Module):
                 key_start=key_start,
             )
 
-        query_positions = _positions(end - L, L)
-        key_positions = _key_positions(cache, S, L, end)
         if L == 1 and _fast_decode_enabled() and _use_kernels():
             # SDPA's sink vector is shared across rows. Fold batch into heads
             # so each row retains its own learned sinks and GQA head grouping,
             # without appending/copying a dummy key and value to the KV bank.
-            distance = query_positions[..., :, None] - key_positions[..., None, :]
-            visible = (distance >= 0) & (key_positions[..., None, :] >= 0)
-            if self.sliding_window:
-                visible = visible & (distance < self.sliding_window)
-            distance = mx.broadcast_to(distance, (B, 1, S))[:, None]
-            visible = mx.broadcast_to(visible, (B, 1, S))[:, None]
-            mask = _decode_attention_mask(
-                position_bias, distance, visible, query.dtype, position_bias.shape[-1]
+            rotating = isinstance(cache, (RotatingKVCache, BatchRotatingKVCache))
+            mask = attention_mask_decode(
+                position_bias,
+                end,
+                cache._idx if rotating else 0,
+                S,
+                self.sliding_window,
+                query.dtype,
+                rotating=rotating,
             )
             Hq, Hkv, D = query.shape[1], key.shape[1], query.shape[-1]
             attn_output = mx.fast.scaled_dot_product_attention(
@@ -506,8 +535,8 @@ class Attention(nn.Module):
             sinks,
             scale=self.scaling,
             window=self.sliding_window,
-            query_positions=query_positions,
-            key_positions=key_positions,
+            query_positions=_positions(end - L, L),
+            key_positions=_key_positions(cache, S, L, end),
         )
 
 
@@ -588,10 +617,19 @@ class FullAttention(Attention):
         )
 
         offset = kv_cache.offset if kv_cache is not None else 0
-        position_ids = _positions(offset, hidden_states.shape[1]).astype(mx.float32)
-        tau = 1.0 + self.log_scaling_alpha * mx.log(
-            mx.maximum((position_ids + 1) / self.log_scaling_n_floor, 1.0)
-        )
+        if hidden_states.shape[1] == 1 and _fast_decode_enabled():
+            tau = _decode_log_scale(
+                (
+                    offset if isinstance(offset, mx.array) else scalar(offset, mx.int32)
+                ).reshape(-1, 1),
+                scalar(self.log_scaling_n_floor),
+                scalar(self.log_scaling_alpha),
+            )
+        else:
+            position_ids = _positions(offset, hidden_states.shape[1]).astype(mx.float32)
+            tau = 1.0 + self.log_scaling_alpha * mx.log(
+                mx.maximum((position_ids + 1) / self.log_scaling_n_floor, 1.0)
+            )
         return self._attend(
             hidden_states,
             self.q_proj(hidden_states),
@@ -744,6 +782,23 @@ class MessageGate(nn.Module):
     def __call__(self, hidden_states: mx.array, message: mx.array) -> mx.array:
         states = _message_input(hidden_states, message, self.down_proj.weight.dtype)
         states = self.down_proj(states)
+        if (
+            hidden_states.shape[1] == 1
+            and _fast_decode_enabled()
+            and _use_kernels()
+            and self.forget_gate_proj.weight.dtype
+            == self.message_gate_proj.weight.dtype
+            == mx.float32
+            and "bias" not in self.forget_gate_proj
+            and "bias" not in self.message_gate_proj
+        ):
+            return message_mix_decode(
+                hidden_states,
+                message,
+                states,
+                self.forget_gate_proj.weight,
+                self.message_gate_proj.weight,
+            )
         states = states.astype(mx.float32)
         return _message_mix(
             hidden_states,
@@ -864,8 +919,7 @@ class DecoderLayer(nn.Module):
                 assert window is not None
                 conv[i] = _conv_state(window, conv.lengths, n)
             conv.advance(block_residual.shape[1])
-        hidden_states = residual + hidden_states.astype(mx.float32)
-        return hidden_states.astype(dtype), block_states
+        return _residual_output(hidden_states, residual), block_states
 
 
 class SlidingDecoderLayer(DecoderLayer):
