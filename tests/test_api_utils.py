@@ -1186,6 +1186,83 @@ class TestResolveServingLane:
     """The single lane-decision orchestrator: given the two offline probes and
     the explicit flags, decide the FINAL (is_mllm_lane, auto_text_fallback)."""
 
+    @pytest.fixture
+    def vision_runtime_available(self, monkeypatch):
+        from rapid_mlx.models import mllm
+
+        monkeypatch.setattr(
+            mllm,
+            "vision_runtime_status",
+            lambda: (mllm.VisionRuntimeStatus.OK, None),
+        )
+
+    @pytest.mark.parametrize(
+        ("vision_module_available", "force_mllm", "expected_mllm", "reason"),
+        [
+            (False, False, False, "vision_architecture_unavailable"),
+            (False, True, True, "vision_lane_forced"),
+            (True, False, True, "vision_supported"),
+        ],
+    )
+    def test_official_inkling_checkpoint_serving_lane(
+        self,
+        tmp_path,
+        monkeypatch,
+        vision_runtime_available,
+        vision_module_available,
+        force_mllm,
+        expected_mllm,
+        reason,
+    ):
+        import importlib.util
+
+        from rapid_mlx.api.utils import resolve_serving_lane_decision
+
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "inkling2_loop",
+                    "architectures": ["Inkling2LoopForConditionalGeneration"],
+                    "text_config": {"model_type": "inkling2_loop"},
+                    "vision_config": {"hidden_size": 1152},
+                }
+            )
+        )
+        real_find_spec = importlib.util.find_spec
+
+        def find_spec(name, *args, **kwargs):
+            if name == "mlx_vlm.models.inkling2_loop":
+                return object() if vision_module_available else None
+            return real_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+        decision = resolve_serving_lane_decision(str(tmp_path), force_mllm=force_mllm)
+
+        assert decision.is_mllm is expected_mllm
+        assert decision.reason == reason
+        assert decision.auto_text_fallback is (not expected_mllm)
+
+    def test_qwen_vl_config_stays_on_mllm_lane(
+        self, tmp_path, vision_runtime_available
+    ):
+        from rapid_mlx.api.utils import resolve_serving_lane_decision
+
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen2_vl",
+                    "architectures": ["Qwen2VLForConditionalGeneration"],
+                    "text_config": {"model_type": "qwen2"},
+                    "vision_config": {"hidden_size": 1280},
+                }
+            )
+        )
+        decision = resolve_serving_lane_decision(str(tmp_path))
+
+        assert decision.is_mllm is True
+        assert decision.reason == "vision_supported"
+        assert decision.auto_text_fallback is False
+
     def _patch_probes(
         self, monkeypatch, *, is_mllm, hybrid, hybrid_runtime_supported=False
     ):
