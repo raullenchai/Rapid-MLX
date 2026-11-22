@@ -120,6 +120,163 @@ def short_convolution_decode(
     return out, state
 
 
+# One SIMD group computes both low-rank expansion dot products for a channel.
+# The projection results and mixing stay FP32, matching the controller's eager
+# up projections. No normalized input or learned weight is captured or cached.
+_MESSAGE_MIX_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint lane = thread_index_in_simdgroup;
+    const uint i = thread_position_in_grid.x / 32;
+    const uint b = i / D;
+    const uint d = i % D;
+    if (b >= x_shape[0]) return;
+    float f = 0.0f, g = 0.0f;
+    for (uint r = lane; r < RANK; r += 32) {
+        const float s = float(low[b * low_strides[0] + r * low_strides[1]]);
+        f = metal::fma(s, float(forget[d * forget_strides[0] + r * forget_strides[1]]), f);
+        g = metal::fma(s, float(gain[d * gain_strides[0] + r * gain_strides[1]]), g);
+    }
+    f = simd_sum(f);
+    g = simd_sum(g);
+    if (lane == 0) {
+        const float a = (1.0f - metal::tanh(f)) * float(x[b * x_strides[0] + d * x_strides[1]]);
+        const float m = metal::tanh(g) * float(message[b * message_strides[0] + d * message_strides[1]]);
+        out[i] = a + m;
+    }
+"""
+
+_message_mix_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_message_mix_decode",
+        input_names=["x", "message", "low", "forget", "gain"],
+        output_names=["out"],
+        source=_MESSAGE_MIX_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def message_mix_decode(x, message, low, forget, gain):
+    D = x.shape[-1]
+    return _message_mix_kernel(
+        inputs=[
+            x.reshape(-1, D),
+            message.reshape(-1, D),
+            low.reshape(x.shape[0], -1),
+            forget,
+            gain,
+        ],
+        template=[("D", D), ("RANK", low.shape[-1])],
+        grid=(x.size * 32, 1, 1),
+        threadgroup=(128, 1, 1),
+        output_shapes=[x.shape],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+_DECODE_MASK_SOURCE = """
+    const int B = sizes[0];
+    const int S = sizes[1];
+    const uint i = thread_position_in_grid.x;
+    if (i >= B * H * S) return;
+    const int k = i % S;
+    const int h = (i / S) % H;
+    const int b = i / (S * H);
+    const int end = ends[(ends_shape[0] == 1 ? 0 : b) * ends_strides[0]];
+    const int shifted = ROTATING ? ((k - int(index) % S + S) % S) : k;
+    const int pos = end - S + shifted;
+    const int distance = S - 1 - shifted;
+    float v = -INFINITY;
+    if (pos >= 0 && (WINDOW == 0 || distance < WINDOW)) {
+        v = distance < R ? float(bias[b * bias_strides[0] + h * bias_strides[2]
+                                     + distance * bias_strides[3]]) : 0.0f;
+    }
+    out[i] = T(v);
+"""
+
+_decode_mask_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_attention_mask_decode",
+        input_names=["bias", "ends", "index", "sizes"],
+        output_names=["out"],
+        source=_DECODE_MASK_SOURCE,
+        ensure_row_contiguous=False,
+    ),
+)
+
+
+def attention_mask_decode(bias, end, index, size, window, dtype, *, rotating):
+    B, _, H, R = bias.shape
+    return _decode_mask_kernel(
+        inputs=[
+            bias,
+            (end if isinstance(end, mx.array) else scalar(end, mx.int32)).reshape(-1),
+            scalar(index, mx.int32),
+            mx.array([B, size], dtype=mx.int32),
+        ],
+        template=[
+            ("T", dtype),
+            ("H", H),
+            ("R", R),
+            ("WINDOW", window),
+            ("ROTATING", rotating),
+        ],
+        grid=(B * H * size, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(B, H, 1, size)],
+        output_dtypes=[dtype],
+    )[0]
+
+
+_ROUTE_WEIGHTS_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint row = threadgroup_position_in_grid.x;
+    const uint lane = thread_index_in_simdgroup;
+    float total = 0.0f;
+    for (uint j = lane; j < K; j += 32) {
+        total += scores[row * scores_strides[0]
+                        + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
+    }
+    total = simd_sum(total) + 1e-20f;
+    for (uint j = lane; j < K; j += 32) {
+        const float s = scores[row * scores_strides[0]
+                        + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
+        out[row * K + j] = (s / total) * route_scale;
+    }
+"""
+
+_route_weights_kernel = cast(
+    Callable[..., list[mx.array]],
+    mx.fast.metal_kernel(
+        name="inkling2_route_weights_decode",
+        input_names=["scores", "indices", "route_scale"],
+        output_names=["out"],
+        source=_ROUTE_WEIGHTS_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    ),
+)
+
+
+def route_weights_decode(scores, indices, route_scale):
+    K = indices.shape[-1]
+    return _route_weights_kernel(
+        inputs=[
+            scores.reshape(-1, scores.shape[-1]),
+            indices.reshape(-1, K),
+            scalar(route_scale),
+        ],
+        template=[("K", K)],
+        grid=(scores.shape[0] * 32, 1, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[indices.shape],
+        output_dtypes=[scores.dtype],
+    )[0]
+
+
 # Attention of learned queries over the depth sources of each token, in one
 # kernel.
 _DEPTH_ATTENTION_SOURCE = """
