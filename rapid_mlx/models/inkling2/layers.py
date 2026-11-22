@@ -666,13 +666,16 @@ class TopKRouter(nn.Module):
                     route_scale=self.routed_scaling_factor,
                 ),
             )
-        return _route_weights(
-            # Keep sigmoid eager: tiny compiler exp differences can change
-            # expert selection at ties, rather than merely round the output.
-            mx.sigmoid(logits),
-            self.e_score_correction_bias,
-            self.top_k,
-            self.routed_scaling_factor,
+        return cast(
+            tuple[mx.array, mx.array],
+            _route_weights(
+                # Keep sigmoid eager: tiny compiler exp differences can change
+                # expert selection at ties, rather than merely round the output.
+                mx.sigmoid(logits),
+                self.e_score_correction_bias,
+                self.top_k,
+                self.routed_scaling_factor,
+            ),
         )
 
 

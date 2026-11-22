@@ -317,6 +317,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # bit-exact kernel for an already-selected model and falls back for
         # unsupported shapes; it does not select a model, parser, or lane.
         "RAPID_MLX_QWEN4_FUSED_GDN_DECODE",
+        # Inkling 2 fused single-token decode kernels (default on). Setting it
+        # to 0 restores the unfused path for an already-selected model; it does
+        # not select a model, parser, engine, or lane.
+        "RAPID_MLX_INKLING2_FAST_DECODE",
         # Opt-in fp32-input fast RMSNorm for narrow Qwen4 decode/verify. This
         # changes only the normalization implementation after model selection;
         # prefill and other model families retain their existing path.
