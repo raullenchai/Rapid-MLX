@@ -366,7 +366,8 @@ def _decode_attention_mask(position_bias, distance, visible, dtype, extent):
     )
 
 
-@_decode_only
+# Not shape-agnostically compiled: the traced broadcast reuses the first
+# batch size it saw, so a later batch would receive a stale mask shape.
 def _decode_attention_bias(position_bias, distance, visible, extent):
     bias = position_bias.transpose(0, 2, 1, 3)
     indices = mx.broadcast_arrays(

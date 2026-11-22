@@ -74,7 +74,7 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "11ab8c3510582229a222742960d64465dcf555fc2fa7a93586d0e40947137acb",
+    "layers.py": "06fba1b2e3d780698575a40b3f589b509ae6c571daa2a9dcf2766eee5f55aa6f",
     "kernels.py": "528f3396a1f46c6abd0ff65ceb99deacba9b69253eb5475674df01fd42b9f169",
     "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
     "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
@@ -391,6 +391,24 @@ def compile_traces(runtime):
         yield traces
     finally:
         sys.setprofile(previous)
+
+
+@pytest.mark.requires_mlx
+def test_decode_attention_bias_broadcasts_shared_bias_per_batch(metal_runtime):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    # The decode mask must follow each call's batch size and key count, not
+    # the shapes of the first call traced (here a larger batch).
+    for batch, keys in ((3, 9), (2, 9), (3, 10), (1, 9), (2, 7)):
+        bias = layers._decode_attention_bias(
+            mx.zeros((batch, 1, 4, 8)),
+            mx.broadcast_to(mx.arange(keys), (batch, 1, 1, keys)),
+            mx.ones((batch, 1, 1, keys), dtype=mx.bool_),
+            8,
+        )
+        mx.eval(bias)
+        assert bias.shape == (batch, 4, 1, keys)
 
 
 @pytest.mark.requires_mlx
