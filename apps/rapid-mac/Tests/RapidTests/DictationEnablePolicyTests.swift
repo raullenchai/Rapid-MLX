@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Dictation enable policy")
 struct DictationEnablePolicyTests {
+    @Test("an unknown catalog waits without rejecting enabled intent")
+    func unavailableCatalogWaits() {
+        #expect(DictationEnablePolicy.evaluate(.init(
+            microphone: true, accessibility: true, modelSelected: true,
+            modelOnDisk: nil, modelAlias: "whisper-small"
+        )) == .waitForCatalog)
+    }
+
     @Test(
         "every missing prerequisite rejects before model preparation",
         arguments: [

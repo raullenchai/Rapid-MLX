@@ -66,7 +66,7 @@ final class DictationController {
     var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
-            UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
+            defaults.set(isEnabled, forKey: Keys.enabled)
             if isEnabled {
                 scheduleModelPreparation()
             } else {
@@ -78,7 +78,7 @@ final class DictationController {
     var trigger: DictationHotkey.Trigger {
         didSet {
             guard trigger != oldValue else { return }
-            UserDefaults.standard.set(trigger.rawValue, forKey: Keys.trigger)
+            defaults.set(trigger.rawValue, forKey: Keys.trigger)
             hotkey.trigger = trigger
         }
     }
@@ -86,7 +86,7 @@ final class DictationController {
     var modelAlias: String {
         didSet {
             guard modelAlias != oldValue else { return }
-            UserDefaults.standard.set(modelAlias, forKey: Keys.model)
+            defaults.set(modelAlias, forKey: Keys.model)
             // `modelSelected` is part of readiness, so the snapshot the UI
             // renders from has to move with it — otherwise picking a model
             // leaves the Enable switch stuck until something else refreshes.
@@ -107,7 +107,7 @@ final class DictationController {
     var archiveAudio: Bool {
         didSet {
             guard archiveAudio != oldValue else { return }
-            UserDefaults.standard.set(archiveAudio, forKey: Keys.archiveAudio)
+            defaults.set(archiveAudio, forKey: Keys.archiveAudio)
         }
     }
 
@@ -118,6 +118,7 @@ final class DictationController {
         static let archiveAudio = "dictation.archiveAudio"
     }
 
+    private let defaults: UserDefaults
     private let server: ServerManager
     private let client: AudioClient
     private let hotkey = DictationHotkey()
@@ -127,8 +128,10 @@ final class DictationController {
     private final class CaptureLifecycle: @unchecked Sendable {
         var recorder: DictationRecorder?
         var ticker: Timer?
+        var activationObserver: NSObjectProtocol?
 
         deinit {
+            if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
             ticker?.invalidate()
             recorder?.shutdown()
         }
@@ -157,6 +160,8 @@ final class DictationController {
     /// masquerading as the user deleting every cached audio model.
     private let audioCatalogLoader: @MainActor (URL) async -> [ModelEntry]?
     private let testingReadiness: Readiness?
+    /// Override TCC without bypassing catalog-derived model readiness.
+    private let testingPermissions: (@MainActor () -> (microphone: Bool, accessibility: Bool))?
     private let testingPrewarm: (@MainActor () async -> Bool)?
     private let testingWarmup: (@MainActor () async -> Bool)?
     private let testingHotkeyStart: (@MainActor () -> Bool)?
@@ -216,8 +221,10 @@ final class DictationController {
         let snapshots: [DictationSnapshot.Snapshot]
     }
     private let modelCacheRoot: URL?
-    private var catalogRefreshRequestID: UUID?
+    private var catalogRefresh: (id: UUID, task: Task<Bool, Never>)?
     private var catalogByAlias: [String: CatalogFacts] = [:]
+    private var waitingForCatalog = false
+    private var isShuttingDown = false
     /// Audio identities proven by Dictation's own catalog load. ContentView
     /// needs this before AudioView mounts so a voice-lane ready transition
     /// cannot masquerade as an unknown custom Chat model. Persisted selection
@@ -230,12 +237,14 @@ final class DictationController {
     init(
         server: ServerManager,
         client: AudioClient = AudioClient(),
+        defaults: UserDefaults = .standard,
         vocabulary: DictationVocabulary? = nil,
         history: DictationHistory? = nil,
         testingEnabled: Bool? = nil,
         testingModelAlias: String? = nil,
         testingPhase: Phase? = nil,
         testingReadiness: Readiness? = nil,
+        testingPermissions: (@MainActor () -> (microphone: Bool, accessibility: Bool))? = nil,
         testingPrewarm: (@MainActor () async -> Bool)? = nil,
         testingWarmup: (@MainActor () async -> Bool)? = nil,
         testingHotkeyStart: (@MainActor () -> Bool)? = nil,
@@ -250,6 +259,7 @@ final class DictationController {
             await ModelCatalog.audioEntriesIfAvailable(binary: $0)
         }
     ) {
+        self.defaults = defaults
         self.modelCacheRoot = modelCacheRoot
         self.server = server
         self.client = client
@@ -257,6 +267,7 @@ final class DictationController {
         self.history = history ?? DictationHistory()
         self.audioCatalogLoader = audioCatalogLoader
         self.testingReadiness = testingReadiness
+        self.testingPermissions = testingPermissions
         self.testingPrewarm = testingPrewarm
         self.testingWarmup = testingWarmup
         self.testingHotkeyStart = testingHotkeyStart
@@ -266,7 +277,6 @@ final class DictationController {
         self.testingTranscribeCancel = testingTranscribeCancel
         self.onProductValueDelivered = onProductValueDelivered
 
-        let defaults = UserDefaults.standard
         let restoredIsEnabled = testingEnabled ?? defaults.bool(forKey: Keys.enabled)
         self.isEnabled = restoredIsEnabled
         // Persisted enabled intent is a launch-time fact. Establish the same
@@ -289,7 +299,12 @@ final class DictationController {
 
         hotkey.trigger = trigger
         hotkey.onTap = { [weak self] in self?.handleHotkey() }
-
+        // Permission/catalog recovery must work even when the Audio pane is closed.
+        captureLifecycle.activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.revalidate() }
+        }
     }
 
     private func transition(to nextPhase: Phase, alias: String?) {
@@ -301,9 +316,10 @@ final class DictationController {
 
     var readiness: Readiness {
         if let testingReadiness { return testingReadiness }
+        let permissions = testingPermissions?()
         return Readiness(
-            microphone: DictationRecorder.microphoneAuthorization == .authorized,
-            accessibility: DictationHotkey.hasAccessibilityPermission,
+            microphone: permissions?.microphone ?? (DictationRecorder.microphoneAuthorization == .authorized),
+            accessibility: permissions?.accessibility ?? DictationHotkey.hasAccessibilityPermission,
             modelSelected: !modelAlias.isEmpty,
             modelOnDisk: catalogByAlias[modelAlias]?.cached == true
         )
@@ -388,6 +404,11 @@ final class DictationController {
     /// the latter and restores the former without inventing another lifecycle.
     func serverStateDidChange(_ newState: ServerState) {
         guard isEnabled else { return }
+        // Engine discovery can recover from `.missing` without starting chat.
+        if waitingForCatalog, case .idle = newState {
+            scheduleModelPreparation()
+            return
+        }
         if modelPreparationDeferred {
             // A low-memory launch may have left auto-start idle. The user's
             // later explicit chat start is the event that safely releases the
@@ -418,6 +439,10 @@ final class DictationController {
             transition(to: .preparingModel, alias: modelAlias)
             scheduleModelPreparation(replacingCurrentPrewarm: true)
         case .crashed, .stopped, .idle, .missing:
+            // Activation must not resume a pending launch-time audio start
+            // after Stop/crash; the hotkey or a later `.ready` owns that retry.
+            if case .stopped = newState { waitingForCatalog = false }
+            if case .crashed = newState { waitingForCatalog = false }
             cancelActiveSessionForModelChange()
             cancelModelPreparation()
             // Preserve the user's Enabled intent, but publish a terminal
@@ -465,17 +490,18 @@ final class DictationController {
         // The on-disk bit comes from a catalog subprocess; fetch it before
         // judging readiness so a fresh launch doesn't refuse to arm a model
         // that is sitting right there in the cache.
-        await refreshModelCacheState()
+        let catalogAvailable = await refreshModelCacheState()
         // The user can turn the switch off while the catalog subprocess is
         // running. Never let that stale enable continuation install a hotkey
         // after ``disable()`` has already torn the session down.
-        guard isEnabled, enableRequestID == requestID else { return }
+        guard !Task.isCancelled, isEnabled, enableRequestID == requestID else { return }
+        waitingForCatalog = !catalogAvailable
         refreshReadiness()
         let decision = DictationEnablePolicy.evaluate(.init(
             microphone: readinessSnapshot.microphone,
             accessibility: readinessSnapshot.accessibility,
             modelSelected: readinessSnapshot.modelSelected,
-            modelOnDisk: readinessSnapshot.modelOnDisk,
+            modelOnDisk: catalogAvailable ? readinessSnapshot.modelOnDisk : nil,
             modelAlias: modelAlias
         ))
         if case .reject(let message, let disableIntent) = decision {
@@ -486,6 +512,13 @@ final class DictationController {
             // intent invalid. Accessibility is different: the user already
             // expressed intent, and granting TCC later should allow re-arm.
             if disableIntent { isEnabled = false }
+            return
+        }
+        if case .waitForCatalog = decision {
+            // Keep the user's shortcut alive, but gate capture until a later
+            // lifecycle hook can prove the model is cached and prepare it.
+            _ = registerHotkey(phaseOnSuccess: .off)
+            enableRequestID = nil
             return
         }
         // Once launch restore establishes this barrier, every re-entrant
@@ -592,6 +625,7 @@ final class DictationController {
         lifecycleTask?.cancel()
         lifecycleTask = nil
         modelPreparationDeferred = false
+        waitingForCatalog = false
         stopTicking()
         recorderStorage?.shutdown()
         hud.hide()
@@ -639,20 +673,34 @@ final class DictationController {
     /// dictation, but no global hotkey may survive into the app's synchronous
     /// server/download shutdown window.
     func shutdownForTermination() {
+        isShuttingDown = true
         disable()
     }
 
     /// The system silently disables an event tap that misbehaves; re-arm when
     /// the app comes forward rather than leaving the user with a dead hotkey.
     func revalidate() {
-        guard isEnabled else { return }
+        guard isEnabled, !isShuttingDown else { return }
         refreshReadiness()
         // Deliberately NOT the full `isReady`: `modelOnDisk` may simply not
         // have been fetched yet in this synchronous path, and a model deleted
         // mid-session is caught at the next hotkey press instead.
         guard readinessSnapshot.permissionsAndSelection else {
             lastError = "Dictation is no longer ready. Check its model and permissions."
-            isEnabled = false
+            if !readinessSnapshot.microphone || !readinessSnapshot.modelSelected {
+                isEnabled = false
+            } else {
+                // Accessibility can be unavailable briefly after relaunch.
+                // Match enable policy: preserve intent so a later grant retries.
+                cancelActiveSessionForModelChange()
+                cancelModelPreparation()
+                stopHotkey()
+                transition(to: .off, alias: nil)
+            }
+            return
+        }
+        if waitingForCatalog {
+            scheduleModelPreparation()
             return
         }
         // Returning to the app is also when a permission granted elsewhere
@@ -706,11 +754,24 @@ final class DictationController {
     /// Re-reads the audio catalog so ``Readiness/modelOnDisk`` reflects what
     /// is actually in the cache. Called when the pane opens, when the alias
     /// changes, and when a download finishes.
-    func refreshModelCacheState() async {
+    @discardableResult
+    func refreshModelCacheState() async -> Bool {
         let requestID = UUID()
-        catalogRefreshRequestID = requestID
-        guard let binary = server.binaryPath else { return }
-        guard let entries = await audioCatalogLoader(binary) else { return }
+        var refresh = (id: requestID, task: Task { await self.loadModelCacheState(requestID: requestID) })
+        catalogRefresh = refresh
+        while true {
+            let result = await refresh.task.value
+            // Follow ownership changes without starting another catalog read.
+            guard let current = catalogRefresh, current.id != refresh.id else {
+                return !Task.isCancelled && result
+            }
+            refresh = current
+        }
+    }
+
+    private func loadModelCacheState(requestID: UUID) async -> Bool {
+        guard let binary = server.binaryPath else { return false }
+        guard let entries = await audioCatalogLoader(binary) else { return false }
         let cacheRoot = modelCacheRoot ?? BundledModel.userHFCacheURL(
             environment: ProcessInfo.processInfo.environment,
             preferredOverride: ModelsFolderPreference.validatedOverrideURL()
@@ -727,9 +788,10 @@ final class DictationController {
             }
             return next
         }.value
-        guard catalogRefreshRequestID == requestID, !Task.isCancelled else { return }
+        guard !Task.isCancelled, catalogRefresh?.id == requestID else { return false }
         catalogByAlias = next
         refreshReadiness()
+        return true
     }
 
     /// Loads the model ahead of the first hotkey press. Without this the first
