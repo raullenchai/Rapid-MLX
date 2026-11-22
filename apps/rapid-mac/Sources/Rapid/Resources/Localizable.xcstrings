@@ -25665,6 +25665,336 @@
           }
         }
       }
+    },
+    "Artifacts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工件"
+          }
+        }
+      }
+    },
+    "Save source (.mmd)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存源码（.mmd）"
+          }
+        }
+      }
+    },
+    "Save image (PNG)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存图片（PNG）"
+          }
+        }
+      }
+    },
+    "Save as…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另存为…"
+          }
+        }
+      }
+    },
+    "No artifacts yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有工件"
+          }
+        }
+      }
+    },
+    "HTML pages, SVG images and diagrams in this conversation appear here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此对话中的 HTML 页面、SVG 图像和图表会显示在这里。"
+          }
+        }
+      }
+    },
+    "Online resources are blocked in previews." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览中已屏蔽在线资源。"
+          }
+        }
+      }
+    },
+    "This artifact can't be previewed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法预览此工件。"
+          }
+        }
+      }
+    },
+    "Resize artifacts panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "调整工件面板大小"
+          }
+        }
+      }
+    },
+    "%lld points wide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "宽 %lld 点"
+          }
+        }
+      }
+    },
+    "HTML artifact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HTML 工件"
+          }
+        }
+      }
+    },
+    "SVG image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "SVG 图像"
+          }
+        }
+      }
+    },
+    "Mermaid diagram" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mermaid 图表"
+          }
+        }
+      }
+    },
+    "Close artifacts panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭工件面板"
+          }
+        }
+      }
+    },
+    "Show at actual size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以实际大小显示"
+          }
+        }
+      }
+    },
+    "Zoom to fit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缩放至适合"
+          }
+        }
+      }
+    },
+    "Copy source" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制源码"
+          }
+        }
+      }
+    },
+    "Reload preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新加载预览"
+          }
+        }
+      }
+    },
+    "Open in browser" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在浏览器中打开"
+          }
+        }
+      }
+    },
+    "Reload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新加载"
+          }
+        }
+      }
+    },
+    "The preview sandbox couldn't be set up, so nothing was loaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法设置预览沙盒，因此未加载任何内容。"
+          }
+        }
+      }
+    },
+    "The preview couldn't be loaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载预览。"
+          }
+        }
+      }
+    },
+    "The preview took too long to load." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览加载时间过长。"
+          }
+        }
+      }
+    },
+    "The preview stopped responding." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览已停止响应。"
+          }
+        }
+      }
+    },
+    "The preview stopped unexpectedly." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览意外停止。"
+          }
+        }
+      }
+    },
+    "The image isn't ready to save yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像尚未准备好保存。"
+          }
+        }
+      }
+    },
+    "Couldn't save the file: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存文件：%@"
+          }
+        }
+      }
+    },
+    "Open this page in your browser?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要在浏览器中打开此页面吗？"
+          }
+        }
+      }
+    },
+    "In the browser the page leaves Rapid's sandbox: its scripts can reach the internet and your browser's data. Only continue if you trust it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在浏览器中，页面将离开 Rapid 的沙盒：其脚本可以访问互联网和浏览器数据。仅在你信任它时继续。"
+          }
+        }
+      }
+    },
+    "Couldn't open the page: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开页面：%@"
+          }
+        }
+      }
+    },
+    "Open in panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在面板中打开"
+          }
+        }
+      }
+    },
+    "HTML · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HTML · %@"
+          }
+        }
+      }
+    },
+    "Open %@ in panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在面板中打开“%@”"
+          }
+        }
+      }
     }
   }
 }

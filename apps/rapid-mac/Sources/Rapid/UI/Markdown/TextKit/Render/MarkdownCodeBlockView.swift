@@ -18,15 +18,33 @@ final class MarkdownCodeBlockView: NSView {
     private let headerLabel = NSTextField(labelWithString: "")
     private let copyButton = NSButton()
     private let previewButton = NSButton()
+    private let openButton = NSButton()
+    private let artifactCard = ArtifactCardView(frame: .zero)
+    private var labelBeforeOpenConstraint: NSLayoutConstraint!
     private var labelBeforePreviewConstraint: NSLayoutConstraint!
     private var labelBeforeCopyConstraint: NSLayoutConstraint!
     private var didCopyResetWork: DispatchWorkItem?
+
+    /// Set by the transcript; nil where there is no artifact panel.
+    var artifactOpener: ArtifactOpener?
+    /// Present only while this block is a settled HTML document.
+    private var htmlItem: ArtifactItem?
 
     /// The parsed document, kept so `draw(_:)` and `height(forWidth:)` do not
     /// re-parse on every pass. Nil means "not an SVG, or not yet valid" —
     /// which is what half a streamed document looks like.
     private var previewImage: NSImage?
-    private enum PreviewKind: Equatable { case svg, mermaid }
+    private enum PreviewKind: Equatable {
+        case svg, mermaid, html
+
+        var artifactKind: ArtifactKind {
+            switch self {
+            case .svg: .svg
+            case .mermaid: .mermaid
+            case .html: .html
+            }
+        }
+    }
     private struct PreviewIdentity: Equatable {
         let source: String
         let kind: PreviewKind
@@ -104,6 +122,24 @@ final class MarkdownCodeBlockView: NSView {
         previewButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(previewButton)
 
+        openButton.title = String(localized: "Open in panel")
+        openButton.bezelStyle = .inline
+        openButton.isBordered = false
+        openButton.font = Self.headerFont
+        openButton.contentTintColor = .secondaryLabelColor
+        openButton.target = self
+        openButton.action = #selector(openInPanel)
+        openButton.isHidden = true
+        openButton.setAccessibilityIdentifier("Artifact.Card.Open")
+        openButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(openButton)
+
+        artifactCard.isHidden = true
+        addSubview(artifactCard)
+
+        labelBeforeOpenConstraint = headerLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: openButton.leadingAnchor,
+            constant: -RapidTheme.Space.md)
         labelBeforePreviewConstraint = headerLabel.trailingAnchor.constraint(
             lessThanOrEqualTo: previewButton.leadingAnchor,
             constant: -RapidTheme.Space.md)
@@ -116,6 +152,9 @@ final class MarkdownCodeBlockView: NSView {
             previewButton.trailingAnchor.constraint(
                 equalTo: copyButton.leadingAnchor, constant: -RapidTheme.Space.md),
             previewButton.centerYAnchor.constraint(equalTo: headerLabel.centerYAnchor),
+            openButton.trailingAnchor.constraint(
+                equalTo: previewButton.leadingAnchor, constant: -RapidTheme.Space.md),
+            openButton.centerYAnchor.constraint(equalTo: headerLabel.centerYAnchor),
             headerLabel.leadingAnchor.constraint(
                 equalTo: leadingAnchor, constant: options.codeHeaderInsets.leading),
             headerLabel.topAnchor.constraint(
@@ -150,7 +189,8 @@ final class MarkdownCodeBlockView: NSView {
         // Re-applied on every configure so a Settings text-size change reaches
         // already-mounted blocks.
         let font = Self.headerFont
-        for control in [headerLabel, copyButton, previewButton] as [NSControl] where control.font != font {
+        for control in [headerLabel, copyButton, previewButton, openButton] as [NSControl]
+        where control.font != font {
             control.font = font
         }
         headerLabel.stringValue = language?.capitalized ?? ""
@@ -220,7 +260,8 @@ final class MarkdownCodeBlockView: NSView {
     /// behind them. Source text hid this because it is left-aligned and
     /// rarely reaches that corner; a full-width image reaches it every time.
     private var headerHeight: CGFloat {
-        guard !(language?.isEmpty ?? true) || previewImage != nil else { return 0 }
+        guard !(language?.isEmpty ?? true) || previewImage != nil || htmlItem != nil
+        else { return 0 }
         let font = Self.headerFont
         let line = (font.ascender - font.descender + font.leading).rounded(.up)
         return options.codeHeaderInsets.top + max(16, line) + options.codeHeaderInsets.bottom
@@ -239,11 +280,27 @@ final class MarkdownCodeBlockView: NSView {
     /// source dominates the card while the thing the reader asked to see is
     /// pushed off the bottom of the window.
     private func bodyHeight(forWidth contentWidth: CGFloat) -> CGFloat {
+        if isShowingHTMLCard { return ArtifactCardView.height }
         if isShowingPreview, let previewImage {
             let size = SVGPreview.drawSize(for: previewImage.size, inWidth: contentWidth)
             if size.height > 0 { return size.height }
         }
         return renderer.measureHeight(width: contentWidth)
+    }
+
+    /// An HTML document stands in as a static card; only the panel hosts a
+    /// live page.
+    private var isShowingHTMLCard: Bool { htmlItem != nil && isShowingPreview }
+
+    public override func layout() {
+        super.layout()
+        guard isShowingHTMLCard else { return }
+        artifactCard.frame = NSRect(
+            x: options.codeInsets.leading,
+            y: headerHeight + options.codeInsets.top,
+            width: max(0, bounds.width - options.codeInsets.leading - options.codeInsets.trailing),
+            height: ArtifactCardView.height
+        )
     }
 
     public override var intrinsicContentSize: NSSize {
@@ -257,6 +314,7 @@ final class MarkdownCodeBlockView: NSView {
 
         let textWidth = bounds.width - options.codeInsets.leading - options.codeInsets.trailing
 
+        if isShowingHTMLCard { return }
         if drawPreview(contentWidth: max(0, textWidth)) { return }
 
         renderer.textContainer.size = CGSize(
@@ -317,26 +375,43 @@ final class MarkdownCodeBlockView: NSView {
     /// cheap `looksLikeSVG` check short-circuits before the parse, so a plain
     /// Swift block costs one substring search per flush and nothing else.
     private func updatePreviewAvailability() {
+        defer { updateArtifactCard() }
         let isSVG = SVGPreview.looksLikeSVG(code: code, language: language)
         let isMermaid = !isSVG
             && MermaidSource.looksLikeMermaid(code: code, language: language)
-        guard isSVG || isMermaid else {
+        // A page is only offered once its block has stopped changing; until
+        // then it is source, like any other code.
+        let isHTML = isFinal && !isSVG && !isMermaid
+            && ArtifactHTMLSource.looksLikeHTML(code: code, language: language)
+        guard isSVG || isMermaid || isHTML else {
             setPreviewHidden(true)
             previewImage = nil
             previewIdentity = nil
+            htmlItem = nil
             hasToggledPreview = false
             isShowingPreview = false
             return
         }
 
         let identity = PreviewIdentity(
-            source: code, kind: isSVG ? .svg : .mermaid
+            source: code, kind: isSVG ? .svg : isMermaid ? .mermaid : .html
         )
         if previewIdentity != identity {
             previewIdentity = identity
             previewImage = nil
+            htmlItem = nil
             hasToggledPreview = false
             isShowingPreview = false
+        }
+
+        if isHTML {
+            if htmlItem == nil {
+                htmlItem = ArtifactItem(id: "inline", kind: .html, source: code)
+            }
+            if !hasToggledPreview { isShowingPreview = true }
+            setPreviewHidden(false)
+            previewButton.title = isShowingPreview ? "Code" : "Preview"
+            return
         }
 
         // The two sources differ in when their picture exists. An SVG document
@@ -427,8 +502,36 @@ final class MarkdownCodeBlockView: NSView {
 
     private func setPreviewHidden(_ hidden: Bool) {
         previewButton.isHidden = hidden
-        labelBeforePreviewConstraint.isActive = !hidden
-        labelBeforeCopyConstraint.isActive = hidden
+        // A picture can be opened full size; an HTML page has its own card.
+        openButton.isHidden = hidden || artifactOpener == nil || htmlItem != nil
+        labelBeforeOpenConstraint.isActive = false
+        labelBeforePreviewConstraint.isActive = false
+        labelBeforeCopyConstraint.isActive = false
+        if !openButton.isHidden {
+            labelBeforeOpenConstraint.isActive = true
+        } else if !hidden {
+            labelBeforePreviewConstraint.isActive = true
+        } else {
+            labelBeforeCopyConstraint.isActive = true
+        }
+    }
+
+    /// Show or hide the HTML card to match the current mode.
+    private func updateArtifactCard() {
+        artifactCard.isHidden = !isShowingHTMLCard
+        guard isShowingHTMLCard, let htmlItem else { return }
+        artifactCard.configure(item: htmlItem)
+        if artifactOpener == nil {
+            artifactCard.onOpen = nil
+        } else {
+            artifactCard.onOpen = { [weak self] in self?.openInPanel() }
+        }
+        needsLayout = true
+    }
+
+    @objc private func openInPanel() {
+        guard let kind = previewIdentity?.kind.artifactKind else { return }
+        artifactOpener?.open(kind: kind, source: code)
     }
 
     @objc private func togglePreview() {
@@ -437,6 +540,7 @@ final class MarkdownCodeBlockView: NSView {
         hasToggledPreview = true
         isShowingPreview.toggle()
         previewButton.title = isShowingPreview ? "Code" : "Preview"
+        updateArtifactCard()
         needsDisplay = true
         // The block stack sizes rows from `height(forWidth:)`, so the row has
         // to be re-measured rather than merely redrawn.

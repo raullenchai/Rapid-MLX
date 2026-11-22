@@ -253,6 +253,7 @@ struct ChatView: View {
     /// Messages that started on the incremental renderer keep using it after
     /// completion. The set changes once per response, not once per token.
     @State private var incrementalAssistantIDs: Set<UUID> = []
+    @State private var artifactPanel = ArtifactPanelModel()
     @Bindable var server: ServerManager
     @Binding var alias: String
     /// Aliases authoritatively owned by a non-chat surface. The set may grow
@@ -387,6 +388,7 @@ struct ChatView: View {
             Divider()
             composeBar
         }
+        .artifactPanel(model: artifactPanel, messages: messages)
         .background(RapidTheme.surfaceCanvas)
         // Drop a stale error banner once the server is provably ready.
         .onChange(of: server.state) { _, newState in
