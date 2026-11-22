@@ -4,6 +4,7 @@
 # rapid_mlx/models/inkling2/NOTICE, under its accompanying MIT license.
 """Text-only catalog, loop/cache, quantization and loader regressions."""
 
+import functools
 import hashlib
 import importlib.util
 import json
@@ -382,6 +383,23 @@ def runtime():
     return mx, inkling2
 
 
+@functools.cache
+def _reduced_precision_fp32_gemm(device):
+    """Probe the current default device; cache separately for CPU and GPU."""
+    import mlx.core as mx
+
+    # Use local NumPy randomness so probing cannot change model/test seeds.
+    # M > 1 exercises GEMM: single-row GEMV can retain full fp32 precision.
+    rng = np.random.default_rng(42)
+    a = rng.standard_normal((8, 512)).astype(np.float32)
+    b = rng.standard_normal((512, 512)).astype(np.float32)
+    expected = a.astype(np.float64) @ b.astype(np.float64)
+    actual = np.asarray(mx.array(a) @ mx.array(b))
+    # Peak-normalized error avoids cancellation near zero. Full fp32 is far
+    # below 1e-5; reduced-precision GEMM errors are about 1e-3 on M5/MLX 0.32.4.
+    return np.max(np.abs(actual - expected)) > 1e-5 * np.max(np.abs(expected))
+
+
 @pytest.fixture
 def metal_runtime(runtime, monkeypatch):
     mx, _ = runtime
@@ -696,7 +714,15 @@ def test_decode_message_controller(metal_runtime, monkeypatch, dtype):
             monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
             actual = gate(x, message)
             assert actual.dtype == expected.dtype == mx.float32
-            np.testing.assert_allclose(actual, expected, atol=5e-6, rtol=5e-6)
+            # The fused expansion uses fp32 per-row reductions; the reference
+            # uses GEMM for batch > 1. Expansion weights/output remain fp32
+            # even for bf16/fp16 down projections (observed error <= 1.85e-3).
+            tolerance = (
+                5e-3
+                if batch > 1 and _reduced_precision_fp32_gemm(str(mx.default_device()))
+                else 5e-6
+            )
+            np.testing.assert_allclose(actual, expected, atol=tolerance, rtol=tolerance)
 
 
 @pytest.mark.requires_mlx
@@ -979,7 +1005,10 @@ def test_cached_decode_matches_full(runtime, batch, loop):
     chunks += [model(tokens[:, i : i + 1], cache=cache) for i in range(12, 20)]
     actual = mx.concatenate(chunks, axis=1)
     mx.eval(full, actual)
-    assert mx.allclose(actual, full, atol=1e-4, rtol=1e-4).item()
+    # Full sequence, chunks and singleton decode use different GEMM row counts
+    # and SDPA kernels. M5 fp32 SDPA alone can differ by about 1.5e-3.
+    tolerance = 5e-3 if _reduced_precision_fp32_gemm(str(mx.default_device())) else 1e-4
+    assert mx.allclose(actual, full, atol=tolerance, rtol=tolerance).item()
     assert all(c[0].offset == 20 for c in cache)
 
 
@@ -1046,6 +1075,13 @@ def test_block_compile_decode_parity(metal_runtime, monkeypatch, batch, loop):
     model = create_model(metal_runtime, dtype=mx.float32, loop=loop)
     tokens = mx.random.randint(0, 120, (batch, 16))
     reference_cache, compiled_cache = model.make_cache(), model.make_cache()
+    # Loop messages use batched eager GEMM expansion versus per-row fp32
+    # fused reductions. Differences propagate into logits and both cache banks.
+    tolerance = (
+        5e-3
+        if loop and batch > 1 and _reduced_precision_fp32_gemm(str(mx.default_device()))
+        else 1e-4
+    )
 
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
     reference = model(tokens[:, :6], cache=reference_cache)
@@ -1075,16 +1111,16 @@ def test_block_compile_decode_parity(metal_runtime, monkeypatch, batch, loop):
         reference = model(tokens[:, step : step + 1], cache=reference_cache)
         monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
         actual = model(tokens[:, step : step + 1], cache=compiled_cache)
-        assert mx.allclose(actual, reference, atol=1e-4, rtol=1e-4).item()
+        assert mx.allclose(actual, reference, atol=tolerance, rtol=tolerance).item()
         for compiled, eager in zip(compiled_cache, reference_cache):
             assert compiled[0].offset == eager[0].offset == step + 1
             for compiled_state, eager_state in zip(compiled[0].state, eager[0].state):
                 assert mx.allclose(
-                    compiled_state, eager_state, atol=1e-4, rtol=1e-4
+                    compiled_state, eager_state, atol=tolerance, rtol=tolerance
                 ).item()
             for compiled_state, eager_state in zip(compiled[1].cache, eager[1].cache):
                 assert mx.allclose(
-                    compiled_state, eager_state, atol=1e-4, rtol=1e-4
+                    compiled_state, eager_state, atol=tolerance, rtol=tolerance
                 ).item()
 
     for layer in decoder_layers:
@@ -1100,6 +1136,13 @@ def test_fast_decode_model_parity(metal_runtime, monkeypatch, batch):
     model = create_model(metal_runtime, dtype=mx.float32)
     tokens = mx.random.randint(0, 120, (batch, 14))
     reference_cache, fast_cache = model.make_cache(), model.make_cache()
+    # As in block-compile parity, batched GEMM expansion and per-row fused
+    # reductions can differ; preserve the strict singleton comparison.
+    tolerance = (
+        5e-3
+        if batch > 1 and _reduced_precision_fp32_gemm(str(mx.default_device()))
+        else 1e-4
+    )
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
     reference_prefill = model(tokens[:, :6], cache=reference_cache)
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
@@ -1112,11 +1155,13 @@ def test_fast_decode_model_parity(metal_runtime, monkeypatch, batch):
         reference = model(tokens[:, step : step + 1], cache=reference_cache)
         monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
         actual = model(tokens[:, step : step + 1], cache=fast_cache)
-        assert mx.allclose(actual, reference, atol=1e-4, rtol=1e-4).item()
+        assert mx.allclose(actual, reference, atol=tolerance, rtol=tolerance).item()
         for fast, slow in zip(fast_cache, reference_cache):
             assert fast[0].offset == slow[0].offset == step + 1
             for fast_state, slow_state in zip(fast[1].cache, slow[1].cache):
-                assert mx.allclose(fast_state, slow_state, atol=1e-4, rtol=1e-4).item()
+                assert mx.allclose(
+                    fast_state, slow_state, atol=tolerance, rtol=tolerance
+                ).item()
 
 
 @pytest.mark.requires_mlx
@@ -1347,7 +1392,17 @@ def test_sanitize_mixed_experts(runtime, converted, legacy, monkeypatch):
     for name, value in expected.items():
         assert mx.allclose(sanitized[name], value, atol=1e-6).item(), name
     tokens = mx.array([[1, 2, 3]])
-    assert mx.allclose(model(tokens), target(tokens), atol=1e-4, rtol=1e-4).item()
+    # Native mixed-expert quantization/loading can select different matmul
+    # kernels. Keep tensor conversion checks above strict, and retain the
+    # original logit bound for the unaffected legacy implementation.
+    tolerance = (
+        5e-3
+        if not legacy and _reduced_precision_fp32_gemm(str(mx.default_device()))
+        else 1e-4
+    )
+    assert mx.allclose(
+        model(tokens), target(tokens), atol=tolerance, rtol=tolerance
+    ).item()
 
 
 @pytest.mark.requires_mlx
