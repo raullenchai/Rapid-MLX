@@ -1729,6 +1729,88 @@ def _bound_names(stmt, nodes) -> set[str]:
     return names
 
 
+def _dict_reasoning_effort_levels(stmts, derived, dictionaries, nodes):
+    """Find string-key dictionary validation, including called effort macros.
+
+    Follow value-preserving aliases and presence defaults, entering only the
+    string arm of an effort type check. Other conditional bindings invalidate
+    aliases and dictionaries so unrelated maps cannot advertise effort levels.
+    """
+    derived, dictionaries = set(derived), dict(dictionaries)
+    macros = {}
+    for stmt in stmts:
+        if isinstance(stmt, nodes.Macro):
+            derived.discard(stmt.name)
+            dictionaries.pop(stmt.name, None)
+            macros.pop(stmt.name, None)
+            if not stmt.args:
+                macros[stmt.name] = stmt.body
+            continue
+        # Macro bodies read the bindings at the call, not at the definition.
+        # Inspect each body only at its first call-containing statement.
+        for call in stmt.find_all(nodes.Call):
+            if isinstance(call.node, nodes.Name) and call.node.name in macros:
+                levels = _dict_reasoning_effort_levels(
+                    macros.pop(call.node.name), derived, dictionaries, nodes
+                )
+                if levels:
+                    return levels
+        if isinstance(stmt, nodes.Assign) and isinstance(stmt.target, nodes.Name):
+            name, expr = stmt.target.name, stmt.node
+            macros.pop(name, None)
+            if isinstance(expr, nodes.CondExpr) and expr.expr2 is not None:
+                source = _value_preserving_source(expr.expr1, nodes)
+                if source in derived and all(
+                    _is_presence_guard(part, source, nodes)
+                    for part in _conjuncts(expr.test, nodes)
+                ):
+                    expr = expr.expr1
+            source = _value_preserving_source(expr, nodes)
+            if source in derived:
+                derived.add(name)
+            else:
+                derived.discard(name)
+            dictionaries.pop(name, None)
+            if isinstance(expr, nodes.Dict):
+                levels = _literal_levels(nodes.List([p.key for p in expr.items]), nodes)
+                if levels:
+                    dictionaries[name] = levels
+        elif isinstance(stmt, nodes.If):
+            found = _guaranteed_membership(stmt.test, nodes)
+            if found is not None:
+                compare, tested = found
+                container = compare.ops[0].expr
+                levels = dictionaries.get(
+                    container.name if isinstance(container, nodes.Name) else None
+                )
+                if (
+                    tested in derived
+                    and levels
+                    and _body_unconditionally_rejects_or_defaults(
+                        stmt.body, tested, levels, nodes
+                    )
+                ):
+                    return levels
+            if any(
+                _is_named_test(stmt.test, name, "string", nodes) for name in derived
+            ):
+                levels = _dict_reasoning_effort_levels(
+                    stmt.body, derived, dictionaries, nodes
+                )
+                if levels:
+                    return levels
+            forgotten: set[str] = set()
+            _forget_assignments_in([stmt], forgotten, nodes)
+            derived -= forgotten
+            for name in forgotten:
+                dictionaries.pop(name, None)
+        else:
+            for name in _bound_names(stmt, nodes):
+                derived.discard(name)
+                dictionaries.pop(name, None)
+    return None
+
+
 @functools.lru_cache(maxsize=64)
 def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...] | None:
     jinja2, nodes = _jinja_nodes()
@@ -1744,7 +1826,9 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     # turn an apparent rejection block into an ordinary successful render.
     if _binds_name(tree, "raise_exception", nodes):
         return None
-    return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
+    return _walk_for_validation(
+        tree.body, {"reasoning_effort"}, set(), nodes
+    ) or _dict_reasoning_effort_levels(tree.body, {"reasoning_effort"}, {}, nodes)
 
 
 def _truthiness_tested_name(test, nodes) -> str | None:
@@ -2866,6 +2950,19 @@ def _render_chat_template(
         )
     ):
         template_kwargs.setdefault("reasoning_effort", "low")
+
+    # Effort-only templates can expose a native off level instead of a boolean.
+    if enable_thinking is False:
+        for source in _chat_template_strings(
+            getattr(template_applicator, "chat_template", None), tools=tools
+        ):
+            reads, _ = _template_context_facts_for_source(source)
+            if (
+                "reasoning_effort" in reads
+                and "enable_thinking" not in reads
+                and "none" in (_native_reasoning_effort_levels_for_source(source) or ())
+            ):
+                template_kwargs.setdefault("reasoning_effort", "none")
 
     # Templates with their own boolean switch and no ``enable_thinking``
     # (Cohere North Mini Code reads ``reasoning``, default on): a resolved off
