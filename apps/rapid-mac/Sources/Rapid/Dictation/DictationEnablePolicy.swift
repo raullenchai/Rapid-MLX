@@ -10,12 +10,14 @@ struct DictationEnablePolicy {
         var microphone: Bool
         var accessibility: Bool
         var modelSelected: Bool
-        var modelOnDisk: Bool
+        /// nil means the catalog probe is unavailable, not that weights are absent.
+        var modelOnDisk: Bool?
         var modelAlias: String
     }
 
     enum Decision: Equatable {
         case prepareModel
+        case waitForCatalog
         case reject(message: String, disableIntent: Bool)
     }
 
@@ -46,7 +48,7 @@ struct DictationEnablePolicy {
                 disableIntent: true
             )
         }
-        guard input.modelOnDisk else {
+        if input.modelOnDisk == false {
             return .reject(
                 message: modelNotDownloadedMessage(alias: input.modelAlias),
                 disableIntent: true
@@ -58,7 +60,7 @@ struct DictationEnablePolicy {
                 disableIntent: false
             )
         }
-        return .prepareModel
+        return input.modelOnDisk == nil ? .waitForCatalog : .prepareModel
     }
 
     struct PreparedState: Equatable {

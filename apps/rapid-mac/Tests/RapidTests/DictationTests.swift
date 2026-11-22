@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -268,6 +269,121 @@ struct DictationTests {
     }
 
     // MARK: - Hotkey
+
+    @MainActor
+    @Test("launch catalog unavailability preserves intent and retries without a toggle",
+          arguments: ["ready", "idle", "revalidate", "activation", "stopped", "missing"])
+    func launchCatalogRecovery(recovery: String) async {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: "dictation.enabled")
+        defaults.set(true, forKey: "dictation.enabled")
+        defer { defaults.set(saved, forKey: "dictation.enabled") }
+        var available = false
+        var prewarms = 0
+        var registrations = 0
+        let controller = DictationController(
+            server: ServerManager(
+                testingState: recovery == "missing" ? .missing : .idle,
+                binaryPath: recovery == "missing" ? nil : Self.tempDirectory().appendingPathComponent("rapid-mlx")
+            ),
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: false),
+            testingPrewarm: { prewarms += 1; return true },
+            testingHotkeyStart: { registrations += 1; return true },
+            audioCatalogLoader: { _ in available ? [cachedAudioEntry(alias: "whisper-small")] : nil }
+        )
+        defer { controller.disable() }
+
+        await controller.bootstrap(deferModelPreparation: true)
+        #expect(controller.isEnabled)
+        #expect(defaults.bool(forKey: "dictation.enabled"))
+        #expect(controller.lastError == nil)
+        #expect(controller.isHotkeyArmed)
+        #expect(prewarms == 0)
+        // Releasing the chat barrier must also tolerate an unavailable catalog.
+        await controller.finishDeferredBootstrap()
+        #expect(controller.isEnabled)
+        #expect(defaults.bool(forKey: "dictation.enabled"))
+        #expect(controller.lastError == nil)
+        #expect(prewarms == 0)
+        guard recovery != "missing" else { return }
+
+        available = true
+        controller.testingReadiness = .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: true)
+        if recovery == "stopped" {
+            controller.serverStateDidChange(.stopped)
+            controller.revalidate()
+            await controller._testingWaitForLifecycleTask()
+            #expect(prewarms == 0, "foregrounding after Stop must not launch an audio sidecar")
+            #expect(controller.isHotkeyArmed)
+            return
+        }
+        if recovery == "activation" {
+            NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+            await waitUntil { prewarms == 1 }
+        } else if recovery == "revalidate" {
+            controller.revalidate()
+        } else {
+            controller.serverStateDidChange(recovery == "ready" ? .ready(alias: "chat-model") : .idle)
+        }
+        await controller._testingWaitForLifecycleTask()
+        #expect(controller.isEnabled)
+        #expect(defaults.bool(forKey: "dictation.enabled"))
+        #expect(controller.isHotkeyArmed)
+        #expect(controller.phase == .idle)
+        #expect(controller.lastError == nil)
+        #expect(prewarms == 1)
+        #expect(registrations == 1)
+        if recovery == "activation" {
+            controller.shutdownForTermination()
+            NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+            await waitUntil(timeout: .milliseconds(100)) { registrations > 1 }
+            #expect(!controller.isHotkeyArmed)
+            #expect(registrations == 1)
+        }
+    }
+
+    @MainActor
+    @Test("only a confirmed absent model clears launch intent", arguments: [false, true])
+    func launchPrerequisiteIntent(modelAbsent: Bool) async {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: "dictation.enabled")
+        defaults.set(true, forKey: "dictation.enabled")
+        defer { defaults.set(saved, forKey: "dictation.enabled") }
+        var registrations = 0
+        let controller = DictationController(
+            server: ServerManager(testingState: .idle, binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")),
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(microphone: true, accessibility: modelAbsent, modelSelected: true, modelOnDisk: false),
+            testingHotkeyStart: { registrations += 1; return true },
+            audioCatalogLoader: { _ in
+                modelAbsent ? [ModelEntry(
+                    alias: "whisper-small", hfRepo: "mlx-community/whisper-small",
+                    sizeOnDisk: nil, cached: false, kind: .audio,
+                    audioCapability: .transcription, audioFamily: "whisper"
+                )] : nil
+            }
+        )
+        defer { controller.disable() }
+        await controller.bootstrap(deferModelPreparation: true)
+        controller.revalidate()
+        #expect(controller.isEnabled == !modelAbsent)
+        #expect(defaults.bool(forKey: "dictation.enabled") == !modelAbsent)
+        #expect(controller.phase == .off)
+        #expect(!controller.isHotkeyArmed)
+        #expect(registrations == 0)
+        if modelAbsent {
+            #expect(controller.lastError == DictationEnablePolicy.modelNotDownloadedMessage(alias: "whisper-small"))
+        } else {
+            controller.testingReadiness = .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: false)
+            controller.revalidate()
+            await controller._testingWaitForLifecycleTask()
+            #expect(controller.isEnabled)
+            #expect(defaults.bool(forKey: "dictation.enabled"))
+            #expect(controller.isHotkeyArmed)
+            #expect(registrations == 1)
+        }
+    }
 
     @MainActor
     @Test("turning dictation off while catalog refresh waits cannot finish enabling")
