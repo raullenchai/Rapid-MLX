@@ -194,7 +194,11 @@ def load(path: str | Path, *, engram_ssd_offload: bool | None = None):
             # SSD-offloaded Engram tables are dropped below without evaluation,
             # so a mixed shard never materializes them (a 2 GiB unused tensor
             # leaves peak RSS near 30 MB).
-            loaded = cast(dict[str, mx.array], mx.load(str(shard), stream=mx.cpu))
+            # Resolved Hub cache blobs have no safetensors extension.
+            loaded = cast(
+                dict[str, mx.array],
+                mx.load(str(shard), format="safetensors", stream=mx.cpu),
+            )
             for key, value in loaded.items():
                 if indexed_keys is not None and key not in indexed_keys:
                     raise ValueError(f"Tensor does not match safetensors index: {key}")
