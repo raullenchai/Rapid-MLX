@@ -498,6 +498,36 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("superseded catalog callers await the newest result without reloading")
+    func supersededCatalogCallersJoinOwner() async {
+        let suiteName = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var pending: [CheckedContinuation<[ModelEntry]?, Never>] = []
+        var loads = 0
+        let controller = DictationController(
+            server: ServerManager(testingState: .idle, binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")),
+            defaults: defaults,
+            testingModelAlias: "whisper-small",
+            audioCatalogLoader: { _ in
+                loads += 1
+                guard loads <= 2 else { return nil }
+                return await withCheckedContinuation { pending.append($0) }
+            }
+        )
+        let older = Task { await controller.refreshModelCacheState() }
+        while pending.count < 1 { await Task.yield() }
+        let newer = Task { await controller.refreshModelCacheState() }
+        while pending.count < 2 { await Task.yield() }
+        pending[0].resume(returning: [])
+        pending[1].resume(returning: [cachedAudioEntry(alias: "whisper-small")])
+        #expect(await older.value)
+        #expect(await newer.value)
+        #expect(loads == 2)
+        #expect(controller.readinessSnapshot.modelOnDisk)
+    }
+
+    @MainActor
     @Test("a second hotkey tap cancels a queued disk check without a catalog load")
     func secondTapCancelsPendingRecordingRequest() async throws {
         let root = try Self.snapshotCache()

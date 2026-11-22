@@ -221,7 +221,7 @@ final class DictationController {
         let snapshots: [DictationSnapshot.Snapshot]
     }
     private let modelCacheRoot: URL?
-    private var catalogRefreshRequestID: UUID?
+    private var catalogRefresh: (id: UUID, task: Task<Bool, Never>)?
     private var catalogByAlias: [String: CatalogFacts] = [:]
     private var waitingForCatalog = false
     private var isShuttingDown = false
@@ -755,9 +755,21 @@ final class DictationController {
     /// is actually in the cache. Called when the pane opens, when the alias
     /// changes, and when a download finishes.
     @discardableResult
-    func refreshModelCacheState(supersededRetries: Int = 2) async -> Bool {
+    func refreshModelCacheState() async -> Bool {
         let requestID = UUID()
-        catalogRefreshRequestID = requestID
+        var refresh = (id: requestID, task: Task { await self.loadModelCacheState(requestID: requestID) })
+        catalogRefresh = refresh
+        while true {
+            let result = await refresh.task.value
+            // Follow ownership changes without starting another catalog read.
+            guard let current = catalogRefresh, current.id != refresh.id else {
+                return !Task.isCancelled && result
+            }
+            refresh = current
+        }
+    }
+
+    private func loadModelCacheState(requestID: UUID) async -> Bool {
         guard let binary = server.binaryPath else { return false }
         guard let entries = await audioCatalogLoader(binary) else { return false }
         let cacheRoot = modelCacheRoot ?? BundledModel.userHFCacheURL(
@@ -776,14 +788,7 @@ final class DictationController {
             }
             return next
         }.value
-        guard !Task.isCancelled else { return false }
-        // Superseded is not "unavailable": a newer refresh owns the result, so
-        // re-read rather than report a failure the caller would treat as
-        // unknown. Bounded so two callers cannot supersede each other forever.
-        guard catalogRefreshRequestID == requestID else {
-            guard supersededRetries > 0 else { return false }
-            return await refreshModelCacheState(supersededRetries: supersededRetries - 1)
-        }
+        guard !Task.isCancelled, catalogRefresh?.id == requestID else { return false }
         catalogByAlias = next
         refreshReadiness()
         return true
