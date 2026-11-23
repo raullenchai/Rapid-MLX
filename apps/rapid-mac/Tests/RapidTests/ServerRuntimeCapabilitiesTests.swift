@@ -91,14 +91,14 @@ struct ServerRuntimeCapabilitiesTests {
                 taskTypes: atomic ? [task] : [], operationModes: atomic ? [operation] : []
             )
             let secondsAtSpawn = ServerManager.primaryIdleUnloadSetting(
-                idleSetting: 300, capabilities: .allKnown, catalogEntry: entry
+                idleSetting: 300, capabilities: .allKnown, primarySupportsChat: entry.supports(.chat)
             )
             #expect(secondsAtSpawn == nil)
             #expect(IdleModelReleasePreference.mode(
                 setting: 300, runtimeSupportsNativeUnload: secondsAtSpawn != nil
             ) == .legacyStop)
             #expect(ServerManager.residentLaunchFlags(
-                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, catalogEntry: entry
+                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, primarySupportsChat: entry.supports(.chat)
             ) == [
                 "--resident-memory-limit-gb", "14", "--resident-model-idle-ttl", "300",
                 "--audio-lane-idle-ttl", "300",
@@ -106,7 +106,7 @@ struct ServerRuntimeCapabilitiesTests {
             var older = ServerRuntimeCapabilities.allKnown
             older.supportsPrimaryIdleUnload = false
             #expect(ServerManager.unsupportedResidentLaunchFlagNames(
-                idleSetting: 300, capabilities: older, catalogEntry: entry
+                idleSetting: 300, capabilities: older, primarySupportsChat: entry.supports(.chat)
             ).isEmpty)
         }
     }
@@ -121,14 +121,14 @@ struct ServerRuntimeCapabilitiesTests {
                 taskTypes: atomic ? [task] : [], operationModes: atomic ? [.chat] : []
             )
             let secondsAtSpawn = ServerManager.primaryIdleUnloadSetting(
-                idleSetting: 300, capabilities: .allKnown, catalogEntry: entry
+                idleSetting: 300, capabilities: .allKnown, primarySupportsChat: entry.supports(.chat)
             )
             #expect(secondsAtSpawn == 300)
             #expect(IdleModelReleasePreference.mode(
                 setting: 300, runtimeSupportsNativeUnload: secondsAtSpawn != nil
             ) == .native)
             #expect(ServerManager.residentLaunchFlags(
-                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, catalogEntry: entry
+                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, primarySupportsChat: entry.supports(.chat)
             ) == [
                 "--resident-memory-limit-gb", "14", "--resident-model-idle-ttl", "300",
                 "--idle-unload-seconds", "300", "--audio-lane-idle-ttl", "300",
@@ -136,11 +136,77 @@ struct ServerRuntimeCapabilitiesTests {
             var older = ServerRuntimeCapabilities.allKnown
             older.supportsPrimaryIdleUnload = false
             #expect(ServerManager.primaryIdleUnloadSetting(
-                idleSetting: 300, capabilities: older, catalogEntry: entry
+                idleSetting: 300, capabilities: older, primarySupportsChat: entry.supports(.chat)
             ) == nil)
             #expect(ServerManager.unsupportedResidentLaunchFlagNames(
-                idleSetting: 300, capabilities: older, catalogEntry: entry
+                idleSetting: 300, capabilities: older, primarySupportsChat: entry.supports(.chat)
             ) == ["--idle-unload-seconds"])
+        }
+    }
+
+    @Test("bundled media aliases resolve without chat catalog hints")
+    @MainActor
+    func bundledMediaIdleLaunchFlags() async throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let aliases = try #require(JSONSerialization.jsonObject(with: Data(contentsOf:
+            root.appendingPathComponent("rapid_mlx/aliases.json")
+        )) as? [String: [String: Any]])
+        // Project the bundled records into the legacy models JSON wire format.
+        var rows: [String: [[String: Any]]] = ["text": [], "image": [], "video": [], "audio": []]
+        for (alias, record) in aliases {
+            var row = record
+            row["alias"] = alias
+            let kind = (record["modality"] as? String ?? "text").split(separator: "-").first.map(String.init) ?? "text"
+            rows[["image", "video", "audio"].contains(kind) ? kind : "text", default: []].append(row)
+        }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: rows), as: UTF8.self)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("harbor-fix5872-catalog-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let binary = directory.appendingPathComponent("rapid-mlx")
+        try """
+        #!/bin/sh
+        if [ "$1" = models ] && [ "$2" = --json ]; then
+          cat <<'CATALOG'
+        \(json)
+        CATALOG
+        else
+          echo '{"cached":[]}'
+        fi
+        """.write(to: binary, atomically: true, encoding: .utf8)
+        chmod(binary.path, 0o755)
+        let chatCatalog = await ModelCatalog.load(binary: binary, hubCacheOverride: nil, openedPaths: [])
+        let projection = try #require(ModelCatalog.parseAvailableJSON(json))
+        #expect(aliases["qwen3.5-4b-4bit"] != nil)
+        for (alias, expectedChat) in [
+            ("bonsai-image-4b-2bit", false), ("qwen-image", false),
+            ("wan2.1-t2v-1.3b-bf16", false), ("qwen3.5-4b-4bit", true), ("uncatalogued-chat", true),
+        ] {
+            #expect(projection.excluded.contains(alias) == !expectedChat)
+            let entry = ServerManager.readyCatalogEntry(
+                alias: alias, probed: chatCatalog.first { $0.alias == alias }, hint: nil
+            )
+            #expect((entry != nil) == (alias == "qwen3.5-4b-4bit"))
+            let primarySupportsChat = await ModelCatalog.primarySupportsChat(
+                alias: alias, binary: binary, catalogEntry: entry
+            )
+            #expect(primarySupportsChat == expectedChat)
+            let secondsAtSpawn = ServerManager.primaryIdleUnloadSetting(
+                idleSetting: 300, capabilities: .allKnown, primarySupportsChat: primarySupportsChat
+            )
+            #expect(secondsAtSpawn == (expectedChat ? 300 : nil))
+            #expect(IdleModelReleasePreference.mode(
+                setting: 300, runtimeSupportsNativeUnload: secondsAtSpawn != nil
+            ) == (expectedChat ? .native : .legacyStop))
+            let flags = ServerManager.residentLaunchFlags(
+                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, primarySupportsChat: primarySupportsChat
+            )
+            #expect(ServerManager.serveArguments(
+                alias: alias, host: "127.0.0.1", port: 8000, extraFlags: flags
+            ).contains("--idle-unload-seconds") == expectedChat)
         }
     }
 

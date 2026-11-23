@@ -2956,6 +2956,9 @@ final class ServerManager {
             probed: probedCatalogEntry,
             hint: catalogProvenStartEntries[ModelReference.key(trimmedAlias)]?.entry
         )
+        let primarySupportsChat = await ModelCatalog.primarySupportsChat(
+            alias: trimmedAlias, binary: binary, catalogEntry: catalogEntry
+        )
         if Task.isCancelled || didSignalShutdown || communityBenchmarkReserved { return }
         guard !isOperating, child == nil else { return }
         let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
@@ -3229,7 +3232,7 @@ final class ServerManager {
             memoryCeilingGB: ModelSizing.residentMemoryCeilingGB(on: hardware),
             capabilities: runtimeCapabilities,
             idleSetting: idleUnloadSeconds,
-            catalogEntry: catalogEntry
+            primarySupportsChat: primarySupportsChat
         ))
         let arguments = Self.serveArguments(
             alias: trimmedAlias,
@@ -3250,7 +3253,7 @@ final class ServerManager {
 
         audioIdleUnloadSupportedAtSpawn = runtimeCapabilities.supportsAudioLaneIdleUnload
         idleUnloadSecondsAtSpawn = Self.primaryIdleUnloadSetting(
-            idleSetting: idleUnloadSeconds, capabilities: runtimeCapabilities, catalogEntry: catalogEntry
+            idleSetting: idleUnloadSeconds, capabilities: runtimeCapabilities, primarySupportsChat: primarySupportsChat
         )
         configureIdleModelRelease(idleUnloadSeconds)
         localSearchEnabledAtSpawn = arguments.contains("--enable-local-search")
@@ -3273,7 +3276,7 @@ final class ServerManager {
         let unsupportedResidentFlags = Self.unsupportedResidentLaunchFlagNames(
             idleSetting: idleUnloadSeconds,
             capabilities: runtimeCapabilities,
-            catalogEntry: catalogEntry
+            primarySupportsChat: primarySupportsChat
         )
         if !unsupportedResidentFlags.isEmpty {
             appendLogLines([
@@ -5307,12 +5310,11 @@ final class ServerManager {
     nonisolated internal static func primaryIdleUnloadSetting(
         idleSetting: Int,
         capabilities: ServerRuntimeCapabilities,
-        catalogEntry: ModelEntry?
+        primarySupportsChat: Bool
     ) -> Int? {
         // Native primary unload only supports text/vision-language chat engines.
         // Preserve existing behavior for uncatalogued chat checkpoints.
-        guard capabilities.supportsPrimaryIdleUnload,
-              catalogEntry?.supports(.chat) != false else { return nil }
+        guard capabilities.supportsPrimaryIdleUnload, primarySupportsChat else { return nil }
         return idleSetting
     }
 
@@ -5320,7 +5322,7 @@ final class ServerManager {
         memoryCeilingGB: Double,
         capabilities: ServerRuntimeCapabilities,
         idleSetting: Int = 0,
-        catalogEntry: ModelEntry? = nil
+        primarySupportsChat: Bool = true
     ) -> [String] {
         var flags: [String] = []
         if capabilities.supportsResidentMemoryLimitGB {
@@ -5340,7 +5342,7 @@ final class ServerManager {
             ])
         }
         if let primaryIdleSetting = primaryIdleUnloadSetting(
-            idleSetting: idleSetting, capabilities: capabilities, catalogEntry: catalogEntry
+            idleSetting: idleSetting, capabilities: capabilities, primarySupportsChat: primarySupportsChat
         ), primaryIdleSetting > 0 {
             flags.append(contentsOf: ["--idle-unload-seconds", String(primaryIdleSetting)])
         }
@@ -5353,10 +5355,10 @@ final class ServerManager {
     nonisolated internal static func unsupportedResidentLaunchFlagNames(
         idleSetting: Int = 0,
         capabilities: ServerRuntimeCapabilities,
-        catalogEntry: ModelEntry? = nil
+        primarySupportsChat: Bool = true
     ) -> [String] {
         var names: [String] = []
-        if idleSetting > 0, catalogEntry?.supports(.chat) != false,
+        if idleSetting > 0, primarySupportsChat,
            !capabilities.supportsPrimaryIdleUnload {
             names.append("--idle-unload-seconds")
         }

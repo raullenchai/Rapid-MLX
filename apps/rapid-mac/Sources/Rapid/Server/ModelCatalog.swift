@@ -903,6 +903,15 @@ enum ModelCatalog {
         alias.hasPrefix("(") && alias.hasSuffix(")")
     }
 
+    /// Resolve launch modality even when the chat-only catalog has no row.
+    /// Both atomic and legacy catalogs explicitly exclude media aliases;
+    /// genuinely uncatalogued checkpoints retain the existing chat policy.
+    static func primarySupportsChat(alias: String, binary: URL, catalogEntry: ModelEntry?) async -> Bool {
+        if let catalogEntry { return catalogEntry.supports(.chat) }
+        let catalog = await listAvailableWithExclusions(binary: binary)
+        return !catalog.excluded.contains { ModelReference.matches($0, alias) }
+    }
+
     /// Runs ``rapid-mlx models`` and returns both the chat-capable rows
     /// and the aliases deliberately withheld from them.
     ///
