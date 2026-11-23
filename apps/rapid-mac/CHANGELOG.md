@@ -17,6 +17,21 @@ can actually understand.
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-11-23
+
+Dictation stays enabled across an update, and the bundled engine adds Hy4 flash and faster Inkling 2 Mini decoding.
+
+### New features and improvements
+
+- **Hy4 flash**: the bundled engine serves Hy4 flash natively, text only, including a 4-bit build for Macs with 128 GB of memory ([#5880](https://github.com/raullenchai/Rapid-MLX/pull/5880), [#5922](https://github.com/raullenchai/Rapid-MLX/pull/5922)).
+- **Inkling 2 Mini**: decoding is faster, and the official checkpoint loads directly ([#5918](https://github.com/raullenchai/Rapid-MLX/pull/5918), [#5919](https://github.com/raullenchai/Rapid-MLX/pull/5919), [#5920](https://github.com/raullenchai/Rapid-MLX/pull/5920), [#5924](https://github.com/raullenchai/Rapid-MLX/pull/5924)).
+
+### Bug fixes
+
+- **Dictation**: the dictation hotkey stays enabled after the app relaunches for an update ([#5921](https://github.com/raullenchai/Rapid-MLX/pull/5921)).
+- **Inkling 2 Mini thinking**: turning thinking off now lowers the model to its minimum reasoning effort ([#5917](https://github.com/raullenchai/Rapid-MLX/pull/5917)).
+- **Image and video models with idle release**: image and video models start again when "release the model when idle" is turned on; they stay loaded until stopped or switched ([#5934](https://github.com/raullenchai/Rapid-MLX/pull/5934)).
+
 ## [1.1.0] — 2026-11-20
 
 Desktop's bundled engine adds native Inkling 2 Mini support and continuation of a partial assistant message. The Desktop app itself is unchanged in this release.
@@ -4681,7 +4696,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.0...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.1...HEAD
+[1.1.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.0...rapid-mac-v1.1.1
 [1.1.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.5...rapid-mac-v1.1.0
 [1.0.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.4...rapid-mac-v1.0.5
 [1.0.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.3...rapid-mac-v1.0.4
