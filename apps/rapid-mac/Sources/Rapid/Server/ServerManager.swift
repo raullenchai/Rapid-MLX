@@ -3228,7 +3228,8 @@ final class ServerManager {
         extraFlags.append(contentsOf: Self.residentLaunchFlags(
             memoryCeilingGB: ModelSizing.residentMemoryCeilingGB(on: hardware),
             capabilities: runtimeCapabilities,
-            idleSetting: idleUnloadSeconds
+            idleSetting: idleUnloadSeconds,
+            catalogEntry: catalogEntry
         ))
         let arguments = Self.serveArguments(
             alias: trimmedAlias,
@@ -3248,7 +3249,9 @@ final class ServerManager {
         )
 
         audioIdleUnloadSupportedAtSpawn = runtimeCapabilities.supportsAudioLaneIdleUnload
-        idleUnloadSecondsAtSpawn = runtimeCapabilities.supportsPrimaryIdleUnload ? idleUnloadSeconds : nil
+        idleUnloadSecondsAtSpawn = Self.primaryIdleUnloadSetting(
+            idleSetting: idleUnloadSeconds, capabilities: runtimeCapabilities, catalogEntry: catalogEntry
+        )
         configureIdleModelRelease(idleUnloadSeconds)
         localSearchEnabledAtSpawn = arguments.contains("--enable-local-search")
         localSearchSupportedAtSpawn = runtimeCapabilities.supportsLocalSearch
@@ -3269,7 +3272,8 @@ final class ServerManager {
         }
         let unsupportedResidentFlags = Self.unsupportedResidentLaunchFlagNames(
             idleSetting: idleUnloadSeconds,
-            capabilities: runtimeCapabilities
+            capabilities: runtimeCapabilities,
+            catalogEntry: catalogEntry
         )
         if !unsupportedResidentFlags.isEmpty {
             appendLogLines([
@@ -5300,10 +5304,23 @@ final class ServerManager {
         return args
     }
 
+    nonisolated internal static func primaryIdleUnloadSetting(
+        idleSetting: Int,
+        capabilities: ServerRuntimeCapabilities,
+        catalogEntry: ModelEntry?
+    ) -> Int? {
+        // Native primary unload only supports text/vision-language chat engines.
+        // Preserve existing behavior for uncatalogued chat checkpoints.
+        guard capabilities.supportsPrimaryIdleUnload,
+              catalogEntry?.supports(.chat) != false else { return nil }
+        return idleSetting
+    }
+
     nonisolated internal static func residentLaunchFlags(
         memoryCeilingGB: Double,
         capabilities: ServerRuntimeCapabilities,
-        idleSetting: Int = 0
+        idleSetting: Int = 0,
+        catalogEntry: ModelEntry? = nil
     ) -> [String] {
         var flags: [String] = []
         if capabilities.supportsResidentMemoryLimitGB {
@@ -5322,8 +5339,10 @@ final class ServerManager {
                     ? min(1800, idleSetting) : 1800),
             ])
         }
-        if capabilities.supportsPrimaryIdleUnload, idleSetting > 0 {
-            flags.append(contentsOf: ["--idle-unload-seconds", String(idleSetting)])
+        if let primaryIdleSetting = primaryIdleUnloadSetting(
+            idleSetting: idleSetting, capabilities: capabilities, catalogEntry: catalogEntry
+        ), primaryIdleSetting > 0 {
+            flags.append(contentsOf: ["--idle-unload-seconds", String(primaryIdleSetting)])
         }
         if capabilities.supportsAudioLaneIdleUnload, idleSetting > 0 {
             flags.append(contentsOf: ["--audio-lane-idle-ttl", String(idleSetting)])
@@ -5333,10 +5352,12 @@ final class ServerManager {
 
     nonisolated internal static func unsupportedResidentLaunchFlagNames(
         idleSetting: Int = 0,
-        capabilities: ServerRuntimeCapabilities
+        capabilities: ServerRuntimeCapabilities,
+        catalogEntry: ModelEntry? = nil
     ) -> [String] {
         var names: [String] = []
-        if idleSetting > 0, !capabilities.supportsPrimaryIdleUnload {
+        if idleSetting > 0, catalogEntry?.supports(.chat) != false,
+           !capabilities.supportsPrimaryIdleUnload {
             names.append("--idle-unload-seconds")
         }
         if !capabilities.supportsResidentMemoryLimitGB {

@@ -78,6 +78,72 @@ struct ServerRuntimeCapabilitiesTests {
         }
     }
 
+    @Test("non-chat models use legacy idle release without primary unload", arguments: [
+        (ModelKind.image, ModelTask.imageGeneration, ModelOperation.textToImage),
+        (.video, .videoGeneration, .textToVideo),
+        (.audio, .speechSynthesis, .presetVoice),
+    ])
+    func nonChatIdleLaunchFlags(kind: ModelKind, task: ModelTask, operation: ModelOperation) {
+        for atomic in [false, true] {
+            let entry = ModelEntry(
+                alias: "generation-model", hfRepo: nil, sizeOnDisk: nil, cached: true,
+                kind: atomic ? .chat : kind,
+                taskTypes: atomic ? [task] : [], operationModes: atomic ? [operation] : []
+            )
+            let secondsAtSpawn = ServerManager.primaryIdleUnloadSetting(
+                idleSetting: 300, capabilities: .allKnown, catalogEntry: entry
+            )
+            #expect(secondsAtSpawn == nil)
+            #expect(IdleModelReleasePreference.mode(
+                setting: 300, runtimeSupportsNativeUnload: secondsAtSpawn != nil
+            ) == .legacyStop)
+            #expect(ServerManager.residentLaunchFlags(
+                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, catalogEntry: entry
+            ) == [
+                "--resident-memory-limit-gb", "14", "--resident-model-idle-ttl", "300",
+                "--audio-lane-idle-ttl", "300",
+            ])
+            var older = ServerRuntimeCapabilities.allKnown
+            older.supportsPrimaryIdleUnload = false
+            #expect(ServerManager.unsupportedResidentLaunchFlagNames(
+                idleSetting: 300, capabilities: older, catalogEntry: entry
+            ).isEmpty)
+        }
+    }
+
+    @Test("text and vision-language chat retain native idle unload", arguments: [
+        ModelTask.textGeneration, .visionLanguage,
+    ])
+    func chatIdleLaunchFlags(task: ModelTask) {
+        for atomic in [false, true] {
+            let entry = ModelEntry(
+                alias: "chat-model", hfRepo: nil, sizeOnDisk: nil, cached: true,
+                taskTypes: atomic ? [task] : [], operationModes: atomic ? [.chat] : []
+            )
+            let secondsAtSpawn = ServerManager.primaryIdleUnloadSetting(
+                idleSetting: 300, capabilities: .allKnown, catalogEntry: entry
+            )
+            #expect(secondsAtSpawn == 300)
+            #expect(IdleModelReleasePreference.mode(
+                setting: 300, runtimeSupportsNativeUnload: secondsAtSpawn != nil
+            ) == .native)
+            #expect(ServerManager.residentLaunchFlags(
+                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: 300, catalogEntry: entry
+            ) == [
+                "--resident-memory-limit-gb", "14", "--resident-model-idle-ttl", "300",
+                "--idle-unload-seconds", "300", "--audio-lane-idle-ttl", "300",
+            ])
+            var older = ServerRuntimeCapabilities.allKnown
+            older.supportsPrimaryIdleUnload = false
+            #expect(ServerManager.primaryIdleUnloadSetting(
+                idleSetting: 300, capabilities: older, catalogEntry: entry
+            ) == nil)
+            #expect(ServerManager.unsupportedResidentLaunchFlagNames(
+                idleSetting: 300, capabilities: older, catalogEntry: entry
+            ) == ["--idle-unload-seconds"])
+        }
+    }
+
     @Test("streaming probe detects a split idle-unload marker and its absence")
     func probeIdleUnloadMarker() async throws {
         let current = try makeRuntimeScript(splitIdleUnloadMarker: true)
