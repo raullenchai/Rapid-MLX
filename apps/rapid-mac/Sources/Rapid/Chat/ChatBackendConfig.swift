@@ -12,12 +12,12 @@ enum ChatBackend: String, CaseIterable, Codable, Sendable {
 @Observable
 final class ChatBackendConfig {
     nonisolated static let storageKey = "Rapid.experimental.chatBackend"
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
 
     var onDisabled: (() -> Void)?
     var chatBackend: ChatBackend {
         didSet {
-            defaults.set(chatBackend.rawValue, forKey: Self.storageKey)
+            defaults?.set(chatBackend.rawValue, forKey: Self.storageKey)
             if chatBackend == .legacy && oldValue == .ownerV1 { onDisabled?() }
         }
     }
@@ -31,5 +31,12 @@ final class ChatBackendConfig {
         self.defaults = defaults
         chatBackend = defaults.string(forKey: Self.storageKey)
             .flatMap(ChatBackend.init(rawValue:)) ?? .legacy
+    }
+
+    /// A value that never reads or writes preferences, for surfaces that must
+    /// stay on one backend whatever the user's setting is.
+    init(pinnedTo backend: ChatBackend) {
+        self.defaults = nil
+        chatBackend = backend
     }
 }

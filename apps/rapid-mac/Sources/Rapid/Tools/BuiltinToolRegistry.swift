@@ -47,6 +47,10 @@ final class BuiltinToolRegistry: ToolRegistry {
     /// Injected at the service boundary so the state transition can be tested
     /// without a live provider. Production always uses ``WebSearchTool/run``.
     private let webSearchRunner: WebSearchRunner
+    /// Page and document stores the tools read and write. Shared by default;
+    /// a temporary chat passes window-private ones.
+    private let documentCache: DocumentContentCache
+    private let browseCache: BrowseContentCache
     private struct RejectedKeyRecoveryTransition {
         let rejectedRevision: UInt64
         let keylessRevision: UInt64
@@ -67,11 +71,15 @@ final class BuiltinToolRegistry: ToolRegistry {
                 provider: provider,
                 apiKey: apiKey
             )
-        }
+        },
+        documentCache: DocumentContentCache = .shared,
+        browseCache: BrowseContentCache = .shared
     ) {
         self.browseApproval = browseApproval
         self.webSearch = webSearch
         self.webSearchRunner = webSearchRunner
+        self.documentCache = documentCache
+        self.browseCache = browseCache
     }
 
     var definitions: [ToolDefinition] {
@@ -91,12 +99,16 @@ final class BuiltinToolRegistry: ToolRegistry {
         case "browse":
             result = await BrowseTool.run(
                 arguments: call.function.arguments,
-                approval: browseApproval
+                approval: browseApproval,
+                cache: browseCache
             )
         case "weather":
             result = await WeatherTool.run(arguments: call.function.arguments)
         case "read_document":
-            result = await ReadDocumentTool.run(arguments: call.function.arguments)
+            result = await ReadDocumentTool.run(
+                arguments: call.function.arguments,
+                cache: documentCache
+            )
         default:
             // The model invented a tool name we don't ship — return an
             // error result so it gets a chance to recover instead of
