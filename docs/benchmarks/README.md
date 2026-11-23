@@ -14,6 +14,7 @@ Performance benchmarks for rapid-mlx on Apple Silicon.
   correctness, context curves, and QSA prefill follow-ups
 - [Qwen3.8 Flash-Next native MTP](qwen38-flash-next-mtp-m3-ultra.md) -
   opt-in decode acceleration and correctness qualification
+- [Inkling 2 Mini on M5 Max](inkling-2-mini-m5-max.md) - Serving, context scaling, and closed experiments
 - [Image Benchmarks](image.md) - Image understanding performance
 - [Video Benchmarks](video.md) - Video understanding performance
 
