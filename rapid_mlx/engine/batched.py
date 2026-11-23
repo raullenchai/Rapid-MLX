@@ -2542,6 +2542,9 @@ class BatchedEngine(BaseEngine):
         # ServerConfig and concurrent cache load/save tasks can observe it.
         # This is deliberately outside the eager branch so disk-stream engines
         # receive the same single, immutable namespace.
+        from ..expert_stats import bind as bind_expert_stats
+
+        bind_expert_stats(self._model)
         from ..runtime.cache import pin_prefix_cache_identity
 
         kv_dtype = str(

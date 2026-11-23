@@ -9210,6 +9210,9 @@ def serve_command(args):
         lazy_load=bool(getattr(args, "lazy_load", False)),
         idle_unload_seconds=getattr(args, "idle_unload_seconds", 0.0),
     )
+    from rapid_mlx.expert_stats import enable_from
+
+    enable_from(getattr(args, "expert_stats", False))
     try:
         load_model(
             args.model,

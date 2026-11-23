@@ -3938,6 +3938,7 @@ from .routes.completions import router as _completions_router
 from .routes.control_status import mount_status as _mount_control_status
 from .routes.cua import router as _cua_router
 from .routes.embeddings import router as _embeddings_router
+from .routes.experts import router as _experts_router
 from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
@@ -3960,6 +3961,7 @@ app.include_router(_health_router)
 # ``X-Rapid-MLX-Internal: true`` gate ALSO applies when ``--api-key`` is unset.
 app.include_router(_health_admin_router)
 app.include_router(_metrics_router)
+app.include_router(_experts_router)
 # Keep literal residency paths ahead of ``/v1/models/{model_id:path}`` so the
 # latter cannot consume ``residency`` as an ordinary model id.
 app.include_router(_residency_router)
