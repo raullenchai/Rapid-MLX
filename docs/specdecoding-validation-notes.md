@@ -97,3 +97,18 @@ Decision:
 
 Full environment, revisions, commands, and per-prompt measurements are in
 [`docs/engineering/performance/2026-09-20-gemma4-assistant-mtp.md`](engineering/performance/2026-09-20-gemma4-assistant-mtp.md).
+
+## 2026-11-22 DSpark: Inkling 2 Mini on M5 Max
+
+The official checkpoint's DSpark block drafter (block size 8) was evaluated
+on Apple M5 Max. At 512-token context, verify forwards of 2/4/8 tokens cost
+32.5/42.5/57.8 ms, against 24.7 ms for one token. Accepted tokens per round
+were 1.0–1.3 on code and prose and about 3 on JSON.
+
+Median decode over four realistic prompts was 43.9 tok/s against 45.6 tok/s
+with plain decoding; JSON alone improved by 39%. The experiment was not
+shipped. Reopen if verify costs fall to about 30 ms for two tokens and
+37 ms for four tokens, or for workloads dominated by structured output.
+
+Environment, artifact revisions, serving results, and experiment details:
+[Inkling 2 Mini on M5 Max](benchmarks/inkling-2-mini-m5-max.md).
