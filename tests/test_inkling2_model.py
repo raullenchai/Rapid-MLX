@@ -208,17 +208,34 @@ def _expert_layer(switch_layers, mx, *, global_scale):
     return layer, x, indices
 
 
-def test_expert_global_scale_fallback_matches_native(monkeypatch):
-    """On MLX without gather_qmm(global_scale=...), rescaling the output is exact."""
+def test_expert_global_scale_fallback_matches_reference(monkeypatch):
+    """Without gather_qmm(global_scale=...), rescaling the output is exact.
+
+    The reference decodes each expert on its own, so this also runs on MLX
+    builds that lack the native argument.
+    """
     mx = pytest.importorskip("mlx.core")
     from rapid_mlx.models.inkling2 import switch_layers
 
-    if not switch_layers._GATHER_QMM_HAS_GLOBAL_SCALE:
-        pytest.skip("this MLX build has no native global_scale to compare against")
     layer, x, indices = _expert_layer(switch_layers, mx, global_scale=True)
     # Give every expert a distinct scale so a wrong gather would show.
     layer.global_scale = layer.global_scale * mx.array([0.5, 1.0, 3.0, 7.0])
-    native = layer(x, indices)
+    dense = mx.stack(
+        [
+            mx.dequantize(
+                layer.weight[e],
+                layer.scales[e],
+                None,
+                layer.group_size,
+                layer.bits,
+                mode=layer.mode,
+                global_scale=layer.global_scale[e],
+            )
+            for e in range(layer.num_experts)
+        ]
+    )
+    reference = x @ dense[indices].swapaxes(-1, -2)
+    native = layer(x, indices) if switch_layers._GATHER_QMM_HAS_GLOBAL_SCALE else None
 
     real = mx.gather_qmm
     calls = []
@@ -233,9 +250,14 @@ def test_expert_global_scale_fallback_matches_native(monkeypatch):
     fallback = layer(x, indices)
 
     assert calls
-    assert fallback.shape == native.shape
-    assert fallback.dtype == native.dtype
-    assert mx.allclose(fallback, native, rtol=1e-5, atol=1e-6).item()
+    assert fallback.shape == reference.shape
+    # The quantized kernel and a dense decode agree to about 0.2%; a wrong or
+    # missing per-expert scale is off by at least a factor of two.
+    error = mx.abs(fallback - reference).max() / mx.abs(reference).max()
+    assert error.item() < 1e-2
+    if native is not None:
+        assert fallback.dtype == native.dtype
+        assert mx.allclose(fallback, native, rtol=1e-5, atol=1e-6).item()
 
     # Half precision: the unscaled product overflows, the fallback must not.
     layer.global_scale = mx.full(layer.global_scale.shape, 0.1)
