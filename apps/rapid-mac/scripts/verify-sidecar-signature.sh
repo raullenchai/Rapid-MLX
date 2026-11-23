@@ -20,16 +20,18 @@ details="$(codesign -d --verbose=4 "$binary" 2>&1)" || {
     echo "ERR: could not inspect official signature on $binary" >&2
     exit 1
 }
-printf '%s\n' "$details" | grep -q '^Authority=Developer ID Application:' || {
+# Match from a here-string, not a pipe: under pipefail an early grep -q exit
+# kills the writer with SIGPIPE and reports a present property as missing.
+grep -q '^Authority=Developer ID Application:' <<<"$details" || {
     echo "ERR: Developer ID Application authority missing on $binary" >&2
     exit 1
 }
-timestamp="$(printf '%s\n' "$details" | sed -n 's/^Timestamp=//p' | head -n 1)"
+timestamp="$(awk '/^Timestamp=/ { sub(/^Timestamp=/, ""); print; exit }' <<<"$details")"
 if [ -z "$timestamp" ] || [ "$(printf '%s' "$timestamp" | tr '[:upper:]' '[:lower:]')" = "none" ]; then
     echo "ERR: secure timestamp missing on $binary" >&2
     exit 1
 fi
-printf '%s\n' "$details" | grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' || {
+grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' <<<"$details" || {
     echo "ERR: hardened runtime flag missing on $binary" >&2
     exit 1
 }
