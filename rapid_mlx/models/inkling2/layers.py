@@ -74,7 +74,10 @@ def _block_decode_only(fn):
 
     @wraps(fn)
     def call(self, hidden_states, *args):
-        if not (
+        # Expert-stats wraps the Python receivers inside this method. A
+        # compiled replay skips those wrappers, so keep the eager path
+        # while GET /experts is armed.
+        if _expert_stats_active() or not (
             hidden_states.shape[1] == 1 and _fast_decode_enabled() and _use_kernels()
         ):
             return fn(self, hidden_states, *args)
@@ -89,6 +92,14 @@ def _block_decode_only(fn):
         return compiled(hidden_states, *args)
 
     return call
+
+
+def _expert_stats_active() -> bool:
+    try:
+        from rapid_mlx.expert_stats import enabled
+    except ImportError:
+        return False
+    return enabled()
 
 
 def _fast_decode_enabled() -> bool:

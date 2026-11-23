@@ -15,10 +15,12 @@ from rapid_mlx.routes.experts import experts
 class ExpertStatsTest(unittest.TestCase):
     def setUp(self):
         expert_stats.reset()
+        expert_stats._patched.clear()
 
     def tearDown(self):
         expert_stats.WINDOW = 256
         expert_stats.reset()
+        expert_stats._patched.clear()
 
     def test_rows_flatten_a_batch_of_tokens(self):
         self.assertEqual(expert_stats._rows([[1, 2], [3, 4]]), [[1, 2], [3, 4]])
@@ -127,12 +129,101 @@ class ExpertStatsTest(unittest.TestCase):
         module = Receiver()
 
         class Model:
+            model_type = "dummy"
+
             def named_modules(self):
                 return [("language_model.layers.12.mlp.experts", module)]
 
         self.assertEqual(expert_stats.bind(Model()), 1)
         module(None, [[4, 7]])
-        self.assertEqual(expert_stats.snapshot()["layers"][0]["il"], 12)
+        body = expert_stats.snapshot()
+        self.assertEqual(body["layers"][0]["il"], 12)
+        self.assertEqual(body["model"], "dummy")
+
+    def test_bind_clears_the_previous_model_window(self):
+        class Receiver:
+            def __call__(self, x, indices):
+                return indices
+
+        expert_stats._patch(Receiver)
+        expert_stats._enabled = True
+        first = Receiver()
+        second = Receiver()
+
+        class Model:
+            def __init__(self, module, name):
+                self._module = module
+                self.model_type = name
+
+            def named_modules(self):
+                return [("layers.0.experts", self._module)]
+
+        expert_stats.bind(Model(first, "one"))
+        first(None, [[1]])
+        self.assertEqual(expert_stats.snapshot()["n_tokens"], 1)
+        expert_stats.bind(Model(second, "two"))
+        body = expert_stats.snapshot()
+        self.assertEqual(body["n_tokens"], 0)
+        self.assertEqual(body["layers"], [])
+        self.assertEqual(body["model"], "two")
+        second(None, [[9]])
+        self.assertEqual(expert_stats.snapshot()["layers"][0]["tokens"], [[9]])
+
+    def test_unbind_retires_only_the_owning_model(self):
+        class Receiver:
+            def __call__(self, x, indices):
+                return indices
+
+        expert_stats._patch(Receiver)
+        expert_stats._enabled = True
+        module = Receiver()
+
+        class Model:
+            model_type = "owned"
+
+            def named_modules(self):
+                return [("layers.1.experts", module)]
+
+        model = Model()
+        expert_stats.bind(model)
+        module(None, [[2]])
+        expert_stats.unbind(object())
+        self.assertEqual(expert_stats.snapshot()["n_tokens"], 1)
+        expert_stats.unbind(model)
+        self.assertEqual(expert_stats.snapshot()["layers"], [])
+
+    def test_bind_rewraps_after_fusion_replaces_the_callable(self):
+        class Switch:
+            def __call__(self, x, indices):
+                return ("stock", indices)
+
+        expert_stats._patch(Switch)
+        expert_stats._enabled = True
+
+        def fused(self, x, indices):
+            return ("fused", indices)
+
+        Switch.__call__ = fused
+        self.assertFalse(getattr(Switch.__call__, "_expert_stats_wrapped", False))
+
+        module = Switch()
+
+        class Model:
+            def named_modules(self):
+                return [("layers.0.mlp", module)]
+
+        expert_stats.bind(Model())
+        self.assertTrue(getattr(Switch.__call__, "_expert_stats_wrapped", False))
+        module(None, [4, 5])
+        self.assertEqual(expert_stats.snapshot()["n_tokens"], 1)
+
+    def test_expert_stats_keeps_inkling_decode_eager(self):
+        from rapid_mlx.models.inkling2 import layers as inkling_layers
+
+        expert_stats._enabled = False
+        self.assertFalse(inkling_layers._expert_stats_active())
+        expert_stats._enabled = True
+        self.assertTrue(inkling_layers._expert_stats_active())
 
     def test_route_is_absent_until_enabled(self):
         with self.assertRaises(HTTPException) as caught:

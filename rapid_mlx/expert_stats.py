@@ -6,6 +6,10 @@ Off unless the server is started with ``--expert-stats`` or
 receive the chosen expert ids. A second projection of the same choice
 (gate and down) is suppressed. Inkling's loop calls the same layer again,
 so each pass is recorded.
+
+The recorder is owned by the most recently bound model. Binding clears
+prior history; unloading that model clears it again. Concurrent resident
+models therefore do not share one mixed window.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import inspect
 import logging
 import os
 import re
+import sys
 import threading
 from collections import deque
 from typing import Any
@@ -35,6 +40,8 @@ _lock = threading.Lock()
 _n_expert = 0
 _n_expert_used = 0
 _layers: dict[int, dict[str, Any]] = {}
+_owner_id: int | None = None
+_model_name: str | None = None
 
 
 def enabled() -> bool:
@@ -47,21 +54,35 @@ def env_enabled() -> bool:
 
 def reset() -> None:
     """Clear recorded routings and the enable flag. Used by tests."""
-    global _enabled, _n_expert, _n_expert_used
+    global _enabled, _n_expert, _n_expert_used, _owner_id, _model_name
     with _lock:
         _enabled = False
         _n_expert = 0
         _n_expert_used = 0
+        _owner_id = None
+        _model_name = None
+        _layers.clear()
+
+
+def clear_history() -> None:
+    """Drop recorded routings while leaving the feature armed."""
+    global _n_expert, _n_expert_used, _owner_id, _model_name
+    with _lock:
+        _n_expert = 0
+        _n_expert_used = 0
+        _owner_id = None
+        _model_name = None
         _layers.clear()
 
 
 def activate() -> None:
-    """Turn recording on and wrap the known expert-id receivers once.
+    """Turn recording on and wrap the known expert-id receivers.
 
     Wrapping is deferred until :func:`bind`, which runs after the other
     MoE patches have replaced ``__call__``. An earlier wrap would be
     bypassed by the fused gate/up path and would also change the
-    signature those patches require.
+    signature those patches require. Bind re-checks each class on every
+    call so a later fusion that replaced our wrapper is restored.
     """
     global _enabled
     _enabled = True
@@ -82,17 +103,28 @@ def enable_from(flag: bool = False) -> bool:
     return False
 
 
-def bind(model: Any) -> int:
-    """Stamp each receiver with the layer number in its module name.
+def bind(model: Any, model_name: str | None = None) -> int:
+    """Stamp receivers on ``model`` and make it the active recorder owner.
 
-    Call after the model and its MoE patches exist. Returns how many
-    modules were stamped. A disabled server stamps nothing.
+    Call after the model and its MoE patches exist. Clears any previous
+    model's history so resident swaps do not mix windows. Returns how
+    many modules were stamped. A disabled server stamps nothing.
     """
     if not (enabled() or env_enabled()):
         return 0
-    if not _patched:
-        activate()
+    clear_history()
+    global _enabled
+    _enabled = True
+    # Fusion can replace a wrapped __call__. Rewrap every class we already
+    # know about, then discover stock receivers when their modules are
+    # already imported (so unit tests with dummy classes stay mlx-free).
+    for cls in list(_patched):
+        _patch(cls)
+    if _should_discover_receivers():
+        for cls in _receiver_types():
+            _patch(cls)
     _set_counts(_counts_from(model))
+    _drop_compiled_decode(model)
     stamped = 0
     named = getattr(model, "named_modules", None)
     if named is None:
@@ -103,7 +135,20 @@ def bind(model: Any) -> int:
             continue
         module._expert_stats_layer = int(match.group(1))
         stamped += 1
+    global _owner_id, _model_name
+    with _lock:
+        _owner_id = id(model)
+        _model_name = model_name or _name_of(model)
     return stamped
+
+
+def unbind(model: Any | None = None) -> None:
+    """Retire history when the owning model is unloaded."""
+    global _owner_id
+    with _lock:
+        if model is not None and _owner_id is not None and id(model) != _owner_id:
+            return
+    clear_history()
 
 
 def note(layer: int, indices: Any) -> None:
@@ -159,18 +204,19 @@ def snapshot() -> dict[str, Any]:
                     "recent": recent,
                 }
             )
-        return {
+        body: dict[str, Any] = {
             "n_expert": _n_expert,
             "n_expert_used": _n_expert_used,
             "n_tokens": n_tokens,
             "window": WINDOW,
             "layers": layers,
         }
+        if _model_name:
+            body["model"] = _model_name
+        return body
 
 
 def _patch(cls: type) -> None:
-    if cls in _patched:
-        return
     original = cls.__call__
     if getattr(original, "_expert_stats_wrapped", False):
         _patched.add(cls)
@@ -204,6 +250,20 @@ def _patch(cls: type) -> None:
     _patched.add(cls)
 
 
+def _should_discover_receivers() -> bool:
+    if not _patched:
+        return True
+    return any(
+        name in sys.modules
+        for name in (
+            "mlx_lm.models.switch_layers",
+            "mlx_vlm.models.switch_layers",
+            "rapid_mlx.models.inkling2.layers",
+            "rapid_mlx.models.inkling2.switch_layers",
+        )
+    )
+
+
 def _receiver_types() -> list[type]:
     found: list[type] = []
     try:
@@ -212,6 +272,15 @@ def _receiver_types() -> list[type]:
         found.extend([SwitchGLU, SwitchMLP])
     except Exception:
         log.debug("mlx-lm switch layers unavailable", exc_info=True)
+    # mlx-vlm keeps a private copy. Importing it here would defeat the
+    # optional vision dependency, so enroll it only once the package is
+    # already resident (true for any loaded VLM), matching moe_fusion.
+    vlm_switch = sys.modules.get("mlx_vlm.models.switch_layers")
+    if vlm_switch is not None:
+        for name in ("SwitchGLU", "SwitchMLP"):
+            cls = getattr(vlm_switch, name, None)
+            if isinstance(cls, type) and cls not in found:
+                found.append(cls)
     try:
         from rapid_mlx.models.inkling2.layers import Experts
         from rapid_mlx.models.inkling2.switch_layers import (
@@ -223,6 +292,37 @@ def _receiver_types() -> list[type]:
     except Exception:
         log.debug("inkling switch layers unavailable", exc_info=True)
     return found
+
+
+def _drop_compiled_decode(model: Any) -> None:
+    """Drop Inkling fast-decode caches so stats see eager routing again."""
+    named = getattr(model, "named_modules", None)
+    if not callable(named):
+        return
+    for _, module in named():
+        stale = [
+            attr
+            for attr in vars(module)
+            if isinstance(attr, str) and attr.startswith("_block_compiled_")
+        ]
+        for attr in stale:
+            try:
+                delattr(module, attr)
+            except Exception:
+                log.debug("failed to drop compiled decode cache %s", attr, exc_info=True)
+
+
+def _name_of(model: Any) -> str | None:
+    for attr in ("model_id", "name", "model_type"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    args = getattr(model, "args", None)
+    for obj in (args, getattr(args, "text", None) if args is not None else None):
+        value = getattr(obj, "model_type", None) if obj is not None else None
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _rows(indices: Any) -> list[list[int]]:
@@ -272,6 +372,9 @@ def _counts_from(model: Any) -> tuple[int, int]:
     inner = getattr(model, "model", None)
     if inner is not None:
         objects.append(getattr(inner, "args", None))
+    language = getattr(model, "language_model", None)
+    if language is not None:
+        objects.append(getattr(language, "args", None))
     n_expert = 0
     n_used = 0
     for obj in objects:
