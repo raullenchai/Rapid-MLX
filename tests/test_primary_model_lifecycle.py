@@ -1220,6 +1220,65 @@ async def test_lifespan_primary_lifecycle_modes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lazy_load", [False, True], ids=["idle-only", "lazy"])
+async def test_lifespan_ignores_idle_unload_for_engines_without_lifecycle(
+    monkeypatch, caplog, lazy_load
+):
+    """An image or video engine must still start when an idle interval is set."""
+    from types import SimpleNamespace
+
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import audio, video
+    from rapid_mlx.runtime import audio_worker
+
+    engine = SimpleNamespace(is_mllm=False, stop=AsyncMock())
+    manager = SimpleNamespace(
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+        contains=Mock(return_value=False),
+        register_primary=Mock(),
+        set_primary_lifecycle_state=Mock(),
+    )
+    cfg = reset_config()
+    cfg.bind_host = None
+    cfg.bind_port = None
+    monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(
+        server, "_model_registry", SimpleNamespace(list_entries=Mock(return_value=[]))
+    )
+    monkeypatch.setattr(server, "_residency_manager", manager)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    monkeypatch.setattr(server, "_telemetry_model_served_state", "idle")
+    monkeypatch.setattr(server, "_primary_lazy_load", lazy_load)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 300.0)
+    monkeypatch.setattr(server, "_warmup_primary_engine", AsyncMock())
+    monkeypatch.setattr(server, "_warmup_tool_grammar", AsyncMock())
+    monkeypatch.setattr(server, "_drain_deferred_prefix_cache_load", AsyncMock())
+    monkeypatch.setattr(server, "_shutdown_save_prefix_cache", AsyncMock())
+    monkeypatch.setattr(audio, "audio_routes_should_register", Mock(return_value=False))
+    monkeypatch.setattr(audio, "shutdown_audio_lanes", AsyncMock())
+    monkeypatch.setattr(video, "start_video_jobs", Mock())
+    monkeypatch.setattr(video, "shutdown_video_jobs", AsyncMock())
+    monkeypatch.setattr(audio_worker, "bind_audio_worker", Mock())
+
+    lifespan = server.lifespan(server.app)
+    if lazy_load:
+        # An explicit --lazy-load request keeps its clear startup error.
+        with pytest.raises(RuntimeError, match="serving engines only"):
+            await lifespan.__anext__()
+        return
+    with caplog.at_level("WARNING", logger=server.logger.name):
+        await lifespan.__anext__()
+    assert server._primary_model_lifecycle is None
+    assert server._primary_idle_unload_seconds == 0.0
+    assert cfg.primary_model_lifecycle is None
+    assert "--idle-unload-seconds is ignored" in caplog.text
+    with pytest.raises(StopAsyncIteration):
+        await lifespan.__anext__()
+
+
+@pytest.mark.asyncio
 async def test_already_loaded_primary_finishes_grammar_warmup_before_idle_monitor(
     monkeypatch,
 ):
