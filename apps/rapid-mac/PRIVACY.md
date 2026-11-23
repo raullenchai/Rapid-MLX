@@ -15,6 +15,10 @@ own key in Settings → Tools).
 * Chat history (conversations, messages, attachments, folders) — stored
   under `~/Library/Application Support/Rapid/conversations.json` and
   never transmitted off-device.
+* Synthesized speech (the audio and the text it was made from) — the
+  latest 50 are kept under `~/Library/Application Support/Rapid/AudioArtifacts/`
+  so the Artifacts library can play them back, and are never transmitted
+  off-device.
 * API keys for tools (Keenable / Parallel / Tavily / Brave) — stored
   in macOS Keychain.
 * Server settings, picker state, window layout — stored in

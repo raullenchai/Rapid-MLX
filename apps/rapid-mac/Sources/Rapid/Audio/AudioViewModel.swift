@@ -65,12 +65,15 @@ final class AudioViewModel {
 
     private let server: ServerManager
     private let client: AudioClient
+    private let artifactStore: AudioArtifactStore
     private let onProductValueDelivered: @MainActor (ProductValueKind) -> Void
 
     init(server: ServerManager, client: AudioClient = AudioClient(),
+         artifactStore: AudioArtifactStore = AudioArtifactStore(),
          onProductValueDelivered: @escaping @MainActor (ProductValueKind) -> Void = { _ in }) {
         self.server = server
         self.client = client
+        self.artifactStore = artifactStore
         self.onProductValueDelivered = onProductValueDelivered
     }
 
@@ -200,6 +203,9 @@ final class AudioViewModel {
             )
             guard !Task.isCancelled, !audio.data.isEmpty else { return }
             synthesizedAudio = audio
+            artifactStore.insert(
+                audio, text: trimmed, voice: selectedVoice, modelAlias: entry.alias
+            )
             onProductValueDelivered(.synthesizedSpeech)
         } catch {
             errorMessage = Self.message(for: error)

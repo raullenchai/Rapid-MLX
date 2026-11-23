@@ -373,7 +373,7 @@ struct ArtifactPanelModelTests {
         #expect(model.items.isEmpty)
     }
 
-    @Test("Select, close, reload and width clamping")
+    @Test("Select, close, full screen and width clamping")
     func intents() {
         let q = message(.user, "q")
         let a = message(.assistant, fence("html", counter) + "\n\n" + fence("html", clock), parent: q.id, at: 1)
@@ -386,12 +386,11 @@ struct ArtifactPanelModelTests {
         model.select("nope")
         #expect(model.selected?.title == "Clock")
 
-        let token = model.reloadToken
-        model.reload()
-        #expect(model.reloadToken != token)
-
+        model.toggleFullScreen()
+        #expect(model.isFullScreen)
         model.close()
         #expect(!model.isOpen)
+        #expect(!model.isFullScreen, "closing must bring the chat back")
 
         model.setPanelWidth(10)
         #expect(model.panelWidth == ArtifactPanelModel.widthRange.lowerBound)
@@ -489,16 +488,23 @@ struct ArtifactWiringTests {
     @Test("The stable accessibility identifiers are declared")
     func identifiers() throws {
         let panel = try source("UI/Artifacts/ArtifactPanelView.swift")
+            + source("UI/Artifacts/ArtifactViewer.swift")
             + source("UI/Artifacts/ArtifactPanelHost.swift")
         for id in [
             "Artifact.Panel", "Artifact.Panel.List", "Artifact.Panel.Copy", "Artifact.Panel.Save",
             "Artifact.Panel.Reload", "Artifact.Panel.OpenInBrowser", "Artifact.Panel.Close",
+            "Artifact.Panel.FullScreen", "Artifact.Panel.Resize",
         ] {
             #expect(panel.contains("\"\(id)\""), "\(id)")
         }
         let card = try source("UI/Artifacts/ArtifactCardView.swift")
             + source("UI/Markdown/TextKit/Render/MarkdownCodeBlockView.swift")
         #expect(card.contains("\"Artifact.Card.Open\""))
+        let library = try source("UI/Artifacts/ArtifactLibraryView.swift")
+        for id in ["Artifact.Library", "Artifact.Library.Table", "Artifact.Library.Back", "Artifact.Library.Detail"] {
+            #expect(library.contains("\"\(id)\""), "\(id)")
+        }
+        #expect(try source("UI/SidebarView.swift").contains("\"Sidebar.Artifacts\""))
     }
 
     @Test("The chat view only hosts the panel")

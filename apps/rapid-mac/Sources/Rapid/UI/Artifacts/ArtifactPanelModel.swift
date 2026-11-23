@@ -38,17 +38,17 @@ extension EnvironmentValues {
 @Observable
 final class ArtifactPanelModel {
 
-    static let widthRange: ClosedRange<CGFloat> = 300...900
+    static let widthRange: ClosedRange<CGFloat> = 300...1600
 
     private(set) var isOpen = false
-    var panelWidth: CGFloat = 460
+    var panelWidth: CGFloat = 560
     private(set) var items: [ArtifactItem] = []
     private(set) var selectedID: String?
     /// Shown when the reader opened a block the list does not hold yet, which
     /// is a block of a reply that is still streaming.
     private(set) var detached: ArtifactItem?
-    /// Bumped by Reload so a live page is rebuilt even if nothing else changed.
-    private(set) var reloadToken = 0
+    /// The panel fills the chat area and the transcript is hidden.
+    private(set) var isFullScreen = false
 
     @ObservationIgnored private var messages: [ChatMessage] = []
     @ObservationIgnored private var isStale = true
@@ -74,15 +74,19 @@ final class ArtifactPanelModel {
         }
     }
 
-    func close() { isOpen = false }
+    /// Closing also leaves full screen, so the chat comes back.
+    func close() {
+        isOpen = false
+        isFullScreen = false
+    }
+
+    func toggleFullScreen() { isFullScreen.toggle() }
 
     func select(_ id: String) {
         guard items.contains(where: { $0.id == id }) else { return }
         detached = nil
         selectedID = id
     }
-
-    func reload() { reloadToken &+= 1 }
 
     /// The transcript changed. Cheap while closed: the work waits for the
     /// panel to open.
@@ -138,20 +142,22 @@ final class ArtifactPanelModel {
 
     /// Every artifact block in `content`, in order. Walks the same compiled
     /// blocks the transcript renders, so the list and the cards agree.
-    static func artifacts(in content: String, messageID: UUID) -> [ArtifactItem] {
+    nonisolated static func blocks(in content: String) -> [ArtifactLibrary.Block] {
         guard content.contains("```") || content.contains("~~~") else { return [] }
-        var index = 0
-        var found: [ArtifactItem] = []
-        for item in MarkdownCompiler().compile(content).items {
+        return MarkdownCompiler().compile(content).items.compactMap { item in
             guard case .code(let block) = item,
                   let kind = ArtifactItem.kind(code: block.code, language: block.language)
-            else { continue }
-            found.append(ArtifactItem(
-                id: "\(messageID.uuidString)#\(index)", kind: kind, source: block.code
-            ))
-            index += 1
+            else { return nil }
+            return ArtifactLibrary.Block(kind: kind, source: block.code)
         }
-        return found
+    }
+
+    static func artifacts(in content: String, messageID: UUID) -> [ArtifactItem] {
+        blocks(in: content).enumerated().map { index, block in
+            ArtifactItem(
+                id: "\(messageID.uuidString)#\(index)", kind: block.kind, source: block.source
+            )
+        }
     }
 }
 

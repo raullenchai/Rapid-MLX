@@ -54,6 +54,25 @@ enum ArtifactPanelActions {
         }
     }
 
+    /// Ask where to save, then copy a stored file there. Returns an error
+    /// message, or nil on success or cancel.
+    static func saveCopy(of source: URL, suggestedName: String) -> String? {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        if let type = UTType(filenameExtension: (suggestedName as NSString).pathExtension) {
+            panel.allowedContentTypes = [type]
+        }
+        guard panel.runModal() == .OK, let destination = panel.url else { return nil }
+        do {
+            let data = try Data(contentsOf: source)
+            try data.write(to: destination, options: .atomic)
+            return nil
+        } catch {
+            return String(localized: "Couldn't save the file: \(error.localizedDescription)")
+        }
+    }
+
     /// PNG bytes for a rendered diagram.
     static func pngData(for image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation,
