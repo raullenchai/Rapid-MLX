@@ -79,7 +79,7 @@ _NUMERICAL_CORE_SHA256 = {
     "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
-    "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
+    "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
 }
 
@@ -236,6 +236,12 @@ def test_expert_global_scale_fallback_matches_native(monkeypatch):
     assert fallback.shape == native.shape
     assert fallback.dtype == native.dtype
     assert mx.allclose(fallback, native, rtol=1e-5, atol=1e-6).item()
+
+    # Half precision: the unscaled product overflows, the fallback must not.
+    layer.global_scale = mx.full(layer.global_scale.shape, 0.1)
+    half = layer(mx.ones((1, 1, 1, 1, 128), dtype=mx.float16) * 40, mx.array([[[0]]]))
+    assert half.dtype == mx.float16
+    assert mx.all(mx.isfinite(half)).item()
 
 
 def test_expert_without_global_scale_never_passes_it(monkeypatch):

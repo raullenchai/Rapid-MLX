@@ -98,6 +98,11 @@ class QuantizedSwitchLinear(nn.Module):
     def __call__(self, x, indices, sorted_indices=False):
         global_scale = self.global_scale
         native_scale = global_scale is not None and _GATHER_QMM_HAS_GLOBAL_SCALE
+        fallback_scale = global_scale is not None and not native_scale
+        dtype = x.dtype
+        if fallback_scale:
+            # The unscaled product can exceed the half-precision range.
+            x = x.astype(mx.float32)
         x = mx.gather_qmm(
             x,
             self["weight"],
@@ -111,13 +116,13 @@ class QuantizedSwitchLinear(nn.Module):
             sorted_indices=sorted_indices,
             **({"global_scale": global_scale} if native_scale else {}),
         )
-        if global_scale is not None and not native_scale:
+        if fallback_scale:
             # MLX before 0.32.3: gather_qmm has no global_scale argument and
             # decodes nvfp4 with the default tensor scale. The result is linear
             # in that scale, so rescaling each expert's output is exact.
             scale = global_scale[indices] / _NVFP4_DEFAULT_GLOBAL_SCALE
             scale = mx.reshape(scale, scale.shape + (1,) * (x.ndim - scale.ndim))
-            x = x * scale.astype(x.dtype)
+            x = (x * scale.astype(mx.float32)).astype(dtype)
         if "bias" in self:
             x = x + mx.expand_dims(self["bias"][indices], -2)
         return x
