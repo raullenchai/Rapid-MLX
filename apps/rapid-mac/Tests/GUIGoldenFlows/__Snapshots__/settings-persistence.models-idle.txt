@@ -11,6 +11,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.CommunityBenchmark" desc="Benchmark" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
+          AXCheckBox subrole=AXToggle id="Chat.NewChat.TemporaryToggle" desc="Temporary chat" help="Turn on temporary chat" value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
