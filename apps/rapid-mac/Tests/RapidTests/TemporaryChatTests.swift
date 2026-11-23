@@ -53,9 +53,11 @@ struct TemporaryChatTests {
         guard let walker = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys
         ) else { return result }
+        // The enumerator can report /private/var for a /var temp directory.
+        let base = root.resolvingSymlinksInPath().path
         for case let url as URL in walker {
             guard (try? url.resourceValues(forKeys: Set(keys)).isRegularFile) == true else { continue }
-            let relative = String(url.path.dropFirst(root.path.count))
+            let relative = String(url.resolvingSymlinksInPath().path.dropFirst(base.count))
             result[relative] = try? Data(contentsOf: url)
         }
         return result
@@ -150,7 +152,10 @@ struct TemporaryChatTests {
         #expect(DocumentContentCache.shared.get(attachment.id) == nil)
         let files = snapshot(of: root).keys
         #expect(!files.isEmpty)
-        #expect(files.allSatisfy { $0.hasPrefix("/\(session.id.uuidString)/documents/") })
+        #expect(
+            files.allSatisfy { $0.hasPrefix("/\(session.id.uuidString)/documents/") },
+            "unexpected paths: \(Array(files))"
+        )
     }
 
     @Test("read_document and browse use the caches the registry was given")
