@@ -176,6 +176,7 @@ struct CommandPaletteView: View {
 enum CommandPalette {
     enum Command: String, CaseIterable, Identifiable {
         case newChat
+        case toggleTemporaryChat
         case searchChats
         case images
         case audio
@@ -192,6 +193,7 @@ enum CommandPalette {
         var title: LocalizedStringKey {
             switch self {
             case .newChat: return "New chat"
+            case .toggleTemporaryChat: return "Toggle temporary chat"
             case .searchChats: return "Search chats"
             case .images: return "Open Images"
             case .audio: return "Open Audio"
@@ -208,6 +210,7 @@ enum CommandPalette {
         var systemImage: String {
             switch self {
             case .newChat: return "square.and.pencil"
+            case .toggleTemporaryChat: return "eye.slash"
             case .searchChats: return "magnifyingglass"
             case .images: return "photo"
             case .audio: return "waveform"
@@ -224,6 +227,7 @@ enum CommandPalette {
         var keywords: String {
             switch self {
             case .newChat: return "create conversation message chat new"
+            case .toggleTemporaryChat: return "private incognito ephemeral no history"
             case .searchChats: return "find conversation history search chat"
             case .images: return "image generation gallery photo"
             case .audio: return "speech transcription voice audio"
@@ -240,6 +244,7 @@ enum CommandPalette {
         var searchTitle: String {
             switch self {
             case .newChat: return String(localized: String.LocalizationValue("New chat"))
+            case .toggleTemporaryChat: return String(localized: String.LocalizationValue("Toggle temporary chat"))
             case .searchChats: return String(localized: String.LocalizationValue("Search chats"))
             case .images: return String(localized: String.LocalizationValue("Open Images"))
             case .audio: return String(localized: String.LocalizationValue("Open Audio"))

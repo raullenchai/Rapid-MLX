@@ -471,6 +471,9 @@ enum DevSnapshot {
                     .environment(appearance)
                     .environment(settingsRouter)
                     .environment(CommandPaletteRequestCoordinator())
+                    .environment(TemporaryChatController(
+                        server: server, sampling: sampling, makeTools: { _, _ in EmptyToolRegistry() }
+                    ))
                     .environment(installTracker)
                     // ``FailedReplaceBanner`` (rendered by ContentView when a
                     // Finder Replace silently failed) hands off to Sparkle, so

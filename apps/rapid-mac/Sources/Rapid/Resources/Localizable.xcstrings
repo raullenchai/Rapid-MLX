@@ -9438,6 +9438,86 @@
         }
       }
     },
+    "Temporary chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "临时对话"
+          }
+        }
+      }
+    },
+    "This chat won't be saved. Memory and instructions are off." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此对话不会被保存，记忆和指令均已关闭。"
+          }
+        }
+      }
+    },
+    "Turn on temporary chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启临时对话"
+          }
+        }
+      }
+    },
+    "Turn off temporary chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭临时对话"
+          }
+        }
+      }
+    },
+    "Discard this temporary chat?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要丢弃此临时对话吗？"
+          }
+        }
+      }
+    },
+    "Temporary chats aren't saved. Turning this off deletes the conversation. Export it first to keep a copy." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "临时对话不会被保存。关闭后将删除此对话。如需保留副本，请先导出。"
+          }
+        }
+      }
+    },
+    "Discard Chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "丢弃对话"
+          }
+        }
+      }
+    },
+    "Toggle temporary chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换临时对话"
+          }
+        }
+      }
+    },
     "Search chats" : {
       "localizations" : {
         "zh-Hans" : {

@@ -22,7 +22,7 @@ struct ReadinessRecoveryActionWiringTests {
     func restartStopsBeforeEnsuringServing() throws {
         let source = try Self.contentViewSource
         #expect(
-            source.contains("case.restart(lettarget):chat.clearStaleErrorBanner()restartModel(target)"),
+            source.contains("case.restart(lettarget):activeChat.clearStaleErrorBanner()restartModel(target)"),
             "The Restart CTA must use the explicit restart path rather than Retry."
         )
 

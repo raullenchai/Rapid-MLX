@@ -142,6 +142,8 @@ struct RapidApp: App {
     @State private var mcpCatalog: MCPCatalog
     @State private var mcpApproval: MCPToolApprovalStore
     @State private var mcpTools: MCPToolRegistry
+    /// The chat view's "Temporary chat" mode: a second, unsaved view model.
+    @State private var temporaryChat: TemporaryChatController
     /// Per-model performance overrides (issue #1717) — the KV-cache and
     /// prefix-cache flags the app hands the engine at spawn.
     @State private var perfConfig: ModelPerfConfigStore
@@ -173,6 +175,9 @@ struct RapidApp: App {
         CrashReporter.install()
         DesktopRuntimeTrust.prewarm()
         LegacyPreferenceCleanup.run()
+        // Leftovers from a crashed run; after the single-instance check so a
+        // second launch cannot wipe the running instance's windows.
+        TemporaryChatStorage.removeAll()
         // Reconcile the local sender gate before any launch task can emit. A
         // missing policy revision remains fail-closed until the startup task
         // persists it successfully.
@@ -306,6 +311,21 @@ struct RapidApp: App {
 
         let chatBackendConfig = ChatBackendConfig()
         _chatBackendConfig = State(initialValue: chatBackendConfig)
+        _temporaryChat = State(initialValue: TemporaryChatController(
+            server: manager,
+            sampling: samplingConfig,
+            makeTools: { documents, pages in
+                CompositeToolRegistry(
+                    builtin: BuiltinToolRegistry(
+                        browseApproval: browseApprovalStore,
+                        webSearch: webSearchConfig,
+                        documentCache: documents,
+                        browseCache: pages
+                    ),
+                    mcp: mcpRegistry
+                )
+            }
+        ))
         let chat = ChatViewModel(
             chatBackendConfig: chatBackendConfig,
             tools: toolRegistry,
@@ -460,6 +480,7 @@ struct RapidApp: App {
                 .environment(webSearch)
                 .environment(browseApproval)
                 .environment(chatBackendConfig)
+                .environment(temporaryChat)
                 .environment(mcpConfig)
                 .environment(mcpCatalog)
                 .environment(mcpApproval)
@@ -1141,7 +1162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reapDownloads: () -> Void,
         flushConversations: () -> Void,
         flushFolders: () -> Void,
-        flushDrafts: () -> Void
+        flushDrafts: () -> Void,
+        removeTemporaryChats: () -> Void = {}
     ) {
         // ORDER MATTERS — stop accepting process-global input before any
         // dependency teardown. Otherwise the dictation hotkey remains live
@@ -1177,6 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A still-debounced draft is enqueued earlier by `stopStream`
         // (`ChatViewModel.stopAndPersist()` saves drafts first); this drains it.
         flushDrafts()
+        removeTemporaryChats()
     }
 
     /// The single clean-shutdown wiring, shared by ``applicationWillTerminate``
@@ -1212,7 +1235,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ImageArtifactStore.flush()
             },
             flushFolders: { ConversationFolderStore.flush() },
-            flushDrafts: { ConversationDraftStore.flush() }
+            flushDrafts: { ConversationDraftStore.flush() },
+            removeTemporaryChats: { TemporaryChatStorage.removeAll() }
         )
     }
 }

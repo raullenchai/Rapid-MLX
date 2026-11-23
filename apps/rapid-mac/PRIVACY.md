@@ -15,6 +15,13 @@ own key in Settings → Tools).
 * Chat history (conversations, messages, attachments, folders) — stored
   under `~/Library/Application Support/Rapid/conversations.json` and
   never transmitted off-device.
+* Temporary chats (the incognito button on the New Chat page) are not added to
+  that history, do not read or update memory, and ignore custom instructions.
+  Their attachments and fetched pages live in a per-chat folder under
+  `~/Library/Application Support/Rapid/temp-chat/` that is deleted when you turn
+  temporary chat off, when Rapid quits, and at the next launch. The engine's
+  prompt prefix cache (below) is not aware of temporary chats and can still be
+  written to disk for them.
 * API keys for tools (Keenable / Parallel / Tavily / Brave) — stored
   in macOS Keychain.
 * Server settings, picker state, window layout — stored in
