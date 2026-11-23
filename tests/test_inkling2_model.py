@@ -79,7 +79,7 @@ _NUMERICAL_CORE_SHA256 = {
     "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "d4244b2ab9864a3d99c2122ba27897c945a45004c6802ebf37f4a0bd7b99a091",
-    "switch_layers.py": "31fb0b6e31112276694f4fa8ba25a92cfc994f01bb90780792e54fd8fd4c54c9",
+    "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
 }
 
@@ -196,6 +196,92 @@ def compat_loader(glue_loader):
         return result
 
     return load
+
+
+def _expert_layer(switch_layers, mx, *, global_scale):
+    mx.random.seed(0)
+    layer = switch_layers.QuantizedSwitchLinear(
+        128, 16, 4, bias=False, group_size=16, mode="nvfp4", global_scale=global_scale
+    )
+    x = mx.random.normal((2, 3, 1, 1, 128))
+    indices = mx.array([[[0, 3], [1, 2], [3, 3]], [[2, 0], [1, 1], [0, 2]]])
+    return layer, x, indices
+
+
+def test_expert_global_scale_fallback_matches_reference(monkeypatch):
+    """Without gather_qmm(global_scale=...), rescaling the output is exact.
+
+    The reference decodes each expert on its own, so this also runs on MLX
+    builds that lack the native argument.
+    """
+    mx = pytest.importorskip("mlx.core")
+    from rapid_mlx.models.inkling2 import switch_layers
+
+    layer, x, indices = _expert_layer(switch_layers, mx, global_scale=True)
+    # Give every expert a distinct scale so a wrong gather would show.
+    layer.global_scale = layer.global_scale * mx.array([0.5, 1.0, 3.0, 7.0])
+    dense = mx.stack(
+        [
+            mx.dequantize(
+                layer.weight[e],
+                layer.scales[e],
+                None,
+                layer.group_size,
+                layer.bits,
+                mode=layer.mode,
+                global_scale=layer.global_scale[e],
+            )
+            for e in range(layer.num_experts)
+        ]
+    )
+    reference = x @ dense[indices].swapaxes(-1, -2)
+    native = layer(x, indices) if switch_layers._GATHER_QMM_HAS_GLOBAL_SCALE else None
+
+    real = mx.gather_qmm
+    calls = []
+
+    def old_gather_qmm(*args, **kwargs):
+        calls.append(set(kwargs))
+        assert "global_scale" not in kwargs
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(switch_layers.mx, "gather_qmm", old_gather_qmm)
+    monkeypatch.setattr(switch_layers, "_GATHER_QMM_HAS_GLOBAL_SCALE", False)
+    fallback = layer(x, indices)
+
+    assert calls
+    assert fallback.shape == reference.shape
+    # The quantized kernel and a dense decode agree to about 0.2%; a wrong or
+    # missing per-expert scale is off by at least a factor of two.
+    error = mx.abs(fallback - reference).max() / mx.abs(reference).max()
+    assert error.item() < 1e-2
+    if native is not None:
+        assert fallback.dtype == native.dtype
+        assert mx.allclose(fallback, native, rtol=1e-5, atol=1e-6).item()
+
+    # Half precision: the unscaled product overflows, the fallback must not.
+    layer.global_scale = mx.full(layer.global_scale.shape, 0.1)
+    half = layer(mx.ones((1, 1, 1, 1, 128), dtype=mx.float16) * 40, mx.array([[[0]]]))
+    assert half.dtype == mx.float16
+    assert mx.all(mx.isfinite(half)).item()
+
+
+def test_expert_without_global_scale_never_passes_it(monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    from rapid_mlx.models.inkling2 import switch_layers
+
+    layer, x, indices = _expert_layer(switch_layers, mx, global_scale=False)
+    assert layer.global_scale is None
+    real = mx.gather_qmm
+    seen = []
+
+    def spy(*args, **kwargs):
+        seen.append(set(kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(switch_layers.mx, "gather_qmm", spy)
+    mx.eval(layer(x, indices))
+    assert seen and all("global_scale" not in kwargs for kwargs in seen)
 
 
 @pytest.mark.parametrize("global_scale", [False, True])

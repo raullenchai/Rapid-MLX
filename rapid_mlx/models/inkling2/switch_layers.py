@@ -22,6 +22,12 @@ def _scatter_unsort(x, inv_order, shape=None):
     return x
 
 
+# MLX 0.32.3 added ``global_scale`` to ``gather_qmm``. Without it, nvfp4 is
+# decoded with this fixed tensor scale (6 * 448).
+_GATHER_QMM_HAS_GLOBAL_SCALE = "global_scale" in (mx.gather_qmm.__doc__ or "")
+_NVFP4_DEFAULT_GLOBAL_SCALE = 2688.0
+
+
 def _quantize_experts(w, *, group_size, bits, mode):
     """Quantize each expert with its own nvfp4 tensor scale."""
     if mode != "nvfp4":
@@ -90,6 +96,13 @@ class QuantizedSwitchLinear(nn.Module):
         return self.weight.shape[0]
 
     def __call__(self, x, indices, sorted_indices=False):
+        global_scale = self.global_scale
+        native_scale = global_scale is not None and _GATHER_QMM_HAS_GLOBAL_SCALE
+        fallback_scale = global_scale is not None and not native_scale
+        dtype = x.dtype
+        if fallback_scale:
+            # The unscaled product can exceed the half-precision range.
+            x = x.astype(mx.float32)
         x = mx.gather_qmm(
             x,
             self["weight"],
@@ -100,9 +113,16 @@ class QuantizedSwitchLinear(nn.Module):
             group_size=self.group_size,
             bits=self.bits,
             mode=self.mode,
-            global_scale=self.global_scale,
             sorted_indices=sorted_indices,
+            **({"global_scale": global_scale} if native_scale else {}),
         )
+        if fallback_scale:
+            # MLX before 0.32.3: gather_qmm has no global_scale argument and
+            # decodes nvfp4 with the default tensor scale. The result is linear
+            # in that scale, so rescaling each expert's output is exact.
+            scale = global_scale[indices] / _NVFP4_DEFAULT_GLOBAL_SCALE
+            scale = mx.reshape(scale, scale.shape + (1,) * (x.ndim - scale.ndim))
+            x = (x * scale.astype(mx.float32)).astype(dtype)
         if "bias" in self:
             x = x + mx.expand_dims(self["bias"][indices], -2)
         return x
