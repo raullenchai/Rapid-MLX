@@ -194,3 +194,21 @@ def test_strict_integrity_failure_is_fatal_but_adhoc_skips_release_properties(
 ):
     assert _verify(tmp_path, "", verify_exit=1).returncode == 1
     assert _verify(tmp_path, "", official=False).returncode == 0
+
+
+def test_official_signature_verification_survives_large_codesign_output(
+    tmp_path: Path,
+):
+    # Output past the pipe buffer used to make an early-exiting grep kill its
+    # writer, which reported a present property as missing.
+    details = "\n".join(
+        [
+            "CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+0 location=embedded",
+            "Authority=Developer ID Application: Example (TEAMID)",
+            "Timestamp=Oct 7, 2026 at 10:00:00 PM",
+            *(f"Hash={index:064x}" for index in range(1500)),
+        ]
+    )
+    for _ in range(20):
+        result = _verify(tmp_path, details)
+        assert result.returncode == 0, result.stderr
