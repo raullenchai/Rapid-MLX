@@ -825,6 +825,7 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
 
     global _engine, _mcp_manager, _primary_model_lifecycle
+    global _primary_idle_unload_seconds
 
     from .routes.agents import start_agent_service_lifecycle
     from .startup_progress import startup_progress
@@ -886,12 +887,22 @@ async def lifespan(app: FastAPI):
             and callable(getattr(_engine, "start", None))
             and callable(getattr(_engine, "stop", None))
         ):
-            raise RuntimeError(
-                "--lazy-load and --idle-unload-seconds currently support "
-                "text and vision-language serving engines only"
+            if _primary_lazy_load:
+                raise RuntimeError(
+                    "--lazy-load and --idle-unload-seconds currently support "
+                    "text and vision-language serving engines only"
+                )
+            # Image and video engines have no unload lifecycle. An idle
+            # interval alone must not stop them from starting.
+            logger.warning(
+                "--idle-unload-seconds is ignored for this model: its engine "
+                "does not support idle unload and stays loaded until the "
+                "server stops"
             )
-        _primary_model_lifecycle = _build_primary_model_lifecycle(_engine)
-        get_config().primary_model_lifecycle = _primary_model_lifecycle
+            _primary_idle_unload_seconds = 0.0
+        else:
+            _primary_model_lifecycle = _build_primary_model_lifecycle(_engine)
+            get_config().primary_model_lifecycle = _primary_model_lifecycle
 
     startup_progress.begin(_model_name or "")
 
