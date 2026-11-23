@@ -198,6 +198,64 @@ def compat_loader(glue_loader):
     return load
 
 
+def _expert_layer(switch_layers, mx, *, global_scale):
+    mx.random.seed(0)
+    layer = switch_layers.QuantizedSwitchLinear(
+        128, 16, 4, bias=False, group_size=16, mode="nvfp4", global_scale=global_scale
+    )
+    x = mx.random.normal((2, 3, 1, 1, 128))
+    indices = mx.array([[[0, 3], [1, 2], [3, 3]], [[2, 0], [1, 1], [0, 2]]])
+    return layer, x, indices
+
+
+def test_expert_global_scale_fallback_matches_native(monkeypatch):
+    """On MLX without gather_qmm(global_scale=...), rescaling the output is exact."""
+    mx = pytest.importorskip("mlx.core")
+    from rapid_mlx.models.inkling2 import switch_layers
+
+    if not switch_layers._GATHER_QMM_HAS_GLOBAL_SCALE:
+        pytest.skip("this MLX build has no native global_scale to compare against")
+    layer, x, indices = _expert_layer(switch_layers, mx, global_scale=True)
+    # Give every expert a distinct scale so a wrong gather would show.
+    layer.global_scale = layer.global_scale * mx.array([0.5, 1.0, 3.0, 7.0])
+    native = layer(x, indices)
+
+    real = mx.gather_qmm
+    calls = []
+
+    def old_gather_qmm(*args, **kwargs):
+        calls.append(set(kwargs))
+        assert "global_scale" not in kwargs
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(switch_layers.mx, "gather_qmm", old_gather_qmm)
+    monkeypatch.setattr(switch_layers, "_GATHER_QMM_HAS_GLOBAL_SCALE", False)
+    fallback = layer(x, indices)
+
+    assert calls
+    assert fallback.shape == native.shape
+    assert fallback.dtype == native.dtype
+    assert mx.allclose(fallback, native, rtol=1e-5, atol=1e-6).item()
+
+
+def test_expert_without_global_scale_never_passes_it(monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    from rapid_mlx.models.inkling2 import switch_layers
+
+    layer, x, indices = _expert_layer(switch_layers, mx, global_scale=False)
+    assert layer.global_scale is None
+    real = mx.gather_qmm
+    seen = []
+
+    def spy(*args, **kwargs):
+        seen.append(set(kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(switch_layers.mx, "gather_qmm", spy)
+    mx.eval(layer(x, indices))
+    assert seen and all("global_scale" not in kwargs for kwargs in seen)
+
+
 @pytest.mark.parametrize("global_scale", [False, True])
 @pytest.mark.parametrize("routing", [False, True])
 def test_compat_version_fallbacks(compat_loader, global_scale, routing):
