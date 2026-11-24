@@ -1207,6 +1207,9 @@ async def lifespan(app: FastAPI):
     _flush_v2_telemetry()
 
 
+_CODING_AGENTS_HINT_SHOWN = False
+
+
 def print_ready_banner(*, update_notice_shown: bool = False) -> None:
     """Print the connection banner after the Uvicorn listener exists.
 
@@ -1279,9 +1282,11 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
             next_step = render_serve_next(
                 _ep, api_key=_cfg.api_key, agents=detected_agents
             )
+            global _CODING_AGENTS_HINT_SHOWN
             agents_hint = (
                 ""
-                if detect_role() is ProcessRole.SIDECAR
+                if _CODING_AGENTS_HINT_SHOWN
+                or detect_role() is ProcessRole.SIDECAR
                 or env_truthy("RAPID_MLX_NO_BANNER")
                 or getattr(_cfg, "json_output", False)
                 else render_coding_agents_hint(detected_agents)
@@ -1290,6 +1295,7 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
             if note:
                 print(f"  Images: off. {note}")
             if agents_hint:
+                _CODING_AGENTS_HINT_SHOWN = True
                 print(agents_hint, end="", flush=True)
             if claim_serve_next_tip():
                 print(next_step, end="", flush=True)

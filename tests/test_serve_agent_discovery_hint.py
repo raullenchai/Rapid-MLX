@@ -22,6 +22,7 @@ def _isolate_banner_state(monkeypatch, tmp_path):
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
     monkeypatch.setenv("CI", "1")  # Keep newsletter hint out of these assertions.
+    monkeypatch.setattr(server, "_CODING_AGENTS_HINT_SHOWN", False)
     saved = (
         server._engine,
         cfg.bind_host,
@@ -86,7 +87,8 @@ def test_serve_ready_prints_coding_agents_hint_once_per_start_on_tty(
     expected = "  Coding agents found: codex, opencode -> rapid-mlx launch codex"
     assert first.count(expected) == 1
     assert first.index("  Ready: http://localhost:8766") < first.index(expected)
-    assert second.count(expected) == 1
+    assert second.count(expected) == 0
+    assert "  Ready: http://localhost:8766" in second
     assert "Next:" not in second
 
 
