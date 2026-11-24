@@ -2080,7 +2080,7 @@ class Qwen3CoderToolParser(ToolParser):
 
         if self._markdown_held_start is not None:
             return None
-        if not self.in_function and not self.is_tool_call_started:
+        if not self.in_function and (not self.is_tool_call_started or self.json_closed):
             # Only a new tool candidate needs the full Markdown context.
             # Re-scanning prose on every token makes ordinary code spans
             # quadratic even though no executable syntax was produced.

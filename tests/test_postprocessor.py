@@ -3347,6 +3347,36 @@ def test_finalize_sanitizer_tail_precedes_tool_call(accumulate):
     assert not any(event.content for event in pp.finalize())
 
 
+@pytest.mark.parametrize("padding", [100, 65537])
+def test_qwen_markdown_deferral_releases_content_once_at_eof(padding):
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+
+    pp = StreamingPostProcessor(
+        _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=Qwen3CoderToolParser(tokenizer=None),
+        ),
+        tools_requested=True,
+        request={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "read", "parameters": {"type": "object"}},
+                }
+            ]
+        },
+    )
+    pp.reset()
+    chunks = ["Use `<tool_call>", "x" * padding, "` trailing text"]
+    events = []
+    for chunk in chunks:
+        events.extend(pp.process_chunk(_make_output(chunk)))
+    assert pp._tool_suppression_released is (padding > 65536)
+    events.extend(pp.finalize())
+    assert "".join(event.content or "" for event in events) == "".join(chunks)
+    assert not any(event.tool_calls for event in events)
+
+
 def test_reasoning_parser_eof_content_follows_sanitizer_tail():
     """#4925: EOF content released by the reasoning parser stays after held text."""
     from rapid_mlx.reasoning.cohere_command_parser import (

@@ -3962,7 +3962,7 @@ class StreamingPostProcessor:
         events = []
 
         finalize_raw = getattr(self.tool_parser, "finalize_legacy_raw_stream", None)
-        if callable(finalize_raw):
+        if callable(finalize_raw) and not self._tool_suppression_released:
             raw_delta = finalize_raw(
                 self.tool_accumulated_text or self.accumulated_text,
                 request=self.request,

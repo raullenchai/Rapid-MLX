@@ -395,6 +395,28 @@ def test_streaming_json_matches_non_streaming():
     )
 
 
+def test_markdown_example_after_completed_tool_call_does_not_hide_later_call():
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("weather", {"city": {"type": "string"}})
+    chunks = [
+        "<tool_call>\n<function=weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>",
+        "\nUse `<tool_call>\n<function=weather>\n<parameter=city>\nExample\n</parameter>\n</function>\n</tool_call>",
+        "`<tool_call>\n<function=weather>\n<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+    ]
+
+    deltas = _feed(parser, chunks, request)
+    final_delta = parser.finalize_legacy_raw_stream("".join(chunks), request=request)
+    if final_delta is not None:
+        deltas.append(final_delta)
+    calls = [tool_call for delta in deltas for tool_call in delta.get("tool_calls", [])]
+
+    assert len(calls) == 2
+    assert [json.loads(call["function"]["arguments"]) for call in calls] == [
+        {"city": "Paris"},
+        {"city": "Rome"},
+    ]
+
+
 def test_same_chunk_close_and_trailing_param_not_dropped():
     """When one chunk batches ``...tail</parameter><parameter=other>val</parameter>``
     the parser must emit BOTH the closing tail of the in-flight string
