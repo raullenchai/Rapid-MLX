@@ -1064,6 +1064,7 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
         "incompatible_weights",
         "invalid_config",
         "backend_load_failed",
+        "insufficient_memory",
     ) and (detail := startup_error_lines(exc, model_ref)):
         print(f"\n  Error loading model: {exc}", file=sys.stderr)
         print(f"  Cause: {detail[0]}", file=sys.stderr)
@@ -3149,6 +3150,10 @@ def _ensure_target_model_downloaded(
 
     if model_downloads.disabled():
         _refuse_model_download(model_name)
+
+    from rapid_mlx.byom.preflight import inform_if_footprint_exceeds_memory
+
+    inform_if_footprint_exceeds_memory(model_name)
 
     # Disk-space gate + mirror pull. Both the disk probe (HF ``model_info``)
     # and the mirror's own metadata + ``/api/models`` catalog round-trips run
@@ -12755,6 +12760,12 @@ def _pull_repository(
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
+    if _cache_runnability(repo_id) is not True:
+        from rapid_mlx.byom.preflight import inform_if_footprint_exceeds_memory
+
+        inform_if_footprint_exceeds_memory(
+            repo_id, original_alias=getattr(args, "_original_alias", None)
+        )
     try:
         # A pinned revision goes through the mirror too: the mirror accepts a
         # file for an exact commit only when its bytes are proven identical

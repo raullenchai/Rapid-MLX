@@ -69,13 +69,16 @@ def test_lifecycle_cancel_is_single_source_of_truth():
 # ── model load failure: classified into a stable code ───────────────
 
 
-def test_model_load_payload_classifies_oom():
+def test_model_load_payload_classifies_oom(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     exc = RuntimeError(f"Metal: unable to allocate 12GB buffer {_SECRET}")
     payload = model_load_error_payload(exc)
     assert payload["code"] == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
     assert payload["type"] == "server_error"
     assert payload["param"] is None
     assert "memory" in payload["message"].lower()
+    assert "qwen3.5-4b-4bit" in payload["message"]
+    assert _SECRET not in payload["message"]
 
 
 def test_model_load_payload_classifies_other_as_load_failed():

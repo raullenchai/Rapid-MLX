@@ -237,9 +237,14 @@ def startup_error_lines(
     if detail is not None and detail[0] == error_class:
         return detail[1:]
     if error_class == "insufficient_memory":
+        from rapid_mlx.recommendations import memory_tier_recommendation
+
+        alias = memory_tier_recommendation(
+            exclude=model_ref if isinstance(model_ref, str) else None
+        )
         return (
             "The model ran out of memory while loading weights.",
-            "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+            f"Free memory, then run `rapid-mlx serve {alias}` for a model that fits this Mac.",
         )
     if error_class == "backend_load_failed":
         return (

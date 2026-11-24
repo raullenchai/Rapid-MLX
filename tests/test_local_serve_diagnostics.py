@@ -103,23 +103,67 @@ def test_local_engine_start_diagnosis(
     assert "\n" not in lines[0] + lines[1]
 
 
-def test_memory_failure_uses_existing_class_and_remedy(tmp_path):
+def test_memory_failure_uses_existing_class_and_remedy(tmp_path, monkeypatch):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     model = _model(tmp_path)
     failure = MemoryError()
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        "Free memory, then run `rapid-mlx serve qwen3.5-4b-4bit` for a model that fits this Mac.",
     )
 
 
+@pytest.mark.parametrize(
+    ("ram_gb", "failed_ref", "expected_alias"),
+    [
+        (16.0, "qwen3.8-27b-4bit", "qwen3.5-4b-4bit"),
+        (18.0, "qwen3.8-27b-4bit", "qwen3.5-9b-4bit"),
+        (48.0, "deepseek-v41-flash-1017", "qwen3.8-27b-4bit"),
+        (16.0, "qwen3.5-4b-4bit", "lfm2.5-1b-4bit"),
+    ],
+)
+def test_memory_failure_names_ram_tier_recommendation(
+    monkeypatch, ram_gb, failed_ref, expected_alias
+):
+    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    lines = startup_error_lines(MemoryError(), failed_ref)
+    assert lines is not None
+    assert f"rapid-mlx serve {expected_alias}" in lines[1]
+
+
+def test_pre_download_memory_info_informs_and_never_blocks(monkeypatch, capsys):
+    from rapid_mlx.byom import preflight
+
+    gib = 1 << 30
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 16 * gib)
+    printed = preflight.inform_if_footprint_exceeds_memory("qwen3.8-27b-4bit")
+    assert printed is True
+    err_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(err_lines) == 1
+    assert "qwen3.8-27b-4bit" in err_lines[0]
+    assert "20 GB" in err_lines[0]
+    assert "16 GB" in err_lines[0]
+    assert "qwen3.5-4b-4bit" in err_lines[0]
+    assert "continuing download" in err_lines[0]
+
+    # Fitting model stays silent.
+    assert preflight.inform_if_footprint_exceeds_memory("qwen3.5-4b-4bit") is False
+    assert capsys.readouterr().err == ""
+
+
 @pytest.mark.parametrize("wrapped", [False, True])
-def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrapped):
+def test_metal_preflight_failure_uses_existing_class_and_remedy(
+    tmp_path, monkeypatch, wrapped
+):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
     from rapid_mlx.memory_budget import MetalPreflightError, format_preflight_error
 
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     model = _model(tmp_path)
     failure = MetalPreflightError(
         format_preflight_error(
@@ -139,7 +183,7 @@ def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrappe
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        "Free memory, then run `rapid-mlx serve qwen3.5-4b-4bit` for a model that fits this Mac.",
     )
 
 
@@ -153,15 +197,16 @@ def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrappe
         "[malloc] Unable to allocate 1073741824 bytes.",
     ],
 )
-def test_metal_oom_uses_existing_class_and_remedy(tmp_path, message):
+def test_metal_oom_uses_existing_class_and_remedy(tmp_path, monkeypatch, message):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 18.0)
     model = _model(tmp_path)
     failure = RuntimeError(message)
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        "Free memory, then run `rapid-mlx serve qwen3.5-9b-4bit` for a model that fits this Mac.",
     )
 
 

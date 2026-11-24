@@ -216,6 +216,50 @@ def fitting_pick(
     return picks[0] if picks else None
 
 
+def memory_tier_recommendation(
+    ram_gb: float | None = None,
+    *,
+    exclude: str | None = None,
+) -> str:
+    """Return the recommended alias for this Mac's memory tier.
+
+    Reuses the curated RAM-tier table in ``model_recommendations.json`` without
+    altering tier thresholds or defaults. Excludes ``exclude`` (when supplied)
+    so an OOM remedy never recommends the exact model that just failed.
+    """
+    resolved_ram = physical_ram_gb() if ram_gb is None else float(ram_gb)
+    excluded: set[str] = set()
+    if isinstance(exclude, str) and exclude:
+        excluded.add(exclude.casefold())
+        try:
+            from .model_aliases import catalog_identity
+
+            canonical = catalog_identity(exclude)
+            if canonical:
+                excluded.add(canonical.casefold())
+        except Exception:
+            pass
+
+    tiers = load_recommendation_tiers(validate_catalog=False)
+    if resolved_ram < tiers[0].floor_gb:
+        baseline = starter_baseline_for_ram(resolved_ram, validate_catalog=False)
+        if baseline.casefold() not in excluded:
+            return baseline
+        for pick in tiers[0].picks:
+            if pick.alias.casefold() not in excluded:
+                return pick.alias
+        return baseline
+
+    current = recommendation_tier(resolved_ram, validate_catalog=False)
+    for tier in reversed(tiers):
+        if tier.floor_gb > current.floor_gb:
+            continue
+        for pick in tier.picks:
+            if pick.alias.casefold() not in excluded:
+                return pick.alias
+    return starter_baseline_for_ram(resolved_ram, validate_catalog=False)
+
+
 def starter_baseline_for_ram(ram_gb: float, *, validate_catalog: bool = True) -> str:
     """Return the installer/Desktop first-chat baseline for ``ram_gb``.
 
