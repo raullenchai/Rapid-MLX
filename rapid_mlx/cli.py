@@ -3211,10 +3211,10 @@ def _ensure_target_model_downloaded(
                 )
                 spinner.stop()
                 retry_cmd = f"rapid-mlx pull {shlex.quote(model_name)}"
-                rendered = render_hub_error(
+                fatal_text = render_hub_error(
                     exc, model_name, retry_command=retry_cmd
                 ) or str(exc)
-                print(f"\n{rendered}\n  Retry: {retry_cmd}\n", file=sys.stderr)
+                print(f"\n{fatal_text}\n  Retry: {retry_cmd}\n", file=sys.stderr)
                 raise SystemExit(1) from exc
             if _is_transient_hub_error(exc):
                 mirror_ok = False
