@@ -256,7 +256,18 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
         with urllib.request.urlopen(
             "http://localhost:8000/health", timeout=0.25
         ) as response:
-            return response.status == 200, True
+            if response.status != 200:
+                return False, True
+            # /health returns HTTP 200 with ready=false during startup load;
+            # let process discovery attach the owning PID (or pick another
+            # ready server) instead of treating a loading server as ready.
+            try:
+                payload = json.loads(response.read())
+            except (AttributeError, OSError, ValueError):
+                payload = {}
+            if isinstance(payload, dict) and payload.get("ready") is False:
+                return False, True
+            return True, True
     except urllib.error.HTTPError:
         # Only an owning serve process makes an unhealthy listener a loading
         # server. A foreign process must not hide a server on another port.

@@ -929,6 +929,23 @@ def test_default_endpoint_ready_states(monkeypatch):
         monkeypatch.setattr(discovery.urllib.request, "urlopen", respond(outcome))
         assert discovery._default_endpoint_ready() == expected
 
+    # /health returns HTTP 200 with ready=false while weights are loading;
+    # discovery must treat it as answered-not-ready so it attaches the PID.
+    class BodyResponse(BytesIO):
+        status = 200
+
+    for body, expected in [
+        (b'{"status": "healthy", "ready": false}', (False, True)),
+        (b'{"status": "healthy", "ready": true}', (True, True)),
+        (b'{"status": "healthy"}', (True, True)),
+    ]:
+        monkeypatch.setattr(
+            discovery.urllib.request,
+            "urlopen",
+            lambda _url, _body=body, **_k: BodyResponse(_body),
+        )
+        assert discovery._default_endpoint_ready() == expected
+
 
 def test_refresh_skips_other_pids_and_unbound_rescans(monkeypatch):
     selected = discovery.Server(5, 8001, "tiny")
@@ -1983,3 +2000,23 @@ def test_qualified_repo_matches_local_only_via_resolver(monkeypatch):
         lambda value: "/models/tiny" if value == "org-a/tiny" else value,
     )
     assert discovery._same_model("org-a/tiny", "/models/tiny")
+
+
+def test_resolve_endpoint_attaches_pid_when_default_health_not_ready(monkeypatch):
+    class LoadingHealth(BytesIO):
+        status = 200
+
+    # Undo the conftest stub so the real _default_endpoint_ready runs.
+    monkeypatch.undo()
+    loading_server = discovery.Server(4321, 8000, "qwen3.5-4b-4bit", listening=True)
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [loading_server])
+    monkeypatch.setattr(discovery, "requires_missing_key", lambda _port: False)
+    monkeypatch.setattr(discovery, "_probe_chat_eligibility", lambda *_a: (None, False))
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_kw: LoadingHealth(b'{"status": "healthy", "ready": false}'),
+    )
+    endpoint = discovery.resolve_endpoint(agent="opencode")
+    assert endpoint.base_url == "http://localhost:8000/v1"
+    assert endpoint.server == loading_server
