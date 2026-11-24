@@ -2380,6 +2380,11 @@ async def _non_stream(
             structured_tool_calls=engine_tool_calls,
             channels_owned=channels_owned,
             finish_reason=output.finish_reason,
+            output_token_ids=(
+                output.tokens
+                if (output.raw_text or output.text) == output.text
+                else None
+            ),
         )
     else:
         cleaned_text, tool_calls = _parsed_tools
@@ -2437,6 +2442,9 @@ async def _non_stream(
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
+        output_token_ids=(
+            output.tokens if (output.raw_text or output.text) == output.text else None
+        ),
         engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
         enable_thinking=_effective_enable_thinking(
             resolved_thinking, cfg.model_path or cfg.model_name

@@ -3672,7 +3672,9 @@ class BatchedEngine(BaseEngine):
                 reasoning_text=reasoning,
                 tool_calls=tool_calls,
                 raw_text=mllm_full_text,
-                tokens=output.output_token_ids,
+                tokens=output.output_token_ids
+                if not getattr(output, "matched_stop", None)
+                else [],
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
                 cached_tokens=getattr(output, "cached_tokens", 0),
@@ -3815,6 +3817,9 @@ class BatchedEngine(BaseEngine):
         return GenerationOutput(
             text=text,
             raw_text=output.output_text,
+            tokens=output.output_token_ids
+            if not assistant_text_prefix and not getattr(output, "matched_stop", None)
+            else [],
             reasoning_text=reasoning_text,
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,

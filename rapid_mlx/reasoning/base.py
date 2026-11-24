@@ -33,6 +33,9 @@ class DeltaMessage:
     content: str | None = None
     reasoning: str | None = None
     source_segments: tuple[tuple[str, str], ...] | None = None
+    # Token IDs for ``content`` only, when an opt-in reasoning parser can
+    # provide an exact aligned projection of its input delta.
+    content_token_ids: tuple[int, ...] | None = None
 
     @property
     def reasoning_content(self) -> str | None:

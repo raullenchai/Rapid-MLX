@@ -217,7 +217,10 @@ async def test_chat_forwards_token_prompt_and_router_seed(engine, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_recovers_router_seed_from_build_prompt(engine, monkeypatch):
+@pytest.mark.parametrize("matched_stop", [None, "STOP"])
+async def test_generate_recovers_router_seed_from_build_prompt(
+    engine, monkeypatch, matched_stop
+):
     expected_seed = tuple(
         _HARMONY_VOCAB[token] for token in _HARMONY_NO_THINKING_SUFFIX_TOKENS
     )
@@ -232,7 +235,11 @@ async def test_generate_recovers_router_seed_from_build_prompt(engine, monkeypat
 
     class _Core:
         async def generate(self, **_kwargs):
-            return _CoreOutput()
+            result = _CoreOutput()
+            result.matched_stop = matched_stop
+            if matched_stop:
+                result.output_token_ids = result.output_token_ids + [999]
+            return result
 
     captured = {}
 
@@ -249,6 +256,7 @@ async def test_generate_recovers_router_seed_from_build_prompt(engine, monkeypat
     output = await engine.generate(prepared_prompt)
 
     assert output.text == "Plain"
+    assert output.tokens == ([] if matched_stop else [_HARMONY_VOCAB["Plain"]])
     assert captured["seed_token_ids"] == expected_seed
 
 

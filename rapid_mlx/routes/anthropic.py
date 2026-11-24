@@ -983,6 +983,11 @@ async def create_anthropic_message(
             structured_tool_calls=engine_tool_calls,
             channels_owned=channels_owned,
             finish_reason=output.finish_reason,
+            output_token_ids=(
+                output.tokens
+                if (output.raw_text or output.text) == output.text
+                else None
+            ),
         )
 
         # H-05: tool_choice={"type":"tool","name":X} pins WHICH tool the
@@ -1029,6 +1034,11 @@ async def create_anthropic_message(
             cleaned_text=cleaned_text,
             tool_calls=tool_calls,
             reasoning_parser=cfg.reasoning_parser,
+            output_token_ids=(
+                output.tokens
+                if (output.raw_text or output.text) == output.text
+                else None
+            ),
             engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
             # #575 — mirror chat.py so the Anthropic non-stream surface
             # gets the same Case-4 fallback (codex R1 BLOCKING: the

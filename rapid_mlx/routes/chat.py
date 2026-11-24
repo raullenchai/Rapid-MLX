@@ -6935,6 +6935,11 @@ async def _create_chat_completion_impl(
             structured_tool_calls=engine_tool_calls,
             channels_owned=channels_owned,
             finish_reason=output.finish_reason,
+            output_token_ids=(
+                output.tokens
+                if (output.raw_text or output.text) == output.text
+                else None
+            ),
         )
     undeclared_tool_dropped = _was_undeclared_tool_dropped()
 
@@ -7428,6 +7433,11 @@ async def _create_chat_completion_impl(
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
+        output_token_ids=(
+            output.tokens
+            if not undeclared_tool_dropped and _raw_text_for_reasoning == output.text
+            else None
+        ),
         engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
         # #575 — chat-template-injected ``<think>`` means the model
         # never emits the start tag; pass the *effective* flag (with
