@@ -8,11 +8,12 @@ checkpoint bigger than the Mac) was discovered only after the full download.
 
 The preflight reads metadata only — one ``model_info`` call, plus a
 ``config.json`` fetch into a temporary directory when the summary suggests an
-unsupported architecture — and stops before any weight byte is fetched when it
-can PROVE the model cannot run. Every verdict is conservative: anything it
-cannot establish (network trouble, gated repo, unusual layout, unknown loader
-inventory) is "no verdict", and the existing download/load paths run exactly
-as before. Uncached catalog text models receive a local-only memory check.
+unsupported architecture or an Inkling 2 layout needs checking — and stops
+before any weight byte is fetched when it can PROVE the model cannot run.
+Every verdict is conservative: anything it cannot establish (network trouble,
+gated repo, unusual layout, unknown loader inventory) is "no verdict", and the
+existing download/load paths run exactly as before. Uncached catalog text
+models receive a local-only memory check.
 
 Telemetry: a rejection is raised as :class:`PreflightRejectedError`, whose closed
 ``failure_class`` the existing ``model_serve_failed`` / ``model_pull_failed``
@@ -418,6 +419,23 @@ def _mlx_lm_version() -> str | None:
         return None
 
 
+def _unsupported_inkling2_layout(config: dict[str, Any]) -> bool:
+    if config.get("model_type") != "inkling2_loop":
+        return False
+    # Per-module quantization records the checkpoint's module paths. The
+    # loader accepts model.language_model.* or remaps official model.llm.*;
+    # model.embed and model.layers.* are left unchanged and cannot load.
+    for key in ("quantization", "quantization_config"):
+        quant = config.get(key)
+        if isinstance(quant, dict) and any(
+            isinstance(path, str)
+            and (path == "model.embed" or path.startswith("model.layers."))
+            for path in quant
+        ):
+            return True
+    return False
+
+
 def architecture_supported(
     config: dict[str, Any],
     supported: frozenset[str] | None,
@@ -428,6 +446,8 @@ def architecture_supported(
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not model_type or supported is None:
         return None
+    if _unsupported_inkling2_layout(config):
+        return False
     if model_type.lower() in supported or model_type in supported:
         return True
     # Repo-supplied model code and speculative-drafter configs are resolved
@@ -806,6 +826,11 @@ def render_architecture_guidance(
     ref: str, config: dict[str, Any], model_type: str | None
 ) -> list[str]:
     """Local-only help shared by preflight and a later loader failure."""
+    if _unsupported_inkling2_layout(config):
+        return [
+            "✗ This Inkling 2 weight layout is not supported.",
+            "  Use the supported build: rapid-mlx serve inkling-2-mini-4bit",
+        ]
     architecture = config.get("architectures")
     names = (
         [name for name in architecture if isinstance(name, str)]
@@ -1444,7 +1469,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
 def evaluate_inspection(
     inspection: Inspection, *, refuse_oversize: bool
 ) -> tuple[Inspection, Verdict | None]:
-    """Apply the shared verdict, confirming Hub architecture refusals from config."""
+    """Apply the verdict, checking Hub architecture and Inkling 2 layout from config."""
     supported = supported_model_types()
     verdict = evaluate(
         inspection,
@@ -1452,15 +1477,21 @@ def evaluate_inspection(
         supported=supported,
         ram_bytes=physical_ram_bytes(),
     )
-    if verdict.failure == UNSUPPORTED_ARCHITECTURE and not inspection.is_local:
+    if not inspection.is_local and (
+        verdict.failure == UNSUPPORTED_ARCHITECTURE
+        or verdict.model_type == "inkling2_loop"
+    ):
+        # Only an architecture refusal needs confirming. For the layout check
+        # an unavailable config leaves the first verdict (e.g. oversize) as is.
+        unconfirmed = None if verdict.failure == UNSUPPORTED_ARCHITECTURE else verdict
         full = _fetch_hub_config(inspection.ref, inspection.revision)
         if full is None:
-            return inspection, None
+            return inspection, unconfirmed
         confirmed = architecture_supported(
             full, supported, chat_template=inspection.has_chat_template
         )
         if confirmed is None:
-            return inspection, None
+            return inspection, unconfirmed
         inspection = replace(inspection, config=full)
         verdict = evaluate(
             inspection,
