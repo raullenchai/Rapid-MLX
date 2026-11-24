@@ -11,6 +11,9 @@ import pytest
 from rapid_mlx import cli
 from rapid_mlx.agents import adapter, setup, telemetry
 from rapid_mlx.agents import server_discovery as discovery
+
+# Captured at collection time, before the autouse conftest stub replaces it.
+_REAL_DEFAULT_READY = discovery._default_endpoint_ready
 from rapid_mlx.agents.server_hint import ServerNotRunningError
 from rapid_mlx.cli_parser import build_parser
 
@@ -2023,8 +2026,8 @@ def test_resolve_endpoint_attaches_pid_when_default_health_not_ready(monkeypatch
     class LoadingHealth(BytesIO):
         status = 200
 
-    # Undo the conftest stub so the real _default_endpoint_ready runs.
-    monkeypatch.undo()
+    # Swap only the conftest stub for the real probe captured at import time.
+    monkeypatch.setattr(discovery, "_default_endpoint_ready", _REAL_DEFAULT_READY)
     loading_server = discovery.Server(4321, 8000, "qwen3.5-4b-4bit", listening=True)
     monkeypatch.setattr(discovery, "scan_servers", lambda: [loading_server])
     monkeypatch.setattr(discovery, "requires_missing_key", lambda _port: False)

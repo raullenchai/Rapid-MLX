@@ -115,8 +115,34 @@ def test_discovery_hint_writes_nothing_to_disk_and_makes_no_network_calls(
     def forbid(*_args, **_kwargs):
         raise AssertionError("network call is forbidden during agent discovery")
 
+    def forbid_write(*_args, **_kwargs):
+        raise AssertionError("disk write is forbidden during agent discovery")
+
+    import builtins
+    import http.client
+    import os
+    import pathlib
+
+    # Network primitives: DNS, raw sockets, http.client and urllib.
     monkeypatch.setattr(urllib.request, "urlopen", forbid)
     monkeypatch.setattr(socket, "create_connection", forbid)
+    monkeypatch.setattr(socket, "getaddrinfo", forbid)
+    monkeypatch.setattr(socket.socket, "connect", forbid)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbid)
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", forbid)
+    # Filesystem mutation primitives: open() for writing, os and pathlib writers.
+    real_open = builtins.open
+
+    def guarded_open(file, mode="r", *args, **kwargs):
+        if any(flag in str(mode) for flag in ("w", "a", "x", "+")):
+            forbid_write()
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    for name in ("mkdir", "makedirs", "replace", "rename", "remove", "unlink"):
+        monkeypatch.setattr(os, name, forbid_write)
+    for name in ("write_text", "write_bytes", "mkdir", "touch", "unlink"):
+        monkeypatch.setattr(pathlib.Path, name, forbid_write)
     monkeypatch.setattr(
         "shutil.which", lambda name: "/usr/bin/opencode" if name == "opencode" else None
     )
