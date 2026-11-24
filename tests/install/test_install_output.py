@@ -570,6 +570,50 @@ def test_quick_start_detects_coding_agents_on_path(tmp_path):
     )
 
 
+def test_detect_coding_agents_ignores_functions_aliases_nonexec_and_dirs(tmp_path):
+    agents_dir = tmp_path / "agents with spaces"
+    agents_dir.mkdir()
+    # Directory and non-executable file on PATH must not count as installed agents.
+    (agents_dir / "opencode").mkdir()
+    non_exec = agents_dir / "hermes"
+    non_exec.write_text("#!/bin/sh\nexit 0\n")
+    non_exec.chmod(0o644)
+
+    # Shell functions and aliases must not trigger detection either.
+    none_found = run_bash(
+        """
+shopt -s expand_aliases
+alias claude='echo fake-alias'
+codex() { echo fake-func; }
+detect_coding_agents
+""",
+        env={"PATH": f"{agents_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+    assert none_found.returncode == 1
+    assert none_found.stdout == ""
+
+    # A real executable file in a PATH directory (including with spaces) is detected,
+    # while functions, aliases, directories, and non-executable files stay ignored.
+    pi_bin = agents_dir / "pi"
+    pi_bin.write_text("#!/bin/sh\nexit 0\n")
+    pi_bin.chmod(0o755)
+    only_exec = run_bash(
+        """
+shopt -s expand_aliases
+alias claude='echo fake-alias'
+codex() { echo fake-func; }
+detect_coding_agents
+""",
+        env={"PATH": f"{agents_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+    assert only_exec.returncode == 0
+    assert only_exec.stdout.strip() == "pi|pi"
+
+
 def run_first_chat(
     tmp_path,
     *,
