@@ -5729,7 +5729,8 @@ def context_window_exhausted(
         return None
     flag_remedy = (
         " This serving window is set by --context-length; raise that flag "
-        "if the model and available memory permit."
+        "if the model and available memory permit (higher context uses more "
+        "unified memory and may cause macOS to swap or run out of memory)."
         if get_config().context_length == limit
         else ""
     )
@@ -5804,6 +5805,12 @@ def memory_context_overflow(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
+    native = get_model_native_max_context(engine) if engine is not None else None
+    up_to = (
+        f"up to this model's {native}-token limit"
+        if native is not None and limit < native < _FALLBACK_MAX_CONTEXT_TOKENS
+        else "up to the model's declared limit"
+    )
     return ContextLengthExceeded(
         prompt_tokens=prompt_tokens,
         limit=limit,
@@ -5811,7 +5818,10 @@ def memory_context_overflow(
             f"This model's maximum context length is {limit} tokens. "
             f"However, you requested {prompt_tokens} tokens. "
             "This limit comes from available memory. Start a new session "
-            "or compact the conversation, or reduce the requested output."
+            "or compact the conversation, or reduce the requested output. "
+            f"To raise this window ({up_to}), restart the server with "
+            "--context-length <tokens>; higher context uses more unified "
+            "memory and may cause macOS to swap or run out of memory."
         ),
     )
 
@@ -5870,7 +5880,8 @@ def enforce_context_length(
             "prompt; the limit is this server's --max-prompt-tokens flag, not "
             "the model's context window. Start a new session or compact the "
             "conversation, or raise --max-prompt-tokens if the model and "
-            "available memory permit."
+            "available memory permit (longer prompts use more unified memory "
+            "and may cause macOS to swap or run out of memory)."
         )
         reject_reason = "operational_cap"
     else:
@@ -5890,7 +5901,9 @@ def enforce_context_length(
             detail += (
                 f" This {max_context}-token window is set by the server's "
                 "--context-length flag, not by the model. Raise "
-                "--context-length if the model and available memory permit."
+                "--context-length if the model and available memory permit "
+                "(higher context uses more unified memory and may cause "
+                "macOS to swap or run out of memory)."
             )
         reject_reason = "prompt_over_window"
     from rapid_mlx.telemetry.inference import (

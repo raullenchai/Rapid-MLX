@@ -1144,6 +1144,8 @@ def test_enforce_over_cap_attributes_operator_window_to_the_flag():
     err = excinfo.value.detail["error"]
     assert err["code"] == "context_length_exceeded"
     assert "--context-length" in err["message"]
+    assert "unified memory" in err["message"]
+    assert "swap or run out of memory" in err["message"]
     assert "reduce the length of the messages" in err["message"]
     # origin/main's OpenAI-shaped lead is a client contract (LiteLLM and
     # others string-match it): the attribution is appended, never swapped in.
@@ -1232,3 +1234,24 @@ def test_context_refusal_logs_reason_once(kind, monkeypatch, caplog):
     records = [r for r in caplog.records if "context_length_exceeded" in r.message]
     assert len(records) == 1
     assert caught.value.detail["error"]["message"] in records[0].message
+
+
+def test_memory_window_rejection_names_context_length_flag_and_memory_cost(monkeypatch):
+    from fastapi import HTTPException
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service import helpers
+
+    reset_config()
+    engine = _StubEngine(
+        model=_StubModel(args=_StubArgs(max_position_embeddings=65536))
+    )
+    monkeypatch.setattr(helpers, "memory_context_ceiling", lambda _eng: 8192)
+    with pytest.raises(HTTPException) as caught:
+        helpers.enforce_context_length(engine, prompt_tokens=10000, max_tokens=256)
+    message = caught.value.detail["error"]["message"]
+    assert caught.value.detail["error"]["code"] == "context_length_exceeded"
+    assert "--context-length" in message
+    assert "65536-token limit" in message
+    assert "unified memory" in message
+    assert "swap or run out of memory" in message
