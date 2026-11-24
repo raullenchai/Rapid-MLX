@@ -542,11 +542,14 @@ def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
             MemoryError("out of memory"),
             "insufficient_memory",
             "out of memory",
-            "rapid-mlx serve qwen3-0.6b-4bit",
+            "rapid-mlx serve qwen3.5-4b-4bit",
         ),
     ],
 )
-def test_runtime_failure_has_class_and_command(error, failure_class, cause, command):
+def test_runtime_failure_has_class_and_command(
+    monkeypatch, error, failure_class, cause, command
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     assert serve_error_class(error) == failure_class
     lines = startup_error_lines(error, None)
     assert cause in lines[0]
@@ -881,3 +884,74 @@ def test_partially_present_index_does_not_accept_other_complete_weights(tmp_path
     (root / "model.safetensors").write_bytes(b"data")
     with pytest.raises(FileNotFoundError, match="Missing indexed model shard"):
         validate_local_model_for_serve(str(root))
+
+
+def test_stale_local_path_states_path_and_two_fixes_in_one_line(tmp_path):
+    stale = tmp_path / "removed-checkpoint"
+    failure = FileNotFoundError(
+        errno.ENOENT, "Local model path does not exist", str(stale)
+    )
+    assert serve_error_class(failure, model_ref=str(stale)) == "local_path_missing"
+
+    lines = startup_error_lines(failure, str(stale))
+    assert lines is not None
+    cause, step = lines
+    assert "\n" not in cause
+    assert str(stale) in cause
+    assert "rapid-mlx pull" in cause
+    assert "correct the path" in cause
+    assert "rapid-mlx pull" in step
+
+    stale_cache = (
+        tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / "deadbeef"
+    )
+    cache_lines = startup_error_lines(
+        FileNotFoundError(errno.ENOENT, "missing", str(stale_cache)), str(stale_cache)
+    )
+    assert cache_lines is not None
+    assert str(stale_cache) in cache_lines[0]
+    assert "rapid-mlx pull qwen3-0.6b-4bit" in cache_lines[0]
+    assert "correct the path" in cache_lines[0]
+
+
+def test_repeated_missing_local_path_failure_deduplicates_on_same_install(
+    tmp_path, monkeypatch, capsys
+):
+    from rapid_mlx import cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    stale = tmp_path / "stale-model-dir"
+    other = tmp_path / "another-stale-dir"
+
+    def run_serve(path):
+        monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(path)])
+        with pytest.raises(SystemExit) as exited:
+            cli.main()
+        assert exited.value.code == 1
+        return capsys.readouterr().err
+
+    # 1st failure: full one-line cause with path + both fixes + Next step.
+    first = run_serve(stale)
+    assert str(stale) in first
+    assert "rapid-mlx pull" in first
+    assert "correct the path" in first
+    assert "Next step:" in first
+
+    # 2nd failure on same path: single repeat notice, no Next step spam.
+    second = run_serve(stale)
+    assert str(stale) in second
+    assert "repeated failure" in second
+    assert "Next step:" not in second
+
+    # 3rd failure on same path: compact single line only, no repeat notice or hints.
+    third = run_serve(stale)
+    assert str(stale) in third
+    assert "repeated failure" not in third
+    assert "Next step:" not in third
+
+    # Failure on a different path resets deduplication and shows full guidance.
+    fourth = run_serve(other)
+    assert str(other) in fourth
+    assert "rapid-mlx pull" in fourth
+    assert "Next step:" in fourth

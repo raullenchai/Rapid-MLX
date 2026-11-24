@@ -461,7 +461,9 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         )
 
 
-def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]:
+def local_serve_preflight_lines(
+    model_ref: str, exc: OSError, *, track_repeat: bool = False
+) -> tuple[str, str]:
     """Give a local serve error a concrete repair command."""
     root = Path(model_ref).expanduser().absolute()
     if not isinstance(exc, (FileNotFoundError, NotADirectoryError, PermissionError)):
@@ -476,8 +478,10 @@ def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]
             f"Grant read access with `chmod -R u+rX {shlex.quote(str(root))}`, then retry.",
         )
     if not root.exists():
-        cause = f"Local model path {root} does not exist."
-    elif not root.is_dir():
+        from .local_serve_diagnostics import missing_local_path_lines
+
+        return missing_local_path_lines(model_ref, track_repeat=track_repeat)
+    if not root.is_dir():
         cause = f"{root} is a file, not a model directory."
     elif filename == root / "config.json":
         cause = f"{root} is missing config.json."
@@ -500,8 +504,6 @@ def local_serve_preflight_lines(model_ref: str, exc: OSError) -> tuple[str, str]
         alias = catalog_alias_for(repo)
         if alias:
             return cause, f"Try the catalog model: `rapid-mlx serve {alias}`."
-    if not root.exists():
-        return cause, "Check the path, then run `rapid-mlx serve /path/to/model`."
     if not root.is_dir():
         return (
             cause,

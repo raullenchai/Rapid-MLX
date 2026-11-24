@@ -17944,8 +17944,13 @@ def main(*, _supervise=False):
                             "Correct config.json, then retry `rapid-mlx serve /path/to/model`.",
                         )
                 else:
-                    cause, step = local_serve_preflight_lines(resolved, exc)
-                print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
+                    cause, step = local_serve_preflight_lines(
+                        resolved, exc, track_repeat=True
+                    )
+                if step:
+                    print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
+                else:
+                    print(f"\n  Cause: {cause}", file=sys.stderr)
             else:
                 message = local_model_failure_message(
                     supplied_model, exc, include_supplied_path=True

@@ -4,10 +4,88 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
 from pathlib import Path
+
+
+def _missing_path_alias(root: Path) -> str | None:
+    """Resolve a catalog alias when a stale path points inside the HF cache."""
+    from rapid_mlx.model_aliases import catalog_alias_for
+
+    for part in root.parts:
+        if not part.startswith("models--"):
+            continue
+        repo = part.removeprefix("models--").replace("--", "/", 1)
+        alias = catalog_alias_for(repo)
+        if alias:
+            return alias
+    return None
+
+
+def _record_missing_path_repeat(root: Path, *, state_dir: Path | None = None) -> int:
+    """Track consecutive missing-path failures for the same path on this install."""
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    base = state_dir if state_dir is not None else Path.home() / ".rapid-mlx"
+    state_file = base / ".last-missing-model-path.json"
+    count = 1
+    try:
+        if state_file.is_file():
+            prev = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(prev, dict) and prev.get("path_hash") == digest:
+                prev_count = prev.get("count", 1)
+                if isinstance(prev_count, int) and prev_count >= 1:
+                    count = prev_count + 1
+        base.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            json.dumps({"path_hash": digest, "count": count}), encoding="utf-8"
+        )
+    except (OSError, ValueError):
+        return 1
+    return count
+
+
+def missing_local_path_lines(
+    model_ref: str,
+    *,
+    track_repeat: bool = False,
+    state_dir: Path | None = None,
+) -> tuple[str, str]:
+    """Build a single-line missing-path diagnostic with both fixes and repeat dedupe."""
+    root = Path(model_ref).expanduser().absolute()
+    alias = _missing_path_alias(root)
+    if alias:
+        cause = (
+            f"Local model path {root} does not exist — "
+            f"re-pull the alias (`rapid-mlx pull {alias}`) or correct the path."
+        )
+        step = (
+            f"Run `rapid-mlx pull {alias}` then `rapid-mlx serve {alias}`, "
+            "or pass the corrected path."
+        )
+    else:
+        cause = (
+            f"Local model path {root} does not exist — "
+            "re-pull a catalog alias (`rapid-mlx pull <alias>`) or correct the path."
+        )
+        step = (
+            "Re-pull a catalog alias (`rapid-mlx pull <alias>`) "
+            "or run `rapid-mlx serve /path/to/model` with the corrected path."
+        )
+    if not track_repeat:
+        return cause, step
+    count = _record_missing_path_repeat(root, state_dir=state_dir)
+    if count == 1:
+        return cause, step
+    if count == 2:
+        return (
+            f"Local model path {root} still does not exist (repeated failure; "
+            "further hints suppressed) — re-pull the alias or correct the path.",
+            "",
+        )
+    return f"Local model path {root} does not exist.", ""
 
 
 def _local_config(model_ref: object) -> tuple[Path, dict] | None:
@@ -291,6 +369,9 @@ def _startup_only_diagnostic(
         if not isinstance(model_ref, str):
             return None
         root = Path(model_ref).expanduser().absolute()
+        if error_class == "local_path_missing" and not root.exists():
+            cause, step = missing_local_path_lines(model_ref)
+            return ("missing_local_path", cause, step)
         if (
             error_class == "corrupt_weights"
             and root.is_file()
