@@ -1481,14 +1481,17 @@ def evaluate_inspection(
         verdict.failure == UNSUPPORTED_ARCHITECTURE
         or verdict.model_type == "inkling2_loop"
     ):
+        # Only an architecture refusal needs confirming. For the layout check
+        # an unavailable config leaves the first verdict (e.g. oversize) as is.
+        unconfirmed = None if verdict.failure == UNSUPPORTED_ARCHITECTURE else verdict
         full = _fetch_hub_config(inspection.ref, inspection.revision)
         if full is None:
-            return inspection, None
+            return inspection, unconfirmed
         confirmed = architecture_supported(
             full, supported, chat_template=inspection.has_chat_template
         )
         if confirmed is None:
-            return inspection, None
+            return inspection, unconfirmed
         inspection = replace(inspection, config=full)
         verdict = evaluate(
             inspection,

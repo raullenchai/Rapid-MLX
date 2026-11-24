@@ -1026,6 +1026,21 @@ def test_hook_allows_inkling2_when_config_unavailable(hook, capsys, monkeypatch)
     assert capsys.readouterr() == ("", "")
 
 
+def test_hook_keeps_oversize_refusal_for_inkling2_when_config_unavailable(
+    hook, monkeypatch
+):
+    monkeypatch.setattr(pf, "supported_model_types", lambda: {"inkling2_loop"})
+    with pytest.raises(SystemExit):
+        hook(
+            _info(
+                {"model.safetensors": 40 * GIB},
+                config={"model_type": "inkling2_loop"},
+            ),
+            full_config=None,
+        )
+    assert [e.failure_class for e in hook.emitted] == [pf.INSUFFICIENT_MEMORY]
+
+
 def test_hook_refuses_oversize_serve_but_not_pull_or_disk_stream(hook, capsys):
     info = _info({"model.safetensors": 40 * GIB}, config=dict(MLX_CONFIG))
     hook(info, _args(command="pull", bits=None, format=None))
