@@ -37,6 +37,7 @@ final class ArtifactPreviewController: NSObject {
     @ObservationIgnored private(set) var webViewsCreated = 0
 
     @ObservationIgnored private let source: String
+    @ObservationIgnored private let isolationScript: String
     @ObservationIgnored private let loadTimeout: Duration
     @ObservationIgnored private let pingInterval: Duration
     @ObservationIgnored private let pingTimeout: Duration
@@ -47,11 +48,13 @@ final class ArtifactPreviewController: NSObject {
 
     init(
         source: String,
+        isolationScript: String = ArtifactSandbox.isolationScript,
         loadTimeout: Duration = .seconds(10),
         pingInterval: Duration = .seconds(5),
         pingTimeout: Duration = .seconds(10)
     ) {
         self.source = source
+        self.isolationScript = isolationScript
         self.loadTimeout = loadTimeout
         self.pingInterval = pingInterval
         self.pingTimeout = pingTimeout
@@ -95,7 +98,7 @@ final class ArtifactPreviewController: NSObject {
 
     private func build(ruleList: WKContentRuleList) {
         let configuration = ArtifactSandbox.makeConfiguration(
-            source: source, ruleList: ruleList
+            source: source, ruleList: ruleList, isolationScript: isolationScript
         )
         let view = WKWebView(frame: hostView.bounds, configuration: configuration)
         view.autoresizingMask = [.width, .height]
@@ -116,11 +119,23 @@ final class ArtifactPreviewController: NSObject {
         guard webView != nil else { return }
         switch event {
         case .didFinish:
-            if state == .loading { state = .ready }
+            if state == .loading, let view = webView { confirmIsolation(of: view) }
         case .didFail:
             fail(.loadFailed)
         case .contentProcessTerminated:
             fail(.contentProcessTerminated)
+        }
+    }
+
+    /// Show the page only once its WebRTC globals are confirmed locked.
+    private func confirmIsolation(of view: WKWebView) {
+        view.evaluateJavaScript(ArtifactSandbox.isolationCheck) { [weak self] result, _ in
+            guard let self, self.webView === view, self.state == .loading else { return }
+            if result as? Bool == true {
+                self.state = .ready
+            } else {
+                self.fail(.sandboxUnavailable)
+            }
         }
     }
 

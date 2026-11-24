@@ -19,9 +19,13 @@ import WebKit
 /// 4. A navigation delegate that allows the initial document load and nothing
 ///    else, and a UI delegate that refuses new windows, media capture, file
 ///    panels and downloads.
+/// 5. WebRTC removed before any page script runs. An `RTCPeerConnection` with
+///    its own ICE server opens sockets that neither the CSP nor the content
+///    rules see, and WebKit offers no switch for it. The load is only shown
+///    once the removal is confirmed, otherwise it fails closed.
 ///
-/// There is deliberately no `WKScriptMessageHandler` and no user script: the
-/// page has no way to call into the app.
+/// There is deliberately no `WKScriptMessageHandler`: the page has no way to
+/// call into the app. The one user script only deletes globals.
 enum ArtifactSandbox {
 
     /// A scheme of our own: not `file:`, which can expose the disk, and not
@@ -30,6 +34,47 @@ enum ArtifactSandbox {
     static let documentPath = "/artifact.html"
 
     static var documentURL: URL { URL(string: "\(scheme)://local\(documentPath)")! }
+
+    /// Everything that can create or drive a peer connection.
+    static let blockedGlobals = [
+        "RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
+        "RTCIceCandidate", "RTCSessionDescription", "RTCCertificate",
+        "RTCRtpSender", "RTCRtpReceiver", "RTCRtpTransceiver",
+        "RTCDtlsTransport", "RTCIceTransport", "RTCSctpTransport",
+    ]
+
+    private static var blockedGlobalsLiteral: String {
+        "[" + blockedGlobals.map { "\"\($0)\"" }.joined(separator: ",") + "]"
+    }
+
+    /// Runs first in every frame. The properties become non-writable and
+    /// non-configurable, so a page cannot put them back, and no other realm is
+    /// reachable under the CSP (no frames, workers or objects).
+    static var isolationScript: String {
+        """
+        (function () {
+          var names = \(blockedGlobalsLiteral);
+          for (var i = 0; i < names.length; i++) {
+            try {
+              Object.defineProperty(window, names[i], { value: undefined, writable: false, configurable: false });
+            } catch (e) {}
+          }
+        })();
+        """
+    }
+
+    /// Evaluates to true only if every global above is locked down.
+    static var isolationCheck: String {
+        """
+        (function () {
+          var names = \(blockedGlobalsLiteral);
+          return names.every(function (n) {
+            var d = Object.getOwnPropertyDescriptor(window, n);
+            return !!d && d.configurable === false && d.writable === false && d.value === undefined;
+          });
+        })()
+        """
+    }
 
     static let contentSecurityPolicy = [
         "default-src 'none'",
@@ -81,7 +126,7 @@ enum ArtifactSandbox {
     /// A fresh configuration. Built per load, never reused.
     @MainActor
     static func makeConfiguration(
-        source: String, ruleList: WKContentRuleList
+        source: String, ruleList: WKContentRuleList, isolationScript: String = isolationScript
     ) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -89,6 +134,10 @@ enum ArtifactSandbox {
             ArtifactSchemeHandler(document: document(for: source)), forURLScheme: scheme
         )
         configuration.userContentController.add(ruleList)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: isolationScript, injectionTime: .atDocumentStart,
+            forMainFrameOnly: false, in: .page
+        ))
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         return configuration

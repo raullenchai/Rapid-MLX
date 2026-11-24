@@ -51,9 +51,13 @@ enum MarkdownItem: Equatable, Sendable {
     public struct CodeBlock: Equatable, Sendable {
         public var code: String
         public var language: String?
-        public init(code: String, language: String?) {
+        /// False when the source ended inside the fence, as a cancelled
+        /// stream leaves it. Such a block may be cut off mid-document.
+        public var isClosed: Bool
+        public init(code: String, language: String?, isClosed: Bool = true) {
             self.code = code
             self.language = language
+            self.isClosed = isClosed
         }
     }
 

@@ -106,11 +106,16 @@ struct ArtifactSandboxPolicyTests {
                 .split(separator: "\n")
                 .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
                 .joined(separator: "\n")
-            for forbidden in [
+            var forbidden = [
                 "WKScriptMessageHandler", "add(_ scriptMessageHandler", "addScriptMessageHandler",
-                "addUserScript", "WKUserScript", "isInspectable = true", "persistent()",
-            ] {
-                #expect(!text.contains(forbidden), "\(file.lastPathComponent) contains \(forbidden)")
+                "isInspectable = true", "persistent()",
+            ]
+            // The isolation script lives in the sandbox file and nowhere else.
+            if file.lastPathComponent != "ArtifactSandbox.swift" {
+                forbidden += ["addUserScript", "WKUserScript"]
+            }
+            for term in forbidden {
+                #expect(!text.contains(term), "\(file.lastPathComponent) contains \(term)")
             }
         }
     }
@@ -127,12 +132,13 @@ private final class ArtifactHarness {
 
     init(
         source: String,
+        isolationScript: String = ArtifactSandbox.isolationScript,
         loadTimeout: Duration = .seconds(10),
         pingInterval: Duration = .seconds(5),
         pingTimeout: Duration = .seconds(10)
     ) {
         controller = ArtifactPreviewController(
-            source: source, loadTimeout: loadTimeout,
+            source: source, isolationScript: isolationScript, loadTimeout: loadTimeout,
             pingInterval: pingInterval, pingTimeout: pingTimeout
         )
         window = NSWindow(
@@ -225,6 +231,12 @@ struct ArtifactNetworkVector: Sendable, CustomTestStringConvertible {
             template: "<form id='f' action='TARGET' method='post'></form><script>document.getElementById('f').submit()</script>",
             baselineReachesProbe: true
         ),
+        .init(
+            name: "webrtc turn",
+            template: "<script>try{var pc=new RTCPeerConnection({iceServers:[{urls:'turn:127.0.0.1:PORT?transport=tcp',username:'u',credential:'c'}]});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)}).catch(function(){})}catch(e){}</script>",
+            baselineReachesProbe: true
+        ),
+        .init(name: "preconnect", template: "<link rel='preconnect' href='TARGET'>", baselineReachesProbe: true),
         .init(name: "window.open", template: "<script>window.open('TARGET')</script>", baselineReachesProbe: false),
     ]
 }
@@ -246,9 +258,41 @@ struct ArtifactSandboxWebKitTests {
         #expect(!first.websiteDataStore.isPersistent)
         #expect(first.websiteDataStore !== second.websiteDataStore)
         #expect(!first.preferences.javaScriptCanOpenWindowsAutomatically)
-        #expect(first.userContentController.userScripts.isEmpty)
+        let scripts = first.userContentController.userScripts
+        #expect(scripts.count == 1, "only the isolation script, nothing that talks to the app")
+        #expect(scripts.first?.source == ArtifactSandbox.isolationScript)
+        #expect(scripts.first?.injectionTime == .atDocumentStart)
+        #expect(scripts.first?.isForMainFrameOnly == false)
         #expect(first.urlSchemeHandler(forURLScheme: ArtifactSandbox.scheme) != nil)
         #expect(first.mediaTypesRequiringUserActionForPlayback == .all)
+    }
+
+    @Test("WebRTC globals are locked and a page cannot restore them")
+    func webRTCIsLocked() async throws {
+        let harness = ArtifactHarness(source: page("<p>x</p>"))
+        #expect(await harness.loadAndWaitUntilReady())
+        let types = try await harness.evaluate("""
+            [typeof RTCPeerConnection, typeof webkitRTCPeerConnection, typeof RTCDataChannel].join(",")
+            """)
+        #expect(types as? String == "undefined,undefined,undefined")
+        let after = try await harness.evaluate("""
+            (function () {
+              try { window.RTCPeerConnection = function () {}; } catch (e) {}
+              try { Object.defineProperty(window, "RTCPeerConnection", { value: function () {} }); } catch (e) {}
+              try { delete window.RTCPeerConnection; } catch (e) {}
+              return typeof RTCPeerConnection;
+            })()
+            """)
+        #expect(after as? String == "undefined")
+    }
+
+    @Test("A load whose WebRTC removal cannot be confirmed fails closed")
+    func failsClosedWithoutIsolation() async throws {
+        let harness = ArtifactHarness(source: page("<p>x</p>"), isolationScript: "")
+        harness.controller.start()
+        let failed = await harness.wait(until: { $0 == .failed(.sandboxUnavailable) })
+        #expect(failed, "state: \(harness.controller.state)")
+        #expect(harness.controller.webView == nil)
     }
 
     @Test("A counter page runs and its button works")
@@ -324,7 +368,7 @@ struct ArtifactSandboxWebKitTests {
         let baseline = probe.requestCount
 
         let harness = ArtifactHarness(source: html)
-        #expect(await harness.loadAndWaitUntilReady() || harness.controller.state != .loading)
+        #expect(await harness.loadAndWaitUntilReady(), "the page never ran, so the denial would be vacuous")
         try await Task.sleep(for: .milliseconds(1_500))
         #expect(probe.requestCount == baseline, "\(vector.name): the sandbox let a request through")
         withExtendedLifetime(harness) {}

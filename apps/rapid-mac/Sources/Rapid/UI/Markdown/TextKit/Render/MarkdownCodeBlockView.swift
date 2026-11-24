@@ -56,6 +56,9 @@ final class MarkdownCodeBlockView: NSView {
     /// ``MarkdownBlockStack``.
     private var isFinal = true
 
+    /// False when the source stopped inside the block's fence.
+    private var isClosed = true
+
     /// Set the moment the reader presses the button. Auto-reveal is a default,
     /// not an override.
     private var hasToggledPreview = false
@@ -169,9 +172,11 @@ final class MarkdownCodeBlockView: NSView {
         code: String,
         language: String?,
         options: MarkdownOptions,
-        isFinal: Bool = true
+        isFinal: Bool = true,
+        isClosed: Bool = true
     ) {
         self.isFinal = isFinal
+        self.isClosed = isClosed
         self.code = code
         self.language = language
         self.options = options
@@ -381,7 +386,7 @@ final class MarkdownCodeBlockView: NSView {
             && MermaidSource.looksLikeMermaid(code: code, language: language)
         // A page is only offered once its block has stopped changing; until
         // then it is source, like any other code.
-        let isHTML = isFinal && !isSVG && !isMermaid
+        let isHTML = isFinal && isClosed && !isSVG && !isMermaid
             && ArtifactHTMLSource.looksLikeHTML(code: code, language: language)
         guard isSVG || isMermaid || isHTML else {
             setPreviewHidden(true)

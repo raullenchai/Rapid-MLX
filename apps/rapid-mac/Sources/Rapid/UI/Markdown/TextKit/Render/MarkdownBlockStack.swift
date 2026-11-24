@@ -76,6 +76,7 @@ struct MarkdownBlockStack: View {
                         // failing and each taking a cache slot from a result
                         // that will matter.
                         isFinal: !isStreaming || group.id != lastGroupID,
+                        isClosed: block.isClosed,
                         artifactOpener: artifactOpener
                     )
                 case .table(let block):
@@ -218,13 +219,16 @@ private struct MarkdownCodeBlockRepresentable: NSViewRepresentable {
     let options: MarkdownOptions
     /// Whether this block's text will change again. See the call site.
     let isFinal: Bool
+    /// False when the stream stopped inside this block's fence.
+    let isClosed: Bool
     let artifactOpener: ArtifactOpener?
 
     func makeNSView(context: Context) -> MarkdownCodeBlockView {
         let view = MarkdownCodeBlockView(options: options)
         view.artifactOpener = artifactOpener
         view.configure(
-            code: block.code, language: block.language, options: options, isFinal: isFinal
+            code: block.code, language: block.language, options: options,
+            isFinal: isFinal, isClosed: isClosed
         )
         return view
     }
@@ -232,7 +236,8 @@ private struct MarkdownCodeBlockRepresentable: NSViewRepresentable {
     func updateNSView(_ view: MarkdownCodeBlockView, context: Context) {
         view.artifactOpener = artifactOpener
         view.configure(
-            code: block.code, language: block.language, options: options, isFinal: isFinal
+            code: block.code, language: block.language, options: options,
+            isFinal: isFinal, isClosed: isClosed
         )
     }
 

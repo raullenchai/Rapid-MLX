@@ -146,7 +146,9 @@ final class ArtifactPanelModel {
         guard content.contains("```") || content.contains("~~~") else { return [] }
         return MarkdownCompiler().compile(content).items.compactMap { item in
             guard case .code(let block) = item,
-                  let kind = ArtifactItem.kind(code: block.code, language: block.language)
+                  let kind = ArtifactItem.kind(code: block.code, language: block.language),
+                  // A page cut off by a stopped stream is not a page.
+                  kind != .html || block.isClosed
             else { return nil }
             return ArtifactLibrary.Block(kind: kind, source: block.code)
         }
