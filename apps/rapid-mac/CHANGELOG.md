@@ -17,6 +17,21 @@ can actually understand.
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-11-24
+
+The bundled engine adds Ternary Bonsai 2.5 27B, recovers from interrupted downloads, and its error messages name the fix. The only change to the app itself is the display name of the new model.
+
+### Models
+
+- **Ternary Bonsai 2.5 27B**: the bundled engine adds the alias `bonsai2.5-27b-2bit`, the successor to Bonsai 2 27B at the same size, shown as "Bonsai 2.5 · 27B · 2-bit" ([#5945](https://github.com/raullenchai/Rapid-MLX/pull/5945), [#5948](https://github.com/raullenchai/Rapid-MLX/pull/5948)).
+
+### Bug fixes
+
+- **Downloads**: a model download that hits a temporary network or server error is retried a few times before it fails ([#5943](https://github.com/raullenchai/Rapid-MLX/pull/5943)).
+- **Out-of-memory guidance**: when a model does not fit in memory, the engine suggests a smaller model that fits this Mac ([#5943](https://github.com/raullenchai/Rapid-MLX/pull/5943)).
+- **Context-length errors**: a prompt that is longer than the context window now gets an error that names the setting to raise ([#5943](https://github.com/raullenchai/Rapid-MLX/pull/5943)).
+- **Inkling 2 Mini**: third-party builds in a weight layout the engine cannot load are refused before the download starts ([#5940](https://github.com/raullenchai/Rapid-MLX/pull/5940)).
+
 ## [1.1.1] — 2026-11-23
 
 Dictation stays enabled across an update, and the bundled engine adds Hy4 flash and faster Inkling 2 Mini decoding.
@@ -4696,7 +4711,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.1...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.2...HEAD
+[1.1.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.1...rapid-mac-v1.1.2
 [1.1.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.1.0...rapid-mac-v1.1.1
 [1.1.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.5...rapid-mac-v1.1.0
 [1.0.5]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.4...rapid-mac-v1.0.5
