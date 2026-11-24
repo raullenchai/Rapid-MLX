@@ -123,6 +123,7 @@ struct ModelPresentationConsistencyTests {
         #expect(ModelDisplayName.name(for: "whisper-large-v3-turbo") == "Whisper Large v3 Turbo")
         #expect(ModelDisplayName.name(for: "bonsai-1.7b-2bit") == "Bonsai · 1.7B · 2-bit")
         #expect(ModelDisplayName.name(for: "bonsai2-4b-2bit") == "Bonsai 2 · 4B · 2-bit")
+        #expect(ModelDisplayName.name(for: "bonsai2.5-27b-2bit") == "Bonsai 2.5 · 27B · 2-bit")
         #expect(ModelDisplayName.name(for: "qwen3.5-9b-8bit") == "Qwen 3.5 · 9B · 8-bit")
         #expect(ModelDisplayName.name(for: "unknown-model") == "unknown-model")
         let entry = ModelEntry(alias: "bonsai-1.7b-2bit", hfRepo: nil, sizeOnDisk: nil, cached: true)
