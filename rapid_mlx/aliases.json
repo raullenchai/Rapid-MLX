@@ -2126,22 +2126,6 @@
       "top_k": 20
     }
   },
-  "bonsai2.5-27b-2bit": {
-    "hf_path": "prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit",
-    "revision": "aa432fd0e17612f6684e728d4d3c42b6656bcabb",
-    "model_type": "prism_hadamard_qwen35",
-    "supports_image_input": true,
-    "tool_call_parser": "qwen3_coder_xml",
-    "reasoning_parser": "qwen3",
-    "is_hybrid": true,
-    "is_hybrid_explicit": true,
-    "supports_spec_decode": false,
-    "recommended_sampling": {
-      "temperature": 1.0,
-      "top_p": 0.95,
-      "top_k": 20
-    }
-  },
   "bonsai2-27b-tensorfold": {
     "hf_path": "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
     "revision": "fcba37d2117a7077eac6b613b2668d14d9779edd",

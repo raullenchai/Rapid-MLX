@@ -322,17 +322,8 @@ def _install_metadata_stub(monkeypatch, config):
     )
 
 
-@pytest.mark.parametrize(
-    "alias",
-    [
-        "bonsai2-2b-2bit",
-        "bonsai2-4b-2bit",
-        "bonsai2-9b-2bit",
-        "bonsai2-27b-2bit",
-        "bonsai2.5-27b-2bit",
-    ],
-)
-def test_text_lane_guard_rejects_prism_pack(monkeypatch, alias):
+@pytest.mark.parametrize("size", [2, 4, 9, 27])
+def test_text_lane_guard_rejects_prism_pack(monkeypatch, size):
     # A prism_hadamard_qwen35 pack routed to the text lane (base wheel with the
     # vision runtime present, or an explicit --no-mllm) must be rejected BEFORE
     # weights download, not left to crash deep in mlx-lm on an unknown arch.
@@ -346,7 +337,9 @@ def test_text_lane_guard_rejects_prism_pack(monkeypatch, alias):
     )
 
     with pytest.raises(ValueError, match="multimodal lane"):
-        server._reject_text_lane_only_mllm_pack(alias, "/snap/bonsai2")
+        server._reject_text_lane_only_mllm_pack(
+            f"bonsai2-{size}b-2bit", "/snap/bonsai2"
+        )
 
 
 def test_text_lane_guard_surfaces_missing_vision_runtime_first(monkeypatch):
@@ -423,17 +416,8 @@ def test_text_lane_guard_passes_through_other_models(monkeypatch, config):
     server._reject_text_lane_only_mllm_pack("some-model", "/snap/other")
 
 
-@pytest.mark.parametrize(
-    "alias",
-    [
-        "bonsai2-2b-2bit",
-        "bonsai2-4b-2bit",
-        "bonsai2-9b-2bit",
-        "bonsai2-27b-2bit",
-        "bonsai2.5-27b-2bit",
-    ],
-)
-def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch, alias):
+@pytest.mark.parametrize("size", [2, 4, 9, 27])
+def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch, size):
     # Cold default start (no --no-mllm): the config-only preflight must require
     # the vision runtime for a prism_hadamard_qwen35 pack BEFORE
     # _ensure_routing_config pulls the whole 8.6 GB checkpoint. is_mllm_model()
@@ -460,7 +444,7 @@ def test_preflight_requires_vision_for_prism_pack_before_download(monkeypatch, a
     monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", _raise)
 
     with pytest.raises(ImportError, match=r"rapid-mlx\[vision\]"):
-        server._preflight_vision_runtime(alias)
+        server._preflight_vision_runtime(f"bonsai2-{size}b-2bit")
     assert calls == ["/snap/pack"]
 
 

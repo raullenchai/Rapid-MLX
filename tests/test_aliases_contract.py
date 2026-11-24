@@ -244,14 +244,13 @@ def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
         assert detect_model_config(profile.hf_path) == profile
 
 
-@pytest.mark.parametrize("version", ["2", "2.5"])
-def test_bonsai2_27b_pins_the_published_multimodal_contract(version: str) -> None:
+def test_bonsai2_27b_pins_the_published_multimodal_contract() -> None:
     """Bonsai 2 uses named XML tools and its published sampling defaults."""
 
-    alias = f"bonsai{version}-27b-2bit"
+    alias = "bonsai2-27b-2bit"
     profile = _execution_profiles()[alias]
 
-    assert profile.hf_path == f"prism-ml/Ternary-Bonsai-{version}-27B-mlx-2bit"
+    assert profile.hf_path == "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
     assert profile.supports_image_input is True
     assert profile.is_text_only is False
     assert profile.tool_call_parser == "qwen3_coder_xml"
@@ -266,14 +265,6 @@ def test_bonsai2_27b_pins_the_published_multimodal_contract(version: str) -> Non
     }
     assert detect_model_config(alias) == profile
     assert detect_model_config(profile.hf_path) == profile
-    assert resolve_profile(alias) == profile
-    if version == "2.5":
-        baseline = dict(_raw_aliases()["bonsai2-27b-2bit"])
-        baseline.update(
-            hf_path=profile.hf_path,
-            revision="aa432fd0e17612f6684e728d4d3c42b6656bcabb",
-        )
-        assert _raw_aliases()[alias] == baseline
 
 
 def test_qwen38_27b_abliterated_alias_is_scoped_and_conservative() -> None:
