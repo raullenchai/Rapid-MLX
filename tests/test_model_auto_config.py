@@ -400,6 +400,7 @@ class TestDetectModelConfig:
                 "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
                 "qwen3_coder_xml",
             ),
+            ("prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit", "qwen3_coder_xml"),
             ("prism-ml/Ternary-Bonsai-2-8B-mlx-2bit", "hermes"),
         ],
     )
@@ -424,6 +425,7 @@ class TestDetectModelConfig:
         ]
         assert bonsai2_regexes, "expected a bonsai-2 family regex"
         for pat in bonsai2_regexes:
+            assert pat.search("prism-ml/Ternary-Bonsai-2.5-27B-mlx-2bit")
             assert not pat.search("prism-ml/Ternary-Bonsai-27B-mlx-2bit")
             assert not pat.search("prism-ml/Ternary-Bonsai-8B-mlx-2bit")
 
