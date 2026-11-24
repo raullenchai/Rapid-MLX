@@ -209,6 +209,117 @@ def test_pre_download_memory_info_informs_and_never_blocks(monkeypatch, capsys):
     assert "continuing download" in small_err
 
 
+def test_pre_download_memory_info_fails_soft_without_ram_or_on_stream_error(
+    monkeypatch,
+):
+    from rapid_mlx.byom import preflight
+
+    gib = 1 << 30
+    monkeypatch.setattr(preflight, "_FOOTPRINT_NOTICES_SHOWN", set())
+    for unknown_ram in (0, None):
+        monkeypatch.setattr(preflight, "physical_ram_bytes", lambda r=unknown_ram: r)
+        assert (
+            preflight.inform_if_footprint_exceeds_memory(
+                "qwen3.8-27b-4bit", estimated_bytes=20 * gib
+            )
+            is False
+        )
+
+    class _BrokenStream:
+        def write(self, _data: str) -> int:
+            raise OSError("broken pipe")
+
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 16 * gib)
+    assert (
+        preflight.inform_if_footprint_exceeds_memory(
+            "qwen3.8-27b-4bit",
+            estimated_bytes=20 * gib,
+            stream=_BrokenStream(),
+        )
+        is False
+    )
+
+    # Unlisted model falls back to model_sizes.size_bytes + serve overhead.
+    from io import StringIO
+
+    from rapid_mlx import model_sizes
+
+    monkeypatch.setattr(preflight, "_FOOTPRINT_NOTICES_SHOWN", set())
+    monkeypatch.setattr(model_sizes, "size_bytes", lambda _ref: 20 * gib)
+    buf = StringIO()
+    assert (
+        preflight.inform_if_footprint_exceeds_memory("owner/unlisted-large", stream=buf)
+        is True
+    )
+    assert "owner/unlisted-large" in buf.getvalue()
+    assert "continuing download" in buf.getvalue()
+
+
+def test_catalog_footprint_handles_import_and_size_failures(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from rapid_mlx import model_aliases, model_sizes
+    from rapid_mlx.recommendations import _catalog_footprint_gb
+
+    fake_profile = SimpleNamespace(hf_path="owner/unmeasured", resident_memory_gb=None)
+    monkeypatch.setattr(model_aliases, "catalog_identity", lambda _ref: None)
+    monkeypatch.setattr(model_aliases, "resolve_profile", lambda _ref: fake_profile)
+    monkeypatch.setattr(
+        model_sizes,
+        "size_bytes",
+        lambda _repo: (_ for _ in ()).throw(RuntimeError("size lookup failed")),
+    )
+    assert _catalog_footprint_gb("owner/unmeasured") is None
+
+    monkeypatch.setattr(model_sizes, "size_bytes", lambda _repo: None)
+    assert _catalog_footprint_gb("owner/unmeasured") is None
+
+    monkeypatch.setitem(sys.modules, "rapid_mlx.model_aliases", None)
+    assert _catalog_footprint_gb("qwen3.5-4b-4bit") is None
+
+
+def test_memory_tier_recommendation_handles_small_ram_and_alias_errors(monkeypatch):
+    import sys
+
+    from rapid_mlx import recommendations
+    from rapid_mlx.recommendations import (
+        Recommendation,
+        RecommendationTier,
+        memory_tier_recommendation,
+    )
+
+    with monkeypatch.context() as ctx:
+        ctx.setitem(sys.modules, "rapid_mlx.model_aliases", None)
+        assert (
+            memory_tier_recommendation(
+                16.0, exclude="custom/model", max_footprint_gb=10.0
+            )
+            == "qwen3.5-4b-4bit"
+        )
+
+    # Sub-tier RAM: baseline qualifies at 4 GiB, nothing qualifies at 1 GiB.
+    assert memory_tier_recommendation(ram_gb=4.0) == "lfm2.5-1b-4bit"
+    assert memory_tier_recommendation(ram_gb=1.0) is None
+
+    # Sub-tier RAM fallback to another tier-0 pick when the baseline exceeds RAM.
+    synthetic_tier = (
+        RecommendationTier(
+            floor_gb=8,
+            picks=(
+                Recommendation("smart", "tiny-pick", 1.5, 60, None, ()),
+                Recommendation("fast", "larger-baseline", 3.5, 50, None, ()),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        recommendations,
+        "load_recommendation_tiers",
+        lambda **_kw: synthetic_tier,
+    )
+    assert memory_tier_recommendation(ram_gb=2.5) == "tiny-pick"
+
+
 @pytest.mark.parametrize("wrapped", [False, True])
 def test_metal_preflight_failure_uses_existing_class_and_remedy(
     tmp_path, monkeypatch, wrapped

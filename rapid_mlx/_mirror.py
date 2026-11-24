@@ -1040,7 +1040,7 @@ def _download_one_from_r2(
                 _R2_BACKOFF_MAX_SECONDS, _R2_BACKOFF_BASE_SECONDS * (2**attempt)
             )
             time.sleep(delay)
-        return ok, reason
+        return ok, reason  # pragma: no cover - loop returns on final attempt
     finally:
         _release_part_lock(lock_fh, lock_path)
 

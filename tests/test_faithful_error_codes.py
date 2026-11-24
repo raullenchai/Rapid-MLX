@@ -143,6 +143,23 @@ def test_model_load_payload_oom_falls_back_to_generic_when_footprint_unknown_or_
     }
 
 
+def test_model_load_payload_oom_falls_back_when_recommendation_raises(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.recommendations.memory_tier_recommendation",
+        lambda **_kw: (_ for _ in ()).throw(RuntimeError("probe failed")),
+    )
+    payload = model_load_error_payload(MemoryError(), model_ref="qwen3.8-27b-4bit")
+    assert payload == {
+        "message": (
+            "The model ran out of memory while loading. "
+            "Free up memory or choose a smaller model."
+        ),
+        "type": "server_error",
+        "code": ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+        "param": None,
+    }
+
+
 def test_model_load_payload_classifies_other_as_load_failed():
     exc = FileNotFoundError(f"missing config.json at {_SECRET}")
     payload = model_load_error_payload(exc)

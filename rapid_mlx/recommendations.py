@@ -318,7 +318,7 @@ def memory_tier_recommendation(
             if _qualifies(pick):
                 return pick.alias
     if baseline_pick is not None and _qualifies(baseline_pick):
-        return baseline_pick.alias
+        return baseline_pick.alias  # pragma: no cover - tiers[0] walked above
     return None
 
 

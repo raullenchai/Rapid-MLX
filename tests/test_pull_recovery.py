@@ -865,3 +865,90 @@ def test_final_hub_error_messages_include_next_steps(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "None" not in err
     assert "Retry: rapid-mlx pull owner/model" in err
+
+
+def test_r2_retry_ignores_part_stat_oserror_and_caps_backoff(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import urllib.error
+    from pathlib import Path
+
+    from rapid_mlx import _mirror
+
+    body = b"0123456789" * 8
+    sha = hashlib.sha256(body).hexdigest()
+    sleeps: list[float] = []
+    monkeypatch.setattr(_mirror.time, "sleep", sleeps.append)
+
+    sidecar_dir = tmp_path / "r2" / ".rapid-mlx-mirror"
+    expected_tmp = sidecar_dir / "model.safetensors.part"
+    orig_stat = Path.stat
+    stat_calls_after_create = 0
+    armed = False
+    stat_errors = 0
+
+    def flaky_stat(self, *args, **kwargs):
+        nonlocal stat_calls_after_create, stat_errors
+        if self == expected_tmp and armed:
+            stat_calls_after_create += 1
+            # Calls 1-2 happen in _do_r2_download's except handler; call 3 is
+            # the retry-loop tmp.exists()/stat() check in _download_one_from_r2.
+            if stat_calls_after_create == 3:
+                stat_errors += 1
+                self.unlink(missing_ok=True)
+                raise OSError(errno.EIO, "transient stat error")
+        return orig_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    class _FakeResp:
+        def __init__(self, data: bytes):
+            self.status = 200
+            self._buf = io.BytesIO(data)
+            self.headers = {"Content-Length": str(len(data))}
+
+        def read(self, n: int = -1) -> bytes:
+            return self._buf.read(n)
+
+        def read1(self, n: int = -1) -> bytes:
+            return self._buf.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    attempts = 0
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal attempts, armed
+        attempts += 1
+        if attempts == 1:
+            expected_tmp.parent.mkdir(parents=True, exist_ok=True)
+            expected_tmp.write_bytes(b"x")
+            armed = True
+        if attempts <= 4:
+            raise urllib.error.HTTPError(
+                req.full_url, 503, "Service Unavailable", {}, None
+            )
+        return _FakeResp(body)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    target = tmp_path / "r2" / "snapshots" / ("a" * 40) / "model.safetensors"
+    ok, reason = _mirror._download_one_from_r2(
+        "https://models.rapidmlx.com/owner/repo/model.safetensors",
+        target,
+        len(body),
+        expected_sha256=sha,
+        sidecar_dir=sidecar_dir,
+        sidecar_key="model.safetensors",
+        repo_root=tmp_path / "r2",
+        enforce_floor=False,
+        max_retries=4,
+    )
+    assert (ok, reason) == (True, "")
+    assert target.read_bytes() == body
+    assert stat_errors == 1
+    assert attempts == 5
+    assert sleeps == [1.0, 2.0, 4.0, 4.0]

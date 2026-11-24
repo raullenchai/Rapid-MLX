@@ -1032,3 +1032,64 @@ def test_missing_path_repeat_counter_is_serialized_across_processes(tmp_path):
         counts = sorted(ex.map(record, [stale] * 8))
     # Every process observes a distinct count: no lost increments.
     assert counts == list(range(1, 9))
+
+
+def test_missing_path_repeat_closes_fd_and_cleans_tmp_on_write_errors(
+    tmp_path, monkeypatch
+):
+    import os
+    import tempfile
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "state"
+    stale = tmp_path / "missing-model"
+
+    opened_fds: list[int] = []
+    closed_fds: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+    real_close = os.close
+
+    def track_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        opened_fds.append(fd)
+        return fd, path
+
+    def track_close(fd: int):
+        closed_fds.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(tempfile, "mkstemp", track_mkstemp)
+    monkeypatch.setattr(os, "close", track_close)
+
+    # 1. os.fdopen failure closes the raw fd and removes the temp file.
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            os,
+            "fdopen",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EIO, "fdopen")),
+        )
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    assert len(opened_fds) == 1
+    assert opened_fds[0] in closed_fds
+    assert list(state_dir.glob("*.tmp")) == []
+
+    # 2. os.replace failure returns 1 and unlinks the temp file.
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            os,
+            "replace",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EXDEV, "replace")),
+        )
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    assert list(state_dir.glob("*.tmp")) == []
+
+    # 3. Cleanup ignores OSError if the temp file was already removed.
+    def remove_then_fail_replace(src, _dst):
+        os.unlink(src)
+        raise OSError(errno.EIO, "replace after unlink")
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(os, "replace", remove_then_fail_replace)
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    assert list(state_dir.glob("*.tmp")) == []
