@@ -2887,7 +2887,9 @@ def _hub_not_found_hint(model_id: str) -> str:
     return "  See catalog aliases with `rapid-mlx models`.\n"
 
 
-def render_hub_error(exc: BaseException, model_id: str) -> str | None:
+def render_hub_error(
+    exc: BaseException, model_id: str, *, retry_command: str | None = None
+) -> str | None:
     """Render an actionable Hub failure found on an explicit cause chain.
 
     Matching is type-based and deliberately ignores ``__context__`` and raw
@@ -2911,6 +2913,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     from rapid_mlx._mirror import MirrorOnlyPullError
 
     rendered_model_id = _safe_hub_model_id(model_id)
+    retry_cmd = retry_command or f"rapid-mlx pull {shlex.quote(rendered_model_id)}"
     current: BaseException | None = exc
     seen: set[int] = set()
     for _ in range(32):
@@ -2985,16 +2988,23 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             return (
                 f"  Error: Hugging Face is temporarily unavailable for "
                 f"'{rendered_model_id}'.\n"
-                "  Try `rapid-mlx pull` again when the service recovers; "
+                f"  Retry `{retry_cmd}` when the service recovers; "
                 "completed cached files will be reused."
             )
         if isinstance(current, urllib.error.HTTPError):
             return None
+        if isinstance(current, OfflineModeIsEnabled):
+            return (
+                f"  Error: could not reach Hugging Face for '{rendered_model_id}' "
+                "(offline mode is enabled).\n"
+                "  Unset `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, then retry "
+                f"`{retry_cmd}`.\n"
+                "  You can also serve an already-cached model."
+            )
         if isinstance(
             current,
             (
                 LocalEntryNotFoundError,
-                OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.Timeout,
                 requests_exceptions.ChunkedEncodingError,
@@ -3009,7 +3019,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             return (
                 f"  Error: could not reach Hugging Face for '{rendered_model_id}'.\n"
                 "  Check your network connection and unset `HF_HUB_OFFLINE` "
-                "if offline mode is not intended.\n"
+                f"if offline mode is not intended, then retry `{retry_cmd}`.\n"
                 "  You can also serve an already-cached model."
             )
         try:
@@ -3195,7 +3205,11 @@ def _ensure_target_model_downloaded(
                     exc, model_ref=model_name, source=mirror_out.get("source")
                 )
                 spinner.stop()
-                print(f"\n{render_hub_error(exc, model_name)}\n", file=sys.stderr)
+                retry_cmd = f"rapid-mlx pull {shlex.quote(model_name)}"
+                rendered = render_hub_error(
+                    exc, model_name, retry_command=retry_cmd
+                ) or str(exc)
+                print(f"\n{rendered}\n  Retry: {retry_cmd}\n", file=sys.stderr)
                 raise SystemExit(1) from exc
             if _is_transient_hub_error(exc):
                 mirror_ok = False
@@ -13006,12 +13020,10 @@ def _pull_repository(
         from rapid_mlx.telemetry.model_events import pull_error_class
 
         error_class = pull_error_class(e)
-        rendered = render_hub_error(e, repo_id)
+        retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)
+        rendered = render_hub_error(e, repo_id, retry_command=retry)
         if rendered is not None and error_class != "not_found":
             print(f"\n{rendered}\n", file=sys.stderr)
-            retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(
-                args
-            )
             print(f"  Retry: {retry}", file=sys.stderr)
             raise SystemExit(1) from None
         is_404 = isinstance(e, RepositoryNotFoundError) or (

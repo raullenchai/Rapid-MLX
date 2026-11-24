@@ -820,7 +820,11 @@ def pinned_snapshot_download(
     from huggingface_hub.errors import OfflineModeIsEnabled
 
     try:
-        return str(snapshot_download(repo_id, **kwargs))
+        return str(
+            model_downloads._retry_transient_hub_call(
+                lambda: snapshot_download(repo_id, **kwargs)
+            )
+        )
     except OfflineModeIsEnabled:
         # Offline, the Hub still wants a file listing for a snapshot that an
         # older client downloaded without one. Use what is on disk instead.
@@ -915,6 +919,31 @@ def _sidecar_key_for(relpath: str) -> str:
     return encoded.replace("/", "__").replace("%2F", "__").replace("%2f", "__")
 
 
+_R2_TRANSIENT_RETRIES = 2
+_R2_BACKOFF_BASE_SECONDS = 1.0
+_R2_BACKOFF_MAX_SECONDS = 4.0
+_RETRYABLE_R2_EXCEPTIONS = frozenset(
+    {
+        "URLError",
+        "TimeoutError",
+        "ConnectionResetError",
+        "ConnectionAbortedError",
+        "BrokenPipeError",
+        "IncompleteRead",
+        "RemoteDisconnected",
+        "HTTPException",
+    }
+)
+
+
+def _is_retryable_r2_reason(reason: str) -> bool:
+    """True when an R2 transfer failure is transient and safe to resume via Range."""
+    return (
+        reason.startswith(("short-read:", "transient-status:"))
+        or reason in _RETRYABLE_R2_EXCEPTIONS
+    )
+
+
 def _download_one_from_r2(
     url: str,
     target: Path,
@@ -929,6 +958,7 @@ def _download_one_from_r2(
     enforce_floor: bool = True,
     raise_transport_errors: bool = False,
     existing_blob_ok: Callable[[Path], bool] | None = None,
+    max_retries: int = 0,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -980,19 +1010,37 @@ def _download_one_from_r2(
     # is what flock actually serializes on).
     lock_fh = _acquire_part_lock(lock_path)
     try:
-        return _do_r2_download(
-            url,
-            target,
-            tmp,
-            expected_size,
-            expected_sha256=expected_sha256,
-            expected_git_oid=expected_git_oid,
-            repo_root=repo_root,
-            progress_tracker=progress_tracker,
-            enforce_floor=enforce_floor,
-            raise_transport_errors=raise_transport_errors,
-            existing_blob_ok=existing_blob_ok,
-        )
+        attempts = max(1, max_retries + 1)
+        ok, reason = False, ""
+        for attempt in range(attempts):
+            ok, reason = _do_r2_download(
+                url,
+                target,
+                tmp,
+                expected_size,
+                expected_sha256=expected_sha256,
+                expected_git_oid=expected_git_oid,
+                repo_root=repo_root,
+                progress_tracker=progress_tracker,
+                enforce_floor=enforce_floor,
+                raise_transport_errors=raise_transport_errors,
+                existing_blob_ok=existing_blob_ok,
+            )
+            if ok or attempt + 1 >= attempts or not _is_retryable_r2_reason(reason):
+                return ok, reason
+            # If the mirror already wrote a partial prefix before dropping, let
+            # the caller hand off to HF Range resume immediately rather than
+            # re-hitting a flapping edge; retry in-place when no prefix landed.
+            try:
+                if tmp.exists() and tmp.stat().st_size > 0:
+                    return ok, reason
+            except OSError:
+                pass
+            delay = min(
+                _R2_BACKOFF_MAX_SECONDS, _R2_BACKOFF_BASE_SECONDS * (2**attempt)
+            )
+            time.sleep(delay)
+        return ok, reason
     finally:
         _release_part_lock(lock_fh, lock_path)
 
@@ -1274,6 +1322,10 @@ def _do_r2_download(
         _rollback_credits(progress_tracker, locals().get("chunks_credited", 0))
         if raise_transport_errors:
             raise
+        if isinstance(e, urllib.error.HTTPError) and (
+            e.code == 429 or 500 <= e.code < 600
+        ):
+            return False, f"transient-status:{e.code}"
         return False, type(e).__name__
 
     # Codex round-5 BLOCKING #2: ``tmp.stat()`` was outside the
@@ -2566,6 +2618,7 @@ def download_with_mirror_fallback(
                     if mirror_only and expected_sha256 is not None
                     else None
                 ),
+                max_retries=_R2_TRANSIENT_RETRIES,
             )
             slow_mirror = _reason == "slow-mirror"
             if slow_mirror:

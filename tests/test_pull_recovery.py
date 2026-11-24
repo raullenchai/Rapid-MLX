@@ -601,3 +601,267 @@ def test_direct_hub_http_errors_retry_and_render_safely(status, tmp_path, monkey
     else:
         assert rendered is None
     assert "private" not in (rendered or "")
+
+
+def test_r2_transient_errors_retry_with_backoff_and_hf_resumes_partial(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import io
+    import urllib.error
+
+    from rapid_mlx import _mirror
+
+    body = b"0123456789" * 10
+    sha = hashlib.sha256(body).hexdigest()
+    sleeps: list[float] = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+
+    class _FakeResp:
+        def __init__(self, status: int, data: bytes, headers: dict[str, str]):
+            self.status = status
+            self._buf = io.BytesIO(data)
+            self.headers = headers
+
+        def read(self, n: int = -1) -> bytes:
+            return self._buf.read(n)
+
+        def read1(self, n: int = -1) -> bytes:
+            return self._buf.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    # 1. Cold R2 transient 503 + URLError retry in place with bounded backoff.
+    r2_attempts = 0
+
+    def fake_r2_urlopen(req, timeout=None):
+        nonlocal r2_attempts
+        r2_attempts += 1
+        if r2_attempts == 1:
+            raise urllib.error.HTTPError(
+                req.full_url, 503, "Service Unavailable", {}, None
+            )
+        if r2_attempts == 2:
+            raise urllib.error.URLError("temporary dns failure")
+        return _FakeResp(200, body, {"Content-Length": str(len(body))})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_r2_urlopen)
+    target = tmp_path / "r2" / "snapshots" / ("a" * 40) / "model.safetensors"
+    ok, reason = _mirror._download_one_from_r2(
+        "https://models.rapidmlx.com/owner/repo/model.safetensors",
+        target,
+        len(body),
+        expected_sha256=sha,
+        sidecar_dir=tmp_path / "r2" / ".rapid-mlx-mirror",
+        sidecar_key="model.safetensors",
+        repo_root=tmp_path / "r2",
+        enforce_floor=False,
+        max_retries=2,
+    )
+    assert (ok, reason) == (True, "")
+    assert target.read_bytes() == body
+    assert r2_attempts == 3
+    assert sleeps == [1.0, 2.0]
+
+    # 2. Mid-stream disconnects resume partial .part bytes via Range across retries.
+    sleeps.clear()
+    seen_ranges: list[str | None] = []
+    hf_attempts = 0
+    location = "https://cdn.example.test/model.safetensors"
+    monkeypatch.setattr(
+        "huggingface_hub.file_download.get_hf_file_metadata",
+        lambda *_a, **_kw: SimpleNamespace(location=location),
+    )
+
+    def fake_hf_urlopen(req, timeout=None):
+        nonlocal hf_attempts
+        hf_attempts += 1
+        seen_ranges.append(req.get_header("Range"))
+        if hf_attempts == 1:
+            return _FakeResp(200, body[:40], {"Content-Length": str(len(body))})
+        if hf_attempts == 2:
+            assert req.get_header("Range") == "bytes=40-"
+            return _FakeResp(
+                206,
+                body[40:75],
+                {
+                    "Content-Length": str(len(body) - 40),
+                    "Content-Range": f"bytes 40-{len(body) - 1}/{len(body)}",
+                },
+            )
+        assert req.get_header("Range") == "bytes=75-"
+        return _FakeResp(
+            206,
+            body[75:],
+            {
+                "Content-Length": str(len(body) - 75),
+                "Content-Range": f"bytes 75-{len(body) - 1}/{len(body)}",
+            },
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_hf_urlopen)
+    hf_root = tmp_path / "hf"
+    hf_target = hf_root / "snapshots" / ("a" * 40) / "model.safetensors"
+    assert (
+        cli._retry_hub_download(
+            lambda: _mirror._hf_resumable_one(
+                "owner/repo",
+                "model.safetensors",
+                "a" * 40,
+                hf_target,
+                len(body),
+                sha,
+                None,
+                hf_root / ".rapid-mlx-mirror",
+                hf_root,
+                None,
+            ),
+            "owner/repo",
+        )
+        is True
+    )
+    assert hf_target.read_bytes() == body
+    assert seen_ranges == [None, "bytes=40-", "bytes=75-"]
+    assert sleeps == [1, 2]
+
+
+def test_r2_permanent_404_does_not_retry(tmp_path, monkeypatch):
+    import urllib.error
+
+    from rapid_mlx import _mirror
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(_mirror.time, "sleep", sleeps.append)
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ok, _reason = _mirror._download_one_from_r2(
+        "https://models.rapidmlx.com/owner/repo/missing.bin",
+        tmp_path / "missing.bin",
+        10,
+        sidecar_dir=tmp_path / "sidecar",
+        sidecar_key="missing.bin",
+        enforce_floor=False,
+        max_retries=2,
+    )
+    assert ok is False
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_model_downloads_retries_transient_errors_with_bounded_backoff(monkeypatch):
+    import huggingface_hub
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+
+    from rapid_mlx import model_downloads
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(model_downloads.time, "sleep", sleeps.append)
+
+    snap_calls = 0
+
+    def fake_snap(repo_id, **kwargs):
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls < 3:
+            raise httpx.ReadTimeout("slow")
+        return "/cache/snap"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snap)
+    assert model_downloads.snapshot_download("owner/repo") == "/cache/snap"
+    assert snap_calls == 3
+    assert sleeps == [1.0, 2.0]
+
+    sleeps.clear()
+    file_calls = 0
+
+    def fake_file(repo_id, filename, **kwargs):
+        nonlocal file_calls
+        file_calls += 1
+        if file_calls == 1:
+            raise _hub_error(HfHubHTTPError, 502)
+        return "/cache/file"
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_file)
+    assert model_downloads.hf_hub_download("owner/repo", "config.json") == "/cache/file"
+    assert file_calls == 2
+    assert sleeps == [1.0]
+
+    # Permanent 403 must not retry.
+    sleeps.clear()
+    gated_calls = 0
+
+    def fake_gated(*_a, **_kw):
+        nonlocal gated_calls
+        gated_calls += 1
+        raise _hub_error(GatedRepoError, 403)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_gated)
+    with pytest.raises(GatedRepoError):
+        model_downloads.snapshot_download("owner/gated")
+    assert gated_calls == 1
+    assert sleeps == []
+
+
+def test_final_hub_error_messages_include_next_steps(monkeypatch, capsys):
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+
+    from rapid_mlx._mirror import ResumableDownloadError
+
+    offline = cli.render_hub_error(OfflineModeIsEnabled("offline"), "owner/model")
+    assert "HF_HUB_OFFLINE" in offline
+    assert "TRANSFORMERS_OFFLINE" in offline
+    assert "rapid-mlx pull owner/model" in offline
+
+    net = cli.render_hub_error(httpx.ConnectError("down"), "owner/model")
+    assert "HF_HUB_OFFLINE" in net
+    assert "rapid-mlx pull owner/model" in net
+
+    unavailable = cli.render_hub_error(
+        _hub_error(HfHubHTTPError, 503),
+        "owner/model",
+        retry_command="rapid-mlx pull owner/model --bits 4",
+    )
+    assert "rapid-mlx pull owner/model --bits 4" in unavailable
+
+    gated = cli.render_hub_error(_hub_error(GatedRepoError, 403), "owner/gated")
+    assert "hf auth login" in gated and "HF_TOKEN" in gated
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.list_builtin_aliases",
+        lambda: {"qwen3.5-4b-4bit": "mlx-community/Qwen3.5-4B-MLX-4bit"},
+    )
+    missing = cli.render_hub_error(
+        _hub_error(RepositoryNotFoundError, 404),
+        "mlx-community/Qwen3.5-4B-MLX-4bi",
+    )
+    assert "qwen3.5-4b-4bit" in missing
+
+    # Auto-pull in serve/chat prints an actionable retry command on fatal resumable error.
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _model: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli,
+        "_try_mirror_prefetch",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ResumableDownloadError("interrupted")),
+    )
+    with pytest.raises(SystemExit) as caught:
+        cli._ensure_target_model_downloaded("owner/model")
+    assert caught.value.code == 1
+    err = capsys.readouterr().err
+    assert "None" not in err
+    assert "Retry: rapid-mlx pull owner/model" in err
