@@ -9448,12 +9448,12 @@
         }
       }
     },
-    "This chat won't be saved. Memory and instructions are off." : {
+    "This chat won't appear in your history. Memory and instructions are off." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此对话不会被保存，记忆和指令均已关闭。"
+            "value" : "此对话不会出现在你的历史记录中，记忆和指令均已关闭。"
           }
         }
       }
@@ -9504,6 +9504,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "丢弃对话"
+          }
+        }
+      }
+    },
+    "Quit and discard this temporary chat?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要退出并丢弃此临时对话吗？"
+          }
+        }
+      }
+    },
+    "Temporary chats aren't saved. Quitting deletes the conversation. Export it first to keep a copy." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "临时对话不会被保存。退出后将删除此对话。如需保留副本，请先导出。"
+          }
+        }
+      }
+    },
+    "Quit and Discard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "退出并丢弃"
           }
         }
       }

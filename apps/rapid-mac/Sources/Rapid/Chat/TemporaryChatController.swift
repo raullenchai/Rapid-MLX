@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -79,13 +80,50 @@ final class TemporaryChatController {
     /// panel keeps the chat.
     func export(_ format: ConversationExport.Format) {
         isConfirmingExit = false
-        guard let snapshot = session?.exportSnapshot() else { return }
         let action = afterExit
         afterExit = nil
+        export(format, then: { action?() }, orElse: {})
+    }
+
+    func export(
+        _ format: ConversationExport.Format,
+        then action: @escaping () -> Void,
+        orElse onCancel: @escaping () -> Void
+    ) {
+        guard let snapshot = session?.exportSnapshot() else {
+            onCancel()
+            return
+        }
         ConversationExportPanel.export(snapshot, format: format) { [weak self] saved in
-            guard saved else { return }
+            guard saved else {
+                onCancel()
+                return
+            }
             self?.discard()
-            action?()
+            action()
+        }
+    }
+
+    enum QuitDecision {
+        case discard
+        case cancel
+        case export(ConversationExport.Format)
+    }
+
+    /// Quitting skips the in-window warning, so it asks here instead.
+    static func askBeforeQuitting() -> QuitDecision {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Quit and discard this temporary chat?")
+        alert.informativeText = String(localized: "Temporary chats aren't saved. Quitting deletes the conversation. Export it first to keep a copy.")
+        alert.addButton(withTitle: String(localized: "Export Markdown…"))
+        alert.addButton(withTitle: String(localized: "Export JSON…"))
+        alert.addButton(withTitle: String(localized: "Quit and Discard"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .export(.markdown)
+        case .alertSecondButtonReturn: return .export(.json)
+        case .alertThirdButtonReturn: return .discard
+        default: return .cancel
         }
     }
 

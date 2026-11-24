@@ -311,7 +311,7 @@ struct RapidApp: App {
 
         let chatBackendConfig = ChatBackendConfig()
         _chatBackendConfig = State(initialValue: chatBackendConfig)
-        _temporaryChat = State(initialValue: TemporaryChatController(
+        let temporaryChatController = TemporaryChatController(
             server: manager,
             sampling: samplingConfig,
             makeTools: { documents, pages in
@@ -325,7 +325,8 @@ struct RapidApp: App {
                     mcp: mcpRegistry
                 )
             }
-        ))
+        )
+        _temporaryChat = State(initialValue: temporaryChatController)
         let chat = ChatViewModel(
             chatBackendConfig: chatBackendConfig,
             tools: toolRegistry,
@@ -443,6 +444,7 @@ struct RapidApp: App {
         AppDelegate.shared.updater = updateChecker
         AppDelegate.shared.sparkleUpdater = sparkleUpdateController
         AppDelegate.shared.chat = chat
+        AppDelegate.shared.temporaryChat = temporaryChatController
         AppDelegate.shared.dictation = dictationController
         AppDelegate.shared.appearance = appearanceConfig
     }
@@ -730,6 +732,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// cancel the in-flight chat stream task before shutting the child
     /// down, and the menu-bar tray's "New Chat" can reach it.
     weak var chat: ChatViewModel?
+    /// The unsaved chat mode. Quit and the tray's New Chat go through it so
+    /// neither silently discards or resets what is on screen.
+    weak var temporaryChat: TemporaryChatController?
     /// Process-wide dictation owns a global CGEvent tap, microphone capture,
     /// and asynchronous transcription work. It must be disarmed before the
     /// server begins its synchronous quit grace, while keeping the persisted
@@ -1009,6 +1014,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // through ``AppDelegate.shared``, all populated by
         // ``RapidApp.init`` above.
         menuBarController = MenuBarController()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let temporaryChat, temporaryChat.hasInteraction else { return .terminateNow }
+        NSApp.activate(ignoringOtherApps: true)
+        switch TemporaryChatController.askBeforeQuitting() {
+        case .discard:
+            return .terminateNow
+        case .cancel:
+            return .terminateCancel
+        case .export(let format):
+            temporaryChat.export(
+                format,
+                then: { NSApp.reply(toApplicationShouldTerminate: true) },
+                orElse: { NSApp.reply(toApplicationShouldTerminate: false) }
+            )
+            return .terminateLater
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -35,6 +35,7 @@ final class TemporaryChatSession {
     let chat: ChatViewModel
     let documentCache: DocumentContentCache
 
+    private let pageCache: BrowseContentCache
     private let storageRoot: URL
     private var isClosed = false
 
@@ -58,6 +59,7 @@ final class TemporaryChatSession {
             diskDirectory: directory.appendingPathComponent("pages", isDirectory: true)
         )
         self.documentCache = documents
+        self.pageCache = pages
         self.chat = ChatViewModel(
             client: client,
             chatBackendConfig: ChatBackendConfig(pinnedTo: .legacy),
@@ -83,11 +85,14 @@ final class TemporaryChatSession {
         )
     }
 
-    /// Idempotent. Stops in-flight work, then deletes this session's directory.
+    /// Idempotent. Stops in-flight work, closes both caches so late extractions
+    /// and fetches cannot write again, then deletes this session's directory.
     func close() {
         guard !isClosed else { return }
         isClosed = true
         chat.stop()
+        documentCache.close()
+        pageCache.close()
         TemporaryChatStorage.remove(windowID: id, in: storageRoot)
     }
 }

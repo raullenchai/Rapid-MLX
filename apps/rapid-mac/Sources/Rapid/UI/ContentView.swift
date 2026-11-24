@@ -1543,9 +1543,11 @@ struct ContentView: View {
                 composerFocusRequest: composerFocusRequest,
                 documentCache: temporaryChat.session?.documentCache ?? .shared,
                 allowsConversationInstructions: !temporaryChat.isActive,
-                isTemporary: temporaryChat.isActive
+                isTemporary: temporaryChat.isActive,
+                retainedDraftOwners: temporaryChat.isActive
+                    ? Set(chat.conversations.map(\.id)).union([chat.activeConversationID])
+                    : []
             )
-            .id(temporaryChat.session?.id)
             .overlay(alignment: .topTrailing) {
                 if temporaryChat.isActive || chat.messages.isEmpty {
                     TemporaryChatToggle(isOn: temporaryChat.isActive) { temporaryChat.toggle() }

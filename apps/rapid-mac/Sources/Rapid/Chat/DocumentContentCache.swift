@@ -130,6 +130,8 @@ final class DocumentContentCache: @unchecked Sendable {
     private var lastAccessedAt: [String: Date] = [:]
     /// Survives entry deletion so in-flight publications can be invalidated.
     private var removalGeneration: [String: UInt64] = [:]
+    /// Guarded by `memoryLock`. Once set, nothing is published or written.
+    private var isClosed = false
 
     private let maxEntries: Int
     private let maxBytes: Int
@@ -217,11 +219,17 @@ final class DocumentContentCache: @unchecked Sendable {
     func registerExtraction(_ id: UUID, task: Task<Void, Never>) -> Bool {
         let k = Self.key(for: id)
         pendingSignal.lock()
-        let registered = pending.contains(k)
+        // Read under pendingSignal so a concurrent `close` either sees this
+        // task when it cancels, or has already marked the cache closed.
+        memoryLock.lock()
+        let closed = isClosed
+        memoryLock.unlock()
+        let registered = pending.contains(k) && !closed
         if registered {
             extractionTasks[k] = task
         }
         pendingSignal.unlock()
+        if closed { task.cancel() }
         return registered
     }
 
@@ -338,7 +346,7 @@ final class DocumentContentCache: @unchecked Sendable {
         let k = Self.key(for: id)
         let accessDate = now()
         memoryLock.lock()
-        guard (removalGeneration[k] ?? 0) == expected else {
+        guard !isClosed, (removalGeneration[k] ?? 0) == expected else {
             memoryLock.unlock()
             return false
         }
@@ -350,10 +358,33 @@ final class DocumentContentCache: @unchecked Sendable {
         // Recheck while holding diskLock so remove cannot race the disk write.
         diskLock.lock(); defer { diskLock.unlock() }
         memoryLock.lock()
-        let stillValid = (removalGeneration[k] ?? 0) == expected
+        let stillValid = !isClosed && (removalGeneration[k] ?? 0) == expected
         memoryLock.unlock()
         guard stillValid else { return false }
         return writeToDiskLocked(k, entry: entry, accessedAt: accessDate)
+    }
+
+    /// Ends this cache's life: cancels in-flight extractions, drops memory,
+    /// deletes the disk folder, and refuses every later publish so a late
+    /// extraction cannot write the folder back. Idempotent.
+    func close() {
+        memoryLock.lock()
+        isClosed = true
+        store.removeAll()
+        order.removeAll()
+        lastAccessedAt.removeAll()
+        totalBytes = 0
+        memoryLock.unlock()
+
+        pendingSignal.lock()
+        let tasks = Array(extractionTasks.values)
+        extractionTasks.removeAll()
+        pendingSignal.unlock()
+        for task in tasks { task.cancel() }
+
+        guard let dir = diskDirectory else { return }
+        diskLock.lock(); defer { diskLock.unlock() }
+        try? FileManager.default.removeItem(at: dir)
     }
 
     /// Removes memory, disk and in-flight work without waiting for cancellation.

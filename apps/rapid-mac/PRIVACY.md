@@ -19,9 +19,11 @@ own key in Settings → Tools).
   that history, do not read or update memory, and ignore custom instructions.
   Their attachments and fetched pages live in a per-chat folder under
   `~/Library/Application Support/Rapid/temp-chat/` that is deleted when you turn
-  temporary chat off, when Rapid quits, and at the next launch. The engine's
-  prompt prefix cache (below) is not aware of temporary chats and can still be
-  written to disk for them.
+  temporary chat off, when Rapid quits, and at the next launch. The engine is
+  not aware of temporary chats: their prompts go through the same prefix cache
+  as any other chat, so they stay in the engine's memory until the cache evicts
+  them or the model stops, and the engine may write that cache to disk when it
+  stops (see the prompt prefix cache below).
 * API keys for tools (Keenable / Parallel / Tavily / Brave) — stored
   in macOS Keychain.
 * Server settings, picker state, window layout — stored in

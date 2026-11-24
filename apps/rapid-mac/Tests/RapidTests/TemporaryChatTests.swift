@@ -396,6 +396,113 @@ struct TemporaryChatTests {
         #expect(ConversationExport.markdown(snapshot).contains("answer"))
     }
 
+    // MARK: - Discard while work is still running
+
+    /// Registers an extraction that ignores cancellation and publishes once
+    /// released, the way a long scanned-PDF pass does.
+    private func startBlockedExtraction(
+        in cache: DocumentContentCache, id: UUID
+    ) -> (release: () -> Void, task: Task<Void, Never>) {
+        cache.beginPending(id)
+        let generation = cache.generation(for: id)
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        let task = Task.detached {
+            for await _ in gate {}
+            defer { cache.finishPending(id) }
+            cache.publish(
+                id,
+                entry: DocumentContentCache.Entry(filename: "scan.pdf", text: "late extracted text"),
+                ifGenerationIs: generation
+            )
+        }
+        cache.registerExtraction(id, task: task)
+        return ({ open.finish() }, task)
+    }
+
+    @Test("An extraction that finishes after discard cannot write the folder back")
+    func lateExtractionAfterDiscardWritesNothing() async throws {
+        let root = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = makeSession(storageRoot: root)
+        let id = UUID()
+        let (release, task) = startBlockedExtraction(in: session.documentCache, id: id)
+
+        session.close()
+        release()
+        await task.value
+
+        #expect(!FileManager.default.fileExists(
+            atPath: TemporaryChatStorage.directory(for: session.id, in: root).path))
+        #expect(snapshot(of: root).isEmpty)
+        #expect(session.documentCache.get(id) == nil)
+    }
+
+    @Test("An extraction registered after the cache closed is cancelled")
+    func extractionRegisteredAfterCloseIsCancelled() async throws {
+        let root = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = DocumentContentCache(diskDirectory: root.appendingPathComponent("documents"))
+        cache.close()
+        let id = UUID()
+        cache.beginPending(id)
+        let task = Task.detached {
+            while !Task.isCancelled { await Task.yield() }
+            cache.finishPending(id)
+        }
+
+        #expect(!cache.registerExtraction(id, task: task))
+        await task.value
+        #expect(task.isCancelled)
+    }
+
+    @Test("A page fetched after discard cannot write the folder back")
+    func latePageAfterDiscardWritesNothing() throws {
+        let root = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("pages")
+        let cache = BrowseContentCache(diskDirectory: directory)
+        cache.put("https://example.com/a", entry: BrowseContentCache.Entry(
+            title: nil, markdown: "before", finalURL: "https://example.com/a"))
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+
+        cache.close()
+        cache.put("https://example.com/b", entry: BrowseContentCache.Entry(
+            title: nil, markdown: "after", finalURL: "https://example.com/b"))
+
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        #expect(cache.get("https://example.com/a") == nil)
+        #expect(cache.get("https://example.com/b") == nil)
+    }
+
+    // MARK: - Exit paths
+
+    private func strippedSource(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let body = try String(
+            contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        return CapabilityChipRenderGateSourceGuardTests.stripCommentsAndWhitespace(body)
+    }
+
+    @Test("Toggling temporary mode keeps the chat view and the normal chat's attachment drafts")
+    func toggleKeepsTheChatViewState() throws {
+        let content = try strippedSource("Sources/Rapid/UI/ContentView.swift")
+        #expect(!content.contains(".id(temporaryChat"))
+        #expect(content.contains("retainedDraftOwners:temporaryChat.isActive"))
+        let chatView = try strippedSource("Sources/Rapid/UI/ChatView.swift")
+        #expect(chatView.contains(".union(retainedDraftOwners)"))
+    }
+
+    @Test("Quit and the tray's New Chat go through the temporary chat exit path")
+    func quitAndTrayUseTheExitPath() throws {
+        let app = try strippedSource("Sources/Rapid/RapidApp.swift")
+        #expect(app.contains("funcapplicationShouldTerminate("))
+        #expect(app.contains("TemporaryChatController.askBeforeQuitting()"))
+        let tray = try strippedSource("Sources/Rapid/UI/MenuBarController.swift")
+        #expect(tray.contains("temporaryChat.leave{chat?.newConversation()}"))
+        #expect(!tray.contains("AppDelegate.shared.chat?.newConversation()"))
+    }
+
     // MARK: - Ordinary chats
 
     @Test("An ordinary chat still persists and keeps its memory store")

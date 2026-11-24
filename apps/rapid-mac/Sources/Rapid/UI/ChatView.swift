@@ -303,6 +303,9 @@ struct ChatView: View {
     var allowsConversationInstructions = true
     /// Swaps the hero copy for the temporary-chat explanation.
     var isTemporary = false
+    /// Conversations whose attachment drafts must survive although this view
+    /// is showing another chat (the normal chat while temporary mode is on).
+    var retainedDraftOwners: Set<UUID> = []
 
     /// Backing state for the composer's inline model picker (Ollama-style).
     /// The picker lives in the compose box now, not a top control bar.
@@ -792,7 +795,7 @@ struct ChatView: View {
                     ? String(localized: "Temporary chat")
                     : String(localized: "Ask anything"),
                 message: isTemporary
-                    ? String(localized: "This chat won't be saved. Memory and instructions are off.")
+                    ? String(localized: "This chat won't appear in your history. Memory and instructions are off.")
                     : emptyStateSubtitle,
                 hint: downloadHint,
                 // No disc. The plate was framing an illustration that already
@@ -1739,7 +1742,9 @@ struct ChatView: View {
         // remaining opportunity to delete that plaintext. ``remove`` also
         // cancels any extraction still running for them.
         let discarded = attachmentDrafts.retainDrafts(
-            for: Set(viewModel.conversations.map(\.id)).union([viewModel.activeConversationID])
+            for: Set(viewModel.conversations.map(\.id))
+                .union([viewModel.activeConversationID])
+                .union(retainedDraftOwners)
         )
         documentCache.remove(contentsOf: discarded)
     }
