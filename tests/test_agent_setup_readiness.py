@@ -310,3 +310,215 @@ def test_health_loading_then_ready_waits_before_model_discovery(monkeypatch):
         "http://localhost:8123/v1/models"
     ]
     assert shown == [True]
+
+
+def test_startup_timeout_shows_progress_and_recovers_when_ready(monkeypatch):
+    from rapid_mlx.agents import server_discovery as discovery
+
+    clock = [0.0]
+    monkeypatch.setattr(setup.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        setup.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    server = discovery.Server(42, 8123, "wanted", listening=True)
+    monkeypatch.setattr(discovery, "server_for_url", lambda _url: server)
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    shown = []
+    monkeypatch.setattr(
+        discovery.Progress, "show", lambda self, url, now: shown.append(url)
+    )
+    attempts = []
+
+    def verify(url, model, **_kwargs):
+        attempts.append(url)
+        if len(attempts) < 3:
+            raise setup.ServerReadinessError("timed out", "startup_timeout")
+        return "wanted"
+
+    failures = []
+    monkeypatch.setattr(setup, "verify_server", verify)
+    monkeypatch.setattr(
+        setup, "track_agent_configure_failed", lambda *v: failures.append(v)
+    )
+    endpoint = discovery.Endpoint("http://localhost:8123/v1")
+    assert (
+        setup.wait_for_server(
+            endpoint.base_url, "wanted", agent="opencode", timeout=10, endpoint=endpoint
+        )
+        == "wanted"
+    )
+    assert endpoint.server is server
+    assert shown == ["http://localhost:8123/v1", "http://localhost:8123/v1"]
+    assert failures == []
+
+
+@pytest.mark.parametrize("loading_mode", ["http_503", "health_ready_false"])
+def test_opencode_setup_waits_for_fake_loading_http_server(
+    monkeypatch, tmp_path, capsys, loading_mode
+):
+    import http.server
+    import threading
+
+    from rapid_mlx.agents import adapter, server_discovery
+    from rapid_mlx.agents import telemetry as agent_telemetry
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr(server_discovery, "scan_servers", lambda: [])
+    monkeypatch.setattr(
+        "rapid_mlx.agents.opencode_version.installed_version",
+        lambda *_a, **_k: "1.19.5",
+    )
+    events = []
+    for mod in (agent_telemetry, setup, adapter):
+        if hasattr(mod, "track_agent_configured"):
+            monkeypatch.setattr(
+                mod,
+                "track_agent_configured",
+                lambda agent, **kw: events.append(("configured", agent, kw)),
+            )
+        monkeypatch.setattr(
+            mod,
+            "track_agent_configure_failed",
+            lambda *vals: events.append(("failed", *vals)),
+        )
+
+    state = {"hits": 0}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if self.path == "/health":
+                state["hits"] += 1
+                if state["hits"] <= 2:
+                    if loading_mode == "http_503":
+                        self.send_response(503)
+                        body = b'{"ready": false}'
+                    else:
+                        self.send_response(200)
+                        body = b'{"status": "healthy", "ready": false}'
+                else:
+                    self.send_response(200)
+                    body = b'{"status": "healthy", "ready": true}'
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/health/ready":
+                self.send_response(503 if state["hits"] <= 2 else 200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"ready": false, "phase": "loading_model"}')
+            elif self.path == "/v1/models":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"data": [{"id": "qwen3.5-4b-4bit"}]}')
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        cli.agents_command(
+            SimpleNamespace(
+                agent_name="opencode",
+                base_url=None,
+                port=port,
+                test=False,
+                setup=True,
+                model=None,
+                agent_version=None,
+                dry_run=False,
+                yes=True,
+                no_check=False,
+                ready_timeout=10,
+            )
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    out = capsys.readouterr().out
+    assert "Waiting for the Rapid-MLX server" in out
+    assert "loading_model" in out
+    assert "OpenCode configured!" in out
+    assert events == [("configured", "opencode", {})]
+    cfg_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    assert cfg_path.is_file()
+    assert "qwen3.5-4b-4bit" in cfg_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["dry_run", "no_check", "non_tty_no_yes", "yes"])
+def test_first_class_setup_flag_semantics_without_server(
+    monkeypatch, tmp_path, capsys, mode
+):
+    from rapid_mlx.agents import adapter, server_discovery
+    from rapid_mlx.agents import telemetry as agent_telemetry
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
+    monkeypatch.setattr(server_discovery, "scan_servers", lambda: [])
+    monkeypatch.setattr(
+        setup.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(ConnectionRefusedError(61, "refused")),
+    )
+    monkeypatch.setattr(setup.sys.stdin, "isatty", lambda: False)
+    real_wait = setup.wait_for_server
+    monkeypatch.setattr(
+        setup,
+        "wait_for_server",
+        lambda *a, **kw: real_wait(*a, **{**kw, "timeout": 0.01}),
+    )
+    events = []
+    for mod in (agent_telemetry, setup, adapter):
+        if hasattr(mod, "track_agent_configured"):
+            monkeypatch.setattr(
+                mod,
+                "track_agent_configured",
+                lambda agent, **kw: events.append(("configured", agent, kw)),
+            )
+        monkeypatch.setattr(
+            mod,
+            "track_agent_configure_failed",
+            lambda *vals: events.append(("failed", *vals)),
+        )
+
+    cli.agents_command(
+        SimpleNamespace(
+            agent_name="pi",
+            base_url=None,
+            port=18777,
+            test=False,
+            setup=True,
+            model="qwen3.5-4b-4bit",
+            agent_version=None,
+            dry_run=mode == "dry_run",
+            yes=mode in {"no_check", "yes"},
+            no_check=mode == "no_check",
+            ready_timeout=1,
+        )
+    )
+    out = capsys.readouterr().out
+    cfg = tmp_path / "pi" / "models.json"
+    if mode == "dry_run":
+        assert not cfg.exists()
+        assert "Dry run only; nothing was written." in out
+        assert events == []
+    elif mode == "non_tty_no_yes":
+        assert not cfg.exists()
+        assert "Setup cancelled; nothing was written." in out
+        assert events == []
+    elif mode == "no_check":
+        assert cfg.exists()
+        assert "Start it with:" not in out
+        assert events == [("configured", "pi", {})]
+    else:
+        assert cfg.exists()
+        assert "rapid-mlx serve qwen3.5-4b-4bit --port 18777" in out
+        assert events == [("configured", "pi", {"server_state": "not_running"})]

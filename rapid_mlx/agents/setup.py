@@ -972,8 +972,15 @@ def wait_for_server(
                 raise
             if server is None and (endpoint is None or not endpoint.follow):
                 server = server_for_url(base_url)
-            loading = isinstance(exc, ServerLoadingError) or (
-                server is not None and isinstance(exc, ServerNotRunningError)
+            loading = (
+                isinstance(exc, ServerLoadingError)
+                or (server is not None and isinstance(exc, ServerNotRunningError))
+                or (
+                    is_local_base_url(base_url)
+                    and isinstance(exc, ServerReadinessError)
+                    and not isinstance(exc, ServerAuthenticationError)
+                    and exc.cause == "startup_timeout"
+                )
             )
             if loading and time.monotonic() < deadline:
                 if endpoint is not None:

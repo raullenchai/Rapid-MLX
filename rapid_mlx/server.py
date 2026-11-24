@@ -1207,6 +1207,9 @@ async def lifespan(app: FastAPI):
     _flush_v2_telemetry()
 
 
+_CODING_AGENTS_HINT_SHOWN = False
+
+
 def print_ready_banner(*, update_notice_shown: bool = False) -> None:
     """Print the connection banner after the Uvicorn listener exists.
 
@@ -1216,7 +1219,12 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
     """
 
     _cfg = get_config()
-    from rapid_mlx.connect import endpoints_from_bind, render_banner, render_serve_next
+    from rapid_mlx.connect import (
+        endpoints_from_bind,
+        render_banner,
+        render_coding_agents_hint,
+        render_serve_next,
+    )
 
     _banner_model = (
         _cfg.model_name
@@ -1261,16 +1269,39 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
             and not is_audio_name(_cfg.model_alias or _cfg.model_name)
         )
         if interactive and _ep.listen_fd is None and _ep.model:
+            from rapid_mlx._env import env_truthy
             from rapid_mlx.first_run import claim_serve_next_tip
+            from rapid_mlx.onboarding import detected_launch_agents
+            from rapid_mlx.telemetry.consent_decision import ProcessRole
+            from rapid_mlx.telemetry.consent_runtime import detect_role
 
             note = _text_lane_image_note(_cfg)
-            next_step = render_serve_next(_ep, api_key=_cfg.api_key)
+            # Resolve agent profiles before printing ``Ready:`` so any one-time
+            # profile-load INFO log lands above the readiness line.
+            detected_agents = detected_launch_agents()
+            next_step = render_serve_next(
+                _ep, api_key=_cfg.api_key, agents=detected_agents
+            )
+            global _CODING_AGENTS_HINT_SHOWN
+            agents_hint = (
+                ""
+                if _CODING_AGENTS_HINT_SHOWN
+                or detect_role() is ProcessRole.SIDECAR
+                or env_truthy("RAPID_MLX_NO_BANNER")
+                or getattr(_cfg, "json_output", False)
+                else render_coding_agents_hint(detected_agents)
+            )
             print(f"  Ready: {_ep.base_url}")
             if note:
                 print(f"  Images: off. {note}")
             if claim_serve_next_tip():
+                # The once-per-install Next block already lists every launch
+                # command; the one-line hint takes over from the next start.
                 print(next_step, end="", flush=True)
                 track_next_step()
+            elif agents_hint:
+                _CODING_AGENTS_HINT_SHOWN = True
+                print(agents_hint, end="", flush=True)
         else:
             print(
                 render_banner(
