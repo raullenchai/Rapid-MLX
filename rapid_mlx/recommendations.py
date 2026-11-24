@@ -263,6 +263,9 @@ def memory_tier_recommendation(
     strictly smaller fitting candidate exists.
     """
     resolved_ram = physical_ram_gb() if ram_gb is None else float(ram_gb)
+    if resolved_ram <= 0:
+        # Unknown RAM: never recommend a model we cannot show fits this Mac.
+        return None
     excluded: set[str] = set()
     limit: float | None = (
         float(max_footprint_gb) if max_footprint_gb is not None else None
@@ -292,7 +295,7 @@ def memory_tier_recommendation(
             return False
         if limit is not None and pick.footprint_gb >= limit:
             return False
-        if resolved_ram > 0 and pick.footprint_gb > resolved_ram:
+        if pick.footprint_gb > resolved_ram:
             return False
         return True
 

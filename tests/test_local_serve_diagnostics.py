@@ -510,3 +510,15 @@ async def test_engine_start_prints_two_lines_and_preserves_failure(
         "  Cause: config.json is missing required VLM text_config fields.",
         "  Next step: Copy a complete config.json from the matching VLM checkpoint.",
     ]
+
+
+def test_memory_tier_recommendation_returns_none_when_ram_unknown(monkeypatch):
+    from rapid_mlx import recommendations
+
+    monkeypatch.setattr(recommendations, "physical_ram_gb", lambda: 0.0)
+    assert recommendations.memory_tier_recommendation() is None
+    assert recommendations.memory_tier_recommendation(ram_gb=0) is None
+    assert (
+        recommendations.memory_tier_recommendation(ram_gb=-1, exclude="qwen3.5-9b-4bit")
+        is None
+    )
