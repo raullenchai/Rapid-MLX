@@ -259,8 +259,11 @@ def _read_bounded(read, *, deadline: float) -> bytes | None:
     """Read a small body under a total wall-clock deadline.
 
     Socket timeouts apply per read call, so a slow local listener could
-    otherwise stretch a 0.25s probe across many chunks. Returns ``None`` when
-    the body exceeds ``_HEALTH_BODY_LIMIT`` or the deadline passes first.
+    otherwise stretch a 0.25s probe across many chunks. Callers pass a
+    ``read1``-style primitive that returns currently available bytes (at most
+    the requested count) so a drip-feeding listener cannot pin one call.
+    Returns ``None`` when the body exceeds ``_HEALTH_BODY_LIMIT`` or the
+    deadline passes first.
     """
     chunks: list[bytes] = []
     total = 0
@@ -293,7 +296,11 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
                 # whole verdict.
                 return True, True
             try:
-                body = _read_bounded(read, deadline=time.monotonic() + 0.5)
+                # read1 returns whatever is buffered instead of blocking for a
+                # full chunk, so the deadline below is a real whole-probe cap.
+                body = _read_bounded(
+                    getattr(response, "read1", read), deadline=time.monotonic() + 0.5
+                )
                 if body is None:
                     # A foreign listener drip-feeding, stalling, or dumping a
                     # huge body cannot prove readiness either.

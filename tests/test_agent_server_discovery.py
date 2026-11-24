@@ -999,7 +999,10 @@ def test_default_endpoint_ready_states(monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def read(self, n=-1):
+        def read(self, n=-1):  # pragma: no cover - must not be used
+            raise AssertionError("probe must use read1 when available")
+
+        def read1(self, n=-1):
             # One byte per call, each call pretending to take 0.3s of wall time.
             self.calls += 1
             clock["now"] += 0.3
