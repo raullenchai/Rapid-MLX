@@ -147,6 +147,7 @@ class TestRouteIntegration:
             structured_tool_calls=None,
             finish_reason=None,
             channels_owned=False,
+            output_token_ids=None,
         ):
             return (
                 "",

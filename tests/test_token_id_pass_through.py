@@ -3,10 +3,26 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.parsing.token_ids import extract_reasoning, extract_tool_calls
 from rapid_mlx.reasoning.base import DeltaMessage
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+
+def _processor(**kwargs):
+    return StreamingPostProcessor(
+        SimpleNamespace(
+            engine=None,
+            reasoning_parser=None,
+            reasoning_parser_name=None,
+            enable_auto_tool_choice=False,
+            tool_call_parser=None,
+            tool_parser_instance=None,
+        ),
+        **kwargs,
+    )
 
 
 def test_complete_dispatch_uses_ids_only_for_explicit_opt_in():
@@ -23,9 +39,14 @@ def test_complete_dispatch_uses_ids_only_for_explicit_opt_in():
             return None, text
 
     parser = Parser()
+    assert extract_reasoning(parser, "answer", token_ids=[3]) == (None, "answer")
     assert extract_reasoning(parser, "answer", token_ids=[]) == (None, "answer")
     assert extract_reasoning(parser, "answer") == (None, "answer")
-    assert parser.calls == [("tokens", "answer", []), ("legacy", "answer")]
+    assert parser.calls == [
+        ("tokens", "answer", [3]),
+        ("legacy", "answer"),
+        ("legacy", "answer"),
+    ]
     assert DeltaMessage(content="plain").content_token_ids is None
 
 
@@ -45,23 +66,30 @@ def test_complete_tool_dispatch_preserves_legacy_fallback():
         [3],
     )
     assert extract_tool_calls(parser, "wire", {}) == ("legacy", "wire", {})
+    assert extract_tool_calls(parser, "wire", {}, token_ids=[]) == (
+        "legacy",
+        "wire",
+        {},
+    )
+
+
+class _Reasoning:
+    def __init__(self):
+        self.seen = []
+
+    def extract_reasoning_streaming_with_tokens(
+        self, previous, current, delta, *, delta_token_ids
+    ):
+        assert bytes(delta_token_ids).decode() == delta
+        self.seen.append((delta, tuple(delta_token_ids)))
+        return DeltaMessage(content=delta, content_token_ids=tuple(delta_token_ids))
+
+    def extract_reasoning_streaming(self, previous, current, delta):
+        self.seen.append((delta, None))
+        return DeltaMessage(content=delta)
 
 
 def test_postprocessor_buffers_empty_chunk_ids_and_forwards_aligned_content():
-    class Reasoning:
-        def __init__(self):
-            self.seen = []
-
-        def extract_reasoning_streaming_with_tokens(
-            self, previous, current, delta, *, delta_token_ids
-        ):
-            self.seen.append(delta_token_ids)
-            return DeltaMessage(content=delta, content_token_ids=(51, 52))
-
-        def extract_reasoning_streaming(self, previous, current, delta):
-            self.seen.append(None)
-            return DeltaMessage(content=delta)
-
     class Tool:
         def __init__(self):
             self.seen = []
@@ -78,60 +106,56 @@ def test_postprocessor_buffers_empty_chunk_ids_and_forwards_aligned_content():
             self.seen.append(None)
             return None
 
-    cfg = SimpleNamespace(
-        engine=None,
-        reasoning_parser=None,
-        reasoning_parser_name=None,
-        enable_auto_tool_choice=False,
-        tool_call_parser=None,
-        tool_parser_instance=None,
-    )
-    pp = StreamingPostProcessor(cfg)
-    pp.reasoning_parser, pp.tool_parser = Reasoning(), Tool()
+    pp = _processor()
+    pp.reasoning_parser, pp.tool_parser = _Reasoning(), Tool()
     pp.enable_thinking = True
-    pp.process_chunk(GenerationOutput(text="", new_text="", finished=False, tokens=[5]))
+    pp.process_chunk(
+        GenerationOutput(text="", new_text="", finished=False, tokens=[195])
+    )
     pp.process_chunk(
         GenerationOutput(
-            text="<|end_message|>",
-            new_text="<|end_message|>",
+            text="é",
+            new_text="é",
             finished=False,
-            tokens=[7],
+            tokens=[169],
         )
     )
-    assert pp.reasoning_parser.seen == [[5, 7]]
-    assert pp.tool_parser.seen == [(51, 52)]
+    assert pp.reasoning_parser.seen == [("é", (195, 169))]
+    assert pp.tool_parser.seen == [(195, 169)]
+
+
+@pytest.mark.parametrize("case", ["held_prefix", "stop_trimmed", "stop_buffered"])
+def test_rewritten_or_stop_buffered_deltas_withhold_ids(case):
+    pp = _processor(request={"stop": ["STOP"]} if case != "held_prefix" else None)
+    pp.reasoning_parser = _Reasoning()
+    pp.enable_thinking = case != "held_prefix"
+    if case == "held_prefix":
+        pp.process_chunk(
+            GenerationOutput(text="<", new_text="<", tokens=list(b"<"), finished=False)
+        )
+        delta, ids, expected = "think>hello", list(b"think>hello"), "<think>hello"
+    else:
+        delta, ids, expected = "answer", list(b"answerSTOP"), "answer"
+    pp.process_chunk(
+        GenerationOutput(
+            text=expected,
+            new_text=delta,
+            tokens=ids,
+            finished=case == "stop_trimmed",
+            matched_stop="STOP" if case == "stop_trimmed" else None,
+        )
+    )
+    assert pp.reasoning_parser.seen == [(expected, None)]
 
 
 def test_synthetic_reasoning_close_uses_legacy_parser_without_fake_ids():
-    class Parser:
-        def __init__(self):
-            self.seen = []
-
-        def extract_reasoning_streaming(self, previous, current, delta):
-            self.seen.append(("legacy", delta))
-            return DeltaMessage(content=delta)
-
-        def extract_reasoning_streaming_with_tokens(
-            self, previous, current, delta, *, delta_token_ids
-        ):
-            self.seen.append(("tokens", delta, delta_token_ids))
-            return DeltaMessage(content=delta)
-
-    cfg = SimpleNamespace(
-        engine=None,
-        reasoning_parser=None,
-        reasoning_parser_name=None,
-        enable_auto_tool_choice=False,
-        tool_call_parser=None,
-        tool_parser_instance=None,
-    )
-    pp = StreamingPostProcessor(cfg)
-    pp.reasoning_parser = Parser()
+    pp = _processor()
+    pp.reasoning_parser = _Reasoning()
     pp._reasoning_cap_hit = True
     output = GenerationOutput(
-        text="answer", new_text="answer", finished=False, tokens=[8]
+        text="answer", new_text="answer", finished=False, tokens=list(b"answer")
     )
 
     pp._process_with_reasoning("answer", output, token_ids=output.tokens)
 
-    assert pp.reasoning_parser.seen == [("legacy", "</think>answer")]
+    assert pp.reasoning_parser.seen == [("</think>answer", None)]

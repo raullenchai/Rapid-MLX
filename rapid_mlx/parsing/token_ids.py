@@ -15,7 +15,7 @@ def supports_token_method(parser, name):
 
 def _dispatch(parser, name, args, ids, **kwargs):
     capability = name + "_with_tokens"
-    if ids is not None and supports_token_method(parser, capability):
+    if ids and supports_token_method(parser, capability):
         kwargs["delta_token_ids" if name.endswith("streaming") else "token_ids"] = ids
         name = capability
     return getattr(parser, name)(*args, **kwargs)
@@ -30,9 +30,7 @@ def extract_reasoning_streaming(parser, *texts, delta_token_ids=None):
 
 
 def extract_tool_calls(parser, text, request=None, *, token_ids=None):
-    if token_ids is not None and supports_token_method(
-        parser, "extract_tool_calls_with_tokens"
-    ):
+    if token_ids and supports_token_method(parser, "extract_tool_calls_with_tokens"):
         return parser.extract_tool_calls_with_tokens(
             text, request=request, token_ids=token_ids
         )

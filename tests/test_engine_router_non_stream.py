@@ -261,6 +261,46 @@ async def test_generate_recovers_router_seed_from_build_prompt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("assistant_prefix", ["", "<tool>"])
+async def test_mllm_generate_drops_ids_when_assistant_prefix_is_injected(
+    engine, monkeypatch, assistant_prefix
+):
+    token_ids = [_HARMONY_VOCAB["Plain"]]
+
+    class _CoreOutput:
+        output_text = "Plain"
+        output_token_ids = token_ids
+        prompt_tokens = 1
+        completion_tokens = 1
+        cached_tokens = 0
+        finish_reason = "stop"
+        matched_stop = None
+
+    class _Scheduler:
+        async def generate(self, **_kwargs):
+            return _CoreOutput()
+
+    engine._mllm_scheduler = _Scheduler()
+    monkeypatch.setattr(engine, "_select_mllm_request_path", lambda *_args: True)
+    monkeypatch.setattr(
+        engine, "_ensure_generation_admission", lambda: ("admission", True)
+    )
+    monkeypatch.setattr(
+        engine, "_transfer_admission_to_scheduler", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        engine,
+        "_route_tokens_for_channels",
+        lambda *_args, **_kwargs: ("", "Plain", None),
+    )
+
+    output = await engine.generate("prompt", _assistant_text_prefix=assistant_prefix)
+
+    assert output.raw_text == f"{assistant_prefix}Plain"
+    assert output.tokens == ([] if assistant_prefix else token_ids)
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_primes_router_for_prompt_opened_final_channel(
     engine, monkeypatch
 ):

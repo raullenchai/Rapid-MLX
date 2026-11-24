@@ -984,8 +984,9 @@ async def create_anthropic_message(
             channels_owned=channels_owned,
             finish_reason=output.finish_reason,
             output_token_ids=(
-                output.tokens
+                (getattr(output, "tokens", None) or None)
                 if (output.raw_text or output.text) == output.text
+                and not getattr(output, "matched_stop", None)
                 else None
             ),
         )
@@ -1035,8 +1036,9 @@ async def create_anthropic_message(
             tool_calls=tool_calls,
             reasoning_parser=cfg.reasoning_parser,
             output_token_ids=(
-                output.tokens
+                (getattr(output, "tokens", None) or None)
                 if (output.raw_text or output.text) == output.text
+                and not getattr(output, "matched_stop", None)
                 else None
             ),
             engine_reasoning_text=getattr(output, "reasoning_text", "") or "",

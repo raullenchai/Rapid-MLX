@@ -2750,7 +2750,15 @@ class StreamingPostProcessor:
         if not hasattr(self, "_pending_reasoning_token_ids"):
             self._pending_reasoning_token_ids = []
         delta_text = output.new_text
+        original_delta_text = delta_text
         token_ids = list(getattr(output, "tokens", ()) or ())
+        # Stop lookback can split a token before a match is reported. Keep
+        # stop-string requests text-only rather than attribute partial bytes.
+        if getattr(output, "matched_stop", None) or (
+            isinstance(self.request, dict) and self.request.get("stop")
+        ):
+            token_ids = []
+            self._pending_reasoning_token_ids.clear()
         if not delta_text and not getattr(output, "tool_calls", None):
             if token_ids and supports_token_method(
                 self.reasoning_parser, "extract_reasoning_streaming_with_tokens"
@@ -2903,7 +2911,11 @@ class StreamingPostProcessor:
             candidate_ids = self._pending_reasoning_token_ids + token_ids
             self._pending_reasoning_token_ids.clear()
             events = self._process_with_reasoning(
-                delta_text, output, token_ids=candidate_ids or None
+                delta_text,
+                output,
+                token_ids=(candidate_ids or None)
+                if delta_text == original_delta_text
+                else None,
             )
         else:
             self._pending_reasoning_token_ids.clear()

@@ -1203,6 +1203,7 @@ def test_named_function_outside_tools_returns_422(monkeypatch):
         *,
         finish_reason=None,
         channels_owned=False,
+        output_token_ids=None,
     ):
         # Rewrite ``tool_choice`` to a ghost target while leaving
         # ``request.tools`` intact (it still contains ``real_function``)
@@ -1220,6 +1221,7 @@ def test_named_function_outside_tools_returns_422(monkeypatch):
             structured_tool_calls=structured_tool_calls,
             finish_reason=finish_reason,
             channels_owned=channels_owned,
+            output_token_ids=output_token_ids,
         )
 
     monkeypatch.setattr(

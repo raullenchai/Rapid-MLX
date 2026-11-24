@@ -3673,7 +3673,8 @@ class BatchedEngine(BaseEngine):
                 tool_calls=tool_calls,
                 raw_text=mllm_full_text,
                 tokens=output.output_token_ids
-                if not getattr(output, "matched_stop", None)
+                if not mllm_assistant_text_prefix
+                and not getattr(output, "matched_stop", None)
                 else [],
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
