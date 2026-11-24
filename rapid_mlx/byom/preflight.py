@@ -1388,13 +1388,23 @@ def inform_if_footprint_exceeds_memory(
         from rapid_mlx.recommendations import memory_tier_recommendation
 
         shown = original_alias or model_ref
-        rec = memory_tier_recommendation(ram / _GIB, exclude=shown)
-        print(
-            f"  Note: {shown} is estimated at ~{_gb(est)} of memory, exceeding "
-            f"this Mac's {_gb(ram)}; recommended for this Mac: "
-            f"`rapid-mlx serve {rec}` — continuing download.",
-            file=stream if stream is not None else sys.stderr,
+        rec = memory_tier_recommendation(
+            ram / _GIB, exclude=shown, max_footprint_gb=est / _GIB
         )
+        target_stream = stream if stream is not None else sys.stderr
+        if rec:
+            print(
+                f"  Note: {shown} is estimated at ~{_gb(est)} of memory, exceeding "
+                f"this Mac's {_gb(ram)}; recommended for this Mac: "
+                f"`rapid-mlx serve {rec}` — continuing download.",
+                file=target_stream,
+            )
+        else:
+            print(
+                f"  Note: {shown} is estimated at ~{_gb(est)} of memory, exceeding "
+                f"this Mac's {_gb(ram)} — continuing download.",
+                file=target_stream,
+            )
         return True
     except Exception:
         return False

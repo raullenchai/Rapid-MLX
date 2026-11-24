@@ -497,8 +497,10 @@ def model_load_error_payload(exc: BaseException, *, model_ref: object = None) ->
         try:
             from .recommendations import memory_tier_recommendation
 
-            alias = memory_tier_recommendation(
-                exclude=model_ref if isinstance(model_ref, str) else None
+            alias = (
+                memory_tier_recommendation(exclude=model_ref)
+                if isinstance(model_ref, str) and model_ref
+                else None
             )
         except Exception:
             alias = None

@@ -542,7 +542,7 @@ def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
             MemoryError("out of memory"),
             "insufficient_memory",
             "out of memory",
-            "rapid-mlx serve qwen3.5-4b-4bit",
+            "rapid-mlx models",
         ),
     ],
 )

@@ -72,13 +72,75 @@ def test_lifecycle_cancel_is_single_source_of_truth():
 def test_model_load_payload_classifies_oom(monkeypatch):
     monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     exc = RuntimeError(f"Metal: unable to allocate 12GB buffer {_SECRET}")
-    payload = model_load_error_payload(exc)
+    payload = model_load_error_payload(exc, model_ref="qwen3.8-27b-4bit")
     assert payload["code"] == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
     assert payload["type"] == "server_error"
     assert payload["param"] is None
     assert "memory" in payload["message"].lower()
     assert "qwen3.5-4b-4bit" in payload["message"]
     assert _SECRET not in payload["message"]
+
+
+@pytest.mark.parametrize(
+    ("ram_gb", "failed_ref", "expected_alias", "forbidden_aliases"),
+    [
+        (
+            24.0,
+            "qwen3.5-4b-4bit",
+            "lfm2.5-1b-4bit",
+            ("bonsai-27b-2bit", "qwen3.5-9b-4bit"),
+        ),
+        (
+            32.0,
+            "qwen3.5-4b-4bit",
+            "lfm2.5-1b-4bit",
+            ("qwen3.8-27b-4bit", "bonsai-27b-2bit"),
+        ),
+        (
+            48.0,
+            "qwen3.8-27b-4bit",
+            "qwen3.5-4b-4bit",
+            ("qwen3.6-35b-4bit", "qwen3.8-27b-4bit"),
+        ),
+    ],
+)
+def test_model_load_payload_oom_only_recommends_strictly_smaller_model(
+    monkeypatch, ram_gb, failed_ref, expected_alias, forbidden_aliases
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    exc = RuntimeError(f"Metal: unable to allocate buffer {_SECRET}")
+    payload = model_load_error_payload(exc, model_ref=failed_ref)
+    assert payload["code"] == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+    assert f"such as `{expected_alias}`" in payload["message"]
+    for forbidden in forbidden_aliases:
+        assert forbidden not in payload["message"]
+    assert _SECRET not in payload["message"]
+
+
+@pytest.mark.parametrize(
+    ("ram_gb", "failed_ref"),
+    [
+        (24.0, "unknown-org/custom-model"),
+        (32.0, "/tmp/unknown-local-checkpoint"),
+        (16.0, "lfm2.5-1b-4bit"),
+        (16.0, None),
+    ],
+)
+def test_model_load_payload_oom_falls_back_to_generic_when_footprint_unknown_or_smallest(
+    monkeypatch, ram_gb, failed_ref
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    exc = RuntimeError(f"Metal: unable to allocate buffer {_SECRET}")
+    payload = model_load_error_payload(exc, model_ref=failed_ref)
+    assert payload == {
+        "message": (
+            "The model ran out of memory while loading. "
+            "Free up memory or choose a smaller model."
+        ),
+        "type": "server_error",
+        "code": ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
+        "param": None,
+    }
 
 
 def test_model_load_payload_classifies_other_as_load_failed():
