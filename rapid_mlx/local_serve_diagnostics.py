@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 
@@ -36,14 +37,43 @@ def _record_missing_path_repeat(root: Path, *, state_dir: Path | None = None) ->
             prev = json.loads(state_file.read_text(encoding="utf-8"))
             if isinstance(prev, dict) and prev.get("path_hash") == digest:
                 prev_count = prev.get("count", 1)
-                if isinstance(prev_count, int) and prev_count >= 1:
+                if (
+                    isinstance(prev_count, int)
+                    and not isinstance(prev_count, bool)
+                    and prev_count >= 1
+                ):
                     count = prev_count + 1
+    except (OSError, ValueError, UnicodeError):
+        # Treat malformed or unreadable state as empty and overwrite below.
+        count = 1
+
+    payload = json.dumps({"path_hash": digest, "count": count}).encode("utf-8")
+    tmp_path: str | None = None
+    try:
         base.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(
-            json.dumps({"path_hash": digest, "count": count}), encoding="utf-8"
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(base),
+            prefix=".last-missing-model-path.",
+            suffix=".tmp",
         )
-    except (OSError, ValueError):
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(payload)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        os.replace(tmp_path, state_file)
+        tmp_path = None
+    except OSError:
         return 1
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     return count
 
 

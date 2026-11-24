@@ -955,3 +955,63 @@ def test_repeated_missing_local_path_failure_deduplicates_on_same_install(
     assert str(other) in fourth
     assert "rapid-mlx pull" in fourth
     assert "Next step:" in fourth
+
+
+def test_missing_path_dedupe_state_malformed_json_is_overwritten(tmp_path):
+    import stat
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / ".last-missing-model-path.json"
+    state_file.write_text("{corrupt-json", encoding="utf-8")
+    state_file.chmod(0o644)
+
+    stale = tmp_path / "missing-model"
+    assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    repaired = json.loads(state_file.read_text(encoding="utf-8"))
+    assert repaired["count"] == 1
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+    assert list(state_dir.glob("*.tmp")) == []
+
+    # Subsequent failure on the same path increments normally.
+    assert _record_missing_path_repeat(stale, state_dir=state_dir) == 2
+    assert json.loads(state_file.read_text(encoding="utf-8"))["count"] == 2
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+
+
+def test_missing_path_dedupe_state_readonly_directory_fails_soft(tmp_path):
+    from rapid_mlx.local_serve_diagnostics import (
+        _record_missing_path_repeat,
+        missing_local_path_lines,
+    )
+
+    state_dir = tmp_path / "readonly-state"
+    state_dir.mkdir()
+    state_dir.chmod(0o500)
+    try:
+        stale = tmp_path / "missing-model"
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+        cause, step = missing_local_path_lines(
+            str(stale), track_repeat=True, state_dir=state_dir
+        )
+        assert str(stale) in cause
+        assert "rapid-mlx pull" in step
+        assert list(state_dir.iterdir()) == []
+    finally:
+        state_dir.chmod(0o700)
+
+
+def test_missing_path_dedupe_state_writes_0600_permissions(tmp_path):
+    import stat
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "fresh-state"
+    stale = tmp_path / "missing-model"
+    assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    state_file = state_dir / ".last-missing-model-path.json"
+    assert state_file.is_file()
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+    assert list(state_dir.glob("*.tmp")) == []
