@@ -1015,3 +1015,20 @@ def test_missing_path_dedupe_state_writes_0600_permissions(tmp_path):
     assert state_file.is_file()
     assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
     assert list(state_dir.glob("*.tmp")) == []
+
+
+def test_missing_path_repeat_counter_is_serialized_across_processes(tmp_path):
+    import concurrent.futures
+    import functools
+    import multiprocessing
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "state"
+    stale = tmp_path / "missing-model"
+    record = functools.partial(_record_missing_path_repeat, state_dir=state_dir)
+    ctx = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=8, mp_context=ctx) as ex:
+        counts = sorted(ex.map(record, [stale] * 8))
+    # Every process observes a distinct count: no lost increments.
+    assert counts == list(range(1, 9))

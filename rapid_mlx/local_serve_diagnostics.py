@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -26,10 +28,36 @@ def _missing_path_alias(root: Path) -> str | None:
     return None
 
 
+@contextlib.contextmanager
+def _state_lock(base: Path):
+    """Serialize the read-increment-replace across concurrent CLI processes."""
+    base.mkdir(parents=True, exist_ok=True)
+    fd = os.open(
+        str(base / ".last-missing-model-path.lock"),
+        os.O_RDWR | os.O_CREAT,
+        0o600,
+    )
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _record_missing_path_repeat(root: Path, *, state_dir: Path | None = None) -> int:
     """Track consecutive missing-path failures for the same path on this install."""
-    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
     base = state_dir if state_dir is not None else Path.home() / ".rapid-mlx"
+    try:
+        with _state_lock(base):
+            return _record_missing_path_repeat_locked(root, base)
+    except OSError:
+        return 1
+
+
+def _record_missing_path_repeat_locked(root: Path, base: Path) -> int:
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
     state_file = base / ".last-missing-model-path.json"
     count = 1
     try:
