@@ -241,14 +241,36 @@ def render_banner(
     return "\n".join(lines) + "\n"
 
 
-def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str:
+def render_coding_agents_hint(agents: list[str] | None = None) -> str:
+    """One-line discovery hint for installed coding agents on PATH.
+
+    Pure formatting over ``detected_launch_agents()`` (PATH binary lookup only:
+    nothing written to disk and no network calls).
+    """
+    if agents is None:
+        from rapid_mlx.onboarding import detected_launch_agents
+
+        agents = detected_launch_agents()
+    if not agents:
+        return ""
+    shown = ", ".join(agents)
+    return f"  Coding agents found: {shown} -> rapid-mlx launch {agents[0]}\n"
+
+
+def render_serve_next(
+    ep: ServerEndpoints,
+    *,
+    api_key: str | None = None,
+    agents: list[str] | None = None,
+) -> str:
     """Short, copyable next steps for an interactive, bound chat server."""
     if ep.listen_fd is not None or not ep.model:
         return ""
 
-    from rapid_mlx.onboarding import detected_launch_agents
+    if agents is None:
+        from rapid_mlx.onboarding import detected_launch_agents
 
-    agents = detected_launch_agents()
+        agents = detected_launch_agents()
     if agents:
         commands = " ; ".join(f"rapid-mlx launch {agent}" for agent in agents)
         return (
