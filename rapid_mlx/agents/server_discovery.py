@@ -251,7 +251,29 @@ def _same_model(left: str, right: str) -> bool:
     return same_identity(left, right) or same_identity(resolved(left), resolved(right))
 
 
-_HEALTH_BODY_LIMIT = 64 * 1024
+_HEALTH_BODY_LIMIT = 16 * 1024
+_HEALTH_READ_CHUNK = 1024
+
+
+def _read_bounded(read, *, deadline: float) -> bytes | None:
+    """Read a small body under a total wall-clock deadline.
+
+    Socket timeouts apply per read call, so a slow local listener could
+    otherwise stretch a 0.25s probe across many chunks. Returns ``None`` when
+    the body exceeds ``_HEALTH_BODY_LIMIT`` or the deadline passes first.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() > deadline:
+            return None
+        chunk = read(_HEALTH_READ_CHUNK)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > _HEALTH_BODY_LIMIT:
+            return None
+        chunks.append(chunk)
 
 
 def _default_endpoint_ready() -> tuple[bool, bool]:
@@ -271,10 +293,10 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
                 # whole verdict.
                 return True, True
             try:
-                body = read(_HEALTH_BODY_LIMIT + 1)
-                if len(body) > _HEALTH_BODY_LIMIT:
-                    # A foreign listener drip-feeding or dumping a huge body
-                    # cannot prove readiness either.
+                body = _read_bounded(read, deadline=time.monotonic() + 0.5)
+                if body is None:
+                    # A foreign listener drip-feeding, stalling, or dumping a
+                    # huge body cannot prove readiness either.
                     return False, True
                 payload = json.loads(body)
             except (OSError, ValueError, TypeError, http.client.HTTPException):

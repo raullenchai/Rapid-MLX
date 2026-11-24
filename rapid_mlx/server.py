@@ -1294,12 +1294,14 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
             print(f"  Ready: {_ep.base_url}")
             if note:
                 print(f"  Images: off. {note}")
-            if agents_hint:
-                _CODING_AGENTS_HINT_SHOWN = True
-                print(agents_hint, end="", flush=True)
             if claim_serve_next_tip():
+                # The once-per-install Next block already lists every launch
+                # command; the one-line hint takes over from the next start.
                 print(next_step, end="", flush=True)
                 track_next_step()
+            elif agents_hint:
+                _CODING_AGENTS_HINT_SHOWN = True
+                print(agents_hint, end="", flush=True)
         else:
             print(
                 render_banner(

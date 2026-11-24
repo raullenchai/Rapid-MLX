@@ -23,6 +23,11 @@ def _isolate_banner_state(monkeypatch, tmp_path):
     monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
     monkeypatch.setenv("CI", "1")  # Keep newsletter hint out of these assertions.
     monkeypatch.setattr(server, "_CODING_AGENTS_HINT_SHOWN", False)
+    # Most tests model a later start: the once-per-install Next block has
+    # already been claimed, so the one-line hint is what the banner prints.
+    from rapid_mlx.first_run import claim_serve_next_tip
+
+    claim_serve_next_tip()
     saved = (
         server._engine,
         cfg.bind_host,
@@ -70,9 +75,11 @@ def test_render_coding_agents_hint_format():
 
 
 def test_serve_ready_prints_coding_agents_hint_once_per_start_on_tty(
-    monkeypatch, capsys
+    monkeypatch, capsys, tmp_path
 ):
     monkeypatch.setattr(server.sys.stdout, "isatty", lambda: True)
+    # Fresh install: the Next block has not been shown yet.
+    (tmp_path / "state" / "serve_next_tip_shown").unlink()
     installed = {"opencode", "codex"}
     monkeypatch.setattr(
         "shutil.which",
@@ -83,13 +90,20 @@ def test_serve_ready_prints_coding_agents_hint_once_per_start_on_tty(
     first = capsys.readouterr().out
     server.print_ready_banner()
     second = capsys.readouterr().out
+    server.print_ready_banner()
+    third = capsys.readouterr().out
 
     expected = "  Coding agents found: codex, opencode -> rapid-mlx launch codex"
-    assert first.count(expected) == 1
-    assert first.index("  Ready: http://localhost:8766") < first.index(expected)
-    assert second.count(expected) == 0
-    assert "  Ready: http://localhost:8766" in second
+    # The once-per-install Next block owns the very first banner; the hint
+    # must not duplicate its launch commands.
+    assert "Next:" in first
+    assert first.count(expected) == 0
+    # From the next start the one-line hint appears exactly once per process.
+    assert second.count(expected) == 1
+    assert second.index("  Ready: http://localhost:8766") < second.index(expected)
     assert "Next:" not in second
+    assert third.count(expected) == 0
+    assert "  Ready: http://localhost:8766" in third
 
 
 def test_serve_ready_detects_profile_binaries_including_claude_pi_hermes(

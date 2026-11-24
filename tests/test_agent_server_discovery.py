@@ -983,9 +983,8 @@ def test_default_endpoint_ready_states(monkeypatch):
         status = 200
 
         def read(self, n=-1):
-            # Honors the bounded read; a body over the limit is rejected.
-            size = discovery._HEALTH_BODY_LIMIT + 1 if n < 0 else n
-            return b" " * size
+            # Never-ending body: the bounded reader must give up at the limit.
+            return b" " * (discovery._HEALTH_READ_CHUNK if n < 0 else n)
 
     monkeypatch.setattr(
         discovery.urllib.request,
@@ -993,6 +992,29 @@ def test_default_endpoint_ready_states(monkeypatch):
         lambda _url, **_k: contextlib.nullcontext(HugeResponse()),
     )
     assert discovery._default_endpoint_ready() == (False, True)
+
+    class DripResponse:
+        status = 200
+
+        def __init__(self):
+            self.calls = 0
+
+        def read(self, n=-1):
+            # One byte per call, each call pretending to take 0.3s of wall time.
+            self.calls += 1
+            clock["now"] += 0.3
+            return b"{" if self.calls < 1000 else b""
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(discovery.time, "monotonic", lambda: clock["now"])
+    drip = DripResponse()
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(drip),
+    )
+    assert discovery._default_endpoint_ready() == (False, True)
+    assert drip.calls <= 3
 
 
 def test_refresh_skips_other_pids_and_unbound_rescans(monkeypatch):
