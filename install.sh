@@ -697,7 +697,29 @@ leaderboard_mac_url() {   # leaderboard_mac_url <cpu brand string> <ram GiB>
     fi
 }
 
+detect_coding_agents() {
+    local bin names="" first=""
+    for bin in opencode codex claude pi hermes crush; do
+        if command -v "$bin" >/dev/null 2>&1; then
+            names="${names:+${names}, }${bin}"
+            [ -n "$first" ] || first="$bin"
+        fi
+    done
+    [ -n "$first" ] || return 1
+    case "$first" in
+        claude) first="claude-code" ;;
+    esac
+    printf '%s|%s\n' "$names" "$first"
+}
+
 print_quick_start_commands() {
+    local detected_agents agent_names first_agent
+    if detected_agents="$(detect_coding_agents)"; then
+        agent_names="${detected_agents%%|*}"
+        first_agent="${detected_agents#*|}"
+        info "Detected coding agents (${agent_names}) — connect with: rapid-mlx launch ${first_agent}"
+        echo ""
+    fi
     info "Quick start:"
     echo ""
     echo "    rapid-mlx chat ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}    # starts its own server"

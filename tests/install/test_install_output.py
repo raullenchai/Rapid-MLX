@@ -513,6 +513,63 @@ def test_quick_start_chat_hint(tmp_path, available):
     assert ("first:" not in line) == available
 
 
+def test_quick_start_detects_coding_agents_on_path(tmp_path):
+    install_bin = tmp_path / "bin"
+    install_bin.mkdir()
+    python = install_bin / "python"
+    python.write_text("#!/bin/bash\nexit 1\n")
+    python.chmod(0o755)
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    # Clean PATH with no coding agents -> no detected line.
+    empty = run_bash(
+        'INSTALL_DIR="$1"; RECOMMENDED_MODEL=model RECOMMENDED_FLAGS= RAM_GB=16; print_quick_start_commands',
+        tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+    assert empty.returncode == 0
+    assert "Detected coding agents" not in empty.stdout
+
+    # Multiple agents on PATH -> lists detected agents in order, recommends first launch target.
+    for name in ("codex", "claude", "hermes"):
+        stub = agents_dir / name
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+    found = run_bash(
+        'INSTALL_DIR="$1"; RECOMMENDED_MODEL=model RECOMMENDED_FLAGS= RAM_GB=16; print_quick_start_commands',
+        tmp_path,
+        env={"PATH": f"{agents_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+    assert found.returncode == 0
+    assert (
+        "Detected coding agents (codex, claude, hermes) — connect with: rapid-mlx launch codex"
+        in found.stdout
+    )
+    assert found.stdout.index("Detected coding agents") < found.stdout.index(
+        "Quick start:"
+    )
+
+    # When claude is the first detected binary, map it to `rapid-mlx launch claude-code`.
+    (agents_dir / "codex").unlink()
+    claude_first = run_bash(
+        'INSTALL_DIR="$1"; RECOMMENDED_MODEL=model RECOMMENDED_FLAGS= RAM_GB=16; print_quick_start_commands',
+        tmp_path,
+        env={"PATH": f"{agents_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+    assert claude_first.returncode == 0
+    assert (
+        "Detected coding agents (claude, hermes) — connect with: rapid-mlx launch claude-code"
+        in claude_first.stdout
+    )
+
+
 def run_first_chat(
     tmp_path,
     *,
