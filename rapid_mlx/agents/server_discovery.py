@@ -262,12 +262,18 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
             # /health returns HTTP 200 with ready=false during startup load;
             # let process discovery attach the owning PID (or pick another
             # ready server) instead of treating a loading server as ready.
+            read = getattr(response, "read", None)
+            if read is None:
+                # Status-only response object (older stubs): the 200 is the
+                # whole verdict.
+                return True, True
             try:
-                payload = json.loads(response.read())
-            except (AttributeError, OSError, ValueError, http.client.HTTPException):
-                # A truncated body (IncompleteRead) is a transport fault, not
-                # a verdict; fall through to the ready-by-status path.
-                payload = {}
+                payload = json.loads(read())
+            except (OSError, ValueError, http.client.HTTPException):
+                # A truncated or malformed body cannot prove readiness; treat
+                # the listener as answering-but-not-ready so process discovery
+                # attaches the owning PID and waits instead of connecting early.
+                return False, True
             if isinstance(payload, dict) and payload.get("ready") is False:
                 return False, True
             return True, True
