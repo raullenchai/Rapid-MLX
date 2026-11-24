@@ -2997,7 +2997,7 @@ def render_hub_error(
         if isinstance(current, OfflineModeIsEnabled):
             return (
                 f"  Error: could not reach Hugging Face for '{rendered_model_id}' "
-                "(offline mode is enabled).\n"
+                "(offline mode is enabled, so no network request was made).\n"
                 "  Unset `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, then retry "
                 f"`{retry_cmd}`.\n"
                 "  You can also serve an already-cached model."
@@ -3211,10 +3211,11 @@ def _ensure_target_model_downloaded(
                 )
                 spinner.stop()
                 retry_cmd = f"rapid-mlx pull {shlex.quote(model_name)}"
-                fatal_text = render_hub_error(
-                    exc, model_name, retry_command=retry_cmd
-                ) or str(exc)
-                print(f"\n{fatal_text}\n  Retry: {retry_cmd}\n", file=sys.stderr)
+                fatal_text = render_hub_error(exc, model_name, retry_command=retry_cmd)
+                if fatal_text is None:
+                    # Rendered messages already carry the retry command.
+                    fatal_text = f"{exc}\n  Retry: {retry_cmd}"
+                print(f"\n{fatal_text}\n", file=sys.stderr)
                 raise SystemExit(1) from exc
             if _is_transient_hub_error(exc):
                 mirror_ok = False
@@ -13035,7 +13036,8 @@ def _pull_repository(
         rendered = render_hub_error(e, repo_id, retry_command=retry)
         if rendered is not None and error_class != "not_found":
             print(f"\n{rendered}\n", file=sys.stderr)
-            print(f"  Retry: {retry}", file=sys.stderr)
+            if retry not in rendered:
+                print(f"  Retry: {retry}", file=sys.stderr)
             raise SystemExit(1) from None
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
