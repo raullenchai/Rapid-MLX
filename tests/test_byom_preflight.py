@@ -961,6 +961,71 @@ def test_hook_reports_architecture_from_confirmed_config(hook, capsys):
     assert "config architectures: NewForCausalLM" in err
 
 
+@pytest.mark.parametrize("quant_field", ["quantization", "quantization_config"])
+@pytest.mark.parametrize("path", ["model.embed", "model.layers.0.attn.in_proj"])
+def test_hook_refuses_inkling2_incompatible_layout(
+    hook, capsys, monkeypatch, quant_field, path
+):
+    monkeypatch.setattr(pf, "supported_model_types", lambda: {"inkling2_loop"})
+    summary = {"model_type": "inkling2_loop"}
+    config = {
+        **summary,
+        quant_field: {path: {"bits": 3, "group_size": 64}},
+    }
+    info = _info({"model.safetensors": GIB, "mtp.safetensors": 1}, config=summary)
+    with pytest.raises(SystemExit) as exc:
+        hook(
+            info,
+            _args(model="mlx-community/Inkling-2-Mini-oQ3e-mtp"),
+            full_config=config,
+        )
+    assert exc.value.code == 1
+    assert isinstance(exc.value.__cause__, pf.PreflightRejectedError)
+    assert [e.failure_class for e in hook.emitted] == [pf.UNSUPPORTED_ARCHITECTURE]
+    err = capsys.readouterr().err
+    assert "weight layout" in err
+    assert "rapid-mlx serve inkling-2-mini-4bit" in err
+    assert "Nothing was downloaded." in err
+
+
+@pytest.mark.parametrize(
+    "repo,quantization",
+    [
+        ("mlx-community/Inkling-2-Mini-4bit", {"bits": 4, "group_size": 64}),
+        # Mixed precision itself is supported when module paths match the loader.
+        ("converted/inkling", {"model.language_model.embed_tokens": {"bits": 6}}),
+        ("official/inkling", {"model.llm.embed": {"bits": 8}}),
+        ("official/inkling", None),
+        ("unknown/inkling", {}),
+    ],
+)
+def test_hook_allows_inkling2_supported_or_unknown_layout(
+    hook, capsys, monkeypatch, repo, quantization
+):
+    monkeypatch.setattr(pf, "supported_model_types", lambda: {"inkling2_loop"})
+    summary = {"model_type": "inkling2_loop"}
+    config = {**summary, "quantization": quantization}
+    # Exercise the verdict even for the catalog repo, which bypasses the hook.
+    assert pf.architecture_supported(config, {"inkling2_loop"}) is True
+    hook(
+        _info({"model.safetensors": GIB}, config=summary),
+        _args(model=repo),
+        full_config=config,
+    )
+    assert hook.emitted == []
+    assert capsys.readouterr() == ("", "")
+
+
+def test_hook_allows_inkling2_when_config_unavailable(hook, capsys, monkeypatch):
+    monkeypatch.setattr(pf, "supported_model_types", lambda: {"inkling2_loop"})
+    hook(
+        _info({"model.safetensors": GIB}, config={"model_type": "inkling2_loop"}),
+        full_config=None,
+    )
+    assert hook.emitted == []
+    assert capsys.readouterr() == ("", "")
+
+
 def test_hook_refuses_oversize_serve_but_not_pull_or_disk_stream(hook, capsys):
     info = _info({"model.safetensors": 40 * GIB}, config=dict(MLX_CONFIG))
     hook(info, _args(command="pull", bits=None, format=None))
