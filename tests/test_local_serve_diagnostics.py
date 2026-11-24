@@ -179,9 +179,12 @@ def test_pre_download_memory_info_informs_and_never_blocks(monkeypatch, capsys):
     from rapid_mlx.byom import preflight
 
     gib = 1 << 30
+    monkeypatch.setattr(preflight, "_FOOTPRINT_NOTICES_SHOWN", set())
     monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 16 * gib)
     printed = preflight.inform_if_footprint_exceeds_memory("qwen3.8-27b-4bit")
     assert printed is True
+    # Preflight and the pull path both call this; the second call is silent.
+    assert preflight.inform_if_footprint_exceeds_memory("qwen3.8-27b-4bit") is False
     err_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
     assert len(err_lines) == 1
     assert "qwen3.8-27b-4bit" in err_lines[0]

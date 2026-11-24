@@ -1353,6 +1353,9 @@ def _same_task_fitting_pick(
         return None, None
 
 
+_FOOTPRINT_NOTICES_SHOWN: set[str] = set()
+
+
 def inform_if_footprint_exceeds_memory(
     model_ref: str,
     *,
@@ -1362,9 +1365,14 @@ def inform_if_footprint_exceeds_memory(
 ) -> bool:
     """Print one informational line if estimated footprint exceeds physical RAM.
 
-    Never blocks, raises, or prompts. Returns True when a line was printed.
+    Never blocks, raises, or prompts. Printed at most once per model per
+    process, so preflight and the pull path cannot repeat it. Returns True
+    when a line was printed.
     """
     try:
+        shown = original_alias or model_ref
+        if shown in _FOOTPRINT_NOTICES_SHOWN:
+            return False
         ram = physical_ram_bytes()
         if not ram:
             return False
@@ -1387,7 +1395,7 @@ def inform_if_footprint_exceeds_memory(
             return False
         from rapid_mlx.recommendations import memory_tier_recommendation
 
-        shown = original_alias or model_ref
+        _FOOTPRINT_NOTICES_SHOWN.add(shown)
         rec = memory_tier_recommendation(
             ram / _GIB, exclude=shown, max_footprint_gb=est / _GIB
         )
