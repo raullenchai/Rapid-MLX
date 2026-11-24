@@ -956,7 +956,7 @@ def test_default_endpoint_ready_states(monkeypatch):
     class TruncatedResponse:
         status = 200
 
-        def read(self):
+        def read(self, _n=-1):
             raise http.client.IncompleteRead(b'{"statu', 8)
 
     monkeypatch.setattr(
@@ -969,13 +969,28 @@ def test_default_endpoint_ready_states(monkeypatch):
     class MalformedResponse:
         status = 200
 
-        def read(self):
+        def read(self, _n=-1):
             return b"<html>loading</html>"
 
     monkeypatch.setattr(
         discovery.urllib.request,
         "urlopen",
         lambda _url, **_k: contextlib.nullcontext(MalformedResponse()),
+    )
+    assert discovery._default_endpoint_ready() == (False, True)
+
+    class HugeResponse:
+        status = 200
+
+        def read(self, n=-1):
+            # Honors the bounded read; a body over the limit is rejected.
+            size = discovery._HEALTH_BODY_LIMIT + 1 if n < 0 else n
+            return b" " * size
+
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(HugeResponse()),
     )
     assert discovery._default_endpoint_ready() == (False, True)
 

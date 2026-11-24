@@ -251,6 +251,9 @@ def _same_model(left: str, right: str) -> bool:
     return same_identity(left, right) or same_identity(resolved(left), resolved(right))
 
 
+_HEALTH_BODY_LIMIT = 64 * 1024
+
+
 def _default_endpoint_ready() -> tuple[bool, bool]:
     """Return (healthy, answered) separately from process discovery."""
     try:
@@ -268,8 +271,13 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
                 # whole verdict.
                 return True, True
             try:
-                payload = json.loads(read())
-            except (OSError, ValueError, http.client.HTTPException):
+                body = read(_HEALTH_BODY_LIMIT + 1)
+                if len(body) > _HEALTH_BODY_LIMIT:
+                    # A foreign listener drip-feeding or dumping a huge body
+                    # cannot prove readiness either.
+                    return False, True
+                payload = json.loads(body)
+            except (OSError, ValueError, TypeError, http.client.HTTPException):
                 # A truncated or malformed body cannot prove readiness; treat
                 # the listener as answering-but-not-ready so process discovery
                 # attaches the owning PID and waits instead of connecting early.
