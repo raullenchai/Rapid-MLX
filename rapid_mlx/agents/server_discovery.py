@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import time
@@ -263,7 +264,9 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
             # ready server) instead of treating a loading server as ready.
             try:
                 payload = json.loads(response.read())
-            except (AttributeError, OSError, ValueError):
+            except (AttributeError, OSError, ValueError, http.client.HTTPException):
+                # A truncated body (IncompleteRead) is a transport fault, not
+                # a verdict; fall through to the ready-by-status path.
                 payload = {}
             if isinstance(payload, dict) and payload.get("ready") is False:
                 return False, True

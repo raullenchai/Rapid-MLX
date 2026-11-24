@@ -946,6 +946,23 @@ def test_default_endpoint_ready_states(monkeypatch):
         )
         assert discovery._default_endpoint_ready() == expected
 
+    # A truncated body is a transport fault, not a readiness verdict: the
+    # probe must still report the HTTP 200 listener as ready-and-answered.
+    import http.client
+
+    class TruncatedResponse:
+        status = 200
+
+        def read(self):
+            raise http.client.IncompleteRead(b'{"statu', 8)
+
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(TruncatedResponse()),
+    )
+    assert discovery._default_endpoint_ready() == (True, True)
+
 
 def test_refresh_skips_other_pids_and_unbound_rescans(monkeypatch):
     selected = discovery.Server(5, 8001, "tiny")
