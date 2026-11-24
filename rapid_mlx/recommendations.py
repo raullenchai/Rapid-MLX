@@ -216,6 +216,115 @@ def fitting_pick(
     return picks[0] if picks else None
 
 
+def _catalog_footprint_gb(model_ref: str) -> float | None:
+    """Return the known catalog serve footprint (GiB) for ``model_ref``, else None."""
+    try:
+        from .model_aliases import catalog_identity, resolve_profile
+    except Exception:
+        return None
+    canonical = catalog_identity(model_ref)
+    wanted = (canonical or model_ref).casefold()
+    for tier in load_recommendation_tiers(validate_catalog=False):
+        for pick in tier.picks:
+            if pick.alias.casefold() == wanted:
+                return pick.footprint_gb
+    profile = resolve_profile(canonical or model_ref)
+    if profile is None:
+        return None
+    if profile.resident_memory_gb is not None:
+        return float(profile.resident_memory_gb)
+    try:
+        from .model_sizes import size_bytes
+
+        weights = size_bytes(profile.hf_path)
+    except Exception:
+        weights = None
+    if weights is not None:
+        # Match byom/preflight._SERVE_OVERHEAD_FRACTION (0.2) + 1 GiB.
+        gib = float(1 << 30)
+        return (weights * 1.2 + gib) / gib
+    return None
+
+
+def memory_tier_recommendation(
+    ram_gb: float | None = None,
+    *,
+    exclude: str | None = None,
+    max_footprint_gb: float | None = None,
+) -> str | None:
+    """Return a recommended alias for this Mac's memory tier, or ``None``.
+
+    Reuses the curated RAM-tier table in ``model_recommendations.json`` without
+    altering tier thresholds or defaults. When ``exclude`` is supplied, only a
+    candidate whose catalog footprint is strictly smaller than the failed
+    model's footprint is returned (walking the tier table downward, then the
+    starter baseline). Returns ``None`` when ``exclude`` has no known catalog
+    footprint (unless ``max_footprint_gb`` supplies an upper bound) or when no
+    strictly smaller fitting candidate exists.
+    """
+    resolved_ram = physical_ram_gb() if ram_gb is None else float(ram_gb)
+    if resolved_ram <= 0:
+        # Unknown RAM: never recommend a model we cannot show fits this Mac.
+        return None
+    excluded: set[str] = set()
+    limit: float | None = (
+        float(max_footprint_gb) if max_footprint_gb is not None else None
+    )
+    if isinstance(exclude, str) and exclude:
+        excluded.add(exclude.casefold())
+        try:
+            from .model_aliases import catalog_identity
+
+            canonical = catalog_identity(exclude)
+            if canonical:
+                excluded.add(canonical.casefold())
+        except Exception:
+            pass
+        failed_footprint = _catalog_footprint_gb(exclude)
+        if failed_footprint is not None:
+            limit = (
+                min(limit, failed_footprint) if limit is not None else failed_footprint
+            )
+        elif limit is None:
+            return None
+
+    tiers = load_recommendation_tiers(validate_catalog=False)
+
+    def _qualifies(pick: Recommendation) -> bool:
+        if pick.alias.casefold() in excluded:
+            return False
+        if limit is not None and pick.footprint_gb >= limit:
+            return False
+        if pick.footprint_gb > resolved_ram:
+            return False
+        return True
+
+    baseline = starter_baseline_for_ram(resolved_ram, validate_catalog=False)
+    baseline_pick = next(
+        (pick for pick in tiers[0].picks if pick.alias == baseline),
+        None,
+    )
+
+    if resolved_ram < tiers[0].floor_gb:
+        if baseline_pick is not None and _qualifies(baseline_pick):
+            return baseline_pick.alias
+        for pick in tiers[0].picks:
+            if _qualifies(pick):
+                return pick.alias
+        return None
+
+    current = recommendation_tier(resolved_ram, validate_catalog=False)
+    for tier in reversed(tiers):
+        if tier.floor_gb > current.floor_gb:
+            continue
+        for pick in tier.picks:
+            if _qualifies(pick):
+                return pick.alias
+    if baseline_pick is not None and _qualifies(baseline_pick):
+        return baseline_pick.alias  # pragma: no cover - tiers[0] walked above
+    return None
+
+
 def starter_baseline_for_ram(ram_gb: float, *, validate_catalog: bool = True) -> str:
     """Return the installer/Desktop first-chat baseline for ``ram_gb``.
 

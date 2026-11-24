@@ -103,23 +103,231 @@ def test_local_engine_start_diagnosis(
     assert "\n" not in lines[0] + lines[1]
 
 
-def test_memory_failure_uses_existing_class_and_remedy(tmp_path):
+def test_memory_failure_uses_existing_class_and_remedy(tmp_path, monkeypatch):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     model = _model(tmp_path)
     failure = MemoryError()
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        "Free memory, or choose a smaller model with `rapid-mlx models`.",
     )
 
 
+@pytest.mark.parametrize(
+    ("ram_gb", "failed_ref", "expected_alias"),
+    [
+        (16.0, "qwen3.8-27b-4bit", "qwen3.5-4b-4bit"),
+        (18.0, "qwen3.8-27b-4bit", "qwen3.5-9b-4bit"),
+        (48.0, "deepseek-v41-flash-1017", "qwen3.8-27b-4bit"),
+        (16.0, "qwen3.5-4b-4bit", "lfm2.5-1b-4bit"),
+        (24.0, "qwen3.5-4b-4bit", "lfm2.5-1b-4bit"),
+        (32.0, "qwen3.5-4b-4bit", "lfm2.5-1b-4bit"),
+        (48.0, "qwen3.8-27b-4bit", "qwen3.5-4b-4bit"),
+        (48.0, "bonsai-27b-2bit", "qwen3.5-4b-4bit"),
+    ],
+)
+def test_memory_failure_names_ram_tier_recommendation(
+    monkeypatch, ram_gb, failed_ref, expected_alias
+):
+    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+    from rapid_mlx.recommendations import (
+        _catalog_footprint_gb,
+        memory_tier_recommendation,
+        recommendation_footprint_gb,
+    )
+
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    recommended = memory_tier_recommendation(ram_gb, exclude=failed_ref)
+    assert recommended == expected_alias
+    failed_fp = _catalog_footprint_gb(failed_ref)
+    rec_fp = recommendation_footprint_gb(recommended)
+    assert failed_fp is not None and rec_fp is not None and rec_fp < failed_fp
+
+    lines = startup_error_lines(MemoryError(), failed_ref)
+    assert lines is not None
+    assert f"rapid-mlx serve {expected_alias}" in lines[1]
+
+
+@pytest.mark.parametrize(
+    ("ram_gb", "failed_ref"),
+    [
+        (24.0, "unknown-org/custom-model"),
+        (32.0, "/tmp/unmeasured-local-checkpoint"),
+        (16.0, "lfm2.5-1b-4bit"),
+        (24.0, "qwen3-0.6b-4bit"),
+    ],
+)
+def test_memory_failure_falls_back_to_generic_when_no_smaller_candidate(
+    monkeypatch, ram_gb, failed_ref
+):
+    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+    from rapid_mlx.recommendations import memory_tier_recommendation
+
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram_gb)
+    assert memory_tier_recommendation(ram_gb, exclude=failed_ref) is None
+    lines = startup_error_lines(MemoryError(), failed_ref)
+    assert lines == (
+        "The model ran out of memory while loading weights.",
+        "Free memory, or choose a smaller model with `rapid-mlx models`.",
+    )
+
+
+def test_pre_download_memory_info_informs_and_never_blocks(monkeypatch, capsys):
+    from rapid_mlx.byom import preflight
+
+    gib = 1 << 30
+    monkeypatch.setattr(preflight, "_FOOTPRINT_NOTICES_SHOWN", set())
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 16 * gib)
+    printed = preflight.inform_if_footprint_exceeds_memory("qwen3.8-27b-4bit")
+    assert printed is True
+    # Preflight and the pull path both call this; the second call is silent.
+    assert preflight.inform_if_footprint_exceeds_memory("qwen3.8-27b-4bit") is False
+    err_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(err_lines) == 1
+    assert "qwen3.8-27b-4bit" in err_lines[0]
+    assert "20 GB" in err_lines[0]
+    assert "16 GB" in err_lines[0]
+    assert "qwen3.5-4b-4bit" in err_lines[0]
+    assert "continuing download" in err_lines[0]
+
+    # Fitting model stays silent.
+    assert preflight.inform_if_footprint_exceeds_memory("qwen3.5-4b-4bit") is False
+    assert capsys.readouterr().err == ""
+
+    # Never names a model larger than the one being downloaded.
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 1 * gib)
+    printed_small = preflight.inform_if_footprint_exceeds_memory(
+        "unknown-org/tiny-model", estimated_bytes=int(1.5 * gib)
+    )
+    assert printed_small is True
+    small_err = capsys.readouterr().err
+    assert "unknown-org/tiny-model" in small_err
+    assert "rapid-mlx serve" not in small_err
+    assert "continuing download" in small_err
+
+
+def test_pre_download_memory_info_fails_soft_without_ram_or_on_stream_error(
+    monkeypatch,
+):
+    from rapid_mlx.byom import preflight
+
+    gib = 1 << 30
+    monkeypatch.setattr(preflight, "_FOOTPRINT_NOTICES_SHOWN", set())
+    for unknown_ram in (0, None):
+        monkeypatch.setattr(preflight, "physical_ram_bytes", lambda r=unknown_ram: r)
+        assert (
+            preflight.inform_if_footprint_exceeds_memory(
+                "qwen3.8-27b-4bit", estimated_bytes=20 * gib
+            )
+            is False
+        )
+
+    class _BrokenStream:
+        def write(self, _data: str) -> int:
+            raise OSError("broken pipe")
+
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 16 * gib)
+    assert (
+        preflight.inform_if_footprint_exceeds_memory(
+            "qwen3.8-27b-4bit",
+            estimated_bytes=20 * gib,
+            stream=_BrokenStream(),
+        )
+        is False
+    )
+
+    # Unlisted model falls back to model_sizes.size_bytes + serve overhead.
+    from io import StringIO
+
+    from rapid_mlx import model_sizes
+
+    monkeypatch.setattr(preflight, "_FOOTPRINT_NOTICES_SHOWN", set())
+    monkeypatch.setattr(model_sizes, "size_bytes", lambda _ref: 20 * gib)
+    buf = StringIO()
+    assert (
+        preflight.inform_if_footprint_exceeds_memory("owner/unlisted-large", stream=buf)
+        is True
+    )
+    assert "owner/unlisted-large" in buf.getvalue()
+    assert "continuing download" in buf.getvalue()
+
+
+def test_catalog_footprint_handles_import_and_size_failures(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from rapid_mlx import model_aliases, model_sizes
+    from rapid_mlx.recommendations import _catalog_footprint_gb
+
+    fake_profile = SimpleNamespace(hf_path="owner/unmeasured", resident_memory_gb=None)
+    monkeypatch.setattr(model_aliases, "catalog_identity", lambda _ref: None)
+    monkeypatch.setattr(model_aliases, "resolve_profile", lambda _ref: fake_profile)
+    monkeypatch.setattr(
+        model_sizes,
+        "size_bytes",
+        lambda _repo: (_ for _ in ()).throw(RuntimeError("size lookup failed")),
+    )
+    assert _catalog_footprint_gb("owner/unmeasured") is None
+
+    monkeypatch.setattr(model_sizes, "size_bytes", lambda _repo: None)
+    assert _catalog_footprint_gb("owner/unmeasured") is None
+
+    monkeypatch.setitem(sys.modules, "rapid_mlx.model_aliases", None)
+    assert _catalog_footprint_gb("qwen3.5-4b-4bit") is None
+
+
+def test_memory_tier_recommendation_handles_small_ram_and_alias_errors(monkeypatch):
+    import sys
+
+    from rapid_mlx import recommendations
+    from rapid_mlx.recommendations import (
+        Recommendation,
+        RecommendationTier,
+        memory_tier_recommendation,
+    )
+
+    with monkeypatch.context() as ctx:
+        ctx.setitem(sys.modules, "rapid_mlx.model_aliases", None)
+        assert (
+            memory_tier_recommendation(
+                16.0, exclude="custom/model", max_footprint_gb=10.0
+            )
+            == "qwen3.5-4b-4bit"
+        )
+
+    # Sub-tier RAM: baseline qualifies at 4 GiB, nothing qualifies at 1 GiB.
+    assert memory_tier_recommendation(ram_gb=4.0) == "lfm2.5-1b-4bit"
+    assert memory_tier_recommendation(ram_gb=1.0) is None
+
+    # Sub-tier RAM fallback to another tier-0 pick when the baseline exceeds RAM.
+    synthetic_tier = (
+        RecommendationTier(
+            floor_gb=8,
+            picks=(
+                Recommendation("smart", "tiny-pick", 1.5, 60, None, ()),
+                Recommendation("fast", "larger-baseline", 3.5, 50, None, ()),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        recommendations,
+        "load_recommendation_tiers",
+        lambda **_kw: synthetic_tier,
+    )
+    assert memory_tier_recommendation(ram_gb=2.5) == "tiny-pick"
+
+
 @pytest.mark.parametrize("wrapped", [False, True])
-def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrapped):
+def test_metal_preflight_failure_uses_existing_class_and_remedy(
+    tmp_path, monkeypatch, wrapped
+):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
     from rapid_mlx.memory_budget import MetalPreflightError, format_preflight_error
 
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     model = _model(tmp_path)
     failure = MetalPreflightError(
         format_preflight_error(
@@ -139,7 +347,7 @@ def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrappe
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        "Free memory, or choose a smaller model with `rapid-mlx models`.",
     )
 
 
@@ -153,15 +361,16 @@ def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrappe
         "[malloc] Unable to allocate 1073741824 bytes.",
     ],
 )
-def test_metal_oom_uses_existing_class_and_remedy(tmp_path, message):
+def test_metal_oom_uses_existing_class_and_remedy(tmp_path, monkeypatch, message):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 18.0)
     model = _model(tmp_path)
     failure = RuntimeError(message)
     assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
     assert startup_error_lines(failure, str(model)) == (
         "The model ran out of memory while loading weights.",
-        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+        "Free memory, or choose a smaller model with `rapid-mlx models`.",
     )
 
 
@@ -301,3 +510,15 @@ async def test_engine_start_prints_two_lines_and_preserves_failure(
         "  Cause: config.json is missing required VLM text_config fields.",
         "  Next step: Copy a complete config.json from the matching VLM checkpoint.",
     ]
+
+
+def test_memory_tier_recommendation_returns_none_when_ram_unknown(monkeypatch):
+    from rapid_mlx import recommendations
+
+    monkeypatch.setattr(recommendations, "physical_ram_gb", lambda: 0.0)
+    assert recommendations.memory_tier_recommendation() is None
+    assert recommendations.memory_tier_recommendation(ram_gb=0) is None
+    assert (
+        recommendations.memory_tier_recommendation(ram_gb=-1, exclude="qwen3.5-9b-4bit")
+        is None
+    )

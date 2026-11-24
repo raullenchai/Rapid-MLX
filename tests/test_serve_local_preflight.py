@@ -542,11 +542,14 @@ def test_sync_cli_prints_bad_numeric_config_remedy(tmp_path, capsys):
             MemoryError("out of memory"),
             "insufficient_memory",
             "out of memory",
-            "rapid-mlx serve qwen3-0.6b-4bit",
+            "rapid-mlx models",
         ),
     ],
 )
-def test_runtime_failure_has_class_and_command(error, failure_class, cause, command):
+def test_runtime_failure_has_class_and_command(
+    monkeypatch, error, failure_class, cause, command
+):
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
     assert serve_error_class(error) == failure_class
     lines = startup_error_lines(error, None)
     assert cause in lines[0]
@@ -881,3 +884,212 @@ def test_partially_present_index_does_not_accept_other_complete_weights(tmp_path
     (root / "model.safetensors").write_bytes(b"data")
     with pytest.raises(FileNotFoundError, match="Missing indexed model shard"):
         validate_local_model_for_serve(str(root))
+
+
+def test_stale_local_path_states_path_and_two_fixes_in_one_line(tmp_path):
+    stale = tmp_path / "removed-checkpoint"
+    failure = FileNotFoundError(
+        errno.ENOENT, "Local model path does not exist", str(stale)
+    )
+    assert serve_error_class(failure, model_ref=str(stale)) == "local_path_missing"
+
+    lines = startup_error_lines(failure, str(stale))
+    assert lines is not None
+    cause, step = lines
+    assert "\n" not in cause
+    assert str(stale) in cause
+    assert "rapid-mlx pull" in cause
+    assert "correct the path" in cause
+    assert "rapid-mlx pull" in step
+
+    stale_cache = (
+        tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / "deadbeef"
+    )
+    cache_lines = startup_error_lines(
+        FileNotFoundError(errno.ENOENT, "missing", str(stale_cache)), str(stale_cache)
+    )
+    assert cache_lines is not None
+    assert str(stale_cache) in cache_lines[0]
+    assert "rapid-mlx pull qwen3-0.6b-4bit" in cache_lines[0]
+    assert "correct the path" in cache_lines[0]
+
+
+def test_repeated_missing_local_path_failure_deduplicates_on_same_install(
+    tmp_path, monkeypatch, capsys
+):
+    from rapid_mlx import cli
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("RAPID_MLX_LOG_FILE", raising=False)
+    stale = tmp_path / "stale-model-dir"
+    other = tmp_path / "another-stale-dir"
+
+    def run_serve(path):
+        monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", str(path)])
+        with pytest.raises(SystemExit) as exited:
+            cli.main()
+        assert exited.value.code == 1
+        return capsys.readouterr().err
+
+    # 1st failure: full one-line cause with path + both fixes + Next step.
+    first = run_serve(stale)
+    assert str(stale) in first
+    assert "rapid-mlx pull" in first
+    assert "correct the path" in first
+    assert "Next step:" in first
+
+    # 2nd failure on same path: single repeat notice, no Next step spam.
+    second = run_serve(stale)
+    assert str(stale) in second
+    assert "repeated failure" in second
+    assert "Next step:" not in second
+
+    # 3rd failure on same path: compact single line only, no repeat notice or hints.
+    third = run_serve(stale)
+    assert str(stale) in third
+    assert "repeated failure" not in third
+    assert "Next step:" not in third
+
+    # Failure on a different path resets deduplication and shows full guidance.
+    fourth = run_serve(other)
+    assert str(other) in fourth
+    assert "rapid-mlx pull" in fourth
+    assert "Next step:" in fourth
+
+
+def test_missing_path_dedupe_state_malformed_json_is_overwritten(tmp_path):
+    import stat
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / ".last-missing-model-path.json"
+    state_file.write_text("{corrupt-json", encoding="utf-8")
+    state_file.chmod(0o644)
+
+    stale = tmp_path / "missing-model"
+    assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    repaired = json.loads(state_file.read_text(encoding="utf-8"))
+    assert repaired["count"] == 1
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+    assert list(state_dir.glob("*.tmp")) == []
+
+    # Subsequent failure on the same path increments normally.
+    assert _record_missing_path_repeat(stale, state_dir=state_dir) == 2
+    assert json.loads(state_file.read_text(encoding="utf-8"))["count"] == 2
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+
+
+def test_missing_path_dedupe_state_readonly_directory_fails_soft(tmp_path):
+    from rapid_mlx.local_serve_diagnostics import (
+        _record_missing_path_repeat,
+        missing_local_path_lines,
+    )
+
+    state_dir = tmp_path / "readonly-state"
+    state_dir.mkdir()
+    state_dir.chmod(0o500)
+    try:
+        stale = tmp_path / "missing-model"
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+        cause, step = missing_local_path_lines(
+            str(stale), track_repeat=True, state_dir=state_dir
+        )
+        assert str(stale) in cause
+        assert "rapid-mlx pull" in step
+        assert list(state_dir.iterdir()) == []
+    finally:
+        state_dir.chmod(0o700)
+
+
+def test_missing_path_dedupe_state_writes_0600_permissions(tmp_path):
+    import stat
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "fresh-state"
+    stale = tmp_path / "missing-model"
+    assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    state_file = state_dir / ".last-missing-model-path.json"
+    assert state_file.is_file()
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+    assert list(state_dir.glob("*.tmp")) == []
+
+
+def test_missing_path_repeat_counter_is_serialized_across_processes(tmp_path):
+    import concurrent.futures
+    import functools
+    import multiprocessing
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "state"
+    stale = tmp_path / "missing-model"
+    record = functools.partial(_record_missing_path_repeat, state_dir=state_dir)
+    ctx = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=8, mp_context=ctx) as ex:
+        counts = sorted(ex.map(record, [stale] * 8))
+    # Every process observes a distinct count: no lost increments.
+    assert counts == list(range(1, 9))
+
+
+def test_missing_path_repeat_closes_fd_and_cleans_tmp_on_write_errors(
+    tmp_path, monkeypatch
+):
+    import os
+    import tempfile
+
+    from rapid_mlx.local_serve_diagnostics import _record_missing_path_repeat
+
+    state_dir = tmp_path / "state"
+    stale = tmp_path / "missing-model"
+
+    opened_fds: list[int] = []
+    closed_fds: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+    real_close = os.close
+
+    def track_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        opened_fds.append(fd)
+        return fd, path
+
+    def track_close(fd: int):
+        closed_fds.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(tempfile, "mkstemp", track_mkstemp)
+    monkeypatch.setattr(os, "close", track_close)
+
+    # 1. os.fdopen failure closes the raw fd and removes the temp file.
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            os,
+            "fdopen",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EIO, "fdopen")),
+        )
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    assert len(opened_fds) == 1
+    assert opened_fds[0] in closed_fds
+    assert list(state_dir.glob("*.tmp")) == []
+
+    # 2. os.replace failure returns 1 and unlinks the temp file.
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            os,
+            "replace",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EXDEV, "replace")),
+        )
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    assert list(state_dir.glob("*.tmp")) == []
+
+    # 3. Cleanup ignores OSError if the temp file was already removed.
+    def remove_then_fail_replace(src, _dst):
+        os.unlink(src)
+        raise OSError(errno.EIO, "replace after unlink")
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(os, "replace", remove_then_fail_replace)
+        assert _record_missing_path_repeat(stale, state_dir=state_dir) == 1
+    assert list(state_dir.glob("*.tmp")) == []

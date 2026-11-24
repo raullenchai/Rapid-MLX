@@ -1353,6 +1353,71 @@ def _same_task_fitting_pick(
         return None, None
 
 
+_FOOTPRINT_NOTICES_SHOWN: set[str] = set()
+
+
+def inform_if_footprint_exceeds_memory(
+    model_ref: str,
+    *,
+    original_alias: str | None = None,
+    estimated_bytes: int | None = None,
+    stream: Any = None,
+) -> bool:
+    """Print one informational line if estimated footprint exceeds physical RAM.
+
+    Never blocks, raises, or prompts. Printed at most once per model per
+    process, so preflight and the pull path cannot repeat it. Returns True
+    when a line was printed.
+    """
+    try:
+        shown = original_alias or model_ref
+        if shown in _FOOTPRINT_NOTICES_SHOWN:
+            return False
+        ram = physical_ram_bytes()
+        if not ram:
+            return False
+        est = estimated_bytes
+        if est is None:
+            lookup = original_alias or model_ref
+            fit = catalog_memory_fit(
+                lookup, ram_bytes=ram, recommended_working_set_bytes=None
+            )
+            est = fit.estimate_bytes
+            if est is None:
+                from rapid_mlx.model_sizes import size_bytes
+
+                weights = size_bytes(model_ref)
+                if weights is not None:
+                    est = int(
+                        weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
+                    )
+        if est is None or est <= ram:
+            return False
+        from rapid_mlx.recommendations import memory_tier_recommendation
+
+        _FOOTPRINT_NOTICES_SHOWN.add(shown)
+        rec = memory_tier_recommendation(
+            ram / _GIB, exclude=shown, max_footprint_gb=est / _GIB
+        )
+        target_stream = stream if stream is not None else sys.stderr
+        if rec:
+            print(
+                f"  Note: {shown} is estimated at ~{_gb(est)} of memory, exceeding "
+                f"this Mac's {_gb(ram)}; recommended for this Mac: "
+                f"`rapid-mlx serve {rec}` — continuing download.",
+                file=target_stream,
+            )
+        else:
+            print(
+                f"  Note: {shown} is estimated at ~{_gb(est)} of memory, exceeding "
+                f"this Mac's {_gb(ram)} — continuing download.",
+                file=target_stream,
+            )
+        return True
+    except Exception:
+        return False
+
+
 def _check_catalog_memory_fit(args: Any) -> None:
     try:
         if (
@@ -1592,6 +1657,18 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
             set_exit_reason("memory_refused", exc=exc)
         raise exc from PreflightRejectedError(verdict.failure)
     funnel.set_preflight("passed")
+    if (
+        not is_local
+        and args.command == "pull"
+        and verdict.est_memory_bytes is not None
+        and verdict.ram_bytes is not None
+        and verdict.est_memory_bytes > verdict.ram_bytes
+    ):
+        inform_if_footprint_exceeds_memory(
+            ref,
+            original_alias=getattr(args, "_original_alias", None),
+            estimated_bytes=verdict.est_memory_bytes,
+        )
     if not is_local and sys.stdout.isatty():
         print()
         for line in render_pass(inspection, verdict):

@@ -494,11 +494,23 @@ def model_load_error_payload(exc: BaseException, *, model_ref: object = None) ->
     ``message`` is a fixed safe string per code.
     """
     if classify_engine_abort(exc) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
+        try:
+            from .recommendations import memory_tier_recommendation
+
+            alias = (
+                memory_tier_recommendation(exclude=model_ref)
+                if isinstance(model_ref, str) and model_ref
+                else None
+            )
+        except Exception:
+            alias = None
+        remedy = (
+            f"Free up memory or try a smaller model such as `{alias}`."
+            if alias
+            else "Free up memory or choose a smaller model."
+        )
         return {
-            "message": (
-                "The model ran out of memory while loading. "
-                "Free up memory or choose a smaller model."
-            ),
+            "message": f"The model ran out of memory while loading. {remedy}",
             "type": "server_error",
             "code": ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY,
             "param": None,

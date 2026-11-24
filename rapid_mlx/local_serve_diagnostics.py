@@ -3,11 +3,147 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import fcntl
+import hashlib
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
+
+
+def _missing_path_alias(root: Path) -> str | None:
+    """Resolve a catalog alias when a stale path points inside the HF cache."""
+    from rapid_mlx.model_aliases import catalog_alias_for
+
+    for part in root.parts:
+        if not part.startswith("models--"):
+            continue
+        repo = part.removeprefix("models--").replace("--", "/", 1)
+        alias = catalog_alias_for(repo)
+        if alias:
+            return alias
+    return None
+
+
+@contextlib.contextmanager
+def _state_lock(base: Path):
+    """Serialize the read-increment-replace across concurrent CLI processes."""
+    base.mkdir(parents=True, exist_ok=True)
+    fd = os.open(
+        str(base / ".last-missing-model-path.lock"),
+        os.O_RDWR | os.O_CREAT,
+        0o600,
+    )
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _record_missing_path_repeat(root: Path, *, state_dir: Path | None = None) -> int:
+    """Track consecutive missing-path failures for the same path on this install."""
+    base = state_dir if state_dir is not None else Path.home() / ".rapid-mlx"
+    try:
+        with _state_lock(base):
+            return _record_missing_path_repeat_locked(root, base)
+    except OSError:
+        return 1
+
+
+def _record_missing_path_repeat_locked(root: Path, base: Path) -> int:
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    state_file = base / ".last-missing-model-path.json"
+    count = 1
+    try:
+        if state_file.is_file():
+            prev = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(prev, dict) and prev.get("path_hash") == digest:
+                prev_count = prev.get("count", 1)
+                if (
+                    isinstance(prev_count, int)
+                    and not isinstance(prev_count, bool)
+                    and prev_count >= 1
+                ):
+                    count = prev_count + 1
+    except (OSError, ValueError, UnicodeError):
+        # Treat malformed or unreadable state as empty and overwrite below.
+        count = 1
+
+    payload = json.dumps({"path_hash": digest, "count": count}).encode("utf-8")
+    tmp_path: str | None = None
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(base),
+            prefix=".last-missing-model-path.",
+            suffix=".tmp",
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(payload)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        os.replace(tmp_path, state_file)
+        tmp_path = None
+    except OSError:
+        return 1
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    return count
+
+
+def missing_local_path_lines(
+    model_ref: str,
+    *,
+    track_repeat: bool = False,
+    state_dir: Path | None = None,
+) -> tuple[str, str]:
+    """Build a single-line missing-path diagnostic with both fixes and repeat dedupe."""
+    root = Path(model_ref).expanduser().absolute()
+    alias = _missing_path_alias(root)
+    if alias:
+        cause = (
+            f"Local model path {root} does not exist — "
+            f"re-pull the alias (`rapid-mlx pull {alias}`) or correct the path."
+        )
+        step = (
+            f"Run `rapid-mlx pull {alias}` then `rapid-mlx serve {alias}`, "
+            "or pass the corrected path."
+        )
+    else:
+        cause = (
+            f"Local model path {root} does not exist — "
+            "re-pull a catalog alias (`rapid-mlx pull <alias>`) or correct the path."
+        )
+        step = (
+            "Re-pull a catalog alias (`rapid-mlx pull <alias>`) "
+            "or run `rapid-mlx serve /path/to/model` with the corrected path."
+        )
+    if not track_repeat:
+        return cause, step
+    count = _record_missing_path_repeat(root, state_dir=state_dir)
+    if count == 1:
+        return cause, step
+    if count == 2:
+        return (
+            f"Local model path {root} still does not exist (repeated failure; "
+            "further hints suppressed) — re-pull the alias or correct the path.",
+            "",
+        )
+    return f"Local model path {root} does not exist.", ""
 
 
 def _local_config(model_ref: object) -> tuple[Path, dict] | None:
@@ -237,9 +373,21 @@ def startup_error_lines(
     if detail is not None and detail[0] == error_class:
         return detail[1:]
     if error_class == "insufficient_memory":
+        from rapid_mlx.recommendations import memory_tier_recommendation
+
+        alias = (
+            memory_tier_recommendation(exclude=model_ref)
+            if isinstance(model_ref, str) and model_ref
+            else None
+        )
+        if alias:
+            return (
+                "The model ran out of memory while loading weights.",
+                f"Free memory, then run `rapid-mlx serve {alias}` for a smaller model that fits this Mac.",
+            )
         return (
             "The model ran out of memory while loading weights.",
-            "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+            "Free memory, or choose a smaller model with `rapid-mlx models`.",
         )
     if error_class == "backend_load_failed":
         return (
@@ -286,6 +434,9 @@ def _startup_only_diagnostic(
         if not isinstance(model_ref, str):
             return None
         root = Path(model_ref).expanduser().absolute()
+        if error_class == "local_path_missing" and not root.exists():
+            cause, step = missing_local_path_lines(model_ref)
+            return ("missing_local_path", cause, step)
         if (
             error_class == "corrupt_weights"
             and root.is_file()
