@@ -115,6 +115,7 @@ class AliasSpec:
     subfolder: str | None
     source: str
     revision: str | None = None
+    retired: bool = False
 
 
 @dataclass(frozen=True)
@@ -553,16 +554,19 @@ def _get_json(url: str) -> Any:
 
 def _load_aliases(main_path: Path, audio_path: Path) -> list[AliasSpec]:
     specs: list[AliasSpec] = []
+    current_aliases: set[str] = set()
     # Repo profiles keep pinned execution metadata for retired alias names,
     # so their repositories stay under mirror drift coverage.
     repo_profiles_path = main_path.with_name("repo_profiles.json")
     catalogs = [(main_path, "hf_path", "main"), (audio_path, "hf_id", "audio")]
     if repo_profiles_path.exists():
-        catalogs.insert(1, (repo_profiles_path, "hf_path", "main"))
+        catalogs.append((repo_profiles_path, "hf_path", "main"))
     for path, key, source in catalogs:
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict):
             raise ValueError(f"{path} must contain a JSON object")
+        if path != repo_profiles_path:
+            current_aliases.update(payload)
         for alias, profile in payload.items():
             if not isinstance(profile, dict):
                 continue
@@ -584,6 +588,7 @@ def _load_aliases(main_path: Path, audio_path: Path) -> list[AliasSpec]:
                     subfolder=subfolder if isinstance(subfolder, str) else None,
                     source=source,
                     revision=revision,
+                    retired=path == repo_profiles_path and alias not in current_aliases,
                 )
             )
     by_repo: dict[str, set[str | None]] = {}
@@ -1082,6 +1087,17 @@ def audit(
     by_alias = {
         str(entry["alias"]).lower(): entry for entry in entries if entry.get("alias")
     }
+    by_hf_path: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        repo_id = entry.get("hf_path")
+        if isinstance(repo_id, str) and (
+            repo_id not in by_hf_path
+            or (
+                entry.get("alias") == repo_id
+                and by_hf_path[repo_id].get("alias") != repo_id
+            )
+        ):
+            by_hf_path[repo_id] = entry
     r2_client = _maybe_r2_client()
 
     # One paced model_info call per unique repository, fanned out to every alias.
@@ -1160,6 +1176,8 @@ def audit(
     ] = {}
     for spec in selected:
         entry = by_alias.get(spec.alias.lower())
+        if entry is None and spec.retired:
+            entry = by_hf_path.get(spec.hf_path)
         intentional = unmirrored.get(spec.hf_path)
         report = _new_report(spec, entry, r2_client is not None, intentional)
         files: list[HfFile]
