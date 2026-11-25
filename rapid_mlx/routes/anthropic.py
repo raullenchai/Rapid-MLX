@@ -55,6 +55,7 @@ from ..parsing.prompt_owner import (
 )
 from ..prompt_token_reuse import RequestPromptTokens, run_prompt_work
 from ..reasoning import finalize_streaming_compat
+from ..reasoning.qwen3_parser import Qwen3ReasoningParser
 from ..request import (
     is_batch_cap_error,
     is_chat_template_error,
@@ -888,6 +889,17 @@ async def create_anthropic_message(
             )
         if effective_thinking is not None:
             chat_kwargs["enable_thinking"] = effective_thinking
+        output_cleaning_kwargs = {}
+        if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
+            output_cleaning_kwargs = {
+                "enable_thinking": effective_thinking,
+                "prompt_thinking_active": _should_start_in_thinking(
+                    getattr(getattr(engine, "tokenizer", None), "chat_template", "")
+                    or "",
+                    effective_thinking,
+                ),
+            }
+            chat_kwargs["_output_cleaning_kwargs"] = output_cleaning_kwargs
         await _attach_mllm_schema_processor(engine, openai_request, chat_kwargs)
         await _attach_tool_choice_processor(engine, openai_request, chat_kwargs)
         _attach_mllm_reasoning_budget(engine, openai_request, messages, chat_kwargs)
@@ -1071,7 +1083,9 @@ async def create_anthropic_message(
             if channels_owned:
                 final_content = strip_special_tokens(cleaned_text)
             else:
-                final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+                final_content = strip_thinking_tags(
+                    clean_output_text(cleaned_text, **output_cleaning_kwargs)
+                )
                 # Final defense against special-token / markup leakage — mirrors
                 # chat.py:669 so the two surfaces don't diverge on what they
                 # consider "sanitized" client-facing content. Pre-existing gap
@@ -1776,6 +1790,14 @@ async def _stream_anthropic_messages(
     resolved_thinking = _resolve_enable_thinking(openai_request)
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+    if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
+        chat_kwargs["_output_cleaning_kwargs"] = {
+            "enable_thinking": resolved_thinking,
+            "prompt_thinking_active": _should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+            ),
+        }
     await _attach_tool_choice_processor(engine, openai_request, chat_kwargs)
     await _attach_mllm_schema_processor(engine, openai_request, chat_kwargs)
     _attach_mllm_reasoning_budget(engine, openai_request, messages, chat_kwargs)

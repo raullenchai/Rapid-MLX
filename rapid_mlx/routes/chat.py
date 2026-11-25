@@ -83,6 +83,7 @@ from ..middleware.auth import check_rate_limit, verify_api_key
 from ..middleware.lan_inference import is_loopback_peer
 from ..parsing.prompt_owner import served_model_identity, split_buffered
 from ..prompt_token_reuse import RequestPromptTokens, run_prompt_work
+from ..reasoning.qwen3_parser import Qwen3ReasoningParser
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
@@ -5508,6 +5509,16 @@ async def _create_chat_completion_impl(
 
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+    output_cleaning_kwargs = {}
+    if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
+        output_cleaning_kwargs = {
+            "enable_thinking": resolved_thinking,
+            "prompt_thinking_active": _should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+            ),
+        }
+        chat_kwargs["_output_cleaning_kwargs"] = output_cleaning_kwargs
 
     # Thread client-supplied ``chat_template_kwargs`` through to the engine
     # so model-specific template variables (e.g. Qwen3.8 ``reasoning_effort``)
@@ -7530,7 +7541,9 @@ async def _create_chat_completion_impl(
         if channels_owned:
             final_content = strip_special_tokens(cleaned_text)
         else:
-            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            final_content = strip_thinking_tags(
+                clean_output_text(cleaned_text, **output_cleaning_kwargs)
+            )
             final_content = sanitize_output(final_content)
         if response_format and final_content:
             final_content = extract_json_from_response(final_content)

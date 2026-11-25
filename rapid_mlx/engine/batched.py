@@ -3587,6 +3587,7 @@ class BatchedEngine(BaseEngine):
         continue_final_message = kwargs.pop("_continue_final_message", False)
         initial_channel = kwargs.pop("_output_router_initial_channel", None)
         request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
+        output_cleaning_kwargs = kwargs.pop("_output_cleaning_kwargs", {})
 
         if self._select_mllm_request_path(images, videos, admission_token):
             mllm_scheduler = self._mllm_scheduler
@@ -3662,7 +3663,9 @@ class BatchedEngine(BaseEngine):
 
             reasoning, content, tool_calls = self._route_tokens_for_channels(
                 output.output_token_ids,
-                fallback_text=clean_output_text(mllm_full_text),
+                fallback_text=clean_output_text(
+                    mllm_full_text, **output_cleaning_kwargs
+                ),
                 initial_channel=(initial_channel or "content")
                 if continue_final_message
                 else None,
@@ -3788,7 +3791,11 @@ class BatchedEngine(BaseEngine):
             # parser sees the complete wire envelope.
             output_text = assistant_text_prefix + (output.output_text or "")
             output.output_text = output_text
-        text = clean_output_text(output.output_text, muse_wire=self._muse_wire_model())
+        text = clean_output_text(
+            output.output_text,
+            muse_wire=self._muse_wire_model(),
+            **output_cleaning_kwargs,
+        )
         # Token-level channel extraction via ``OutputRouter`` — the SAME
         # state machine the streaming path already uses
         # (``_stream_with_output_router``). For non-streaming we feed the
@@ -3916,6 +3923,7 @@ class BatchedEngine(BaseEngine):
                 self.release_admission_reservation()
 
         request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
+        output_cleaning_kwargs = kwargs.pop("_output_cleaning_kwargs", {})
 
         if self._select_mllm_request_path(images, videos, admission_token):
             mllm_scheduler = self._mllm_scheduler
@@ -3993,7 +4001,9 @@ class BatchedEngine(BaseEngine):
                 # ``logprobs=true, top_logprobs=K``.
                 yield GenerationOutput(
                     text=clean_output_text(
-                        output.output_text, muse_wire=self._muse_wire_model()
+                        output.output_text,
+                        muse_wire=self._muse_wire_model(),
+                        **output_cleaning_kwargs,
                     ),
                     new_text=output.new_text,
                     tokens=output.new_token_ids,
@@ -4114,7 +4124,9 @@ class BatchedEngine(BaseEngine):
         try:
             async for output in self._engine.stream_outputs(request_id):
                 text = clean_output_text(
-                    output.output_text, muse_wire=self._muse_wire_model()
+                    output.output_text,
+                    muse_wire=self._muse_wire_model(),
+                    **output_cleaning_kwargs,
                 )
 
                 yield GenerationOutput(
@@ -4382,6 +4394,11 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             continue_final_message=continue_final_message,
         )
+        if "_output_cleaning_kwargs" in kwargs and context is not None:
+            kwargs["_output_cleaning_kwargs"] = {
+                **kwargs["_output_cleaning_kwargs"],
+                "prompt_thinking_active": context.initial_channel == "reasoning",
+            }
         capture = PromptContextCapture(
             context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
         )
@@ -5393,6 +5410,11 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             continue_final_message=continue_final_message,
         )
+        if "_output_cleaning_kwargs" in kwargs and context is not None:
+            kwargs["_output_cleaning_kwargs"] = {
+                **kwargs["_output_cleaning_kwargs"],
+                "prompt_thinking_active": context.initial_channel == "reasoning",
+            }
         capture = PromptContextCapture(
             context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
         )

@@ -94,6 +94,7 @@ from ..parsing.prompt_owner import (
     split_buffered,
 )
 from ..reasoning import finalize_streaming_compat
+from ..reasoning.qwen3_parser import Qwen3ReasoningParser
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     ContextLengthExceeded,
@@ -1709,6 +1710,16 @@ async def _non_stream(
     resolved_thinking = _resolve_enable_thinking(openai_request)
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+    output_cleaning_kwargs = {}
+    if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
+        output_cleaning_kwargs = {
+            "enable_thinking": resolved_thinking,
+            "prompt_thinking_active": _should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+            ),
+        }
+        chat_kwargs["_output_cleaning_kwargs"] = output_cleaning_kwargs
     # Forward client ``chat_template_kwargs`` to the engine (#2474 wired only
     # the chat surface; here the dict was dropped, so the native
     # ``reasoning_effort`` level #3043 merges in never reached the template).
@@ -2467,7 +2478,9 @@ async def _non_stream(
         if channels_owned:
             final_content = strip_special_tokens(cleaned_text)
         else:
-            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            final_content = strip_thinking_tags(
+                clean_output_text(cleaned_text, **output_cleaning_kwargs)
+            )
             final_content = sanitize_output(
                 final_content,
                 strip_tool_markup=bool(tool_parse_request.tools),
@@ -3319,6 +3332,15 @@ async def _stream_responses(
         resolved_thinking = _resolve_enable_thinking(openai_request)
         if resolved_thinking is not None:
             chat_kwargs["enable_thinking"] = resolved_thinking
+        if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
+            chat_kwargs["_output_cleaning_kwargs"] = {
+                "enable_thinking": resolved_thinking,
+                "prompt_thinking_active": _should_start_in_thinking(
+                    getattr(getattr(engine, "tokenizer", None), "chat_template", "")
+                    or "",
+                    resolved_thinking,
+                ),
+            }
         # Forward client ``chat_template_kwargs`` to the engine (#2474 wired only
         # the chat surface; here the dict was dropped, so the native
         # ``reasoning_effort`` level #3043 merges in never reached the template).

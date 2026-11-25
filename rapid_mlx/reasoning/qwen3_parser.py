@@ -150,6 +150,31 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     def start_token(self) -> str:
         return "<think>"
 
+    def configure_request(
+        self,
+        *,
+        enable_thinking: bool | None = None,
+        prompt_thinking_active: bool = False,
+    ) -> None:
+        self.reset_state()
+        self._implicit_reasoning = (
+            type(self) is not Qwen3ReasoningParser
+            or enable_thinking is not False
+            or prompt_thinking_active
+        )
+
+    def _extract_reasoning_streaming_inner(
+        self, previous_text: str, current_text: str, delta_text: str
+    ) -> DeltaMessage | None:
+        if not getattr(self, "_implicit_reasoning", True):
+            # Start in content; only an explicit opener enters reasoning.
+            return self._handle_multi_block_after_close(
+                previous_text, current_text, delta_text
+            )
+        return super()._extract_reasoning_streaming_inner(
+            previous_text, current_text, delta_text
+        )
+
     @property
     def end_token(self) -> str:
         return "</think>"
@@ -199,6 +224,13 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         # lone closer retains the implicit-reasoning contract.
         start_index = model_output.find(self.start_token)
         end_index = model_output.find(self.end_token)
+        if (
+            type(self) is Qwen3ReasoningParser
+            and enable_thinking is False
+            and not prompt_thinking_active
+            and start_index == -1
+        ):
+            return None, model_output
         if end_index != -1 and (start_index == -1 or end_index < start_index):
             reasoning = model_output[:end_index].strip() or None
             content = model_output[end_index + len(self.end_token) :].strip() or None

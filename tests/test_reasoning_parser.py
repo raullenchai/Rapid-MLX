@@ -122,6 +122,95 @@ class TestQwen3Parser:
         assert reasoning == "Some text"
         assert content == "more text"
 
+    @pytest.mark.parametrize("chunk_size", [None, 1, 7, 1000])
+    @pytest.mark.parametrize(
+        "thinking,prompt_active,opener,expected_reasoning",
+        [
+            (False, False, "", ""),
+            (False, False, "<think>", "prefix"),
+            (True, False, "", "prefix"),
+            (False, True, "", "prefix"),
+        ],
+    )
+    def test_cleaned_request_mode(
+        self, parser, chunk_size, thinking, prompt_active, opener, expected_reasoning
+    ):
+        from rapid_mlx.api.utils import (
+            clean_output_text,
+            sanitize_output,
+            strip_thinking_tags,
+        )
+
+        prefix = "I will list files.\n```bash\nls\n```\n"
+        raw = opener + prefix + "</think>\nRunning it now."
+        mode = dict(enable_thinking=thinking, prompt_thinking_active=prompt_active)
+        if chunk_size is None:
+            reasoning, content = parser.extract_reasoning(
+                clean_output_text(raw, **mode), **mode
+            )
+            content = strip_thinking_tags(clean_output_text(content, **mode))
+        else:
+            parser.configure_request(**mode)
+            accumulated = reasoning = content = ""
+            for offset in range(0, len(raw), chunk_size):
+                delta = raw[offset : offset + chunk_size]
+                previous, accumulated = accumulated, accumulated + delta
+                result = parser.extract_reasoning_streaming(
+                    previous, accumulated, delta
+                )
+                if result:
+                    reasoning += result.reasoning or ""
+                    content += result.content or ""
+        assert (reasoning or "").strip() == (
+            prefix.strip() if expected_reasoning else ""
+        )
+        expected = (
+            "Running it now." if expected_reasoning else prefix + "\nRunning it now."
+        )
+        assert sanitize_output(content).strip() == expected
+
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_cleaned_stray_closer_before_tool_call(self, parser, wrapped):
+        import json
+
+        from rapid_mlx.api.utils import clean_output_text
+        from rapid_mlx.service.helpers import _finalize_content_and_reasoning
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+
+        wire = "<function=bash><parameter=command>ls</parameter></function>"
+        if wrapped:
+            wire = "<tool_call>" + wire + "</tool_call>"
+        raw = "I will list files.</think>" + wire
+        mode = dict(enable_thinking=False, prompt_thinking_active=False)
+        cleaned = clean_output_text(raw, **mode)
+        request = {"tools": [{"type": "function", "function": {"name": "bash"}}]}
+        parsed = Qwen3CoderToolParser().extract_tool_calls(cleaned, request=request)
+        content, reasoning = _finalize_content_and_reasoning(
+            raw_text=raw,
+            cleaned_text=parsed.content,
+            tool_calls=parsed.tool_calls,
+            reasoning_parser=parser,
+            **mode,
+        )
+        assert not reasoning
+        assert "I will list files." in content
+        assert len(parsed.tool_calls) == 1
+        assert parsed.tool_calls[0]["name"] == "bash"
+        assert json.loads(parsed.tool_calls[0]["arguments"]) == {"command": "ls"}
+
+    def test_request_gate_preserves_subclass_implicit_reasoning(self):
+        parser = get_parser("hy3")()
+        parser.configure_request(enable_thinking=False)
+        assert parser.extract_reasoning(
+            "prefix</think>answer", enable_thinking=False
+        ) == (
+            "prefix",
+            "answer",
+        )
+        result = parser.extract_reasoning_streaming("", "prefix", "prefix")
+        assert result.reasoning == "prefix"
+        assert not result.content
+
     # Streaming tests
 
     def test_streaming_simple_flow(self, parser):

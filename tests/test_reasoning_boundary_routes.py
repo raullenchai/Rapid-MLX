@@ -273,6 +273,30 @@ def test_reasoning_delimiters_every_split(surface, thinking, raw, reason, answer
         assert actual == streaming_expected, (parts, actual)
 
 
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_thinking_off_stray_closer_keeps_answer(surface, stream, monkeypatch):
+    from rapid_mlx.api.utils import clean_output_text
+
+    original_chat = Engine.chat
+
+    async def cleaned_chat(self, **kwargs):
+        output = await original_chat(self, **kwargs)
+        output.text = clean_output_text(
+            output.text, **kwargs.get("_output_cleaning_kwargs", {})
+        )
+        return output
+
+    monkeypatch.setattr(Engine, "chat", cleaned_chat)
+    raw = "I will list files.\n```bash\nls\n```\n</think>\nRunning it now."
+    expected = raw if stream and surface != "chat" else raw.replace("</think>", "")
+    assert route("qwen3", "hermes", raw, surface, stream, thinking=False) == {
+        "content": expected,
+        "reasoning": "",
+        "calls": [],
+    }
+
+
 def test_nested_block_preserves_later_reasoning_and_answer():
     parser = get_parser("qwen3")()
     assert parser.extract_reasoning(

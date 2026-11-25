@@ -717,7 +717,13 @@ def _clean_gpt_oss_output(text: str) -> str:
     return cleaned.strip()
 
 
-def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
+def clean_output_text(
+    text: str,
+    *,
+    muse_wire: bool = False,
+    enable_thinking: bool | None = None,
+    prompt_thinking_active: bool = False,
+) -> str:
     """
     Clean model output by removing special tokens.
 
@@ -729,6 +735,9 @@ def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
 
     Args:
         text: Raw model output
+        enable_thinking: False disables implicit reasoning unless the prompt
+            already opened it. None preserves legacy cleaning.
+        prompt_thinking_active: Whether the prompt opened reasoning.
         muse_wire: True when the SERVING MODEL is muse_glimmer (resolved
             from the checkpoint's model_type by the caller, never from
             output bytes). Gates the ATEM channel demux below so a
@@ -766,7 +775,11 @@ def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
 
     # Add opening <think> tag if response has closing but not opening
     # This happens when enable_thinking=True in the chat template
-    if "</think>" in text and not text.lstrip().startswith("<think>"):
+    if (
+        (enable_thinking is not False or prompt_thinking_active or "<think>" in text)
+        and "</think>" in text
+        and not text.lstrip().startswith("<think>")
+    ):
         text = "<think>" + text
 
     return text

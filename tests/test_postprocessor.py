@@ -51,6 +51,34 @@ def _make_output(
 class TestStreamingPostProcessorBasic:
     """Tests for basic content streaming (no reasoning, no tools)."""
 
+    @pytest.mark.parametrize("wrapped", [False, True])
+    @pytest.mark.parametrize("size", [1, 1000])
+    def test_thinking_off_stray_closer_before_function(self, wrapped, size):
+        cfg = _make_cfg(
+            reasoning_parser_name="qwen3",
+            enable_auto_tool_choice=True,
+            tool_call_parser="qwen3_coder_xml",
+        )
+        request = {"tools": [{"type": "function", "function": {"name": "bash"}}]}
+        pp = StreamingPostProcessor(cfg, request=request, enable_thinking=False)
+        wire = "<function=bash><parameter=command>ls</parameter></function>"
+        if wrapped:
+            wire = "<tool_call>" + wire + "</tool_call>"
+        raw = "I will list files.</think>" + wire
+        events = []
+        for offset in range(0, len(raw), size):
+            events += pp.process_chunk(_make_output(raw[offset : offset + size]))
+        events += pp.finalize()
+        assert not [event for event in events if event.reasoning]
+        assert "I will list files." in "".join(event.content or "" for event in events)
+        functions = [
+            call["function"] for event in events for call in event.tool_calls or []
+        ]
+        assert any(function.get("name") == "bash" for function in functions)
+        assert json.loads(
+            "".join(function.get("arguments", "") for function in functions)
+        ) == {"command": "ls"}
+
     def test_simple_content(self):
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg)

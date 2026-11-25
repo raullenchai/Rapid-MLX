@@ -92,6 +92,13 @@ class TestCleanOutputText:
         result = clean_output_text(text)
         assert result.count("<think>") == 1
 
+    @pytest.mark.parametrize("prompt_active", [False, True])
+    def test_disabled_thinking_implicit_opener(self, prompt_active):
+        text = "Answer before</think>answer after"
+        assert clean_output_text(
+            text, enable_thinking=False, prompt_thinking_active=prompt_active
+        ) == ("<think>" + text if prompt_active else text)
+
     def test_strips_whitespace(self):
         assert clean_output_text("  Hello  ") == "Hello"
 
