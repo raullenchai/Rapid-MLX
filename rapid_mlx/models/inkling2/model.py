@@ -84,6 +84,7 @@ class TextModel(PipelineMixin, nn.Module):
         assert self.args.loop_config is not None
         core = self.args.loop_core
         caches = iter(cache)
+        dispatch_early = hidden_states.shape[1] == 1
 
         def run(
             layers: list[DecoderLayer | None],
@@ -101,6 +102,11 @@ class TextModel(PipelineMixin, nn.Module):
                     conv_mask=conv_mask,
                     messages=messages,
                 )
+                if dispatch_early:
+                    # Hand each finished visit to the GPU while Python builds
+                    # the next one; a decode step is otherwise one long graph
+                    # that starts executing only after all 48 visits are built.
+                    mx.async_eval(hidden_states)
             return hidden_states, block_states
 
         prelude = run(self.layers[: core.start], hidden_states, None)
