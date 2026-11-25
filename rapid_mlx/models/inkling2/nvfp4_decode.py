@@ -1,7 +1,12 @@
 # Copyright © 2025-2026 Apple Inc.
 # SPDX-License-Identifier: MIT
 # Dot grouping and lane ownership adapted from MLX's fp_quantized.h (v0.32.5).
-"""Single-token routed NVFP4 projections matching the stock FP32 reduction."""
+"""Single-token routed NVFP4 projections matching the stock FP32 reduction.
+
+Fallback detects failures in the one-time evaluated probe per kernel variant
+and in guarded invocation. Evaluation of real lazy outputs is intentionally
+not wrapped because decode evaluates asynchronously.
+"""
 
 from functools import cache
 from types import SimpleNamespace
