@@ -12,9 +12,11 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import DEFAULT, Mock
 
 import numpy as np
 import pytest
@@ -76,7 +78,7 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "f86522db21d69dff2008fbd1b58d5c4cf8420625be5dbd84a095bbdedf153a43",
+    "layers.py": "009a1b58eb7d3eb6a1da78d86e7eaa3e146cf48adc6e5cf5bc795ebb173d2142",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
@@ -1077,7 +1079,8 @@ def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
 
 
 @pytest.mark.requires_mlx
-def test_packed_projection_fallbacks(metal_runtime, monkeypatch):
+@pytest.mark.parametrize("failure", ["concatenate", "first_eval", "second_eval"])
+def test_packed_projection_fallbacks(metal_runtime, monkeypatch, failure):
     from mlx import nn
 
     from rapid_mlx.models.inkling2 import layers
@@ -1087,14 +1090,24 @@ def test_packed_projection_fallbacks(metal_runtime, monkeypatch):
     projections = [nn.Linear(64, 32, bias=False).to_quantized() for _ in range(2)]
     x = mx.ones((1, 1, 64))
     owner = nn.Module()
-    original = projections[0].weight
+    original = [p[f] for p in projections for f in ("weight", "scales", "biases")]
+    expected = [p(x) for p in projections]
+    mx.eval(expected)
     with monkeypatch.context() as m:
-        evaluate = Mock(side_effect=RuntimeError("lazy evaluation failed"))
-        m.setattr(mx, "eval", evaluate)
+        target = "concatenate" if failure == "concatenate" else "eval"
+        failure_at = 2 if failure == "second_eval" else 1
+        evaluate = Mock(
+            wraps=getattr(mx, target),
+            side_effect=[DEFAULT] * (failure_at - 1) + [RuntimeError("packing failed")],
+        )
+        m.setattr(mx, target, evaluate)
         assert pack(owner, "query", projections, x) is None
         assert pack(owner, "query", projections, x) is None
-        evaluate.assert_called_once()
-    assert projections[0].weight is original
+        assert evaluate.call_count == failure_at
+    for p in projections:
+        for f in ("weight", "scales", "biases"):
+            assert p[f] is original.pop(0)
+    assert all(mx.array_equal(p(x), y).item() for p, y in zip(projections, expected))
     projections[1].bits = 8
     assert pack(nn.Module(), "query", projections, x) is None
     projections[1].bits = 4
@@ -1144,6 +1157,23 @@ def test_packed_projection_invocation_failure(metal_runtime, monkeypatch):
         invoke.assert_called_once()
     for projection, reference in zip(projections, expected):
         assert mx.array_equal(projection(x), reference).item()
+
+    owner, barrier = nn.Module(), Barrier(2)
+    concatenate = Mock(wraps=mx.concatenate)
+    monkeypatch.setattr(mx, "concatenate", concatenate)
+
+    def first_use(_):
+        with mx.stream(mx.new_stream(mx.gpu)):
+            barrier.wait(timeout=10)
+            output = _packed_quantized_projections(owner, "query", projections, x)
+            mx.eval(output)
+            return output
+
+    with ThreadPoolExecutor(2) as pool:
+        outputs = list(pool.map(first_use, range(2)))
+    mx.eval(outputs)
+    assert concatenate.call_count == len(owner._decode_pack_query[2])
+    assert all(mx.array_equal(a, b).item() for a, b in zip(*outputs))
 
 
 @pytest.mark.requires_mlx

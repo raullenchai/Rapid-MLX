@@ -3,6 +3,7 @@
 
 import math
 import os
+import threading
 from functools import partial, wraps
 from typing import Any, cast
 
@@ -56,6 +57,7 @@ __all__ = [
 ]
 
 
+_DECODE_PACK_LOCK = threading.RLock()
 _ROUTER_SCORE_EPS = 1e-20
 
 
@@ -471,26 +473,33 @@ def _packed_quantized_projections(owner, name, projections, x):
         or cached[0] != config
         or any(a is not b for a, b in zip(sources, cached[1]))
     ):
-        packed = {
-            f: mx.concatenate([p[f] for p in projections], axis=0) for f in fields
-        }
-        try:
-            mx.eval(*packed.values())
-        except Exception:
-            object.__setattr__(owner, attr, False)
-            return None
-        ends = []
-        start = 0
-        for p in projections:
-            end = start + p.weight.shape[0]
-            for f in fields:
-                p[f] = packed[f][start:end]
-            ends.append(end)
-            start = end
-        mx.eval([p[f] for p in projections for f in fields])
-        sources = tuple(p[f] for p in projections for f in fields)
-        cached = (config, sources, packed, ends[:-1])
-        object.__setattr__(owner, attr, cached)
+        with _DECODE_PACK_LOCK:
+            if getattr(owner, attr, None) is not cached:
+                return _packed_quantized_projections(owner, name, projections, x)
+            try:
+                packed = {
+                    f: mx.concatenate([p[f] for p in projections], axis=0)
+                    for f in fields
+                }
+                mx.eval(*packed.values())
+                ends = []
+                start = 0
+                replacements = []
+                for p in projections:
+                    end = start + p.weight.shape[0]
+                    replacements.extend(packed[f][start:end] for f in fields)
+                    ends.append(end)
+                    start = end
+                mx.eval(replacements)
+            except Exception:
+                object.__setattr__(owner, attr, False)
+                return None
+            sources = tuple(replacements)
+            for p, offset in zip(projections, range(0, len(sources), len(fields))):
+                for i, f in enumerate(fields):
+                    p[f] = sources[offset + i]
+            cached = (config, sources, packed, ends[:-1])
+            object.__setattr__(owner, attr, cached)
     try:
         output = mx.quantized_matmul(
             x,
