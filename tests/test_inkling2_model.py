@@ -72,8 +72,8 @@ CONFIG["text_config"]["loop_config"] = {
 }
 
 
-# Complete reviewed source of the five numerical-core files omitted by
-# .coveragerc. See NOTICE for provenance. Review edits before updating pins;
+# Complete reviewed source of the five omitted numerical-core files and the
+# decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
@@ -81,6 +81,7 @@ _NUMERICAL_CORE_SHA256 = {
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "342d56d32a4936da5d3ce0b796d3bb4fd133d2722fd44657fe79cf6b38300754",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
+    "nvfp4_decode.py": "92378b67e35e409a49e497c008116fd490d02f9dd652f4adced185b3550a11db",
 }
 
 
@@ -96,7 +97,7 @@ def test_numerical_core_source_contract():
         for path in coverage["run"]["omit"].splitlines()
         if path.strip().startswith(prefix)
     }
-    assert omitted == _NUMERICAL_CORE_SHA256.keys()
+    assert omitted == _NUMERICAL_CORE_SHA256.keys() - {"nvfp4_decode.py"}
     for filename, expected in _NUMERICAL_CORE_SHA256.items():
         assert hashlib.sha256((root / prefix / filename).read_bytes()).hexdigest() == (
             expected
@@ -399,15 +400,38 @@ def test_nvfp4_decode_unsupported(metal_runtime, monkeypatch, case):
     mx.eval(layer(x, indices, sorted_indices=case == "sorted"))
 
 
-def test_nvfp4_decode_build_failure(metal_runtime, monkeypatch):
+@pytest.mark.parametrize("failure", ["build", "call", "eval"])
+def test_nvfp4_decode_build_failure(metal_runtime, monkeypatch, failure):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
 
-    build = Mock(side_effect=RuntimeError("unavailable"))
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, 16, 4, "nvfp4")
+    x = mx.ones((1, 1, 1, 1, 128), mx.bfloat16)
+    indices = mx.zeros((1, 1, 2), mx.uint32)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", False)
+    expected = layer(x, indices)
+    mx.eval(expected)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", True)
+    error = RuntimeError("unavailable")
+    kernel = Mock(side_effect=error if failure == "call" else None)
+    build = Mock(side_effect=error if failure == "build" else None, return_value=kernel)
     monkeypatch.setattr(mx.fast, "metal_kernel", build)
     factory = functools.cache(nvfp4_decode._get_kernel.__wrapped__)
+    monkeypatch.setattr(nvfp4_decode, "_get_kernel", factory)
+    with monkeypatch.context() as probe:
+        if failure == "eval":
+            kernel.return_value = [mx.zeros((1,), mx.bfloat16)]
+            evaluate = Mock(side_effect=error)
+            probe.setattr(mx, "eval", evaluate)
+        actual = [layer(x, indices), layer(x, indices)]
+    for output in actual:
+        assert mx.array_equal(output, expected).item()
     assert factory() is None and factory() is None
     build.assert_called_once()
+    assert kernel.call_count == (failure != "build")
+    if failure == "eval":
+        evaluate.assert_called_once()
 
 
 def test_nvfp4_decode_model_exact(metal_runtime, monkeypatch):

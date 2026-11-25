@@ -64,13 +64,32 @@ _SOURCE = """
 @cache
 def _get_kernel():
     try:
-        return mx.fast.metal_kernel(
+        kernel = mx.fast.metal_kernel(
             name="inkling2_nvfp4_decode",
             input_names=["x", "w", "scales", "idx", "global_scale"],
             output_names=["out"],
             header=_HEADER,
             source=_SOURCE,
         )
+        # Metal compilation is lazy: force a tiny synthetic dispatch before
+        # caching success, without evaluating or changing the caller's inputs.
+        mx.eval(
+            kernel(
+                inputs=[
+                    mx.zeros((1, 1, 16), mx.bfloat16),
+                    mx.zeros((1, 32, 2), mx.uint32),
+                    mx.zeros((1, 32, 1), mx.uint8),
+                    mx.zeros((1,), mx.uint32),
+                    mx.full((1,), 2688.0, mx.float32),
+                ],
+                template=[("N", 16), ("M", 32), ("SHARED", True), ("HAS_SCALE", True)],
+                grid=(32, 32, 1),
+                threadgroup=(32, 16, 1),
+                output_shapes=[(1, 1, 32)],
+                output_dtypes=[mx.bfloat16],
+            )[0]
+        )
+        return kernel
     except Exception:
         # Cache failure too, so unsupported runtimes keep the stock path.
         return None
