@@ -261,7 +261,7 @@ def test_reasoning_delimiters_every_split(surface, thinking, raw, reason, answer
     "raw,reasoning,content",
     [
         ("\n<think>R</think>A", "R", "A"),
-        ("preamble<think>R</think>A", "R", "preambleA"),
+        ("preamble<think>R</think>A", "", "preamble<think>RA"),
         (
             "I will list files.\n```bash\nls\n```\n</think>\nRunning it now.",
             "",
@@ -288,10 +288,7 @@ def test_thinking_off_stray_closer_keeps_answer(
     assert buffered == {"content": content, "reasoning": reasoning, "calls": []}
     for chunks in [[raw], list(raw)]:
         streamed = route("qwen3", "hermes", raw, surface, True, chunks, thinking=False)
-        assert streamed["content"] == buffered["content"]
-        assert streamed["calls"] == buffered["calls"]
-        if not reasoning:
-            assert not streamed["reasoning"]
+        assert streamed == buffered
 
 
 def test_nested_block_preserves_later_reasoning_and_answer():
@@ -303,11 +300,12 @@ def test_nested_block_preserves_later_reasoning_and_answer():
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_thinking_off_tool_argument_opener_after_stray_closer(surface, stream):
+@pytest.mark.parametrize("tail", ["", "<"])
+def test_thinking_off_tool_argument_opener_after_stray_closer(surface, stream, tail):
     raw = (
         "I will list files.</think><function=run_shell_command>"
         '<parameter=command>echo "<think>"</parameter></function>'
-    )
+    ) + tail
     result = route("qwen3", "qwen3_coder_xml", raw, surface, stream, thinking=False)
     assert not result["reasoning"]
     assert "I will list files." in result["content"]
@@ -320,13 +318,23 @@ def test_thinking_off_tool_argument_opener_after_stray_closer(surface, stream):
         "\n<think>R</think>A",
         "preamble<think>R</think>A",
         "I will list files.</think>Running it now.",
+        "plain answer",
         "preamble<think>R",
+        "  answer</think>tail</think><",
+        "\n\t",
+        "<thi",
         'I will list files.</think><function=run_shell_command><parameter=command>echo "<think>"</parameter></function>',
     ],
 )
 def test_thinking_off_every_split(raw):
     parser = get_parser("qwen3")()
     buffered = parser.extract_reasoning(raw, enable_thinking=False)
+    expected = (
+        ("R", "A")
+        if raw.lstrip().startswith("<think>")
+        else (None, raw.replace("</think>", ""))
+    )
+    assert buffered == expected
     for chunks in [[raw], list(raw)] + [[raw[:i], raw[i:]] for i in range(1, len(raw))]:
         parser.configure_request(enable_thinking=False)
         previous = reasoning = content = ""
@@ -338,4 +346,8 @@ def test_thinking_off_every_split(raw):
             if delta:
                 reasoning += delta.reasoning or ""
                 content += delta.content or ""
+        final = parser.finish_stream()
+        if final:
+            reasoning += final.reasoning or ""
+            content += final.content or ""
         assert (reasoning, content) == tuple(value or "" for value in buffered), chunks

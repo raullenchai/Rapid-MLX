@@ -94,12 +94,23 @@ class TestCleanOutputText:
 
     @pytest.mark.parametrize("prompt_active", [False, True])
     @pytest.mark.parametrize(
-        "text", ["Answer before</think>answer after", "preamble<think>R</think>A"]
+        "text",
+        [
+            "Answer before</think>answer after",
+            "preamble<think>R</think>A",
+            "\n<think>R</think>A",
+        ],
     )
     def test_disabled_thinking_implicit_opener(self, prompt_active, text):
-        assert clean_output_text(
-            text, enable_thinking=False, prompt_thinking_active=prompt_active
-        ) == ("<think>" + text if prompt_active else text)
+        expected = text.strip()
+        if prompt_active and not expected.startswith("<think>"):
+            expected = "<think>" + expected
+        assert (
+            clean_output_text(
+                text, enable_thinking=False, prompt_thinking_active=prompt_active
+            )
+            == expected
+        )
 
     def test_strips_whitespace(self):
         assert clean_output_text("  Hello  ") == "Hello"

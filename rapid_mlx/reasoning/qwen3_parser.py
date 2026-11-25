@@ -169,39 +169,34 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
 
     def reset_state(self):
         super().reset_state()
-        self._off_state = ("content", False, False, True)
+        self._off_leading = True
         self._off_pending = ""
 
     def _extract_thinking_off(self, text: str, *, final: bool = False) -> DeltaMessage:
-        """Consume explicit boundaries, holding only an incomplete tag suffix."""
-        phase, opened, literal, leading = self._off_state
+        """Emit content verbatim except closers, holding partial tag suffixes."""
         text = self._off_pending + text
-        if leading:
-            text = text.lstrip()
-            leading = not text
         held = 0 if final else self._held_partial_tag_len(text)
         self._off_pending = text[len(text) - held :] if held else ""
         text = text[: len(text) - held]
-        parts = {"content": [], "reasoning": []}
-        for part in re.split(r"(<think>|</think>)", text):
-            if part == self.start_token and not literal:
-                phase, opened = "reasoning", True
-            elif part == self.end_token:
-                # A closer before any opener makes subsequent openers literal.
-                literal = literal or not opened
-                phase = "content"
-            else:
-                parts[phase].append(part)
-        self._off_state = phase, opened, literal, leading
-        return DeltaMessage(
-            reasoning="".join(parts["reasoning"]) or None,
-            content="".join(parts["content"]) or None,
-        )
+        return DeltaMessage(content=text.replace(self.end_token, "") or None)
 
     def extract_reasoning_streaming(
         self, previous_text: str, current_text: str, delta_text: str
     ) -> DeltaMessage | None:
         if not getattr(self, "_implicit_reasoning", True):
+            if self._off_leading:
+                stripped = current_text.lstrip()
+                if stripped.startswith(self.start_token):
+                    # Only a leading opener enables the unchanged parent parser.
+                    self._implicit_reasoning = True
+                    self._off_pending = ""
+                    return super().extract_reasoning_streaming(
+                        "", current_text, current_text
+                    )
+                if not stripped or self.start_token.startswith(stripped):
+                    self._off_pending = current_text
+                    return None
+                self._off_leading = False
             return self._extract_thinking_off(delta_text)
         return super().extract_reasoning_streaming(
             previous_text, current_text, delta_text
@@ -266,10 +261,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             and enable_thinking is False
             and not prompt_thinking_active
         ):
-            parser = Qwen3ReasoningParser()
-            parser.configure_request(enable_thinking=False)
-            result = parser._extract_thinking_off(model_output, final=True)
-            return result.reasoning, result.content or ""
+            if model_output.lstrip().startswith(self.start_token):
+                return super().extract_reasoning(
+                    model_output, enable_thinking=enable_thinking
+                )
+            return None, model_output.replace(self.end_token, "")
         if end_index != -1 and (start_index == -1 or end_index < start_index):
             reasoning = model_output[:end_index].strip() or None
             content = model_output[end_index + len(self.end_token) :].strip() or None
@@ -418,7 +414,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            routes to ``reasoning`` (preserves #570).
         """
         if not getattr(self, "_implicit_reasoning", True):
-            return self.finish_stream()
+            # Content here replaces the whole output on the messages route.
+            # After streaming content, never use a held delimiter suffix as
+            # that correction; leave incomplete terminal prefixes un-emitted.
+            return self.finish_stream() if self._off_leading else None
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
             return None
