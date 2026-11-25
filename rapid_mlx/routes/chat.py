@@ -7537,14 +7537,24 @@ async def _create_chat_completion_impl(
 
     # Clean and strip thinking tags from content
     final_content = None
+    literal_think_tags = False
     if cleaned_text:
         if channels_owned:
             final_content = strip_special_tokens(cleaned_text)
         else:
-            final_content = strip_thinking_tags(
-                clean_output_text(cleaned_text, **output_cleaning_kwargs)
+            literal_think_tags = (
+                output_cleaning_kwargs.get("enable_thinking") is False
+                and not output_cleaning_kwargs.get("prompt_thinking_active")
+                and not (output.raw_text or output.text).lstrip().startswith("<think>")
             )
-            final_content = sanitize_output(final_content)
+            if literal_think_tags and tool_calls:
+                cleaned_text = cleaned_text.replace("</think>", "", 1)
+            final_content = clean_output_text(cleaned_text, **output_cleaning_kwargs)
+            if not literal_think_tags:
+                final_content = strip_thinking_tags(final_content)
+            final_content = sanitize_output(
+                final_content, preserve_think_close=literal_think_tags
+            )
         if response_format and final_content:
             final_content = extract_json_from_response(final_content)
 
@@ -7713,6 +7723,7 @@ async def _create_chat_completion_impl(
     )
     if channels_owned:
         chat_response.choices[0].message.reasoning_content = reasoning_text
+    if channels_owned or literal_think_tags:
         chat_response.choices[0].message.content = final_content
     # ── Response cache — STORE ───────────────────────────────────────
     #
@@ -8033,12 +8044,14 @@ async def stream_chat_completion(
             where the token can be exactly what the caller asked the
             model to write.
             """
-            _sanitize = (
-                sanitize_reasoning_for_stream
+            sanitized = (
+                sanitize_reasoning_for_stream(text)
                 if field == "reasoning_content"
-                else sanitize_content_for_stream
+                else sanitize_content_for_stream(
+                    text, preserve_think_close=preserve_think_close
+                )
             )
-            escaped = json.dumps(text if processor.channels_owned else _sanitize(text))
+            escaped = json.dumps(text if processor.channels_owned else sanitized)
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # Wire truth for content already delivered before the terminal chunk:
@@ -8055,7 +8068,11 @@ async def stream_chat_completion(
         ) -> str:
             """Serialize one content delta, preserving requested logprobs."""
             wire_text = (
-                text if processor.channels_owned else sanitize_content_for_stream(text)
+                text
+                if processor.channels_owned
+                else sanitize_content_for_stream(
+                    text, preserve_think_close=preserve_think_close
+                )
             )
             _streamed_content_parts.append(wire_text)
             if not want_logprobs:
@@ -8071,7 +8088,7 @@ async def stream_chat_completion(
                     )
                 ],
             )
-            if processor.channels_owned:
+            if processor.channels_owned or preserve_think_close:
                 chunk.choices[0].delta.content = wire_text
             return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
@@ -8197,6 +8214,17 @@ async def stream_chat_completion(
         )
         processor.set_thinking_model(request.model)
         processor.reset()
+        preserve_think_close = (
+            type(processor.reasoning_parser) is Qwen3ReasoningParser
+            and not processor.reasoning_parser._implicit_reasoning
+        )
+        if preserve_think_close:
+            # This parser already consumed the sole structural stray closer.
+            from ..api.utils import StreamingContentSanitizer
+
+            processor._content_sanitizer = StreamingContentSanitizer(
+                preserve_think_close=True
+            )
 
         # Forced ``tool_choice`` synthetic-prefix replay swallow (PR #716
         # codex r9 BLOCKING #1). When the upstream chat_kwargs builder
@@ -9228,6 +9256,8 @@ async def stream_chat_completion(
                 usage=None,
                 metrics=_build_response_metrics(finish_output),
             )
+            if preserve_think_close:
+                final_chunk.choices[0].delta.content = terminal_content or None
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
         elif fallback_tool_calls or finalize_content:
             # Defensive: stream ended without a "finish" event but

@@ -233,7 +233,9 @@ def strip_reasoning_channel_markup(text: str) -> str:
     return _REASONING_CHANNEL_TAG_RE.sub("", text)
 
 
-def sanitize_output(text: str, *, strip_tool_markup: bool = True) -> str:
+def sanitize_output(
+    text: str, *, strip_tool_markup: bool = True, preserve_think_close: bool = False
+) -> str:
     """Final catch-all sanitizer for client-facing content.
 
     This is the LAST defense against markup leakage. Runs after all
@@ -242,8 +244,12 @@ def sanitize_output(text: str, *, strip_tool_markup: bool = True) -> str:
 
     ``strip_tool_markup=False`` preserves tool-call-shaped text for requests
     where tool parsing is disabled, while still removing other special tokens.
+    ``preserve_think_close=True`` leaves literal closers already classified by
+    the request's reasoning parser intact.
     """
     pattern = _FINAL_SANITIZER if strip_tool_markup else _FINAL_SANITIZER_NO_TOOL_MARKUP
+    if preserve_think_close:
+        pattern = re.compile(pattern.pattern.replace(r"|</think>", ""), re.DOTALL)
     return _sanitize_with(text, pattern)
 
 
@@ -503,7 +509,9 @@ class StreamingReasoningSanitizer:
         return result
 
 
-def sanitize_content_for_stream(text: str | None) -> str:
+def sanitize_content_for_stream(
+    text: str | None, *, preserve_think_close: bool = False
+) -> str:
     """Streaming variant of :func:`sanitize_output` for ``content``.
 
     Same whitespace-preservation contract as
@@ -514,7 +522,10 @@ def sanitize_content_for_stream(text: str | None) -> str:
     reasoning sanitizer is what let the marker get eaten out of files
     the agent was asked to write.
     """
-    return _sanitize_for_stream(text, _FINAL_SANITIZER)
+    pattern = _FINAL_SANITIZER
+    if preserve_think_close:
+        pattern = re.compile(pattern.pattern.replace(r"|</think>", ""), re.DOTALL)
+    return _sanitize_for_stream(text, pattern)
 
 
 # Partial forms of _FINAL_SANITIZER's angle tokens and [Calling\s+tool.

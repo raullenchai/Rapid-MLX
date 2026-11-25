@@ -262,6 +262,13 @@ def test_reasoning_delimiters_every_split(surface, thinking, raw, reason, answer
     [
         ("\n<think>R</think>A", "R", "A"),
         ("preamble<think>R</think>A", "", "preamble<think>RA"),
+        ("a</think>b</think>c", "", "ab</think>c"),
+        ("a<think>b</think>c</think>d", "", "a<think>bc</think>d"),
+        *[
+            (prefix + tail, "", prefix + tail)
+            for prefix in ("", "answer")
+            for tail in ("<", "</", "</thin")
+        ],
         (
             "I will list files.\n```bash\nls\n```\n</think>\nRunning it now.",
             "",
@@ -286,9 +293,72 @@ def test_thinking_off_stray_closer_keeps_answer(
     monkeypatch.setattr(Engine, "chat", cleaned_chat)
     buffered = route("qwen3", "hermes", raw, surface, False, thinking=False)
     assert buffered == {"content": content, "reasoning": reasoning, "calls": []}
-    for chunks in [[raw], list(raw)]:
-        streamed = route("qwen3", "hermes", raw, surface, True, chunks, thinking=False)
+    for chunks in [[raw], list(raw), [raw[i : i + 7] for i in range(0, len(raw), 7)]]:
+        streamed = route(
+            "qwen3", "hermes", raw, surface, True, chunks, thinking=False, capture=True
+        )
+        packets = streamed.pop("packets")
         assert streamed == buffered
+        if surface == "messages":
+            active = set()
+            for packet in packets:
+                typ = packet["type"]
+                if typ == "content_block_start":
+                    assert not active
+                    active.add(packet["index"])
+                elif typ == "content_block_delta":
+                    assert packet["index"] in active
+                elif typ == "content_block_stop":
+                    active.remove(packet["index"])
+            assert not active
+        elif surface == "responses":
+            done = False
+            for packet in packets:
+                if packet["type"] == "response.output_text.delta":
+                    assert not done
+                if packet["type"] == "response.output_text.done":
+                    done = True
+                    assert packet["text"] == content
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("earlier_closer", [False, True])
+def test_thinking_off_tool_argument_closer(surface, earlier_closer, monkeypatch):
+    from rapid_mlx.api.utils import clean_output_text
+
+    original_chat = Engine.chat
+
+    async def cleaned_chat(self, **kwargs):
+        output = await original_chat(self, **kwargs)
+        output.text = clean_output_text(
+            output.text, **kwargs.get("_output_cleaning_kwargs", {})
+        )
+        return output
+
+    monkeypatch.setattr(Engine, "chat", cleaned_chat)
+    prefix = "a</think>" if earlier_closer else ""
+    raw = (
+        prefix
+        + '<function=run_shell_command><parameter=command>echo "</think>"</parameter></function>'
+    )
+    buffered = route("qwen3", "qwen3_coder_xml", raw, surface, False, thinking=False)
+    assert buffered == {
+        "content": "a" if earlier_closer else "",
+        "reasoning": "",
+        "calls": [["run_shell_command", {"command": 'echo "</think>"'}]],
+    }
+    # Buffered extraction, and the Messages/Responses streaming recovery,
+    # decode tool arguments before the reasoning parser can consume a closer.
+    expected = dict(buffered)
+    if surface == "chat" and not earlier_closer:
+        expected["calls"] = [["run_shell_command", {"command": 'echo ""'}]]
+    for chunks in [[raw], list(raw), [raw[i : i + 7] for i in range(0, len(raw), 7)]]:
+        assert (
+            route(
+                "qwen3", "qwen3_coder_xml", raw, surface, True, chunks, thinking=False
+            )
+            == expected
+        )
 
 
 def test_nested_block_preserves_later_reasoning_and_answer():
@@ -332,7 +402,7 @@ def test_thinking_off_every_split(raw):
     expected = (
         ("R", "A")
         if raw.lstrip().startswith("<think>")
-        else (None, raw.replace("</think>", ""))
+        else (None, raw.replace("</think>", "", 1))
     )
     assert buffered == expected
     for chunks in [[raw], list(raw)] + [[raw[:i], raw[i:]] for i in range(1, len(raw))]:

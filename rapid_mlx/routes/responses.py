@@ -2474,16 +2474,25 @@ async def _non_stream(
     )
 
     final_content = None
+    literal_think_tags = False
     if cleaned_text:
         if channels_owned:
             final_content = strip_special_tokens(cleaned_text)
         else:
-            final_content = strip_thinking_tags(
-                clean_output_text(cleaned_text, **output_cleaning_kwargs)
+            literal_think_tags = (
+                output_cleaning_kwargs.get("enable_thinking") is False
+                and not output_cleaning_kwargs.get("prompt_thinking_active")
+                and not (output.raw_text or output.text).lstrip().startswith("<think>")
             )
+            if literal_think_tags and tool_calls:
+                cleaned_text = cleaned_text.replace("</think>", "", 1)
+            final_content = clean_output_text(cleaned_text, **output_cleaning_kwargs)
+            if not literal_think_tags:
+                final_content = strip_thinking_tags(final_content)
             final_content = sanitize_output(
                 final_content,
                 strip_tool_markup=bool(tool_parse_request.tools),
+                preserve_think_close=literal_think_tags,
             )
         # R7-M4 (Vlad r7 — 0.8.8 sweep): mirror the chat-route fence-strip
         # so a model that wraps a ``json_object`` / ``json_schema`` body
@@ -2581,7 +2590,7 @@ async def _non_stream(
     if channels_owned:
         assistant_message.reasoning_content = reasoning_text
         assistant_message.content = final_content
-    if not tool_parse_request.tools:
+    if not tool_parse_request.tools or literal_think_tags:
         # The request-aware sanitizer already handled non-tool markup. Restore
         # tool-shaped text removed by AssistantMessage's context-free validator.
         assistant_message.content = final_content
@@ -3638,7 +3647,13 @@ async def _stream_responses(
             openai_request.model_dump(),
             filter_tools,
             tool_filter,
-            preserve_think_close=reasoning_parser is None,
+            preserve_think_close=(
+                reasoning_parser is None
+                or (
+                    type(reasoning_parser) is Qwen3ReasoningParser
+                    and chat_kwargs.get("enable_thinking") is False
+                )
+            ),
         )
 
         reasoning_close_marker = "</think>"
@@ -4400,6 +4415,18 @@ async def _stream_responses(
             owned_tail = "".join(owned_content(prompt_owner.finish()))
             accumulated_raw = "".join(prompt_owner.content)
         merge_owned_reasoning()
+
+        if (
+            type(reasoning_parser) is Qwen3ReasoningParser
+            and not reasoning_parser._implicit_reasoning
+        ):
+            tail = reasoning_parser.finish_stream()
+            if tail and tail.content:
+                content = _transition_reasoning_to_content(tail.content)
+                filtered = tool_filter.process(content)
+                if filtered:
+                    async for ev in _emit_text_delta(filtered):
+                        yield ev
 
         # Flush the same content-only tool input, including a partial final marker.
         remaining = owned_tail + tool_filter.flush()

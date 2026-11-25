@@ -53,7 +53,8 @@ class TestStreamingPostProcessorBasic:
 
     @pytest.mark.parametrize("wrapped", [False, True])
     @pytest.mark.parametrize("size", [1, 1000])
-    def test_thinking_off_stray_closer_before_function(self, wrapped, size):
+    @pytest.mark.parametrize("command", ["ls", 'echo "</think>"'])
+    def test_thinking_off_stray_closer_before_function(self, wrapped, size, command):
         cfg = _make_cfg(
             reasoning_parser_name="qwen3",
             enable_auto_tool_choice=True,
@@ -61,7 +62,7 @@ class TestStreamingPostProcessorBasic:
         )
         request = {"tools": [{"type": "function", "function": {"name": "bash"}}]}
         pp = StreamingPostProcessor(cfg, request=request, enable_thinking=False)
-        wire = "<function=bash><parameter=command>ls</parameter></function>"
+        wire = f"<function=bash><parameter=command>{command}</parameter></function>"
         if wrapped:
             wire = "<tool_call>" + wire + "</tool_call>"
         raw = "I will list files.</think>" + wire
@@ -77,7 +78,7 @@ class TestStreamingPostProcessorBasic:
         assert any(function.get("name") == "bash" for function in functions)
         assert json.loads(
             "".join(function.get("arguments", "") for function in functions)
-        ) == {"command": "ls"}
+        ) == {"command": command}
 
     def test_simple_content(self):
         cfg = _make_cfg()

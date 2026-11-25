@@ -266,6 +266,50 @@ class TestQwen3Parser:
             assert not delta.reasoning
             previous += chunk
 
+    @pytest.mark.parametrize("finalizer", ["finish_stream", "finalize_streaming"])
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            *[
+                (prefix + tail, prefix + tail)
+                for prefix in ("", "answer")
+                for tail in ("<", "</", "</thin")
+            ],
+            ("a</think>b</think>c", "ab</think>c"),
+            (
+                'a</think><function=bash><parameter=command>echo "</think>"</parameter></function>',
+                'a<function=bash><parameter=command>echo "</think>"</parameter></function>',
+            ),
+            (
+                '<function=bash><parameter=command>echo "</think>"</parameter></function>',
+                '<function=bash><parameter=command>echo ""</parameter></function>',
+            ),
+        ],
+    )
+    def test_thinking_off_content_parity(self, parser, finalizer, raw, expected):
+        assert parser.extract_reasoning(raw, enable_thinking=False) == (None, expected)
+        for chunks in [[raw], list(raw)] + [
+            [raw[:i], raw[i:]] for i in range(1, len(raw))
+        ]:
+            parser.configure_request(enable_thinking=False)
+            previous = content = ""
+            for chunk in chunks:
+                delta = parser.extract_reasoning_streaming(
+                    previous, previous + chunk, chunk
+                )
+                previous += chunk
+                if delta:
+                    assert not delta.reasoning
+                    content += delta.content or ""
+                assert len(parser._off_pending) < len(parser.end_token)
+            finish = getattr(parser, finalizer)
+            final = finish(raw) if finalizer == "finalize_streaming" else finish()
+            if final:
+                assert not final.reasoning
+                content += final.content or ""
+            assert content == expected, chunks
+            assert not parser.finish_stream().content
+
     # Streaming tests
 
     def test_streaming_simple_flow(self, parser):

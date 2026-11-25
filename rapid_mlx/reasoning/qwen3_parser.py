@@ -171,14 +171,22 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         super().reset_state()
         self._off_leading = True
         self._off_pending = ""
+        self._off_closer_consumed = False
 
     def _extract_thinking_off(self, text: str, *, final: bool = False) -> DeltaMessage:
-        """Emit content verbatim except closers, holding partial tag suffixes."""
+        """Consume the first stray closer and hold only a possible delimiter."""
         text = self._off_pending + text
-        held = 0 if final else self._held_partial_tag_len(text)
+        if not self._off_closer_consumed and self.end_token in text:
+            text = text.replace(self.end_token, "", 1)
+            self._off_closer_consumed = True
+        held = (
+            0
+            if final or self._off_closer_consumed
+            else self._held_partial_tag_len(text)
+        )
         self._off_pending = text[len(text) - held :] if held else ""
         text = text[: len(text) - held]
-        return DeltaMessage(content=text.replace(self.end_token, "") or None)
+        return DeltaMessage(content=text or None)
 
     def extract_reasoning_streaming(
         self, previous_text: str, current_text: str, delta_text: str
@@ -265,7 +273,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 return super().extract_reasoning(
                     model_output, enable_thinking=enable_thinking
                 )
-            return None, model_output.replace(self.end_token, "")
+            return None, model_output.replace(self.end_token, "", 1)
         if end_index != -1 and (start_index == -1 or end_index < start_index):
             reasoning = model_output[:end_index].strip() or None
             content = model_output[end_index + len(self.end_token) :].strip() or None
@@ -414,10 +422,9 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            routes to ``reasoning`` (preserves #570).
         """
         if not getattr(self, "_implicit_reasoning", True):
-            # Content here replaces the whole output on the messages route.
-            # After streaming content, never use a held delimiter suffix as
-            # that correction; leave incomplete terminal prefixes un-emitted.
-            return self.finish_stream() if self._off_leading else None
+            # Routes drain finish_stream before closing their content lane;
+            # direct callers also receive any still-held suffix exactly once.
+            return self.finish_stream()
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
             return None

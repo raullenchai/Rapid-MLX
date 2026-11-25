@@ -1079,13 +1079,25 @@ async def create_anthropic_message(
         )
 
         final_content = None
+        literal_think_tags = False
         if cleaned_text:
             if channels_owned:
                 final_content = strip_special_tokens(cleaned_text)
             else:
-                final_content = strip_thinking_tags(
-                    clean_output_text(cleaned_text, **output_cleaning_kwargs)
+                literal_think_tags = (
+                    output_cleaning_kwargs.get("enable_thinking") is False
+                    and not output_cleaning_kwargs.get("prompt_thinking_active")
+                    and not (output.raw_text or output.text)
+                    .lstrip()
+                    .startswith("<think>")
                 )
+                if literal_think_tags and tool_calls:
+                    cleaned_text = cleaned_text.replace("</think>", "", 1)
+                final_content = clean_output_text(
+                    cleaned_text, **output_cleaning_kwargs
+                )
+                if not literal_think_tags:
+                    final_content = strip_thinking_tags(final_content)
                 # Final defense against special-token / markup leakage — mirrors
                 # chat.py:669 so the two surfaces don't diverge on what they
                 # consider "sanitized" client-facing content. Pre-existing gap
@@ -1093,6 +1105,7 @@ async def create_anthropic_message(
                 final_content = sanitize_output(
                     final_content,
                     strip_tool_markup=bool(chat_kwargs.get("tools")),
+                    preserve_think_close=literal_think_tags,
                 )
 
         # Issue #569: never silently drop. Mirror the OpenAI route's
@@ -1189,7 +1202,7 @@ async def create_anthropic_message(
         if channels_owned:
             assistant_message.reasoning_content = reasoning_text
             assistant_message.content = final_content
-        if not chat_kwargs.get("tools"):
+        if not chat_kwargs.get("tools") or literal_think_tags:
             # The request-aware sanitizer already handled non-tool markup.
             # Preserve tool-shaped text through the context-free validator.
             assistant_message.content = final_content
@@ -1225,7 +1238,8 @@ async def create_anthropic_message(
         anthropic_response = openai_to_anthropic(
             openai_response,
             cfg.model_name or anthropic_request.model,
-            channels_owned=channels_owned,
+            # Thinking-off content was already classified and sanitized above.
+            channels_owned=channels_owned or literal_think_tags,
             strip_tool_markup=bool(chat_kwargs.get("tools")),
             reasoning_enabled=_resolve_reasoning_enabled(anthropic_request.model),
             # H-03: forward the engine-surfaced matched stop string so
@@ -2279,7 +2293,13 @@ async def _stream_anthropic_messages(
         openai_request.model_dump(),
         filter_tools,
         tool_filter,
-        preserve_think_close=reasoning_parser is None,
+        preserve_think_close=(
+            reasoning_parser is None
+            or (
+                type(reasoning_parser) is Qwen3ReasoningParser
+                and chat_kwargs.get("enable_thinking") is False
+            )
+        ),
     )
 
     # Per-request reasoning cap (upstream vLLM PR #20859 / #42396 backport).
@@ -2715,6 +2735,25 @@ async def _stream_anthropic_messages(
         for packet in emit_owned(prompt_owner.finish()):
             yield packet
         accumulated_text = "".join(prompt_owner.content)
+
+    # Drain thinking-off delimiter prefixes before closing the current block.
+    # finalize_streaming's correction lane replaces accumulated_text here.
+    if (
+        type(reasoning_parser) is Qwen3ReasoningParser
+        and not reasoning_parser._implicit_reasoning
+    ):
+        tail = reasoning_parser.finish_stream()
+        if tail and tail.content:
+            filtered = tool_filter.process(tail.content)
+            events, current_block_type, block_index = _emit_and_track(
+                [("text", filtered)] if filtered else [],
+                current_block_type,
+                block_index,
+            )
+            for event in events:
+                ev = _capture(event)
+                if ev is not None:
+                    yield ev
 
     # Flush remaining from both filters
     remaining = tool_filter.flush()

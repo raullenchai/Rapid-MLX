@@ -97,6 +97,7 @@ class TestCleanOutputText:
         "text",
         [
             "Answer before</think>answer after",
+            "a</think>b</think>c",
             "preamble<think>R</think>A",
             "\n<think>R</think>A",
         ],
@@ -121,6 +122,23 @@ class TestCleanOutputText:
             '<parameter=command>echo "<think>"</parameter></function>'
         )
         assert clean_output_text(text, enable_thinking=False) == text
+
+    @pytest.mark.parametrize("strip_tools", [False, True])
+    def test_cleaned_literal_closers_survive_final_sanitizers(self, strip_tools):
+        from rapid_mlx.api.utils import sanitize_content_for_stream, sanitize_output
+
+        text = "ab</think>c"
+        assert clean_output_text(text, enable_thinking=False) == text
+        assert (
+            sanitize_output(
+                text, strip_tool_markup=strip_tools, preserve_think_close=True
+            )
+            == text
+        )
+        assert sanitize_content_for_stream(text, preserve_think_close=True) == text
+        # Default callers retain their existing structural-marker cleanup.
+        assert sanitize_output(text) == "abc"
+        assert sanitize_content_for_stream(text) == "abc"
 
     def test_combined_special_tokens_and_think(self):
         text = "<|im_start|><think>I need to think.</think>42<|im_end|>"
