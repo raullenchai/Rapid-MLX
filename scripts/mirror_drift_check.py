@@ -560,13 +560,13 @@ def _load_aliases(main_path: Path, audio_path: Path) -> list[AliasSpec]:
     repo_profiles_path = main_path.with_name("repo_profiles.json")
     catalogs = [(main_path, "hf_path", "main"), (audio_path, "hf_id", "audio")]
     if repo_profiles_path.exists():
-        catalogs.insert(1, (repo_profiles_path, "hf_path", "main"))
+        catalogs.append((repo_profiles_path, "hf_path", "main"))
     for path, key, source in catalogs:
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict):
             raise ValueError(f"{path} must contain a JSON object")
-        if path == main_path:
-            current_aliases = set(payload)
+        if path != repo_profiles_path:
+            current_aliases.update(payload)
         for alias, profile in payload.items():
             if not isinstance(profile, dict):
                 continue

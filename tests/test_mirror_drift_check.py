@@ -596,6 +596,31 @@ def test_retired_alias_catalog_lookup(
         )
 
 
+def test_current_audio_alias_in_repo_profiles_uses_strict_lookup(monkeypatch, tmp_path):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    main.write_text("{}")
+    audio.write_text(json.dumps({"speech": {"hf_id": "audio/speech"}}))
+    (tmp_path / "repo_profiles.json").write_text(
+        json.dumps({"speech": {"hf_path": "audio/speech"}})
+    )
+    entries = [
+        {"alias": "audio/speech", "hf_path": "audio/speech", "status": "mirrored"}
+    ]
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: entries)
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(drift, "_hf_repo", lambda _repo: drift.HfRepo("rev", []))
+
+    reports = drift.audit(main, audio, aliases={"speech"}, only_used=True)
+
+    assert len(reports) == 2
+    for report in reports:
+        assert report.catalog_status is None
+        assert not report.catalog_present
+        assert any(f.kind == "not_in_catalog" for f in report.findings)
+    assert all(not spec.retired for spec in drift._load_aliases(main, audio))
+
+
 def test_hf_failure_is_reported_without_aborting(monkeypatch, tmp_path):
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
