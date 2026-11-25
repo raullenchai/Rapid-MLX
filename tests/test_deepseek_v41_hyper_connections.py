@@ -483,9 +483,9 @@ def test_hc_mixes_column_major_projection_takes_the_stock_graph(
     expected = hc._hc_mixes_reference(x, column_major, scale, base, 4, 20, 1e-6, 1e-6)
     for a, e in zip(actual, expected, strict=True):
         assert mx.array_equal(a, e).item()
-    # the fused order differs here, which is why the layout is excluded
-    fused = hc._fused_hc_mixes(x, column_major, scale, base, 20, 1e-6, 1e-6)
-    assert not mx.array_equal(fused[0], expected[0]).item()
+    # The fused order can differ from the stock matmul here, which is why the
+    # layout is excluded. Whether it does depends on the stock summation order
+    # (it differs before MLX 0.32.5 and matches from 0.32.5), so it is not pinned.
 
 
 def test_fused_hc_mixes_reads_strided_scale_and_base_densely() -> None:
