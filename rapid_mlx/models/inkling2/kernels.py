@@ -149,7 +149,10 @@ def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dty
     )
     if _probe_expert_conv_residual(kernel, tuple(launch["template"]), x.dtype) is None:
         return None
-    return kernel(**launch)
+    try:
+        return kernel(**launch)
+    except Exception:
+        return None
 
 
 # One thread owns a channel, including its FP32 history. Do not contract the

@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "bffb29d6e239f1e2340e8da5fb2e80bc9b2e61ebbc96d71706a810292f2d69a3",
-    "kernels.py": "897d83edcf87ad981dc4d36eb901985a4d7471975f8eca078129c8fad097dc21",
+    "kernels.py": "416876475b1f432ca6d597a22c08287b71da3a2a23318bd05f6521e7730753ed",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -738,7 +738,8 @@ def test_expert_conv_residual_cached_logits(metal_runtime, monkeypatch, dtype):
 
 
 @pytest.mark.requires_mlx
-def test_expert_conv_residual_fallback(metal_runtime, monkeypatch):
+@pytest.mark.parametrize("failure", ["probe", "invocation"])
+def test_expert_conv_residual_fallback(metal_runtime, monkeypatch, failure):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
@@ -771,9 +772,15 @@ def test_expert_conv_residual_fallback(metal_runtime, monkeypatch):
     broken = Mock(side_effect=RuntimeError("lazy compilation unavailable"))
     with monkeypatch.context() as patch:
         patch.setattr(mx.fast, "metal_kernel", Mock(return_value=broken))
+        if failure == "invocation":
+            patch.setattr(
+                kernels, "_probe_expert_conv_residual", lambda kernel, *args: kernel
+            )
         actual = model(mx.array([[4]]), cache=cache)
         assert mx.array_equal(actual, expected).item()
-        broken.assert_called_once()
+        broken.assert_called()
+        if failure == "probe":
+            broken.assert_called_once()
     kernels._expert_conv_residual_factory.cache_clear()
     kernels._probe_expert_conv_residual.cache_clear()
     # The existing setting and uncached/multi-token/batched calls bypass fusion.
