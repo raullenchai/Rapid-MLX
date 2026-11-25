@@ -81,7 +81,7 @@ _NUMERICAL_CORE_SHA256 = {
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "342d56d32a4936da5d3ce0b796d3bb4fd133d2722fd44657fe79cf6b38300754",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
-    "nvfp4_decode.py": "92378b67e35e409a49e497c008116fd490d02f9dd652f4adced185b3550a11db",
+    "nvfp4_decode.py": "b94edcb8b4ecb88fda1cbee2a39f79db0c260f3bb0ccefa7abe996b305479213",
 }
 
 
@@ -401,7 +401,7 @@ def test_nvfp4_decode_unsupported(metal_runtime, monkeypatch, case):
 
 
 @pytest.mark.parametrize("failure", ["build", "call", "eval"])
-def test_nvfp4_decode_build_failure(metal_runtime, monkeypatch, failure):
+def test_nvfp4_decode_nondefault_build_failure(metal_runtime, monkeypatch, failure):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import nvfp4_decode
     from rapid_mlx.models.inkling2 import switch_layers as sl
@@ -416,9 +416,10 @@ def test_nvfp4_decode_build_failure(metal_runtime, monkeypatch, failure):
     error = RuntimeError("unavailable")
     kernel = Mock(side_effect=error if failure == "call" else None)
     build = Mock(side_effect=error if failure == "build" else None, return_value=kernel)
-    monkeypatch.setattr(mx.fast, "metal_kernel", build)
     factory = functools.cache(nvfp4_decode._get_kernel.__wrapped__)
     monkeypatch.setattr(nvfp4_decode, "_get_kernel", factory)
+    assert factory() is not None
+    monkeypatch.setattr(mx.fast, "metal_kernel", build)
     with monkeypatch.context() as probe:
         if failure == "eval":
             kernel.return_value = [mx.zeros((1,), mx.bfloat16)]
@@ -427,11 +428,28 @@ def test_nvfp4_decode_build_failure(metal_runtime, monkeypatch, failure):
         actual = [layer(x, indices), layer(x, indices)]
     for output in actual:
         assert mx.array_equal(output, expected).item()
-    assert factory() is None and factory() is None
+    assert factory(128, 32, True, False) is None and factory() is not None
     build.assert_called_once()
     assert kernel.call_count == (failure != "build")
     if failure == "eval":
         evaluate.assert_called_once()
+
+
+@pytest.mark.parametrize("dtype", ["int32", "uint32", "int64", "uint64"])
+def test_nvfp4_invalid_indices_no_crash_no_stock_parity(metal_runtime, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, 16, 4, "nvfp4", True)
+    x = mx.ones((1, 1, 128), mx.bfloat16)
+    indices = mx.array([-1, 4, 2**31 - 1], mx.int64).astype(getattr(mx, dtype))
+    output = nvfp4_decode.project(
+        x, layer.weight, layer.scales, indices, layer.global_scale
+    )
+    mx.eval(output)
+    assert output.shape == (3, 1, 32)
+    assert mx.all(mx.isfinite(output)).item()
 
 
 def test_nvfp4_decode_model_exact(metal_runtime, monkeypatch):

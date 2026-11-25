@@ -30,7 +30,7 @@ _SOURCE = """
     uint row = thread_position_in_grid.y;
     uint k = thread_position_in_grid.z;
     if (row >= M) return;
-    uint expert = idx[k];
+    uint expert = uint(clamp(idx[k], 0, w_shape[0] - 1));
     uint wb = (expert * M + row) * (N / 8);
     uint sb = (expert * M + row) * (N / 16);
     uint xb = SHARED ? 0 : k * N;
@@ -62,7 +62,7 @@ _SOURCE = """
 
 
 @cache
-def _get_kernel():
+def _get_kernel(n=16, rows=32, shared=True, has_scale=True):
     try:
         kernel = mx.fast.metal_kernel(
             name="inkling2_nvfp4_decode",
@@ -71,21 +71,28 @@ def _get_kernel():
             header=_HEADER,
             source=_SOURCE,
         )
-        # Metal compilation is lazy: force a tiny synthetic dispatch before
+        # Metal compilation is lazy: probe this specialization before
         # caching success, without evaluating or changing the caller's inputs.
         mx.eval(
             kernel(
                 inputs=[
-                    mx.zeros((1, 1, 16), mx.bfloat16),
-                    mx.zeros((1, 32, 2), mx.uint32),
-                    mx.zeros((1, 32, 1), mx.uint8),
-                    mx.zeros((1,), mx.uint32),
-                    mx.full((1,), 2688.0, mx.float32),
+                    mx.zeros((1, 1, n), mx.bfloat16),
+                    mx.zeros((1, rows, n // 8), mx.uint32),
+                    mx.zeros((1, rows, n // 16), mx.uint8),
+                    mx.zeros((1,), mx.int32),
+                    mx.full((1,), 2688.0, mx.float32)
+                    if has_scale
+                    else mx.zeros((1, rows, n // 16), mx.uint8),
                 ],
-                template=[("N", 16), ("M", 32), ("SHARED", True), ("HAS_SCALE", True)],
-                grid=(32, 32, 1),
+                template=[
+                    ("N", n),
+                    ("M", rows),
+                    ("SHARED", shared),
+                    ("HAS_SCALE", has_scale),
+                ],
+                grid=(32, rows, 1),
                 threadgroup=(32, 16, 1),
-                output_shapes=[(1, 1, 32)],
+                output_shapes=[(1, 1, rows)],
                 output_dtypes=[mx.bfloat16],
             )[0]
         )
@@ -96,14 +103,14 @@ def _get_kernel():
 
 
 def project(x, w, scales, indices, global_scale):
-    kernel = _get_kernel()
+    rows, n, p = w.shape[1], x.shape[-1], indices.size
+    kernel = _get_kernel(n, rows, x.shape[-3] == 1, global_scale is not None)
     if kernel is None:
         return None
-    rows, n, p = w.shape[1], x.shape[-1], indices.size
     shape = (1,) * max(x.ndim - 3, indices.ndim - 1) + (p, 1, rows)
     scale = global_scale if global_scale is not None else scales
     return kernel(
-        inputs=[x, w, scales, indices.astype(mx.uint32), scale],
+        inputs=[x, w, scales, indices.astype(mx.int32), scale],
         template=[
             ("N", n),
             ("M", rows),
