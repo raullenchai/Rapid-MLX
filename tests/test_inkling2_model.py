@@ -78,7 +78,7 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "64ca3eb8882c4b89111dc844287b3a546bc3abdbdafd29dbb41fe718ed33dbfa",
+    "layers.py": "fccca19798afdfd9c1416a9b423a815d500acca064c1d1b3b8d1afdd98067d19",
     "kernels.py": "1421bed51f55c18b85cf9b79695819a7c09c2fb64dd1d6552a2a95e2c06c52b6",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
@@ -1195,7 +1195,9 @@ def create_model(runtime, *, dtype=None, loop=True):
 @pytest.mark.parametrize(
     "mode,group", [("affine", 64), ("mxfp4", 32), ("nvfp4", 16), ("mxfp8", 32)]
 )
-def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
+def test_packed_quantized_projections_exact(
+    metal_runtime, monkeypatch, dtype, mode, group
+):
     import gc
 
     from mlx import nn
@@ -1203,6 +1205,16 @@ def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
     from rapid_mlx.models.inkling2.layers import _packed_quantized_projections
 
     mx, _ = metal_runtime
+
+    def packed_call(owner, projections, x):
+        with monkeypatch.context() as m:
+            launch = Mock(wraps=mx.quantized_matmul)
+            m.setattr(mx, "quantized_matmul", launch)
+            output = _packed_quantized_projections(owner, "query", projections, x)
+            launch.assert_called_once()
+            assert output is not None
+            return output
+
     dtype = getattr(mx, dtype)
     for seed, width, scale in ((3, 64, 0.001), (17, 128, 1.0), (91, 4096, 100.0)):
         mx.random.seed(seed)
@@ -1215,7 +1227,7 @@ def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
         x = (mx.random.normal((1, 1, width * 2)) * scale).astype(dtype)[..., ::2]
         expected = [p(x) for p in projections]
         mx.eval(expected, [p.parameters() for p in projections])
-        actual = _packed_quantized_projections(owner, "query", projections, x)
+        actual = packed_call(owner, projections, x)
         mx.eval(actual)
         for a, b in zip(actual, expected):
             assert a.dtype == b.dtype
@@ -1226,7 +1238,7 @@ def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
         mx.synchronize()
         before = mx.get_active_memory()
         packed = owner._decode_pack_query
-        actual = _packed_quantized_projections(owner, "query", projections, x)
+        actual = packed_call(owner, projections, x)
         mx.eval(actual)
         del actual
         gc.collect()
@@ -1238,7 +1250,7 @@ def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
             1, dtype=projections[0].scales.dtype
         )
         expected = projections[0](x)
-        actual = _packed_quantized_projections(owner, "query", projections, x)[0]
+        actual = packed_call(owner, projections, x)[0]
         assert mx.array_equal(actual, expected).item()
 
 
@@ -1272,15 +1284,21 @@ def test_packed_projection_fallbacks(metal_runtime, monkeypatch, failure):
         for f in ("weight", "scales", "biases"):
             assert p[f] is original.pop(0)
     assert all(mx.array_equal(p(x), y).item() for p, y in zip(projections, expected))
-    projections[1].bits = 8
-    assert pack(nn.Module(), "query", projections, x) is None
-    projections[1].bits = 4
-    projections[1].bias = mx.zeros((32,))
-    assert pack(nn.Module(), "query", projections, x) is None
-    assert pack(nn.Module(), "query", [nn.Linear(64, 32)] * 2, x) is None
-
+    with monkeypatch.context() as m:
+        m.setattr(mx, "quantized_matmul", lambda *a, **kw: pytest.fail("packed launch"))
+        scales = projections[1].scales
+        for invalid in (scales.astype(mx.float16), scales[:, :0]):
+            projections[1].scales = invalid
+            assert pack(nn.Module(), "query", projections, x) is None
+        projections[1].scales = scales
+        projections[1].bits = 8
+        assert pack(nn.Module(), "query", projections, x) is None
+        projections[1].bits = 4
+        projections[1].bias = mx.zeros((32,))
+        assert pack(nn.Module(), "query", projections, x) is None
+        assert pack(nn.Module(), "query", [nn.Linear(64, 32)] * 2, x) is None
     attn = layers.SlidingAttention(inkling2.ModelArgs.from_dict(CONFIG).text)
-    spy = Mock(return_value=None)
+    spy = Mock(side_effect=lambda *a: pytest.fail("excluded packed path"))
     monkeypatch.setattr(layers, "_packed_quantized_projections", spy)
     for batch, length, cache, enabled, gpu in (
         (1, 2, [SimpleNamespace(offset=2)], "1", True),
@@ -1296,6 +1314,7 @@ def test_packed_projection_fallbacks(metal_runtime, monkeypatch, failure):
         h = mx.ones((batch, length, 64))
         attn._project_inputs(h, h, h, cache)
     spy.assert_not_called()
+    spy.side_effect, spy.return_value = None, None
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
     monkeypatch.setattr(layers, "_use_kernels", lambda: True)
     attn._project_inputs(x, x, x + 1, [SimpleNamespace(offset=2)])
@@ -1330,6 +1349,7 @@ def test_packed_projection_invocation_failure(metal_runtime, monkeypatch):
         with mx.stream(mx.new_stream(mx.gpu)):
             barrier.wait(timeout=10)
             output = _packed_quantized_projections(owner, "query", projections, x)
+            assert output is not None
             mx.eval(output)
             return output
 
@@ -1363,12 +1383,28 @@ def test_packed_projection_cached_logits_exact(metal_runtime, monkeypatch, dtype
     full = model(tokens)
     mx.eval(full)
     pack = layers._packed_quantized_projections
+
+    def checked_pack(*args):
+        output = pack(*args)
+        assert output is not None
+        return output
+
+    spy = Mock(side_effect=checked_pack)
     for start, end in [(0, 6)] + [(i, i + 1) for i in range(6, 12)]:
         with monkeypatch.context() as m:
             m.setattr(layers, "_packed_quantized_projections", lambda *a: None)
             expected = model(tokens[:, start:end], cache=reference_cache)
             mx.eval(expected)
-        actual = model(tokens[:, start:end], cache=packed_cache)
+        spy.reset_mock()
+        with monkeypatch.context() as m:
+            m.setattr(layers, "_packed_quantized_projections", spy)
+            spy.side_effect = (
+                checked_pack if start else lambda *a: pytest.fail("prefill")
+            )
+            actual = model(tokens[:, start:end], cache=packed_cache)
+            assert {c.args[1] for c in spy.call_args_list} == (
+                {"query", "k", "v"} if start else set()
+            )
         assert mx.array_equal(actual, expected).item()
         assert mx.array_equal(actual.view(mx.uint32), expected.view(mx.uint32)).item()
     assert layers._packed_quantized_projections is pack

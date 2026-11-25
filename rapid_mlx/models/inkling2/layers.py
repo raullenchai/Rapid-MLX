@@ -446,7 +446,12 @@ def _decode_attention_bias(position_bias, distance, visible, extent):
 
 
 def _packed_quantized_projections(owner, name, projections, x):
-    """Pack once after loading; parameter slices share the packed allocation."""
+    """Pack once after loading; parameter slices share the packed allocation.
+
+    Packing construction/evaluation and matmul invocation failures return None.
+    Real lazy matmul output evaluation is intentionally not wrapped: decode
+    evaluates asynchronously.
+    """
     if any(type(p) is not nn.QuantizedLinear or "bias" in p for p in projections):
         return None
     first = projections[0]
