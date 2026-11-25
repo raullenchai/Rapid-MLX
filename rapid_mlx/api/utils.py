@@ -775,14 +775,9 @@ def clean_output_text(
 
     # Add opening <think> tag if response has closing but not opening
     # This happens when enable_thinking=True in the chat template
-    start_index = text.find("<think>")
     end_index = text.find("</think>")
     if (
-        (
-            enable_thinking is not False
-            or prompt_thinking_active
-            or 0 <= start_index < end_index
-        )
+        (enable_thinking is not False or prompt_thinking_active)
         and end_index != -1
         and not text.lstrip().startswith("<think>")
     ):

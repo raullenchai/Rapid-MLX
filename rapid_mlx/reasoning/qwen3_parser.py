@@ -150,6 +150,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     def start_token(self) -> str:
         return "<think>"
 
+    @property
+    def sanitize_when_thinking_disabled(self) -> bool:
+        return type(self) is Qwen3ReasoningParser
+
     def configure_request(
         self,
         *,
@@ -163,27 +167,50 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             or prompt_thinking_active
         )
 
-    def _extract_reasoning_streaming_inner(
+    def reset_state(self):
+        super().reset_state()
+        self._off_state = ("content", False, False, True)
+        self._off_pending = ""
+
+    def _extract_thinking_off(self, text: str, *, final: bool = False) -> DeltaMessage:
+        """Consume explicit boundaries, holding only an incomplete tag suffix."""
+        phase, opened, literal, leading = self._off_state
+        text = self._off_pending + text
+        if leading:
+            text = text.lstrip()
+            leading = not text
+        held = 0 if final else self._held_partial_tag_len(text)
+        self._off_pending = text[len(text) - held :] if held else ""
+        text = text[: len(text) - held]
+        parts = {"content": [], "reasoning": []}
+        for part in re.split(r"(<think>|</think>)", text):
+            if part == self.start_token and not literal:
+                phase, opened = "reasoning", True
+            elif part == self.end_token:
+                # A closer before any opener makes subsequent openers literal.
+                literal = literal or not opened
+                phase = "content"
+            else:
+                parts[phase].append(part)
+        self._off_state = phase, opened, literal, leading
+        return DeltaMessage(
+            reasoning="".join(parts["reasoning"]) or None,
+            content="".join(parts["content"]) or None,
+        )
+
+    def extract_reasoning_streaming(
         self, previous_text: str, current_text: str, delta_text: str
     ) -> DeltaMessage | None:
         if not getattr(self, "_implicit_reasoning", True):
-            start_index = current_text.find(self.start_token)
-            end_index = current_text.find(self.end_token)
-            if end_index != -1 and (start_index == -1 or end_index < start_index):
-                # A later literal opener cannot establish an earlier boundary.
-                offset = len(previous_text) - self._held_tag_suffix_len
-                self._held_tag_suffix_len = 0
-                return DeltaMessage(content=current_text[offset:])
-            if start_index == -1:
-                # Start in content while withholding partial delimiters.
-                return self._handle_multi_block_after_close(
-                    previous_text, current_text, delta_text
-                )
-            # Preserve the parent path's explicit-opener handling, including
-            # discarding a preamble in the chunk containing the opener.
-        return super()._extract_reasoning_streaming_inner(
+            return self._extract_thinking_off(delta_text)
+        return super().extract_reasoning_streaming(
             previous_text, current_text, delta_text
         )
+
+    def finish_stream(self) -> DeltaMessage | None:
+        if not getattr(self, "_implicit_reasoning", True):
+            return self._extract_thinking_off("", final=True)
+        return super().finish_stream()
 
     @property
     def end_token(self) -> str:
@@ -238,9 +265,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             type(self) is Qwen3ReasoningParser
             and enable_thinking is False
             and not prompt_thinking_active
-            and (start_index == -1 or (end_index != -1 and end_index < start_index))
         ):
-            return None, model_output
+            parser = Qwen3ReasoningParser()
+            parser.configure_request(enable_thinking=False)
+            result = parser._extract_thinking_off(model_output, final=True)
+            return result.reasoning, result.content or ""
         if end_index != -1 and (start_index == -1 or end_index < start_index):
             reasoning = model_output[:end_index].strip() or None
             content = model_output[end_index + len(self.end_token) :].strip() or None
@@ -388,6 +417,8 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            that shape. The bare-text-preamble label fallback still
            routes to ``reasoning`` (preserves #570).
         """
+        if not getattr(self, "_implicit_reasoning", True):
+            return self.finish_stream()
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
             return None

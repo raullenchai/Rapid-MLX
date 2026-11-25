@@ -255,6 +255,17 @@ class TestQwen3Parser:
         assert result.reasoning == "R"
         assert result.content == "A"
 
+    def test_thinking_off_emits_each_content_delta(self, parser):
+        parser.configure_request(enable_thinking=False)
+        previous = ""
+        for chunk in ["Hello ", "world, ", "done."]:
+            delta = parser.extract_reasoning_streaming(
+                previous, previous + chunk, chunk
+            )
+            assert delta.content == chunk
+            assert not delta.reasoning
+            previous += chunk
+
     # Streaming tests
 
     def test_streaming_simple_flow(self, parser):
