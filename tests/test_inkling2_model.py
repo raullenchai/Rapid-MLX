@@ -79,7 +79,7 @@ _NUMERICAL_CORE_SHA256 = {
     "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
-    "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
+    "switch_layers.py": "b846c8e0a5d20d097cb4926a83dc531cb0c20884cc75f4b316ee97ee92ad2bf9",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
 }
 
@@ -167,7 +167,7 @@ def compat_loader(glue_loader):
                 def to_quantized(self):
                     pass
 
-        native = glue_loader.module(
+        glue_loader.module(
             "mlx_lm.models.switch_layers",
             SwitchLinear=Native,
             _gather_sort=object(),
@@ -188,9 +188,8 @@ def compat_loader(glue_loader):
             glue_loader.module("mlx_lm.kernels.expert_routing")
             router = None
         result = glue_loader.load("compat")
-        selected = native if global_scale else fallback
         for name in ("SwitchLinear", "_gather_sort", "_scatter_unsort"):
-            assert getattr(result, name) is getattr(selected, name)
+            assert getattr(result, name) is getattr(fallback, name)
         assert result.expert_routing is router
         glue_loader.shim.install.assert_called_once_with()
         return result
@@ -282,6 +281,159 @@ def test_expert_without_global_scale_never_passes_it(monkeypatch):
     monkeypatch.setattr(switch_layers.mx, "gather_qmm", spy)
     mx.eval(layer(x, indices))
     assert seen and all("global_scale" not in kwargs for kwargs in seen)
+
+
+@pytest.mark.parametrize(
+    "r,n,m,p",
+    [
+        (r, n, m, p)
+        for n, m, p in [
+            (16, 1, 2),
+            (64, 3, 2),
+            (96, 17, 16),
+            (512, 17, 2),
+            (528, 3, 2),
+            (1152, 2304, 8),
+            (2304, 1152, 8),
+            (2560, 2304, 8),
+            (768, 17, 16),
+        ]
+        for r in (1, p)
+    ],
+)
+@pytest.mark.parametrize("scale", [None, "native", "fallback"])
+@pytest.mark.parametrize("seed", [0, 42, 123])
+@pytest.mark.parametrize("wide", [False, True])
+def test_nvfp4_decode_matches_stock(
+    metal_runtime, monkeypatch, r, n, m, p, scale, seed, wide
+):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    if scale == "native" and not sl._GATHER_QMM_HAS_GLOBAL_SCALE:
+        pytest.skip("Native tensor scale unavailable")
+    mx.random.seed(seed)
+    layer = sl.QuantizedSwitchLinear(n, m, 20, False, 16, 4, "nvfp4", scale is not None)
+    if scale is not None:
+        layer.global_scale *= mx.linspace(0.25, 4.0, 20)
+    if scale == "fallback":
+        monkeypatch.setattr(sl, "_GATHER_QMM_HAS_GLOBAL_SCALE", False)
+    x = mx.random.normal((1, 1, r, 1, n))
+    if wide:
+        # Exercise rounding within qdot, beyond nearly exact bf16 products
+        # of similarly sized values, as well as cancellation across groups.
+        x *= 2.0 ** mx.random.randint(-16, 17, x.shape).astype(mx.float32)
+    x = x.astype(mx.bfloat16)
+    indices = mx.random.randint(0, 20, (1, 1, p))
+    spy = Mock(wraps=nvfp4_decode.project)
+    monkeypatch.setattr(nvfp4_decode, "project", spy)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", False)
+    expected = layer(x, indices)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", True)
+    actual = layer(x, indices)
+    assert spy.call_count == 1 and nvfp4_decode._get_kernel() is not None
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype == mx.bfloat16
+    assert mx.array_equal(actual, expected).item()
+
+
+def test_nvfp4_decode_formats(metal_runtime):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+
+    kernel = mx.fast.metal_kernel(
+        name="inkling2_nvfp4_formats",
+        input_names=["encoded"],
+        output_names=["values", "scales"],
+        header=nvfp4_decode._HEADER,
+        source="""
+            uint i = thread_position_in_grid.x;
+            uint c = encoded[i];
+            if (i < 16) values[i] = fp4(c);
+            scales[i] = scale8(c);
+        """,
+    )
+    values, scales = kernel(
+        inputs=[mx.arange(256, dtype=mx.uint32)],
+        grid=(256, 1, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[(16,), (256,)],
+        output_dtypes=[mx.float32, mx.float32],
+    )
+    # Every E2M1 code and E4M3 scale, including subnormals and signed zero.
+    magnitudes = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+    expected_values = mx.array(magnitudes + [-v for v in magnitudes], mx.float32)
+    expected_scales = []
+    for code in range(256):
+        e, m = (code >> 3) & 15, code & 7
+        value = m / 512 if e == 0 else (1 + m / 8) * 2 ** (e - 7)
+        expected_scales.append(-value if code & 128 else value)
+    finite = mx.array([c for c in range(256) if c & 127 != 127])
+    expected_scales = mx.array(expected_scales, mx.float32)
+    assert mx.array_equal(
+        values.view(mx.uint32), expected_values.view(mx.uint32)
+    ).item()
+    assert mx.array_equal(
+        scales[finite].view(mx.uint32), expected_scales[finite].view(mx.uint32)
+    ).item()
+    assert mx.all(mx.isnan(scales[mx.array([127, 255])])).item()
+
+
+@pytest.mark.parametrize("case", ["float32", "sorted", "multi", "affine", "disabled"])
+def test_nvfp4_decode_unsupported(metal_runtime, monkeypatch, case):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    mode, group = ("affine", 32) if case == "affine" else ("nvfp4", 16)
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, group, 4, mode)
+    shape = (1, 1, 1, 2 if case == "multi" else 1, 128)
+    x = mx.ones(shape, mx.float32 if case == "float32" else mx.bfloat16)
+    indices = mx.zeros((1, 1, 2), mx.uint32)
+    if case == "disabled":
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+    monkeypatch.setattr(
+        nvfp4_decode, "project", Mock(side_effect=AssertionError("kernel dispatched"))
+    )
+    mx.eval(layer(x, indices, sorted_indices=case == "sorted"))
+
+
+def test_nvfp4_decode_build_failure(metal_runtime, monkeypatch):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+
+    build = Mock(side_effect=RuntimeError("unavailable"))
+    monkeypatch.setattr(mx.fast, "metal_kernel", build)
+    factory = functools.cache(nvfp4_decode._get_kernel.__wrapped__)
+    assert factory() is None and factory() is None
+    build.assert_called_once()
+
+
+def test_nvfp4_decode_model_exact(metal_runtime, monkeypatch):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    model = create_model(metal_runtime, dtype=mx.bfloat16)
+    for layer in model.model.language_model.layers:
+        for name in ("gate_up_proj", "down_proj"):
+            proj = getattr(layer.mlp.experts, name)
+            setattr(layer.mlp.experts, name, proj.to_quantized(16, 4, "nvfp4", True))
+    spy = Mock(wraps=nvfp4_decode.project)
+    monkeypatch.setattr(nvfp4_decode, "project", spy)
+    outputs = []
+    for enabled in (False, True):
+        monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", enabled)
+        for layer in model.model.language_model.layers:
+            if hasattr(layer.mlp, "_block_compiled__forward"):
+                delattr(layer.mlp, "_block_compiled__forward")
+        cache = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+        outputs.append(model(mx.array([[4]]), cache=cache))
+        mx.eval(outputs[-1])
+    assert spy.call_count > 0
+    assert mx.array_equal(*outputs).item()
 
 
 @pytest.mark.parametrize("global_scale", [False, True])

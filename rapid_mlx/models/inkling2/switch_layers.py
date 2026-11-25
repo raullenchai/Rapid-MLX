@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import math
+import os
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -26,6 +27,7 @@ def _scatter_unsort(x, inv_order, shape=None):
 # decoded with this fixed tensor scale (6 * 448).
 _GATHER_QMM_HAS_GLOBAL_SCALE = "global_scale" in (mx.gather_qmm.__doc__ or "")
 _NVFP4_DEFAULT_GLOBAL_SCALE = 2688.0
+_NVFP4_DECODE_ENABLED = True
 
 
 def _quantize_experts(w, *, group_size, bits, mode):
@@ -96,6 +98,30 @@ class QuantizedSwitchLinear(nn.Module):
         return self.weight.shape[0]
 
     def __call__(self, x, indices, sorted_indices=False):
+        if (
+            _NVFP4_DECODE_ENABLED
+            and os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0"
+            and mx.default_device() == mx.gpu
+            and (self.mode, self.bits, self.group_size) == ("nvfp4", 4, 16)
+            and "bias" not in self
+            and self.get("biases") is None
+            and x.dtype == mx.bfloat16
+            and sorted_indices is False
+            and x.ndim >= 3
+            and x.shape[-2] == 1
+            and math.prod(x.shape[:-3]) == 1
+            and indices.ndim >= 1
+            and 1 <= indices.size <= 16
+            and indices.shape[-1] == indices.size
+            and x.shape[-3] in (1, indices.size)
+            and x.shape[-1] == self.input_dims
+            and x.shape[-1] % 16 == 0
+        ):
+            from .nvfp4_decode import project
+
+            result = project(x, self.weight, self.scales, indices, self.global_scale)
+            if result is not None:
+                return result
         global_scale = self.global_scale
         native_scale = global_scale is not None and _GATHER_QMM_HAS_GLOBAL_SCALE
         fallback_scale = global_scale is not None and not native_scale
