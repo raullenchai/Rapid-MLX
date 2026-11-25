@@ -73,6 +73,7 @@ class QuantizedSwitchLinear(nn.Module):
         self.freeze()
 
     def _quantize(self, weight, global_scale=False):
+        self._nvfp4_decode = None
         if global_scale:
             self.weight, self.scales, self.global_scale = _quantize_experts(
                 weight, group_size=self.group_size, bits=self.bits, mode=self.mode
@@ -102,27 +103,53 @@ class QuantizedSwitchLinear(nn.Module):
             _NVFP4_DECODE_ENABLED
             and os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0"
             and mx.default_device() == mx.gpu
-            and (self.mode, self.bits, self.group_size) == ("nvfp4", 4, 16)
-            and "bias" not in self
-            and self.get("biases") is None
-            and x.dtype == mx.bfloat16
             and sorted_indices is False
-            and x.ndim >= 3
-            and x.shape[-2] == 1
-            and math.prod(x.shape[:-3]) == 1
-            and indices.ndim >= 1
-            and mx.issubdtype(indices.dtype, mx.integer)
-            and 1 <= indices.size <= 16
-            and indices.shape[-1] == indices.size
-            and x.shape[-3] in (1, indices.size)
-            and x.shape[-1] == self.input_dims
-            and x.shape[-1] % 16 == 0
         ):
-            from .nvfp4_decode import project
+            launch = self._nvfp4_decode
+            if (
+                launch is None
+                or x.shape != launch.x_shape
+                or indices.shape != launch.indices_shape
+                or indices.dtype != launch.index_dtype
+                or x.dtype != mx.bfloat16
+            ):
+                launch = None
+                if (
+                    (self.mode, self.bits, self.group_size) == ("nvfp4", 4, 16)
+                    and "bias" not in self
+                    and self.get("biases") is None
+                    and x.dtype == mx.bfloat16
+                    and x.ndim >= 3
+                    and x.shape[-2] == 1
+                    and math.prod(x.shape[:-3]) == 1
+                    and indices.ndim >= 1
+                    and mx.issubdtype(indices.dtype, mx.integer)
+                    and 1 <= indices.size <= 16
+                    and indices.shape[-1] == indices.size
+                    and x.shape[-3] in (1, indices.size)
+                    and x.shape[-1] == self.input_dims
+                    and x.shape[-1] % 16 == 0
+                ):
+                    from .nvfp4_decode import prepare
 
-            result = project(x, self.weight, self.scales, indices, self.global_scale)
-            if result is not None:
-                return result
+                    launch = self._nvfp4_decode = prepare(
+                        x, self.weight, indices, self.global_scale
+                    )
+            if launch is not None and launch.kernel is not None:
+                try:
+                    return launch.kernel(
+                        inputs=[
+                            x,
+                            self.weight,
+                            self.scales,
+                            indices,
+                            self.global_scale if launch.has_scale else self.scales,
+                        ],
+                        **launch.kwargs,
+                    )[0]
+                except Exception:
+                    # Keep invocation failures on the stock path on later tokens too.
+                    launch.kernel = None
         global_scale = self.global_scale
         native_scale = global_scale is not None and _GATHER_QMM_HAS_GLOBAL_SCALE
         fallback_scale = global_scale is not None and not native_scale

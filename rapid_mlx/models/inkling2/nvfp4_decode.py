@@ -4,6 +4,7 @@
 """Single-token routed NVFP4 projections matching the stock FP32 reduction."""
 
 from functools import cache
+from types import SimpleNamespace
 
 import mlx.core as mx
 
@@ -30,7 +31,8 @@ _SOURCE = """
     uint row = thread_position_in_grid.y;
     uint k = thread_position_in_grid.z;
     if (row >= M) return;
-    uint expert = uint(clamp(idx[k], 0, w_shape[0] - 1));
+    // Preserve signed-32 normalization without a separate array cast/launch.
+    uint expert = uint(clamp(int(idx[k]), 0, w_shape[0] - 1));
     uint wb = (expert * M + row) * (N / 8);
     uint sb = (expert * M + row) * (N / 16);
     uint xb = SHARED ? 0 : k * N;
@@ -62,7 +64,7 @@ _SOURCE = """
 
 
 @cache
-def _get_kernel(n=16, rows=32, shared=True, has_scale=True):
+def _get_kernel(n=16, rows=32, shared=True, has_scale=True, index_dtype=mx.int32):
     try:
         kernel = mx.fast.metal_kernel(
             name="inkling2_nvfp4_decode",
@@ -79,7 +81,7 @@ def _get_kernel(n=16, rows=32, shared=True, has_scale=True):
                     mx.zeros((1, 1, n), mx.bfloat16),
                     mx.zeros((1, rows, n // 8), mx.uint32),
                     mx.zeros((1, rows, n // 16), mx.uint8),
-                    mx.zeros((1,), mx.int32),
+                    mx.zeros((1,), index_dtype),
                     mx.full((1,), 2688.0, mx.float32)
                     if has_scale
                     else mx.zeros((1, rows, n // 16), mx.uint8),
@@ -102,26 +104,46 @@ def _get_kernel(n=16, rows=32, shared=True, has_scale=True):
         return None
 
 
-def project(x, w, scales, indices, global_scale):
+def prepare(x, w, indices, global_scale):
+    """Resolve the evaluated specialization and immutable launch metadata once."""
     rows, n, p = w.shape[1], x.shape[-1], indices.size
-    kernel = _get_kernel(n, rows, x.shape[-3] == 1, global_scale is not None)
-    if kernel is None:
-        return None
+    shared, has_scale = x.shape[-3] == 1, global_scale is not None
     shape = (1,) * max(x.ndim - 3, indices.ndim - 1) + (p, 1, rows)
-    scale = global_scale if global_scale is not None else scales
-    try:
-        return kernel(
-            inputs=[x, w, scales, indices.astype(mx.int32), scale],
+    return SimpleNamespace(
+        x_shape=x.shape,
+        indices_shape=indices.shape,
+        index_dtype=indices.dtype,
+        has_scale=has_scale,
+        kernel=_get_kernel(n, rows, shared, has_scale, indices.dtype),
+        kwargs=dict(
             template=[
                 ("N", n),
                 ("M", rows),
-                ("SHARED", x.shape[-3] == 1),
-                ("HAS_SCALE", global_scale is not None),
+                ("SHARED", shared),
+                ("HAS_SCALE", has_scale),
             ],
             grid=(32, rows, p),
             threadgroup=(32, 16, 1),
             output_shapes=[shape],
             output_dtypes=[mx.bfloat16],
+        ),
+    )
+
+
+def project(x, w, scales, indices, global_scale):
+    launch = prepare(x, w, indices, global_scale)
+    if launch.kernel is None:
+        return None
+    try:
+        return launch.kernel(
+            inputs=[
+                x,
+                w,
+                scales,
+                indices,
+                global_scale if launch.has_scale else scales,
+            ],
+            **launch.kwargs,
         )[0]
     except Exception:
         # Invocation construction can fail even after a successful probe.
