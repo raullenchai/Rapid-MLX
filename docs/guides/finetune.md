@@ -50,3 +50,71 @@ prints the serve command. To start a new run from saved LoRA weights, pass
 
 When telemetry is enabled, the completion event contains the outcome, elapsed
 time and row-count buckets, and whether validation data was prepared.
+
+## Evaluate your adapter
+
+Keep a test dataset separate from training and validation. For writing style,
+put the outline in the user turn and the author's original passage in the
+assistant turn. Eval accepts one user/assistant pair per JSONL row, or a
+`prompt` and `completion` pair.
+
+```bash
+rapid-mlx eval qwen3-0.6b-4bit --adapter ./my-adapter --data ./test.jsonl \
+  --few-shot ./train.jsonl --task style --samples 20 --seed 0 --out ./eval-report
+```
+
+LoRA learns how you write, not what you know; facts and claims must come from
+the outline. With little text, try few-shot prompting first; eval tells you
+whether fine-tuning was worth it.
+
+Eval uses the same sampled outlines for the base model, the LoRA adapter, and
+the optional three-shot baseline. It chooses three distinct examples from
+`--few-shot` training rows using the seed and excludes exact matches to held-out
+prompts. The JSONL has no row-level source document IDs, so eval cannot verify
+document separation. Use a document-level train/eval split when preparing your
+data. The model can still borrow topics from training examples, even across
+documents. Outputs use greedy decoding with a 512-token limit.
+
+- **Loss and perplexity.** Eval gives each arm the reference passage token by
+  token and averages negative log probabilities over reference tokens. Perplexity
+  is the exponential of that average. Lower values indicate that the model
+  assigns more probability to the held-out writing. Prompt tokens and turn
+  terminators are excluded, except when tokenization merges the prompt boundary
+  into the first scored token.
+- **Style distance** (lower is closer) is a surface measure. It compares
+  sentence length and variance, type-token ratio, mean word length, first- and
+  second-person pronoun use, contractions, sentence-initial conjunctions,
+  list and markup lines, punctuation (including questions and dashes), and
+  English function words. Each feature uses its population standard deviation
+  across the sampled references, with a minimum scale for near-constant features.
+  Eval bounds each scaled difference to the same range, averages across
+  features and samples, and reports three decimals. English-specific features
+  and word counts are coarse for other languages, especially those without
+  word spacing.
+- **Indicative style preference.** The base model sees the reference and two
+  anonymous outputs in both orders, with the same excerpt of each text in both.
+  The rendered prompt and answer token fit within 2,048 tokens or the smaller
+  context limit declared by the model or tokenizer.
+  Eval scores the next-token log probabilities of A and B and averages the
+  adapter's log-odds across orderings to offset position bias. An absolute
+  average at or below 0.1 counts as a tie. Empty candidates, tokenizer options
+  that cannot be scored, prompts that cannot fit, and non-finite scores count
+  as invalid comparisons. The JSON reports decided comparisons, ties by margin,
+  and invalid comparisons for each baseline. Small judges may prefer their own
+  writing. The preference measures perceived style and cannot verify facts.
+
+Use `--task generic` for loss, perplexity, and samples alone. With a style judge
+and three-shot baseline, the headline is the adapter's win rate across all
+sampled prompts, including ties and invalid comparisons in the denominator.
+The serve recommendation requires a majority of wins in that case and lower
+perplexity than both the base model and the three-shot baseline. When the
+headline is perplexity change, the recommendation requires lower perplexity
+than the available baselines.
+
+Eval starts stdout and `report.md` with a one-line perplexity scorecard and
+adapter decision, and prints elapsed time and up to three truncated samples.
+It writes `report.md` and `report.json` to `--out`, which defaults to
+`<adapter>-eval` beside the adapter.
+Both files stay local. The JSON contains aggregate results and the adapter hash.
+The Markdown includes excerpts from your dataset and model outputs, so review it
+before sharing.

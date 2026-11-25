@@ -2563,6 +2563,24 @@ def _add_finetune_parser(subparsers) -> None:
     parser.add_argument("--resume", help="Path to existing LoRA safetensors weights")
 
 
+def _add_eval_parser(subparsers) -> None:
+    from .adapter_eval import TASKS
+
+    parser = subparsers.add_parser(
+        "eval", help="Evaluate a LoRA adapter on held-out text"
+    )
+    parser.add_argument(
+        "model", help="Base model alias, Hub repo, or local checkpoint"
+    ).completer = alias_completer
+    parser.add_argument("--adapter", required=True, help="LoRA adapter directory")
+    parser.add_argument("--data", required=True, help="Held-out JSONL dataset")
+    parser.add_argument("--task", choices=TASKS, default="style")
+    parser.add_argument("--few-shot", help="Training JSONL for the three-shot baseline")
+    parser.add_argument("--samples", type=int, default=20, help="Maximum held-out rows")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--out", help="Report directory (default: <adapter>-eval)")
+
+
 def _add_pull_parser(
     subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
 ) -> None:
@@ -3308,6 +3326,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_help_parser(subparsers)
     _add_pull_parser(subparsers)
     _add_finetune_parser(subparsers)
+    _add_eval_parser(subparsers)
     _add_import_parser(subparsers)
     _add_rm_parser(subparsers)
     _add_alias_parser(subparsers)

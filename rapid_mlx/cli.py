@@ -17612,6 +17612,10 @@ def main(*, _supervise=False):
     from rapid_mlx import model_downloads
 
     model_downloads.configure(getattr(args, "disable_model_downloads", False))
+    if args.command == "eval":
+        from rapid_mlx.adapter_eval import eval_command
+
+        raise SystemExit(eval_command(args))
     if getattr(args, "disable_version_check", False):
         # The environment carries the opt-out to every server this command starts.
         os.environ["RAPID_MLX_DISABLE_VERSION_CHECK"] = "1"

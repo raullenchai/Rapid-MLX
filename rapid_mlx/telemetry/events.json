@@ -377,7 +377,7 @@
         "recipe", "ls", "version", "help", "pull", "import", "rm", "alias",
         "ps", "top", "upgrade", "update", "chat", "run", "info", "agents", "start",
         "connect", "doctor", "telemetry", "feedback", "share", "launch",
-        "service", "status", "log", "jobs", "finetune", "lora", "bare", "other"
+        "service", "status", "log", "jobs", "finetune", "lora", "eval", "bare", "other"
       ]
     },
     "finetune_status": {"values": ["ok", "oom", "err", "abort"]},

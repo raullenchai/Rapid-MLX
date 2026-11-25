@@ -88,6 +88,7 @@
     "connect": "Show the server's connection info and wire up a tool",
     "cua": "Native-accessibility computer-use agent with configurable planner",
     "doctor": "Check environment health (Python, packages, HF cache, network, ...)",
+    "eval": "Evaluate a LoRA adapter on held-out text",
     "feedback": "Tell us what you want from Rapid-MLX (opens the community Discord)",
     "finetune": "LoRA fine-tuning for local text models",
     "help": "Show help for a subcommand",
@@ -3181,6 +3182,178 @@
       }
      ],
      "prog": "rapid-mlx doctor"
+    },
+    "eval": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": "rapid_mlx._completion.alias_completer",
+       "const": null,
+       "default": null,
+       "dest": "model",
+       "help": "Base model alias, Hub repo, or local checkpoint",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [],
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "adapter",
+       "help": "LoRA adapter directory",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--adapter"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "data",
+       "help": "Held-out JSONL dataset",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--data"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "choices": [
+        "style",
+        "generic"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "style",
+       "dest": "task",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--task"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "few_shot",
+       "help": "Training JSONL for the three-shot baseline",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--few-shot"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 20,
+       "dest": "samples",
+       "help": "Maximum held-out rows",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--samples"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 0,
+       "dest": "seed",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--seed"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "out",
+       "help": "Report directory (default: <adapter>-eval)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--out"
+       ],
+       "required": false,
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [
+        "model"
+       ],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "adapter",
+        "data",
+        "task",
+        "few_shot",
+        "samples",
+        "seed",
+        "out"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx eval"
     },
     "feedback": {
      "actions": [
