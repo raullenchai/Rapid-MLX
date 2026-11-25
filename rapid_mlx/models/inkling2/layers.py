@@ -25,8 +25,10 @@ from rapid_mlx.models.inkling2.compat import (
 )
 from rapid_mlx.models.inkling2.config import TextArgs
 from rapid_mlx.models.inkling2.kernels import (
+    _expert_conv_residual_factory,
     attention_mask_decode,
     depth_attention,
+    expert_conv_residual_decode,
     message_mix_decode,
     relative_attention,
     route_weights_decode,
@@ -770,9 +772,11 @@ class SparseMoeBlock(nn.Module):
         return final_hidden_states.astype(hidden_states.dtype)
 
     @_block_decode_only
-    def _forward(self, hidden_states):
+    def _forward(self, hidden_states, combine=True):
         selected_experts, routing_weights = self.gate(hidden_states)
         expert_states = self.experts(hidden_states, selected_experts)
+        if not combine:
+            return expert_states, routing_weights
         return _combine_experts(expert_states, routing_weights)
 
 
@@ -943,15 +947,44 @@ class DecoderLayer(nn.Module):
             residual = hidden_states = block_residual.astype(mx.float32) + hidden_states
 
         assert block_states is not None
-        hidden_states = self.mlp(
-            self._mlp_states(hidden_states, block_states, messages, block_residual)
+        mlp_input = self._mlp_states(
+            hidden_states, block_states, messages, block_residual
         )
-        hidden_states, conv_states[3] = self.post_mlp_convolution(
-            hidden_states,
-            conv_states[3],
-            conv_mask,
-            lengths=conv.lengths if conv is not None else None,
-        )
+        fused = None
+        if (
+            mlp_input.shape[:2] == (1, 1)
+            and conv_states[3] is not None
+            and self.mlp.sharding_group is None
+            and 1 < self.mlp.gate.top_k <= 8
+            and mlp_input.shape[-1] >= 32
+            and mlp_input.shape[-1] % 4 == 0
+            and 2 <= self.post_mlp_convolution.kernel_size <= 5
+            and _fast_decode_enabled()
+            and _use_kernels()
+            and _expert_conv_residual_factory() is not None
+        ):
+            states, weights = self.mlp._forward(mlp_input, False)
+            fused = expert_conv_residual_decode(
+                states,
+                weights,
+                conv_states[3],
+                self.post_mlp_convolution.conv1d.weight,
+                conv_mask,
+                conv.lengths,
+                residual,
+                mlp_input.dtype,
+            )
+        if fused is None:
+            hidden_states = self.mlp(mlp_input)
+            hidden_states, conv_states[3] = self.post_mlp_convolution(
+                hidden_states,
+                conv_states[3],
+                conv_mask,
+                lengths=conv.lengths if conv is not None else None,
+            )
+            hidden_states = _residual_output(hidden_states, residual)
+        else:
+            hidden_states, conv_states[3] = fused
 
         if conv is not None:
             n = self.post_mlp_convolution.kernel_size - 1
@@ -959,7 +992,7 @@ class DecoderLayer(nn.Module):
                 assert window is not None
                 conv[i] = _conv_state(window, conv.lengths, n)
             conv.advance(block_residual.shape[1])
-        return _residual_output(hidden_states, residual), block_states
+        return hidden_states, block_states
 
 
 class SlidingDecoderLayer(DecoderLayer):

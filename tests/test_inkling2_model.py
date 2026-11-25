@@ -76,8 +76,8 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
-    "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
+    "layers.py": "6267f9b181479a2e43b4238d856a897df8a073a913bd019e50364b6bf5d1edcc",
+    "kernels.py": "1278793fc1218635f7b7b062fb832e5b4515aeab2849d6a20ad93426d4fb3edf",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -672,6 +672,119 @@ def test_short_conv_decode_parity(
         assert _conv_state(next_state, lengths, width - 1) is next_state
         state = next_state
         x = (x.astype(mx.float32) * 0.75 + step * 0.125).astype(dtype)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
+@pytest.mark.parametrize("experts", [2, 4, 8])
+def test_expert_conv_residual_exact(metal_runtime, dtype, experts):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    dtype = getattr(mx, dtype)
+    for seed in (3, 29, 71):
+        mx.random.seed(seed)
+        for scale, channels, width in ((0.001, 32, 2), (1, 64, 4), (100, 2048, 5)):
+            conv = layers.ShortConvolution(channels, width)
+            conv.conv1d.weight = mx.random.normal((channels, width, 1)).astype(dtype)
+            x = (mx.random.normal((1, 1, experts, channels * 2)) * scale).astype(dtype)[
+                ..., ::2
+            ]
+            mix = mx.random.uniform(shape=(1, 1, experts))
+            state = mx.random.normal((1, width - 1, channels * 2))[..., ::2] * scale
+            residual = mx.random.normal((1, 1, channels)) * scale
+            for mask, lengths in ((None, None), (mx.array([[False]]), mx.array([0]))):
+                combined = layers._combine_experts(x, mix).astype(dtype)
+                convolved, window = conv(combined, state, mask, lengths=lengths)
+                expected = layers._residual_output(convolved, residual)
+                actual, retained = kernels.expert_conv_residual_decode(
+                    x, mix, state, conv.conv1d.weight, mask, lengths, residual, dtype
+                )
+                assert actual.dtype == expected.dtype == dtype
+                assert mx.array_equal(actual, expected).item()
+                bits = mx.uint32 if dtype == mx.float32 else mx.uint16
+                assert mx.array_equal(actual.view(bits), expected.view(bits)).item()
+                assert retained.dtype == mx.float32
+                assert mx.array_equal(
+                    retained, layers._conv_state(window, lengths, width - 1)
+                ).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_expert_conv_residual_cached_logits(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    model = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    calls = Mock(wraps=layers.expert_conv_residual_decode)
+    factory = layers._expert_conv_residual_factory
+    for seed in (3, 29, 71):
+        mx.random.seed(seed)
+        tokens = mx.random.randint(0, 120, (1, 10))
+        caches = [model.make_cache(), model.make_cache()]
+        for cache in caches:
+            mx.eval(model(tokens[:, :6], cache=cache))
+        for step in range(6, 10):
+            monkeypatch.setattr(layers, "_expert_conv_residual_factory", lambda: None)
+            expected = model(tokens[:, step : step + 1], cache=caches[0])
+            mx.eval(expected)
+            monkeypatch.setattr(layers, "_expert_conv_residual_factory", factory)
+            monkeypatch.setattr(layers, "expert_conv_residual_decode", calls)
+            calls.reset_mock()
+            actual = model(tokens[:, step : step + 1], cache=caches[1])
+            assert calls.call_count > 0
+            assert mx.array_equal(actual, expected).item()
+
+
+@pytest.mark.requires_mlx
+def test_expert_conv_residual_fallback(metal_runtime, monkeypatch):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    unavailable = Mock(return_value=None)
+    weight = mx.zeros((64, 4, 1))
+    with monkeypatch.context() as patch:
+        patch.setattr(kernels, "_expert_conv_residual_factory", unavailable)
+        for batch, length, experts in ((2, 1, 2), (1, 2, 2), (1, 1, 16)):
+            x = mx.zeros((batch, length, experts, 64))
+            mix = mx.zeros(x.shape[:3])
+            state = mx.zeros((batch, 3, 64))
+            outer = mx.zeros((batch, length, 64))
+            assert (
+                kernels.expert_conv_residual_decode(
+                    x, mix, state, weight, None, None, outer, mx.float32
+                )
+                is None
+            )
+    unavailable.assert_not_called()
+    model = create_model(metal_runtime, dtype=mx.float32, loop=False)
+    cache = model.make_cache()
+    mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+    kernels._expert_conv_residual_factory.cache_clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            mx.fast, "metal_kernel", Mock(side_effect=RuntimeError("unavailable"))
+        )
+        assert kernels._expert_conv_residual_factory() is None
+        mx.eval(model(mx.array([[4]]), cache=cache))
+    kernels._expert_conv_residual_factory.cache_clear()
+    # The existing setting and uncached/multi-token/batched calls bypass fusion.
+    monkeypatch.setattr(
+        layers,
+        "expert_conv_residual_decode",
+        Mock(side_effect=AssertionError("unexpected fusion")),
+    )
+    for batch, length in ((1, 1), (1, 3), (2, 1)):
+        ids = mx.ones((batch, length), dtype=mx.int32)
+        mx.eval(model(ids))
+        cache = model.make_cache()
+        mx.eval(model(mx.ones((batch, 3), dtype=mx.int32), cache=cache))
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+        mx.eval(model(ids, cache=cache))
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+        if batch > 1 or length > 1:
+            mx.eval(model(ids, cache=cache))
 
 
 @pytest.mark.requires_mlx

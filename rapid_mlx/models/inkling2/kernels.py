@@ -3,6 +3,7 @@
 
 import math
 from collections.abc import Callable
+from functools import lru_cache
 from typing import cast
 
 import mlx.core as mx
@@ -13,6 +14,109 @@ __all__ = [
     "depth_attention",
     "relative_attention",
 ]
+
+
+@lru_cache(maxsize=1)
+def _expert_conv_residual_factory():
+    try:
+        return mx.fast.metal_kernel(
+            name="inkling2_expert_conv_residual_decode",
+            input_names=[
+                "x",
+                "mix",
+                "state",
+                "weight",
+                "mask",
+                "lengths",
+                "outer",
+                "divisor",
+            ],
+            output_names=["out", "next_state"],
+            header="#pragma clang fp contract(off)\n",
+            source="""
+                const uint c = thread_position_in_grid.x;
+                if (c >= C) return;
+                float combined = 0.0f;
+                for (int e = 0; e < E; ++e) {
+                    float product = float(x[e * x_strides[2] + c * x_strides[3]])
+                        * float(mix[e * mix_strides[2]]);
+                    combined = combined + product;
+                }
+                combined = float(T(combined));
+                float history[K];
+                for (int j = 0; j < K - 1; ++j)
+                    history[j] = state[j * state_strides[1] + c * state_strides[2]];
+                history[K - 1] = HAS_MASK && !mask[0] ? 0.0f : combined;
+                float acc = 0.0f;
+                for (int j = 0; j < K; ++j)
+                    acc = metal::fma(float(W(history[j])),
+                        float(weight[c * weight_strides[0] + j * weight_strides[1]]), acc);
+                // Preserve MoE, Conv1d, and post-convolution token rounding.
+                float convolved = float(T((float(W(acc)) + combined) / divisor));
+                out[c] = T(float(outer[c * outer_strides[2]]) + convolved);
+                const int start = HAS_LENGTHS && lengths[0] <= 0 ? 0 : 1;
+                for (int j = 0; j < K - 1; ++j)
+                    next_state[j * C + c] = history[start + j];
+            """,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+    except (RuntimeError, ValueError):
+        return None
+
+
+def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dtype):
+    """Combine routed experts and a cached static convolution for one token."""
+    C, K = weight.shape[:2]
+    types = (mx.float32, mx.bfloat16, mx.float16)
+    if not (
+        x.ndim == 4
+        and x.shape[:2] == (1, 1)
+        and 1 < x.shape[2] <= 8
+        and x.shape[3] == C
+        and C >= 32
+        and C % 4 == 0
+        and mix.shape == x.shape[:3]
+        and mix.dtype == mx.float32
+        and state is not None
+        and state.shape == (1, K - 1, C)
+        and state.dtype == mx.float32
+        and weight.shape == (C, K, 1)
+        and 2 <= K <= 5
+        and outer.shape == (1, 1, C)
+        and outer.dtype == mx.float32
+        and all(t in types for t in (dtype, x.dtype, weight.dtype))
+    ):
+        return None
+    kernel = _expert_conv_residual_factory()
+    if kernel is None:
+        return None
+    empty = scalar(0.0).reshape(1)
+    return kernel(
+        inputs=[
+            x,
+            mix,
+            state,
+            weight,
+            mask if mask is not None else empty,
+            lengths if lengths is not None else empty,
+            outer,
+            scalar(math.sqrt(K + 1)),
+        ],
+        template=[
+            ("T", dtype),
+            ("W", weight.dtype),
+            ("C", C),
+            ("K", K),
+            ("E", x.shape[2]),
+            ("HAS_MASK", mask is not None),
+            ("HAS_LENGTHS", lengths is not None),
+        ],
+        grid=(C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[outer.shape, state.shape],
+        output_dtypes=[dtype, mx.float32],
+    )
 
 
 # One thread owns a channel, including its FP32 history. Do not contract the
