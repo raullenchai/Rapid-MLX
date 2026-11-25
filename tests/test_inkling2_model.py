@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "ac24004d36900bb3da40ed458f263bf0d85be1cbab721cf3dea55bee3eabbea5",
-    "kernels.py": "cb6383441d4d236852d48d1ba680b3df2a77ff84540231119cfdf05accb22ca1",
+    "kernels.py": "abb21f1a7fda1b2dc391df6c5c994f1036f0a51f2a0ff6e8559e9bc786b20a64",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -836,7 +836,7 @@ def test_router_topk_exact(metal_runtime, monkeypatch, seed):
                 router.e_score_correction_bias = bias
                 expected = router(logits)
                 scores = mx.sigmoid(logits.astype(mx.float32))
-                indices, actual_scores = kernels._route_topk()(
+                indices, actual_scores = kernels._route_topk(n, k)(
                     inputs=[logits.astype(mx.float32), bias],
                     template=[("N", n), ("K", k)],
                     grid=(128, 1, 1),
@@ -855,7 +855,8 @@ def test_router_topk_exact(metal_runtime, monkeypatch, seed):
 
 
 @pytest.mark.requires_mlx
-def test_router_topk_gates_and_failure(metal_runtime, monkeypatch):
+@pytest.mark.parametrize("failure", ["construction", "invocation", "evaluation"])
+def test_router_topk_gates_and_failure(metal_runtime, monkeypatch, failure):
     mx, inkling2 = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
@@ -883,8 +884,28 @@ def test_router_topk_gates_and_failure(metal_runtime, monkeypatch):
         router.e_score_correction_bias = mx.zeros((129,))
         mx.eval(router(mx.zeros((1, 1, 64)), True))
 
+    attempts = []
+    pending = mx.zeros((1,))
+    real_eval = mx.eval
+
     def broken(*args, **kwargs):
-        raise RuntimeError("kernel construction failed")
+        attempts.append("construction")
+        if failure == "construction":
+            raise RuntimeError("kernel construction failed")
+
+        def launch(**kwargs):
+            attempts.append("invocation")
+            if failure == "invocation":
+                raise RuntimeError("kernel invocation failed")
+            return [pending, pending]
+
+        return launch
+
+    def evaluate(*arrays):
+        if any(a is pending for a in arrays):
+            attempts.append("evaluation")
+            raise RuntimeError("lazy kernel evaluation failed")
+        return real_eval(*arrays)
 
     router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
     x = mx.ones((1, 1, 64))
@@ -893,10 +914,14 @@ def test_router_topk_gates_and_failure(metal_runtime, monkeypatch):
     try:
         with monkeypatch.context() as patch:
             patch.setattr(mx.fast, "metal_kernel", broken)
-            actual = router(x, True)
-            assert kernels._route_topk() is None
-            for a, e in zip(actual, expected):
-                assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+            patch.setattr(mx, "eval", evaluate)
+            for _ in range(2):
+                actual = router(x, True)
+                mx.eval(*actual)
+                for a, e in zip(actual, expected):
+                    assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+            stages = ["construction", "invocation", "evaluation"]
+            assert attempts == stages[: stages.index(failure) + 1]
     finally:
         kernels._route_topk.cache_clear()
 
@@ -1404,8 +1429,8 @@ def test_fast_decode_specializations_stay_bounded(
     for name, kernel in vars(kernels).copy().items():
         if name.endswith("_kernel"):
             monkeypatch.setattr(kernels, name, record(name, kernel))
-    topk = record("route_topk", kernels._route_topk())
-    monkeypatch.setattr(kernels, "_route_topk", lambda: topk)
+    topk = record("route_topk", kernels._route_topk(4, 2))
+    monkeypatch.setattr(kernels, "_route_topk", lambda n, k: topk)
 
     expected_keys = expected_traces = None
     for step in range(6, 46):

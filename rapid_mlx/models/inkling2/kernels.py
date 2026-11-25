@@ -3,7 +3,7 @@
 
 import math
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache
 from typing import cast
 
 import mlx.core as mx
@@ -278,10 +278,10 @@ def route_weights_decode(scores, indices, route_scale):
     )[0]
 
 
-@lru_cache(maxsize=1)
-def _route_topk():
+@cache
+def _route_topk(n, k):
     try:
-        return mx.fast.metal_kernel(
+        kernel = mx.fast.metal_kernel(
             name="inkling2_route_topk_decode",
             input_names=["logits", "bias"],
             output_names=["indices", "out_scores"],
@@ -315,13 +315,26 @@ def _route_topk():
             ensure_row_contiguous=False,
             compile_options={"math_mode": "safe"},
         )
-    except RuntimeError:
+        # Metal builds lazily: evaluate synthetic outputs before caching success.
+        mx.eval(
+            *kernel(
+                inputs=[mx.zeros((1, 1, n)), mx.zeros((n,))],
+                template=[("N", n), ("K", k)],
+                grid=(128, 1, 1),
+                threadgroup=(128, 1, 1),
+                output_shapes=[(1, 1, k), (1, 1, n)],
+                output_dtypes=[mx.uint32, mx.float32],
+            )
+        )
+        return kernel
+    except Exception:
+        # Cache unavailability as well, so decode permanently uses the stock path.
         return None
 
 
 def route_topk_decode(logits, bias, k, scale):
     """Single-row FP32 scoring/selection, with existing decode normalization."""
-    kernel = _route_topk()
+    kernel = _route_topk(logits.shape[-1], k)
     if kernel is None:
         return None
     indices, scores = kernel(
