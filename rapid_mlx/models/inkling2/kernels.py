@@ -197,7 +197,12 @@ def _get_message_norm(dim, output, input_dtype, dtype):
 
 
 def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
-    """Normalize/concatenate controller inputs, or normalize/cast mixed output."""
+    """Normalize/concatenate controller inputs, or normalize/cast mixed output.
+
+    Failures are detected by a one-time evaluated probe per kernel variant and
+    guarded invocation. Real lazy output evaluation is intentionally not wrapped:
+    decode evaluates asynchronously.
+    """
     D = x.shape[-1]
     output = message is None
     supported = (mx.float32, mx.float16, mx.bfloat16)
