@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -50,21 +50,47 @@ async def empty_receive():
 async def test_residency_reports_primary_idle_monitor(
     monkeypatch, modality, idle_seconds
 ):
-    from rapid_mlx.config import get_config
+    from rapid_mlx import local_search_runtime, server
     from rapid_mlx.middleware.auth import verify_api_key
-    from rapid_mlx.routes import residency
-    from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
+    from rapid_mlx.routes import agents, audio, residency, video
 
-    lifecycle = (
-        PrimaryModelLifecycle(
-            SimpleNamespace(_loaded=True),
-            lazy_load=True,
-            idle_unload_seconds=idle_seconds,
-        )
-        if modality in {"text", "mllm"}
-        else None
+    # Match the engine protocols: image/video have stop(), but no _loaded/start().
+    engines = {
+        "text": SimpleNamespace(
+            _loaded=True, is_mllm=False, start=AsyncMock(), stop=AsyncMock()
+        ),
+        "mllm": SimpleNamespace(
+            _loaded=True, is_mllm=True, start=AsyncMock(), stop=AsyncMock()
+        ),
+        "image-gen": SimpleNamespace(is_mllm=False, stop=AsyncMock()),
+        "video-gen": SimpleNamespace(is_mllm=False, stop=AsyncMock()),
+    }
+    monkeypatch.setattr(server, "_engine", engines[modality])
+    monkeypatch.setattr(
+        server, "_model_registry", SimpleNamespace(list_entries=lambda: [])
     )
-    monkeypatch.setattr(get_config(), "primary_model_lifecycle", lifecycle)
+    monkeypatch.setattr(
+        server,
+        "_residency_manager",
+        SimpleNamespace(start=AsyncMock(), shutdown=AsyncMock()),
+    )
+    monkeypatch.setattr(server, "_gc_control", False)
+    monkeypatch.setattr(server, "_enable_audio_lane", False)
+    monkeypatch.setattr(server, "_audio_lane_idle_ttl", 0)
+    monkeypatch.setattr(server, "_warmup_primary_engine", AsyncMock())
+    monkeypatch.setattr(server, "_warmup_tool_grammar", AsyncMock())
+    monkeypatch.setattr(server, "_drain_deferred_prefix_cache_load", AsyncMock())
+    monkeypatch.setattr(server, "_shutdown_save_prefix_cache", AsyncMock())
+    monkeypatch.setattr(server, "_flush_v2_telemetry", Mock())
+    monkeypatch.setattr(local_search_runtime, "startup", AsyncMock())
+    monkeypatch.setattr(local_search_runtime, "shutdown", AsyncMock())
+    monkeypatch.setattr(agents, "start_agent_service_lifecycle", Mock())
+    monkeypatch.setattr(agents, "close_agent_service", AsyncMock())
+    monkeypatch.setattr(audio, "audio_routes_should_register", lambda **_: False)
+    monkeypatch.setattr(audio, "shutdown_audio_lanes", AsyncMock())
+    monkeypatch.setattr(video, "start_video_jobs", Mock())
+    monkeypatch.setattr(video, "shutdown_video_jobs", AsyncMock())
+    server.configure_primary_model_lifecycle(idle_unload_seconds=idle_seconds)
     monkeypatch.setattr(
         residency, "_manager", lambda: SimpleNamespace(snapshot=lambda: {"models": []})
     )
@@ -81,13 +107,14 @@ async def test_residency_reports_primary_idle_monitor(
             return response.json()["primary_idle_unload_active"]
 
         assert await active() is False
+        # The protocol gate and config assignment live in lifespan, not the builder.
+        lifespan = server.lifespan(app)
+        await anext(lifespan)
         try:
-            if lifecycle is not None:
-                await lifecycle.start()
-            assert await active() is (lifecycle is not None and idle_seconds > 0)
+            assert await active() is (modality in {"text", "mllm"} and idle_seconds > 0)
         finally:
-            if lifecycle is not None:
-                await lifecycle.shutdown()
+            with pytest.raises(StopAsyncIteration):
+                await anext(lifespan)
         assert await active() is False
 
 
