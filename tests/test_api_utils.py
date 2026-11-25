@@ -102,6 +102,13 @@ class TestCleanOutputText:
     def test_strips_whitespace(self):
         assert clean_output_text("  Hello  ") == "Hello"
 
+    def test_disabled_thinking_opener_after_stray_closer(self):
+        text = (
+            "I will list files.</think><function=run_shell_command>"
+            '<parameter=command>echo "<think>"</parameter></function>'
+        )
+        assert clean_output_text(text, enable_thinking=False) == text
+
     def test_combined_special_tokens_and_think(self):
         text = "<|im_start|><think>I need to think.</think>42<|im_end|>"
         result = clean_output_text(text)

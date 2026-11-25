@@ -211,6 +211,50 @@ class TestQwen3Parser:
         assert result.reasoning == "prefix"
         assert not result.content
 
+    @pytest.mark.parametrize("chunk_size", [None, 1, 7, 1000])
+    def test_thinking_off_opener_after_stray_closer(self, parser, chunk_size):
+        import json
+
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+
+        raw = (
+            "I will list files.</think><function=run_shell_command>"
+            '<parameter=command>echo "<think>"</parameter></function>'
+        )
+        if chunk_size is None:
+            reasoning, content = parser.extract_reasoning(raw, enable_thinking=False)
+        else:
+            parser.configure_request(enable_thinking=False)
+            accumulated = reasoning = content = ""
+            for offset in range(0, len(raw), chunk_size):
+                chunk = raw[offset : offset + chunk_size]
+                result = parser.extract_reasoning_streaming(
+                    accumulated, accumulated + chunk, chunk
+                )
+                accumulated += chunk
+                if result:
+                    reasoning += result.reasoning or ""
+                    content += result.content or ""
+        assert not reasoning
+        assert "I will list files." in content
+        request = {
+            "tools": [{"type": "function", "function": {"name": "run_shell_command"}}]
+        }
+        parsed = Qwen3CoderToolParser().extract_tool_calls(content, request=request)
+        assert "I will list files." in parsed.content
+        assert len(parsed.tool_calls) == 1
+        assert parsed.tool_calls[0]["name"] == "run_shell_command"
+        assert json.loads(parsed.tool_calls[0]["arguments"]) == {
+            "command": 'echo "<think>"'
+        }
+
+    def test_thinking_off_explicit_pair_discards_leading_newline(self, parser):
+        parser.configure_request(enable_thinking=False)
+        raw = "\n<think>R</think>A"
+        result = parser.extract_reasoning_streaming("", raw, raw)
+        assert result.reasoning == "R"
+        assert result.content == "A"
+
     # Streaming tests
 
     def test_streaming_simple_flow(self, parser):

@@ -304,6 +304,19 @@ def test_nested_block_preserves_later_reasoning_and_answer():
     ) == ("SNR", "ATZ")
 
 
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_thinking_off_tool_argument_opener_after_stray_closer(surface, stream):
+    raw = (
+        "I will list files.</think><function=run_shell_command>"
+        '<parameter=command>echo "<think>"</parameter></function>'
+    )
+    result = route("qwen3", "qwen3_coder_xml", raw, surface, stream, thinking=False)
+    assert not result["reasoning"]
+    assert "I will list files." in result["content"]
+    assert result["calls"] == [["run_shell_command", {"command": 'echo "<think>"'}]]
+
+
 @pytest.mark.parametrize(
     "chunks",
     [

@@ -167,10 +167,20 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         self, previous_text: str, current_text: str, delta_text: str
     ) -> DeltaMessage | None:
         if not getattr(self, "_implicit_reasoning", True):
-            # Start in content; only an explicit opener enters reasoning.
-            return self._handle_multi_block_after_close(
-                previous_text, current_text, delta_text
-            )
+            start_index = current_text.find(self.start_token)
+            end_index = current_text.find(self.end_token)
+            if end_index != -1 and (start_index == -1 or end_index < start_index):
+                # A later literal opener cannot establish an earlier boundary.
+                offset = len(previous_text) - self._held_tag_suffix_len
+                self._held_tag_suffix_len = 0
+                return DeltaMessage(content=current_text[offset:])
+            if start_index == -1:
+                # Start in content while withholding partial delimiters.
+                return self._handle_multi_block_after_close(
+                    previous_text, current_text, delta_text
+                )
+            # Preserve the parent path's explicit-opener handling, including
+            # discarding a preamble in the chunk containing the opener.
         return super()._extract_reasoning_streaming_inner(
             previous_text, current_text, delta_text
         )
@@ -228,7 +238,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             type(self) is Qwen3ReasoningParser
             and enable_thinking is False
             and not prompt_thinking_active
-            and start_index == -1
+            and (start_index == -1 or (end_index != -1 and end_index < start_index))
         ):
             return None, model_output
         if end_index != -1 and (start_index == -1 or end_index < start_index):
