@@ -41,6 +41,7 @@ def tiny_model():
                     num_attention_heads=2,
                     num_key_value_heads=1,
                     head_dim=4,
+                    rope_parameters={"partial_rotary_factor": 0.5},  # Two rotary dims.
                     linear_num_key_heads=1,
                     linear_num_value_heads=3,
                     linear_key_head_dim=4,
