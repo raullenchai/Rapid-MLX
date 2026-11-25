@@ -3304,9 +3304,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 1000,
+       "default": null,
        "dest": "iters",
-       "help": null,
+       "help": "Training iterations (default: 3 epochs, up to 1000 iterations)",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -4276,9 +4276,9 @@
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
-       "default": 1000,
+       "default": null,
        "dest": "iters",
-       "help": null,
+       "help": "Training iterations (default: 3 epochs, up to 1000 iterations)",
        "metavar": null,
        "nargs": null,
        "option_strings": [

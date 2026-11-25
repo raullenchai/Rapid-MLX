@@ -125,20 +125,14 @@ def validate_adapter_checkpoint(model: str) -> None:
         raise ValueError("--adapter is unsupported with fp8 repack checkpoints")
 
 
-def prepare_adapter_cli(args) -> None:
-    """Run before CLI dispatch can branch to an alternate weight loader."""
-    if getattr(args, "adapter", None) is None:
-        return
-    model = getattr(args, "model", None)
-    if not model:
-        raise ValueError("--adapter requires a text base model")
-    validate_adapter(args.adapter, model)
+def validate_adapter_runtime(model: str, *, cua_only: bool = False) -> None:
+    """Reject alternate model runtimes that cannot serve mlx-lm adapters."""
     from .audio.probe import is_audio_model_alias
     from .audio.registry import resolve_local_audio_folder
     from .model_aliases import resolve_profile
     from .models.deepseek_v41_native.artifacts import is_product_target
 
-    if is_product_target(model) or getattr(args, "cua_only", False):
+    if is_product_target(model) or cua_only:
         raise ValueError(
             "--adapter is unsupported with dedicated native/media runtimes"
         )
@@ -151,6 +145,17 @@ def prepare_adapter_cli(args) -> None:
         raise ValueError(
             "--adapter supports text models only (no image/video/audio/diffusion)"
         )
+
+
+def prepare_adapter_cli(args) -> None:
+    """Run before CLI dispatch can branch to an alternate weight loader."""
+    if getattr(args, "adapter", None) is None:
+        return
+    model = getattr(args, "model", None)
+    if not model:
+        raise ValueError("--adapter requires a text base model")
+    validate_adapter(args.adapter, model)
+    validate_adapter_runtime(model, cua_only=getattr(args, "cua_only", False))
     payload = getattr(args, "speculative_config", None)
     reject_adapter_options(
         mllm=getattr(args, "mllm", False),

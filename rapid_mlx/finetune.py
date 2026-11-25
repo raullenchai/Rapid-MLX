@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import re
 import shlex
 import signal
 import subprocess
@@ -22,7 +23,12 @@ from . import __version__, model_downloads
 from ._download_gate import _format_size
 from .launch._common import atomic_write_json
 from .local_model_path import raise_if_missing_local_model, resolved_model_ref
-from .lora_adapter import ADAPTER_METADATA, _base_identity
+from .lora_adapter import (
+    ADAPTER_METADATA,
+    _base_identity,
+    validate_adapter_checkpoint,
+    validate_adapter_runtime,
+)
 from .model_aliases import resolve_model, resolve_revision, resolve_subfolder
 from .model_metadata import read_model_metadata, resolve_offline_cached_snapshot
 from .model_reference import normalize_model_reference
@@ -33,6 +39,9 @@ from .telemetry.track import track
 
 _MEMORY_TIP = "Try smaller --batch-size, --num-layers or --max-seq-length, or stop the local server."
 _TUNER_FLAGS = ("iters", "batch_size", "num_layers", "learning_rate", "max_seq_length")
+_VAL_LOSS = re.compile(r"^Iter \d+: Val loss (-?(?:\d+(?:\.\d+)?|inf|nan))(?=,|\s|$)")
+_DEFAULT_EPOCHS = 3
+_MAX_DEFAULT_ITERS = 1000
 _STOP_GRACE_SECONDS = 2.0
 # Match the mlx-lm downloader when materializing a pinned checkpoint.
 _MODEL_FILES = [
@@ -135,19 +144,21 @@ def _print_plan(args, out, train, valid):
         if metadata and metadata.snapshot_dir:
             shards = metadata.snapshot_dir.glob("model*.safetensors")
             weights = sum(shard.stat().st_size for shard in shards) or weights
-        # Approximate saved activations across layers. Actual peaks vary by model.
+        # Text-model calibration against measured mlx-lm LoRA peaks. Allow for
+        # backward intermediates in the activation budget and extra workspace.
         hidden = config.get("hidden_size") or 4096
         layers = max(args.num_layers, 0) or config.get("num_hidden_layers") or 32
         tokens = args.batch_size * args.max_seq_length
-        activations = 16 * hidden * layers * tokens
+        activations = 56 * hidden * layers * tokens
         # Allow one float32 buffer each for the full-vocabulary logits and their
         # gradient during cross-entropy training.
         logits_and_grad = 8 * (config.get("vocab_size") or 0) * tokens
-        estimate = (weights or 0) + activations + logits_and_grad
+        workspace = 1_250_000_000
+        estimate = (weights or 0) + activations + logits_and_grad + workspace
         suffix = " plus unknown base weights" if weights is None else ""
         available = psutil.virtual_memory().available
         print(
-            f"Estimated unified memory: {_format_size(estimate)}{suffix} "
+            f"Estimated unified memory: approximately {_format_size(estimate)}{suffix} "
             f"({_format_size(available)} available).",
             flush=True,
         )
@@ -155,6 +166,7 @@ def _print_plan(args, out, train, valid):
             print(f"Warning: low available memory. {_MEMORY_TIP}", file=sys.stderr)
     except Exception:
         print("Estimated unified memory: unavailable.", flush=True)
+    print("The tuner prints measured 'Peak mem' during training.", flush=True)
     try:
         running = any(
             serve_subcommand_index(p.info.get("cmdline") or []) is not None
@@ -262,6 +274,7 @@ def _train(args, model, data, out):
             f"--resume-adapter-file={Path(args.resume).expanduser().absolute()}"
         )
     oom = False
+    first_val_loss = last_val_loss = None
     with subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -275,6 +288,12 @@ def _train(args, model, data, out):
             assert child.stdout is not None
             for line in child.stdout:
                 print(line, end="", flush=True)
+                if match := _VAL_LOSS.match(line):
+                    loss = float(match[1])
+                    if first_val_loss is None:
+                        first_val_loss = loss
+                    else:
+                        last_val_loss = loss
                 oom |= line.strip().startswith("MemoryError") or (
                     classify_engine_abort(line) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
                 )
@@ -290,6 +309,15 @@ def _train(args, model, data, out):
         raise ValueError(
             f"mlx-lm exited with status {code}. Check the tuner output above and retry."
         )
+    if (
+        first_val_loss is not None
+        and last_val_loss is not None
+        and not last_val_loss < first_val_loss
+    ):
+        print(
+            "Validation loss did not improve. Try more training data or a different --learning-rate.",
+            flush=True,
+        )
 
 
 def finetune_command(args):
@@ -298,7 +326,8 @@ def finetune_command(args):
     status = "err"
     try:
         if (
-            min(args.iters, args.batch_size, args.max_seq_length) < 1
+            min(args.batch_size, args.max_seq_length) < 1
+            or (args.iters is not None and args.iters < 1)
             or args.num_layers < -1
         ):
             raise ValueError(
@@ -316,6 +345,14 @@ def finetune_command(args):
                 raise ValueError(
                     f"Unknown model alias {args.model!r}. Run rapid-mlx models to list aliases."
                 )
+        try:
+            validate_adapter_runtime(args.model)
+            validate_adapter_checkpoint(args.model)
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot fine-tune {reference!r} for serving with LoRA. {exc}. "
+                "Choose a text-only model that supports LoRA adapters."
+            ) from exc
         if args.resume:
             _validate_resume(
                 Path(args.resume).expanduser(), args.model, args.num_layers
@@ -327,6 +364,15 @@ def finetune_command(args):
             data, train, valid = _prepare_data(
                 Path(args.data).expanduser(), scratch, args.batch_size
             )
+            if args.iters is None:
+                # mlx-lm trains on full batches and drops the remainder each epoch.
+                args.iters = min(
+                    _MAX_DEFAULT_ITERS, _DEFAULT_EPOCHS * (train // args.batch_size)
+                )
+                print(
+                    f"Default --iters={args.iters} targets {_DEFAULT_EPOCHS} epochs over full batches "
+                    f"with a cap of {_MAX_DEFAULT_ITERS} iterations."
+                )
             _print_plan(args, out, train, valid)
             model = _training_model(args.model, reference)
             out.mkdir(parents=True, exist_ok=False)

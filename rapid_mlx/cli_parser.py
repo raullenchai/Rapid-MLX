@@ -2549,7 +2549,11 @@ def _add_finetune_parser(subparsers) -> None:
         help="New adapter directory (default: ~/.rapid-mlx/adapters/<model>-<timestamp>)",
     )
     # mlx-lm 0.31.3 lora.CONFIG_DEFAULTS (keep the CLI import free of MLX).
-    parser.add_argument("--iters", type=int, default=1000)
+    parser.add_argument(
+        "--iters",
+        type=int,
+        help="Training iterations (default: 3 epochs, up to 1000 iterations)",
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument(
         "--num-layers", type=int, default=16, help="Layers to adapt (-1 for all)"
