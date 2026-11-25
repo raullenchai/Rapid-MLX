@@ -23,7 +23,7 @@ import shlex
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -146,6 +146,9 @@ from ..service.helpers import (
     repair_messages_fit_context,
     served_chat_template,
 )
+
+if TYPE_CHECKING:
+    from .chat import _OutputCleaningKwargs
 
 logger = logging.getLogger(__name__)
 
@@ -1710,7 +1713,7 @@ async def _non_stream(
     resolved_thinking = _resolve_enable_thinking(openai_request)
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
-    output_cleaning_kwargs = {}
+    output_cleaning_kwargs: _OutputCleaningKwargs = {}
     if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
         output_cleaning_kwargs = {
             "enable_thinking": resolved_thinking,

@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -163,6 +163,11 @@ from ..service.helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _OutputCleaningKwargs(TypedDict, total=False):
+    enable_thinking: bool | None
+    prompt_thinking_active: bool
 
 
 def _record_nonstream_failure(
@@ -5509,7 +5514,7 @@ async def _create_chat_completion_impl(
 
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
-    output_cleaning_kwargs = {}
+    output_cleaning_kwargs: _OutputCleaningKwargs = {}
     if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
         output_cleaning_kwargs = {
             "enable_thinking": resolved_thinking,

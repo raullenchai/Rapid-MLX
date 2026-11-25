@@ -103,7 +103,7 @@ from ..service.helpers import (
     prompt_compression_headers,
     reasoning_stop_scope_kwargs,
 )
-from .chat import _effective_posthoc_reasoning_cap
+from .chat import _effective_posthoc_reasoning_cap, _OutputCleaningKwargs
 
 
 def _apply_anthropic_thinking_defaults(openai_request: ChatCompletionRequest) -> None:
@@ -889,7 +889,7 @@ async def create_anthropic_message(
             )
         if effective_thinking is not None:
             chat_kwargs["enable_thinking"] = effective_thinking
-        output_cleaning_kwargs = {}
+        output_cleaning_kwargs: _OutputCleaningKwargs = {}
         if type(cfg.reasoning_parser) is Qwen3ReasoningParser:
             output_cleaning_kwargs = {
                 "enable_thinking": effective_thinking,
