@@ -76,7 +76,7 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
+    "layers.py": "f86522db21d69dff2008fbd1b58d5c4cf8420625be5dbd84a095bbdedf153a43",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
@@ -1022,6 +1022,165 @@ def create_model(runtime, *, dtype=None, loop=True):
     model.eval()
     mx.eval(model.parameters())
     return model
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize(
+    "mode,group", [("affine", 64), ("mxfp4", 32), ("nvfp4", 16), ("mxfp8", 32)]
+)
+def test_packed_quantized_projections_exact(metal_runtime, dtype, mode, group):
+    import gc
+
+    from mlx import nn
+
+    from rapid_mlx.models.inkling2.layers import _packed_quantized_projections
+
+    mx, _ = metal_runtime
+    dtype = getattr(mx, dtype)
+    for seed, width, scale in ((3, 64, 0.001), (17, 128, 1.0), (91, 4096, 100.0)):
+        mx.random.seed(seed)
+        owner = nn.Module()
+        sizes = (width // 2, width // 16, width // 2, max(4, width // 128))
+        projections = [nn.Linear(width, n, bias=False) for n in sizes]
+        for p in projections:
+            p.weight = mx.random.normal(p.weight.shape).astype(dtype)
+        projections = [p.to_quantized(group_size=group, mode=mode) for p in projections]
+        x = (mx.random.normal((1, 1, width * 2)) * scale).astype(dtype)[..., ::2]
+        expected = [p(x) for p in projections]
+        mx.eval(expected, [p.parameters() for p in projections])
+        actual = _packed_quantized_projections(owner, "query", projections, x)
+        mx.eval(actual)
+        for a, b in zip(actual, expected):
+            assert a.dtype == b.dtype
+            assert mx.array_equal(a, b).item()
+            assert mx.array_equal(a.view(mx.uint8), b.view(mx.uint8)).item()
+        del actual, a, b
+        gc.collect()
+        mx.synchronize()
+        before = mx.get_active_memory()
+        packed = owner._decode_pack_query
+        actual = _packed_quantized_projections(owner, "query", projections, x)
+        mx.eval(actual)
+        del actual
+        gc.collect()
+        mx.synchronize()
+        # Reusing a pack must not retain another allocation.
+        assert mx.get_active_memory() <= before
+        assert owner._decode_pack_query is packed
+        projections[0].scales = projections[0].scales + mx.array(
+            1, dtype=projections[0].scales.dtype
+        )
+        expected = projections[0](x)
+        actual = _packed_quantized_projections(owner, "query", projections, x)[0]
+        assert mx.array_equal(actual, expected).item()
+
+
+@pytest.mark.requires_mlx
+def test_packed_projection_fallbacks(metal_runtime, monkeypatch):
+    from mlx import nn
+
+    from rapid_mlx.models.inkling2 import layers
+
+    mx, inkling2 = metal_runtime
+    pack = layers._packed_quantized_projections
+    projections = [nn.Linear(64, 32, bias=False).to_quantized() for _ in range(2)]
+    x = mx.ones((1, 1, 64))
+    owner = nn.Module()
+    original = projections[0].weight
+    with monkeypatch.context() as m:
+        evaluate = Mock(side_effect=RuntimeError("lazy evaluation failed"))
+        m.setattr(mx, "eval", evaluate)
+        assert pack(owner, "query", projections, x) is None
+        assert pack(owner, "query", projections, x) is None
+        evaluate.assert_called_once()
+    assert projections[0].weight is original
+    projections[1].bits = 8
+    assert pack(nn.Module(), "query", projections, x) is None
+    projections[1].bits = 4
+    projections[1].bias = mx.zeros((32,))
+    assert pack(nn.Module(), "query", projections, x) is None
+    assert pack(nn.Module(), "query", [nn.Linear(64, 32)] * 2, x) is None
+
+    attn = layers.SlidingAttention(inkling2.ModelArgs.from_dict(CONFIG).text)
+    spy = Mock(return_value=None)
+    monkeypatch.setattr(layers, "_packed_quantized_projections", spy)
+    for batch, length, cache, enabled, gpu in (
+        (1, 2, [SimpleNamespace(offset=2)], "1", True),
+        (2, 1, [SimpleNamespace(offset=2)], "1", True),
+        (1, 1, None, "1", True),
+        (1, 1, [None], "1", True),
+        (1, 1, [SimpleNamespace(offset=0)], "1", True),
+        (1, 1, [SimpleNamespace(offset=2)], "0", True),
+        (1, 1, [SimpleNamespace(offset=2)], "1", False),
+    ):
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", enabled)
+        monkeypatch.setattr(layers, "_use_kernels", lambda gpu=gpu: gpu)
+        h = mx.ones((batch, length, 64))
+        attn._project_inputs(h, h, h, cache)
+    spy.assert_not_called()
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    attn._project_inputs(x, x, x + 1, [SimpleNamespace(offset=2)])
+    assert [call.args[1] for call in spy.call_args_list] == ["query"]
+
+
+@pytest.mark.requires_mlx
+def test_packed_projection_invocation_failure(metal_runtime, monkeypatch):
+    from mlx import nn
+
+    from rapid_mlx.models.inkling2.layers import _packed_quantized_projections
+
+    mx, _ = metal_runtime
+    owner = nn.Module()
+    projections = [nn.Linear(64, 32, bias=False).to_quantized() for _ in range(2)]
+    x = mx.ones((1, 1, 64))
+    expected = [p(x) for p in projections]
+    mx.eval(expected)
+    with monkeypatch.context() as m:
+        invoke = Mock(side_effect=RuntimeError("invocation failed"))
+        m.setattr(mx, "quantized_matmul", invoke)
+        assert _packed_quantized_projections(owner, "query", projections, x) is None
+        invoke.assert_called_once()
+    for projection, reference in zip(projections, expected):
+        assert mx.array_equal(projection(x), reference).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("loop", [False, True])
+def test_packed_projection_cached_logits_exact(metal_runtime, monkeypatch, dtype, loop):
+    from mlx import nn
+
+    from rapid_mlx.models.inkling2 import layers
+
+    mx, _ = metal_runtime
+    model = create_model(metal_runtime, dtype=getattr(mx, dtype), loop=loop)
+    nn.quantize(
+        model,
+        group_size=64,
+        class_predicate=lambda p, m: any(
+            p.endswith("." + n + "_proj")
+            for n in ("q", "k", "v", "r", "gate", "sink", "weight")
+        ),
+    )
+    reference_cache, packed_cache = model.make_cache(), model.make_cache()
+    tokens = mx.random.randint(0, 120, (1, 12))
+    full = model(tokens)
+    mx.eval(full)
+    pack = layers._packed_quantized_projections
+    for start, end in [(0, 6)] + [(i, i + 1) for i in range(6, 12)]:
+        with monkeypatch.context() as m:
+            m.setattr(layers, "_packed_quantized_projections", lambda *a: None)
+            expected = model(tokens[:, start:end], cache=reference_cache)
+            mx.eval(expected)
+        actual = model(tokens[:, start:end], cache=packed_cache)
+        assert mx.array_equal(actual, expected).item()
+        assert mx.array_equal(actual.view(mx.uint32), expected.view(mx.uint32)).item()
+    assert layers._packed_quantized_projections is pack
+    assert any(hasattr(layer.self_attn, "_decode_pack_query") for layer in model.layers)
+    assert any(hasattr(layer.self_attn, "_decode_pack_k") for layer in model.layers)
+    assert mx.array_equal(model(tokens), full).item()
 
 
 def test_catalog():
