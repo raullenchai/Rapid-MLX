@@ -3,7 +3,7 @@
 
 import math
 from collections.abc import Callable
-from functools import cache, lru_cache
+from functools import cache
 from typing import cast
 
 import mlx.core as mx
@@ -16,7 +16,16 @@ __all__ = [
 ]
 
 
-@lru_cache(maxsize=1)
+def _probe_metal(kernel, **launch):
+    """Force lazy Metal compilation using synthetic inputs before caching success."""
+    try:
+        mx.eval(*kernel(**launch))
+    except Exception:
+        return None
+    return kernel
+
+
+@cache
 def _expert_conv_residual_factory():
     try:
         return mx.fast.metal_kernel(
@@ -79,20 +88,15 @@ def _probe_expert_conv_residual(kernel, template, x_dtype):
         ((1, 1, C), mx.float32),
         ((), mx.float32),
     )
-    try:
-        mx.eval(
-            kernel(
-                inputs=[mx.ones(s, dtype=d) for s, d in specs],
-                template=list(template),
-                grid=(C, 1, 1),
-                threadgroup=(256, 1, 1),
-                output_shapes=[(1, 1, C), (1, K - 1, C)],
-                output_dtypes=[T, mx.float32],
-            )
-        )
-    except Exception:
-        return None
-    return kernel
+    return _probe_metal(
+        kernel,
+        inputs=[mx.ones(s, dtype=d) for s, d in specs],
+        template=list(template),
+        grid=(C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(1, 1, C), (1, K - 1, C)],
+        output_dtypes=[T, mx.float32],
+    )
 
 
 def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dtype):
@@ -415,6 +419,78 @@ def route_weights_decode(scores, indices, route_scale):
         output_shapes=[indices.shape],
         output_dtypes=[scores.dtype],
     )[0]
+
+
+@cache
+def _route_topk(n, k):
+    try:
+        kernel = mx.fast.metal_kernel(
+            name="inkling2_route_topk_decode",
+            input_names=["logits", "bias"],
+            output_names=["indices", "out_scores"],
+            source="""
+                #pragma clang fp contract(off)
+                const uint tid = thread_position_in_threadgroup.x;
+                threadgroup float scores[N], order[N];
+                if (tid < N) {
+                    float x = logits[tid * logits_strides[2]];
+                    float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(x)));
+                    scores[tid] = x < 0.0f ? y : 1.0f - y;
+                    out_scores[tid] = scores[tid];
+                    order[tid] = -(scores[tid] + bias[tid * bias_strides[0]]);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (tid < N) {
+                    uint rank = 0;
+                    const float a = order[tid];
+                    for (uint j = 0; j < N; ++j) {
+                        float b = order[j];
+                        bool less = metal::isnan(a) ? !metal::isnan(b)
+                            : !metal::isnan(b) && b < a;
+                        bool equal = a == b || (metal::isnan(a) && metal::isnan(b));
+                        rank += less || (equal && j < tid);
+                    }
+                    if (rank < K) {
+                        indices[rank] = tid;
+                    }
+                }
+            """,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+        return _probe_metal(
+            kernel,
+            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,))],
+            template=[("N", n), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), (1, 1, n)],
+            output_dtypes=[mx.uint32, mx.float32],
+        )
+    except Exception:
+        # Cache unavailability as well, so decode permanently uses the stock path.
+        return None
+
+
+def route_topk_decode(
+    logits: mx.array, bias: mx.array, k: int, scale: float
+) -> tuple[mx.array, mx.array] | None:
+    """Single-row FP32 scoring/selection, with existing decode normalization."""
+    kernel = _route_topk(logits.shape[-1], k)
+    if kernel is None:
+        return None
+    try:
+        indices, scores = kernel(
+            inputs=[logits, bias],
+            template=[("N", logits.shape[-1]), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), logits.shape],
+            output_dtypes=[mx.uint32, mx.float32],
+        )
+    except Exception:
+        return None
+    return indices, route_weights_decode(scores, indices, scale)
 
 
 # Attention of learned queries over the depth sources of each token, in one

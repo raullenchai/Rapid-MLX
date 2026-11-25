@@ -76,8 +76,8 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "bffb29d6e239f1e2340e8da5fb2e80bc9b2e61ebbc96d71706a810292f2d69a3",
-    "kernels.py": "416876475b1f432ca6d597a22c08287b71da3a2a23318bd05f6521e7730753ed",
+    "layers.py": "5352037a5c08c2c11b24b24c641694a5fa9a427af68615a7193b19cfdf4266ab",
+    "kernels.py": "b4fb58609f86bbefd4cf4c55634fa4d8e79e259c51a19550134db48c1c6185f1",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -947,6 +947,170 @@ def test_decode_message_controller(metal_runtime, monkeypatch, dtype):
 
 
 @pytest.mark.requires_mlx
+@pytest.mark.parametrize("seed", [0, 17, 53])
+def test_router_topk_exact(metal_runtime, monkeypatch, seed):
+    mx, inkling2 = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    monkeypatch.setattr(layers, "expert_routing", None)
+    mx.random.seed(seed)
+    for n, k in [(4, 2), (16, 8), (65, 33), (128, 8), (128, 128)]:
+        router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
+        router.weight, router.top_k = mx.eye(n), k
+        for dtype in (mx.float32, mx.bfloat16):
+            random = mx.random.normal((1, 1, n)).astype(dtype)
+            for logits, bias in (
+                (random, mx.random.normal((n,))),
+                (mx.zeros_like(random), mx.zeros((n,))),
+                (random, -mx.sigmoid(random.astype(mx.float32)).reshape(n)),
+                (random, (mx.arange(n) % 3 - 1.0) * 1e20),
+                ((random * 1000).astype(dtype), mx.arange(n) % 3 - 1.0),
+                (mx.full(random.shape, -100.0, dtype=dtype), mx.zeros((n,))),
+            ):
+                router.e_score_correction_bias = bias
+                expected = router(logits)
+                scores = mx.sigmoid(logits.astype(mx.float32))
+                indices, actual_scores = kernels._route_topk(n, k)(
+                    inputs=[logits.astype(mx.float32), bias],
+                    template=[("N", n), ("K", k)],
+                    grid=(128, 1, 1),
+                    threadgroup=(128, 1, 1),
+                    output_shapes=[(1, 1, k), logits.shape],
+                    output_dtypes=[mx.uint32, mx.float32],
+                )
+                assert mx.array_equal(indices, expected[0]).item()
+                assert mx.array_equal(
+                    actual_scores.view(mx.uint32), scores.view(mx.uint32)
+                ).item()
+                actual = router(logits, True)
+                for a, e in zip(actual, expected):
+                    assert a.dtype == e.dtype
+                    assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("failure", ["construction", "invocation", "evaluation"])
+def test_router_topk_gates_and_failure(metal_runtime, monkeypatch, failure):
+    mx, inkling2 = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    monkeypatch.setattr(layers, "expert_routing", None)
+    router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("unsupported router used decode kernel")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(layers, "route_topk_decode", unexpected)
+        for shape, cached in [
+            ((1, 3, 64), True),
+            ((2, 1, 64), True),
+            ((1, 1, 64), False),
+        ]:
+            mx.eval(router(mx.zeros(shape), cached))
+        patch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+        mx.eval(router(mx.zeros((1, 1, 64)), True))
+        patch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+        patch.setattr(layers, "_use_kernels", lambda: False)
+        mx.eval(router(mx.zeros((1, 1, 64)), True))
+        patch.setattr(layers, "_use_kernels", lambda: True)
+        router.weight = mx.zeros((129, 64))
+        router.e_score_correction_bias = mx.zeros((129,))
+        mx.eval(router(mx.zeros((1, 1, 64)), True))
+
+    attempts = []
+    pending = mx.zeros((1,))
+    real_eval = mx.eval
+
+    def broken(*args, **kwargs):
+        attempts.append("construction")
+        if failure == "construction":
+            raise RuntimeError("kernel construction failed")
+
+        def launch(**kwargs):
+            attempts.append("invocation")
+            if failure == "invocation":
+                raise RuntimeError("kernel invocation failed")
+            return [pending, pending]
+
+        return launch
+
+    def evaluate(*arrays):
+        if any(a is pending for a in arrays):
+            attempts.append("evaluation")
+            raise RuntimeError("lazy kernel evaluation failed")
+        return real_eval(*arrays)
+
+    router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
+    x = mx.ones((1, 1, 64))
+    expected = router(x)
+    kernels._route_topk.cache_clear()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(mx.fast, "metal_kernel", broken)
+            patch.setattr(mx, "eval", evaluate)
+            for _ in range(2):
+                actual = router(x, True)
+                mx.eval(*actual)
+                for a, e in zip(actual, expected):
+                    assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+            stages = ["construction", "invocation", "evaluation"]
+            assert attempts == stages[: stages.index(failure) + 1]
+    finally:
+        kernels._route_topk.cache_clear()
+
+
+@pytest.mark.requires_mlx
+def test_router_topk_real_invocation_failure(metal_runtime, monkeypatch):
+    mx, inkling2 = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    monkeypatch.setattr(layers, "expert_routing", None)
+    router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
+    x = mx.ones((1, 1, 64))
+    expected = router(x)
+    # Warm the cache with a successful construction and evaluated probe.
+    assert kernels._route_topk(4, 2) is not None
+    launch = Mock(side_effect=RuntimeError("real kernel invocation failed"))
+    monkeypatch.setattr(kernels, "_route_topk", lambda n, k: launch)
+    actual = router(x, True)
+    mx.eval(*actual)
+    launch.assert_called_once()
+    for a, e in zip(actual, expected):
+        assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_router_topk_cached_logits_exact(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    monkeypatch.setattr(layers, "expert_routing", None)
+    models = [create_model(metal_runtime, dtype=getattr(mx, dtype)) for _ in range(2)]
+    caches = [model.make_cache() for model in models]
+    tokens = mx.array([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
+    calls = Mock(wraps=layers.route_topk_decode)
+    for step in range(10):
+        outputs = []
+        for i, (model, cache) in enumerate(zip(models, caches)):
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    layers, "route_topk_decode", calls if i else lambda *a: None
+                )
+                ids = tokens[:, step : step + 1]
+                out = model(ids, cache=cache)
+                mx.eval(out)
+                outputs.append(out)
+        assert mx.array_equal(
+            outputs[0].view(mx.uint32), outputs[1].view(mx.uint32)
+        ).item()
+        if step == 0:
+            assert calls.call_count == 0  # A one-token prefill has no cached history.
+    assert calls.call_count > 0
+
+
+@pytest.mark.requires_mlx
 def test_decode_router_and_positions(metal_runtime, monkeypatch):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import layers
@@ -1419,6 +1583,8 @@ def test_fast_decode_specializations_stay_bounded(
     for name, kernel in vars(kernels).copy().items():
         if name.endswith("_kernel"):
             monkeypatch.setattr(kernels, name, record(name, kernel))
+    topk = record("route_topk", kernels._route_topk(4, 2))
+    monkeypatch.setattr(kernels, "_route_topk", lambda n, k: topk)
 
     expected_keys = expected_traces = None
     for step in range(6, 46):
@@ -1427,9 +1593,8 @@ def test_fast_decode_specializations_stay_bounded(
             mx.eval(logits)
             assert mx.all(mx.isfinite(logits)).item()
             assert all(c[0].offset == step + 1 for c in cache)
-            if expected_keys is None:
-                expected_keys = {name: seen.copy() for name, seen in keys.items()}
-            assert keys == expected_keys
+            if expected_keys is not None:
+                assert keys == expected_keys
             traces = compile_traces.copy()
             if expected_traces is not None:
                 assert traces == expected_traces
@@ -1437,6 +1602,7 @@ def test_fast_decode_specializations_stay_bounded(
             # Warm every batch size once: block graphs trace per input shape.
             # Growing KV banks and revisiting these sizes must add no traces.
             expected_traces = traces.copy()
+            expected_keys = {name: seen.copy() for name, seen in keys.items()}
     assert all(
         seen for name, seen in keys.items() if name != "_relative_attention_kernel"
     )

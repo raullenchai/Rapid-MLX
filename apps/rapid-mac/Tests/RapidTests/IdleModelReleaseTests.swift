@@ -16,6 +16,25 @@ struct IdleModelReleaseTests {
         }
     }
 
+    @Test func runningPrimaryOverridesRuntimeCapability() {
+        for supportsNative in [false, true] {
+            for reported in [false, true] {
+                #expect(IdleModelReleasePreference.mode(setting: 300,
+                    runtimeSupportsNativeUnload: supportsNative, primaryIdleUnloadActive: reported)
+                    == (reported ? .native : .legacyStop))
+                #expect(IdleModelReleasePreference.mode(setting: 0,
+                    runtimeSupportsNativeUnload: supportsNative, primaryIdleUnloadActive: reported) == .off)
+            }
+        }
+    }
+
+    @Test func disablingAudioOnlyIdleUnloadRestarts() {
+        #expect(IdleModelReleasePreference.restartDecision(
+            setting: 0, secondsAtSpawn: nil, audioSecondsAtSpawn: 300, isReady: true,
+            isOperating: false, hasActiveRequests: false, hasResidentLoadsInFlight: false,
+            alias: "speech") == .restart(alias: "speech"))
+    }
+
     @Test func nativeUnloadUsesAudioCapability() throws {
         // Legacy audio runtimes retain the stop fallback.
         #expect(!IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: true, residentAudioLanes: 0))
@@ -121,5 +140,11 @@ struct ServerActivityIdleTests {
         let new = try decoder.decode(ModelResidencySnapshot.self, from: Data("{\(base),\"activity\":{\"in_flight\":2,\"idle_seconds\":0}}".utf8))
         #expect(old.activity == nil)
         #expect(new.activity == ServerActivity(inFlight: 2, idleSeconds: 0))
+        #expect(old.primaryIdleUnloadActive == nil)
+        for active in [false, true] {
+            let snapshot = try decoder.decode(ModelResidencySnapshot.self,
+                from: Data("{\(base),\"primary_idle_unload_active\":\(active)}".utf8))
+            #expect(snapshot.primaryIdleUnloadActive == active)
+        }
     }
 }

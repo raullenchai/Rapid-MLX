@@ -751,6 +751,7 @@ async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
     assert snapshot == {
         "models": [{"id": "chat-model"}],
         "audio_lanes": [{"lane": "stt", "model": "whisper-small"}],
+        "primary_idle_unload_active": False,
     }
 
 
