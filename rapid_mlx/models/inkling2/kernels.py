@@ -242,7 +242,7 @@ def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
             output_shapes=[x.shape if output else (1, 1, 2 * D)],
             output_dtypes=[dtype],
         )[0]
-    except (RuntimeError, ValueError):
+    except Exception:
         return None
 
 

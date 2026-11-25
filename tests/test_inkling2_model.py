@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "c191b46673402799251f30f58b60a3eb6aa415653441827e351c89be838da432",
-    "kernels.py": "a43bf8394311c12f00fac336b2e2638184f1dcf8697b2b8720a8c05151e8ab57",
+    "kernels.py": "748ff59cccee5ffae94747173b4003b9bf912d98883d2832eff6c941cc29567e",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -877,6 +877,23 @@ def test_message_norm_cached_logits_exact(metal_runtime, monkeypatch, dtype):
         assert mx.array_equal(actual, expected).item()
         assert mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()
     assert seen == {False, True}
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("error", [RuntimeError, ValueError, TypeError])
+def test_message_norm_invocation_fallback(metal_runtime, monkeypatch, error):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    kernel = Mock(side_effect=error("kernel invocation unavailable"))
+    monkeypatch.setattr(kernels, "_get_message_norm", lambda *args: kernel)
+    x = mx.ones((1, 1, 64))
+    for helper, args in (
+        (layers._message_input, (x, x, mx.float16)),
+        (layers._norm_cast, (x, mx.ones((64,)), 1e-6, mx.float16)),
+    ):
+        assert mx.array_equal(helper(*args, decode=True), helper(*args)).item()
+    assert kernel.call_count == 2
 
 
 @pytest.mark.requires_mlx
