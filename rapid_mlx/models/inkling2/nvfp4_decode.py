@@ -109,16 +109,20 @@ def project(x, w, scales, indices, global_scale):
         return None
     shape = (1,) * max(x.ndim - 3, indices.ndim - 1) + (p, 1, rows)
     scale = global_scale if global_scale is not None else scales
-    return kernel(
-        inputs=[x, w, scales, indices.astype(mx.int32), scale],
-        template=[
-            ("N", n),
-            ("M", rows),
-            ("SHARED", x.shape[-3] == 1),
-            ("HAS_SCALE", global_scale is not None),
-        ],
-        grid=(32, rows, p),
-        threadgroup=(32, 16, 1),
-        output_shapes=[shape],
-        output_dtypes=[mx.bfloat16],
-    )[0]
+    try:
+        return kernel(
+            inputs=[x, w, scales, indices.astype(mx.int32), scale],
+            template=[
+                ("N", n),
+                ("M", rows),
+                ("SHARED", x.shape[-3] == 1),
+                ("HAS_SCALE", global_scale is not None),
+            ],
+            grid=(32, rows, p),
+            threadgroup=(32, 16, 1),
+            output_shapes=[shape],
+            output_dtypes=[mx.bfloat16],
+        )[0]
+    except Exception:
+        # Invocation construction can fail even after a successful probe.
+        return None

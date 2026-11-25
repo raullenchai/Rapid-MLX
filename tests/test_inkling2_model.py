@@ -81,7 +81,7 @@ _NUMERICAL_CORE_SHA256 = {
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "342d56d32a4936da5d3ce0b796d3bb4fd133d2722fd44657fe79cf6b38300754",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
-    "nvfp4_decode.py": "b94edcb8b4ecb88fda1cbee2a39f79db0c260f3bb0ccefa7abe996b305479213",
+    "nvfp4_decode.py": "3d4bbcc3b37c76b95066aa110320ce8e9019b811e390ede38f5bf32a0f56f396",
 }
 
 
@@ -433,6 +433,30 @@ def test_nvfp4_decode_nondefault_build_failure(metal_runtime, monkeypatch, failu
     assert kernel.call_count == (failure != "build")
     if failure == "eval":
         evaluate.assert_called_once()
+
+
+def test_nvfp4_decode_invocation_failure(metal_runtime, monkeypatch):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, 16, 4, "nvfp4")
+    x = mx.ones((1, 1, 1, 1, 128), mx.bfloat16)
+    indices = mx.zeros((1, 1, 2), mx.uint32)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", False)
+    expected = layer(x, indices)
+    mx.eval(expected)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", True)
+    factory = functools.cache(nvfp4_decode._get_kernel.__wrapped__)
+    monkeypatch.setattr(nvfp4_decode, "_get_kernel", factory)
+    # The one-time probe succeeds; only the real invocation raises.
+    kernel = Mock(side_effect=[[mx.zeros((1,), mx.bfloat16)], RuntimeError("invoke")])
+    monkeypatch.setattr(mx.fast, "metal_kernel", Mock(return_value=kernel))
+    actual = layer(x, indices)
+    assert mx.array_equal(actual, expected).item()
+    assert factory(128, 32, True, False) is kernel
+    assert kernel.call_count == 2
+    assert kernel.call_args.kwargs["inputs"][0] is x
 
 
 @pytest.mark.parametrize("dtype", ["int32", "uint32", "int64", "uint64"])
