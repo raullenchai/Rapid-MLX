@@ -544,6 +544,58 @@ def test_optional_assets_and_in_flight_sync_severity(monkeypatch, tmp_path):
     assert reports["stable"].findings[0].severity == "error"
 
 
+@pytest.mark.parametrize(
+    "current, retired, catalog_aliases, catalog_repo, expected_status",
+    [
+        (False, True, ["org/model"], "org/model", "status-0"),
+        (False, True, [], "org/model", None),
+        (True, False, ["org/model"], "org/model", None),
+        (True, True, ["org/model"], "org/model", None),
+        (False, True, ["other", "org/model"], "org/model", "status-1"),
+        (False, True, ["org/model", "other"], "org/model", "status-0"),
+        (False, True, ["first", "second"], "org/model", "status-0"),
+        (False, True, ["org/Model"], "org/Model", None),
+        (False, True, ["model", "org/model"], "org/model", "status-0"),
+    ],
+)
+def test_retired_alias_catalog_lookup(
+    monkeypatch,
+    tmp_path,
+    current,
+    retired,
+    catalog_aliases,
+    catalog_repo,
+    expected_status,
+):
+    main = tmp_path / "aliases.json"
+    audio = tmp_path / "audio.json"
+    profile = {"model": {"hf_path": "org/model"}}
+    main.write_text(json.dumps(profile if current else {}))
+    audio.write_text("{}")
+    if retired:
+        (tmp_path / "repo_profiles.json").write_text(json.dumps(profile))
+    specs = drift._load_aliases(main, audio)
+    assert all(spec.source == "main" for spec in specs)
+    assert all(spec.retired == (retired and not current) for spec in specs)
+    entries = [
+        {"alias": alias, "hf_path": catalog_repo, "status": f"status-{index}"}
+        for index, alias in enumerate(catalog_aliases)
+    ]
+    monkeypatch.setattr(drift, "_catalog_entries", lambda: entries)
+    monkeypatch.setattr(drift, "_maybe_r2_client", lambda: None)
+    monkeypatch.setattr(drift, "_hf_repo", lambda _repo: drift.HfRepo("rev", []))
+
+    reports = drift.audit(main, audio, aliases={"model"}, only_used=True)
+
+    assert len(reports) == len(specs)
+    for report in reports:
+        assert report.catalog_status == expected_status
+        assert report.catalog_present == (expected_status is not None)
+        assert any(f.kind == "not_in_catalog" for f in report.findings) == (
+            expected_status is None
+        )
+
+
 def test_hf_failure_is_reported_without_aborting(monkeypatch, tmp_path):
     main = tmp_path / "main.json"
     audio = tmp_path / "audio.json"
