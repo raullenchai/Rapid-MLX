@@ -3,6 +3,7 @@
 
 import math
 from collections.abc import Callable
+from functools import lru_cache
 from typing import cast
 
 import mlx.core as mx
@@ -275,6 +276,63 @@ def route_weights_decode(scores, indices, route_scale):
         output_shapes=[indices.shape],
         output_dtypes=[scores.dtype],
     )[0]
+
+
+@lru_cache(maxsize=1)
+def _route_topk():
+    try:
+        return mx.fast.metal_kernel(
+            name="inkling2_route_topk_decode",
+            input_names=["logits", "bias"],
+            output_names=["indices", "out_scores"],
+            source="""
+                #pragma clang fp contract(off)
+                const uint tid = thread_position_in_threadgroup.x;
+                threadgroup float scores[N], order[N];
+                if (tid < N) {
+                    float x = logits[tid * logits_strides[2]];
+                    float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(x)));
+                    scores[tid] = x < 0.0f ? y : 1.0f - y;
+                    out_scores[tid] = scores[tid];
+                    order[tid] = -(scores[tid] + bias[tid * bias_strides[0]]);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (tid < N) {
+                    uint rank = 0;
+                    const float a = order[tid];
+                    for (uint j = 0; j < N; ++j) {
+                        float b = order[j];
+                        bool less = metal::isnan(a) ? !metal::isnan(b)
+                            : !metal::isnan(b) && b < a;
+                        bool equal = a == b || (metal::isnan(a) && metal::isnan(b));
+                        rank += less || (equal && j < tid);
+                    }
+                    if (rank < K) {
+                        indices[rank] = tid;
+                    }
+                }
+            """,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+    except RuntimeError:
+        return None
+
+
+def route_topk_decode(logits, bias, k, scale):
+    """Single-row FP32 scoring/selection, with existing decode normalization."""
+    kernel = _route_topk()
+    if kernel is None:
+        return None
+    indices, scores = kernel(
+        inputs=[logits, bias],
+        template=[("N", logits.shape[-1]), ("K", k)],
+        grid=(128, 1, 1),
+        threadgroup=(128, 1, 1),
+        output_shapes=[(1, 1, k), logits.shape],
+        output_dtypes=[mx.uint32, mx.float32],
+    )
+    return indices, route_weights_decode(scores, indices, scale)
 
 
 # Attention of learned queries over the depth sources of each token, in one
