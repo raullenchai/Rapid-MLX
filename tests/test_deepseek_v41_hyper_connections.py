@@ -463,7 +463,7 @@ def test_hc_mixes_traced_parameters_take_the_stock_graph(fresh_mix_verdicts) -> 
 
 
 def test_hc_mixes_column_major_projection_takes_the_stock_graph(
-    fresh_mix_verdicts,
+    fresh_mix_verdicts, monkeypatch
 ) -> None:
     """The stock GEMV reduces a column-major projection in another order; a
     cancelling column exposes the difference, so that layout stays stock even
@@ -479,13 +479,19 @@ def test_hc_mixes_column_major_projection_takes_the_stock_graph(
     column[mx.array([0, 32, 1024]), 0] = mx.array([2.0**24, 1.0, -(2.0**24)])
     column_major = column.T
     assert not hc._hc_mixes_supported(x, column_major, scale, base, 4)
+    fused_calls = []
+    monkeypatch.setattr(
+        hc, "_fused_hc_mixes", lambda *a, **k: fused_calls.append(a) or None
+    )
     actual = hc.hc_mixes(x, column_major, scale, base, 4, 20, 1e-6, 1e-6)
+    assert fused_calls == []
     expected = hc._hc_mixes_reference(x, column_major, scale, base, 4, 20, 1e-6, 1e-6)
     for a, e in zip(actual, expected, strict=True):
         assert mx.array_equal(a, e).item()
-    # the fused order differs here, which is why the layout is excluded
-    fused = hc._fused_hc_mixes(x, column_major, scale, base, 20, 1e-6, 1e-6)
-    assert not mx.array_equal(fused[0], expected[0]).item()
+    # The fused order can differ from the stock matmul here, which is why the
+    # layout is excluded. Whether it does depends on the stock summation order
+    # (it differs before MLX 0.32.5 and matches from 0.32.5), so the dispatch
+    # is pinned above instead of the numeric difference.
 
 
 def test_fused_hc_mixes_reads_strided_scale_and_base_densely() -> None:
