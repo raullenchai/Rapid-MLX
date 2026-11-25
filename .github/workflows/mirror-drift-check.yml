@@ -50,3 +50,33 @@ jobs:
         run: python -m pip install 'huggingface-hub==1.33.0'
       - name: Fail separately on dangling image or runtime-asset pins
         run: python scripts/check_image_pins.py
+
+  report-failure:
+    needs: [audit-used-models, image-pin-resolution]
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    permissions:
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report scheduled failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUDIT_RESULT: ${{ needs.audit-used-models.result }}
+          PIN_RESULT: ${{ needs.image-pin-resolution.result }}
+        run: |
+          set -euo pipefail
+          title='Mirror drift check is failing'
+          failed=()
+          if [[ "$AUDIT_RESULT" == failure ]]; then failed+=(audit-used-models); fi
+          if [[ "$PIN_RESULT" == failure ]]; then failed+=(image-pin-resolution); fi
+          body=$(printf 'Run: %s\nFailed jobs: %s\nThe run summary lists the affected aliases.\n' "$RUN_URL" "${failed[*]}")
+          issue=$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number,title --jq '[.[] | select(.title == "Mirror drift check is failing")][0].number // empty')
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
