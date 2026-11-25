@@ -154,6 +154,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     def sanitize_when_thinking_disabled(self) -> bool:
         return type(self) is Qwen3ReasoningParser
 
+    @property
+    def literal_content_mode(self) -> bool:
+        return not getattr(self, "_implicit_reasoning", True)
+
     def configure_request(
         self,
         *,
@@ -172,16 +176,20 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         self._off_leading = True
         self._off_pending = ""
         self._off_closer_consumed = False
+        self._off_tool_started = False
 
     def _extract_thinking_off(self, text: str, *, final: bool = False) -> DeltaMessage:
         """Consume the first stray closer and hold only a possible delimiter."""
         text = self._off_pending + text
-        if not self._off_closer_consumed and self.end_token in text:
+        if (
+            not (self._off_closer_consumed or self._off_tool_started)
+            and self.end_token in text
+        ):
             text = text.replace(self.end_token, "", 1)
             self._off_closer_consumed = True
         held = (
             0
-            if final or self._off_closer_consumed
+            if final or self._off_closer_consumed or self._off_tool_started
             else self._held_partial_tag_len(text)
         )
         self._off_pending = text[len(text) - held :] if held else ""
@@ -205,6 +213,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                     self._off_pending = current_text
                     return None
                 self._off_leading = False
+            if not (self._off_closer_consumed or self._off_tool_started):
+                tool = _TOOL_CALL_MARKUP_RE.search(current_text)
+                self._off_tool_started = bool(
+                    tool and self.end_token not in current_text[: tool.start()]
+                )
             return self._extract_thinking_off(delta_text)
         return super().extract_reasoning_streaming(
             previous_text, current_text, delta_text
@@ -273,6 +286,9 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 return super().extract_reasoning(
                     model_output, enable_thinking=enable_thinking
                 )
+            tool = _TOOL_CALL_MARKUP_RE.search(model_output)
+            if tool and self.end_token not in model_output[: tool.start()]:
+                return None, model_output
             return None, model_output.replace(self.end_token, "", 1)
         if end_index != -1 and (start_index == -1 or end_index < start_index):
             reasoning = model_output[:end_index].strip() or None

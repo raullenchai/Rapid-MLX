@@ -8214,12 +8214,13 @@ async def stream_chat_completion(
         )
         processor.set_thinking_model(request.model)
         processor.reset()
-        preserve_think_close = (
-            type(processor.reasoning_parser) is Qwen3ReasoningParser
-            and not processor.reasoning_parser._implicit_reasoning
+        preserve_think_close = getattr(
+            processor.reasoning_parser, "literal_content_mode", False
         )
         if preserve_think_close:
             # This parser already consumed the sole structural stray closer.
+            if processor.tool_parser is not None:
+                processor.tool_parser.skip_reasoning_parsing = True
             from ..api.utils import StreamingContentSanitizer
 
             processor._content_sanitizer = StreamingContentSanitizer(

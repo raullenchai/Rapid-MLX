@@ -73,6 +73,38 @@ class TestQwen3Parser:
         """Create a fresh Qwen3 parser for each test."""
         return get_parser("qwen3")()
 
+    @pytest.mark.parametrize("prefix", ["", "answer", "answer</think>"])
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "<function=echo><parameter=text></think></parameter></function>",
+            "<tool_call><function=echo><parameter=text></think></parameter></function></tool_call>",
+            '<tool_call>{"name":"echo","arguments":{"text":"</think>"}}</tool_call>',
+        ],
+    )
+    def test_thinking_off_preserves_tool_bytes_every_split(self, parser, prefix, tool):
+        raw = prefix + tool + "tail</think>"
+        expected = prefix.replace("</think>", "", 1) + tool + "tail</think>"
+        assert parser.extract_reasoning(raw, enable_thinking=False) == (None, expected)
+        for chunks in [[raw], list(raw)] + [
+            [raw[:i], raw[i:]] for i in range(1, len(raw))
+        ]:
+            parser.configure_request(enable_thinking=False)
+            previous = content = ""
+            for chunk in chunks:
+                delta = parser.extract_reasoning_streaming(
+                    previous, previous + chunk, chunk
+                )
+                previous += chunk
+                if delta:
+                    assert not delta.reasoning
+                    content += delta.content or ""
+            final = parser.finish_stream()
+            if final:
+                assert not final.reasoning
+                content += final.content or ""
+            assert content == expected, chunks
+
     # Non-streaming tests
 
     def test_extract_with_both_tags(self, parser):
@@ -282,7 +314,7 @@ class TestQwen3Parser:
             ),
             (
                 '<function=bash><parameter=command>echo "</think>"</parameter></function>',
-                '<function=bash><parameter=command>echo ""</parameter></function>',
+                '<function=bash><parameter=command>echo "</think>"</parameter></function>',
             ),
         ],
     )

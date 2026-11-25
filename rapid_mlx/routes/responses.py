@@ -3649,10 +3649,7 @@ async def _stream_responses(
             tool_filter,
             preserve_think_close=(
                 reasoning_parser is None
-                or (
-                    type(reasoning_parser) is Qwen3ReasoningParser
-                    and chat_kwargs.get("enable_thinking") is False
-                )
+                or getattr(reasoning_parser, "literal_content_mode", False)
             ),
         )
 

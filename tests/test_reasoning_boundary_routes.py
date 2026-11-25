@@ -322,8 +322,66 @@ def test_thinking_off_stray_closer_keeps_answer(
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
-@pytest.mark.parametrize("earlier_closer", [False, True])
-def test_thinking_off_tool_argument_closer(surface, earlier_closer, monkeypatch):
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("stream,native", [(False, False), (True, False), (True, True)])
+def test_prompt_opened_keeps_main_sanitizer(
+    surface, thinking, stream, native, monkeypatch
+):
+    from rapid_mlx.service import helpers
+
+    # Keep a prompt-opened parser active independently of the request switch.
+    for module in (chat, responses, anthropic, helpers):
+        monkeypatch.setattr(module, "_should_start_in_thinking", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        get_parser("qwen3"), "implicit_reasoning_until_close", True, raising=False
+    )
+    monkeypatch.setattr(
+        get_parser("qwen3"), "sanitize_when_thinking_disabled", True, raising=False
+    )
+    raw = "Secret.</think>Answer</think>Tail"
+    expected = {"content": "AnswerTail", "reasoning": "Secret.", "calls": []}
+    if not thinking and not stream:
+        # Main's buffered cleaner supplies an opener for the residual closer.
+        expected["content"] = "Tail"
+    if native:
+        raw = "Answer</think>Tail"
+        expected["reasoning"] = ""
+        original_stream = Engine.stream_chat
+
+        async def channel_stream(self, **kwargs):
+            async for output in original_stream(self, **kwargs):
+                output.channel = "content"
+                yield output
+
+        monkeypatch.setattr(Engine, "stream_chat", channel_stream)
+    for chunks in [[raw], list(raw), [raw[i : i + 7] for i in range(0, len(raw), 7)]]:
+        assert (
+            route(
+                "qwen3",
+                "hermes",
+                raw,
+                surface,
+                stream,
+                chunks,
+                thinking=thinking,
+                template="{% if add_generation_prompt %}<think>{% endif %}",
+            )
+            == expected
+        )
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize(
+    "wire,earlier_closer",
+    [
+        ("bare", False),
+        ("bare", True),
+        ("wrapped", False),
+        ("wrapped", True),
+        ("json", False),
+    ],
+)
+def test_thinking_off_tool_argument_closer(surface, earlier_closer, wire, monkeypatch):
     from rapid_mlx.api.utils import clean_output_text
 
     original_chat = Engine.chat
@@ -337,27 +395,33 @@ def test_thinking_off_tool_argument_closer(surface, earlier_closer, monkeypatch)
 
     monkeypatch.setattr(Engine, "chat", cleaned_chat)
     prefix = "a</think>" if earlier_closer else ""
-    raw = (
-        prefix
-        + '<function=run_shell_command><parameter=command>echo "</think>"</parameter></function>'
-    )
-    buffered = route("qwen3", "qwen3_coder_xml", raw, surface, False, thinking=False)
+    call = '<function=run_shell_command><parameter=command>echo "</think>"</parameter></function>'
+    tool_parser = "qwen3_coder_xml"
+    if wire == "wrapped":
+        call = "<tool_call>" + call + "</tool_call>"
+    elif wire == "json":
+        call = (
+            "<tool_call>"
+            + json.dumps(
+                {
+                    "name": "run_shell_command",
+                    "arguments": {"command": 'echo "</think>"'},
+                }
+            )
+            + "</tool_call>"
+        )
+        tool_parser = "hermes"
+    raw = prefix + call
+    buffered = route("qwen3", tool_parser, raw, surface, False, thinking=False)
     assert buffered == {
         "content": "a" if earlier_closer else "",
         "reasoning": "",
         "calls": [["run_shell_command", {"command": 'echo "</think>"'}]],
     }
-    # Buffered extraction, and the Messages/Responses streaming recovery,
-    # decode tool arguments before the reasoning parser can consume a closer.
-    expected = dict(buffered)
-    if surface == "chat" and not earlier_closer:
-        expected["calls"] = [["run_shell_command", {"command": 'echo ""'}]]
     for chunks in [[raw], list(raw), [raw[i : i + 7] for i in range(0, len(raw), 7)]]:
         assert (
-            route(
-                "qwen3", "qwen3_coder_xml", raw, surface, True, chunks, thinking=False
-            )
-            == expected
+            route("qwen3", tool_parser, raw, surface, True, chunks, thinking=False)
+            == buffered
         )
 
 
