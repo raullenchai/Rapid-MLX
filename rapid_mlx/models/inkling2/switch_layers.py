@@ -111,6 +111,7 @@ class QuantizedSwitchLinear(nn.Module):
             and x.shape[-2] == 1
             and math.prod(x.shape[:-3]) == 1
             and indices.ndim >= 1
+            and mx.issubdtype(indices.dtype, mx.integer)
             and 1 <= indices.size <= 16
             and indices.shape[-1] == indices.size
             and x.shape[-3] in (1, indices.size)
