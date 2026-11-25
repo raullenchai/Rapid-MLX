@@ -79,7 +79,7 @@ _NUMERICAL_CORE_SHA256 = {
     "layers.py": "1d74c99cf0a0207c5217e5b424e965e98f5bafbb73e818513c70c7fc889419e7",
     "kernels.py": "7643aadfdc988b658c7d7f877dc7b6f9c25a56f811f2718c6a0f2c6565ce1219",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
-    "switch_layers.py": "b846c8e0a5d20d097cb4926a83dc531cb0c20884cc75f4b316ee97ee92ad2bf9",
+    "switch_layers.py": "342d56d32a4936da5d3ce0b796d3bb4fd133d2722fd44657fe79cf6b38300754",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
 }
 
