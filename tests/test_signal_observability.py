@@ -51,6 +51,23 @@ def _wait_for_nonempty_file(path: Path, *, timeout: float = 5.0) -> None:
     raise AssertionError(f"{path} stayed empty for {timeout:.1f}s")
 
 
+def _wait_until_stopped(pid: int, *, timeout: float = 10.0) -> None:
+    """Block until ``ps`` reports ``pid`` as stopped (state ``T``)."""
+    deadline = time.monotonic() + timeout
+    state = ""
+    while time.monotonic() < deadline:
+        state = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if state.startswith("T"):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"process {pid} did not stop (state {state!r})")
+
+
 def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -> str:
     """Read a single line from ``proc.stdout`` but give up after
     ``timeout`` seconds even if the child never prints anything.
@@ -470,11 +487,15 @@ def test_startup_preserves_crash_file_while_helper_is_writing(tmp_path):
         helper_pid = int(pid)
         crash = Path(path)
         os.kill(helper_pid, signal.SIGSTOP)
+        # kill() returns before the stop takes effect. A helper that is still
+        # running would drain the traceback, exit and release its lock, and
+        # the next startup would then correctly report the finished file.
+        _wait_until_stopped(helper_pid)
         child.stdin.write("crash\n")
         child.stdin.flush()
         assert child.wait(timeout=10) != 0
         subprocess.run([sys.executable, "-c", setup], check=True, timeout=10)
-        assert crash.exists()
+        assert crash.exists(), sorted(path.name for path in tmp_path.iterdir())
         os.kill(helper_pid, signal.SIGCONT)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
