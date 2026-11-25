@@ -40,6 +40,16 @@ rapid-mlx serve lfm3-vl-2b-8bit
 
 Send images using the [multimodal request format](../guides/multimodal.md).
 
+Ternary Bonsai 2.5 27B (`bonsai2.5-27b-2bit`) is a 2-bit build that accepts
+images as well as text and downloads about 8.9 GB. It replaces the weights of
+`bonsai2-27b-2bit` and keeps the same named XML tool format, thinking controls
+and sampling defaults. The optional draft head published with the model is not
+used yet.
+
+```bash
+rapid-mlx serve bonsai2.5-27b-2bit
+```
+
 ### Open an existing checkpoint in Desktop
 
 In **Settings → Models**, choose **Open existing checkpoint…** to select one

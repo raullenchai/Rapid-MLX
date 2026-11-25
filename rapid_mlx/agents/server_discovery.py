@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import time
@@ -250,13 +251,69 @@ def _same_model(left: str, right: str) -> bool:
     return same_identity(left, right) or same_identity(resolved(left), resolved(right))
 
 
+_HEALTH_BODY_LIMIT = 16 * 1024
+_HEALTH_READ_CHUNK = 1024
+
+
+def _read_bounded(read, *, deadline: float) -> bytes | None:
+    """Read a small body under a total wall-clock deadline.
+
+    Socket timeouts apply per read call, so a slow local listener could
+    otherwise stretch a 0.25s probe across many chunks. Callers pass a
+    ``read1``-style primitive that returns currently available bytes (at most
+    the requested count) so a drip-feeding listener cannot pin one call.
+    Returns ``None`` when the body exceeds ``_HEALTH_BODY_LIMIT`` or the
+    deadline passes first.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() > deadline:
+            return None
+        chunk = read(_HEALTH_READ_CHUNK)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > _HEALTH_BODY_LIMIT:
+            return None
+        chunks.append(chunk)
+
+
 def _default_endpoint_ready() -> tuple[bool, bool]:
     """Return (healthy, answered) separately from process discovery."""
     try:
         with urllib.request.urlopen(
             "http://localhost:8000/health", timeout=0.25
         ) as response:
-            return response.status == 200, True
+            if response.status != 200:
+                return False, True
+            # /health returns HTTP 200 with ready=false during startup load;
+            # let process discovery attach the owning PID (or pick another
+            # ready server) instead of treating a loading server as ready.
+            read = getattr(response, "read", None)
+            if read is None:
+                # Status-only response object (older stubs): the 200 is the
+                # whole verdict.
+                return True, True
+            try:
+                # read1 returns whatever is buffered instead of blocking for a
+                # full chunk, so the deadline below is a real whole-probe cap.
+                body = _read_bounded(
+                    getattr(response, "read1", read), deadline=time.monotonic() + 0.5
+                )
+                if body is None:
+                    # A foreign listener drip-feeding, stalling, or dumping a
+                    # huge body cannot prove readiness either.
+                    return False, True
+                payload = json.loads(body)
+            except (OSError, ValueError, TypeError, http.client.HTTPException):
+                # A truncated or malformed body cannot prove readiness; treat
+                # the listener as answering-but-not-ready so process discovery
+                # attaches the owning PID and waits instead of connecting early.
+                return False, True
+            if isinstance(payload, dict) and payload.get("ready") is False:
+                return False, True
+            return True, True
     except urllib.error.HTTPError:
         # Only an owning serve process makes an unhealthy listener a loading
         # server. A foreign process must not hide a server on another port.

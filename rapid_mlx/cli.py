@@ -1064,6 +1064,7 @@ def _print_model_load_error(args: argparse.Namespace, exc: BaseException) -> Non
         "incompatible_weights",
         "invalid_config",
         "backend_load_failed",
+        "insufficient_memory",
     ) and (detail := startup_error_lines(exc, model_ref)):
         print(f"\n  Error loading model: {exc}", file=sys.stderr)
         print(f"  Cause: {detail[0]}", file=sys.stderr)
@@ -2887,7 +2888,9 @@ def _hub_not_found_hint(model_id: str) -> str:
     return "  See catalog aliases with `rapid-mlx models`.\n"
 
 
-def render_hub_error(exc: BaseException, model_id: str) -> str | None:
+def render_hub_error(
+    exc: BaseException, model_id: str, *, retry_command: str | None = None
+) -> str | None:
     """Render an actionable Hub failure found on an explicit cause chain.
 
     Matching is type-based and deliberately ignores ``__context__`` and raw
@@ -2911,6 +2914,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     from rapid_mlx._mirror import MirrorOnlyPullError
 
     rendered_model_id = _safe_hub_model_id(model_id)
+    retry_cmd = retry_command or f"rapid-mlx pull {shlex.quote(rendered_model_id)}"
     current: BaseException | None = exc
     seen: set[int] = set()
     for _ in range(32):
@@ -2985,16 +2989,23 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             return (
                 f"  Error: Hugging Face is temporarily unavailable for "
                 f"'{rendered_model_id}'.\n"
-                "  Try `rapid-mlx pull` again when the service recovers; "
+                f"  Retry `{retry_cmd}` when the service recovers; "
                 "completed cached files will be reused."
             )
         if isinstance(current, urllib.error.HTTPError):
             return None
+        if isinstance(current, OfflineModeIsEnabled):
+            return (
+                f"  Error: could not reach Hugging Face for '{rendered_model_id}' "
+                "(offline mode is enabled, so no network request was made).\n"
+                "  Unset `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, then retry "
+                f"`{retry_cmd}`.\n"
+                "  You can also serve an already-cached model."
+            )
         if isinstance(
             current,
             (
                 LocalEntryNotFoundError,
-                OfflineModeIsEnabled,
                 requests_exceptions.ConnectionError,
                 requests_exceptions.Timeout,
                 requests_exceptions.ChunkedEncodingError,
@@ -3009,7 +3020,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             return (
                 f"  Error: could not reach Hugging Face for '{rendered_model_id}'.\n"
                 "  Check your network connection and unset `HF_HUB_OFFLINE` "
-                "if offline mode is not intended.\n"
+                f"if offline mode is not intended, then retry `{retry_cmd}`.\n"
                 "  You can also serve an already-cached model."
             )
         try:
@@ -3140,6 +3151,10 @@ def _ensure_target_model_downloaded(
     if model_downloads.disabled():
         _refuse_model_download(model_name)
 
+    from rapid_mlx.byom.preflight import inform_if_footprint_exceeds_memory
+
+    inform_if_footprint_exceeds_memory(model_name)
+
     # Disk-space gate + mirror pull. Both the disk probe (HF ``model_info``)
     # and the mirror's own metadata + ``/api/models`` catalog round-trips run
     # BEFORE the first "Pulling"/"First-time download" line — up to a few
@@ -3195,7 +3210,12 @@ def _ensure_target_model_downloaded(
                     exc, model_ref=model_name, source=mirror_out.get("source")
                 )
                 spinner.stop()
-                print(f"\n{render_hub_error(exc, model_name)}\n", file=sys.stderr)
+                retry_cmd = f"rapid-mlx pull {shlex.quote(model_name)}"
+                fatal_text = render_hub_error(exc, model_name, retry_command=retry_cmd)
+                if fatal_text is None:
+                    # Rendered messages already carry the retry command.
+                    fatal_text = f"{exc}\n  Retry: {retry_cmd}"
+                print(f"\n{fatal_text}\n", file=sys.stderr)
                 raise SystemExit(1) from exc
             if _is_transient_hub_error(exc):
                 mirror_ok = False
@@ -12741,6 +12761,12 @@ def _pull_repository(
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
+    if _cache_runnability(repo_id) is not True:
+        from rapid_mlx.byom.preflight import inform_if_footprint_exceeds_memory
+
+        inform_if_footprint_exceeds_memory(
+            repo_id, original_alias=getattr(args, "_original_alias", None)
+        )
     try:
         # A pinned revision goes through the mirror too: the mirror accepts a
         # file for an exact commit only when its bytes are proven identical
@@ -13006,13 +13032,12 @@ def _pull_repository(
         from rapid_mlx.telemetry.model_events import pull_error_class
 
         error_class = pull_error_class(e)
-        rendered = render_hub_error(e, repo_id)
+        retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)
+        rendered = render_hub_error(e, repo_id, retry_command=retry)
         if rendered is not None and error_class != "not_found":
             print(f"\n{rendered}\n", file=sys.stderr)
-            retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(
-                args
-            )
-            print(f"  Retry: {retry}", file=sys.stderr)
+            if retry not in rendered:
+                print(f"  Retry: {retry}", file=sys.stderr)
             raise SystemExit(1) from None
         is_404 = isinstance(e, RepositoryNotFoundError) or (
             "404" in str(e) or "not found" in str(e).lower()
@@ -17921,8 +17946,13 @@ def main(*, _supervise=False):
                             "Correct config.json, then retry `rapid-mlx serve /path/to/model`.",
                         )
                 else:
-                    cause, step = local_serve_preflight_lines(resolved, exc)
-                print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
+                    cause, step = local_serve_preflight_lines(
+                        resolved, exc, track_repeat=True
+                    )
+                if step:
+                    print(f"\n  Cause: {cause}\n  Next step: {step}", file=sys.stderr)
+                else:
+                    print(f"\n  Cause: {cause}", file=sys.stderr)
             else:
                 message = local_model_failure_message(
                     supplied_model, exc, include_supplied_path=True

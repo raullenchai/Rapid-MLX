@@ -653,3 +653,65 @@ def test_tokenizer_remote_boundaries_use_policy(monkeypatch, target, args):
             function(*args)
     else:
         assert function(*args) in (None, False)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (503, True),
+        (429, True),
+        (404, False),
+        (403, False),
+        (401, False),
+    ],
+)
+def test_transient_hub_classifier_handles_urllib_http_errors(status, expected):
+    import urllib.error
+
+    err = urllib.error.HTTPError(
+        "https://huggingface.co/owner/repo/resolve/main/config.json",
+        status,
+        "HTTP error",
+        {},
+        None,
+    )
+    assert model_downloads._is_transient_hub_failure(err) is expected
+
+
+def test_local_files_only_and_online_pinned_fallback_paths(monkeypatch):
+    from rapid_mlx import _mirror
+
+    snap_calls = []
+    file_calls = []
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda repo_id, **kwargs: snap_calls.append((repo_id, kwargs)) or "/snap",
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda repo_id, filename, **kwargs: (
+            file_calls.append((repo_id, filename, kwargs)) or "/file"
+        ),
+    )
+    monkeypatch.setattr(
+        _mirror, "download_with_mirror_fallback", lambda *_a, **_k: False
+    )
+
+    assert (
+        model_downloads.snapshot_download("acme/model", local_files_only=True)
+        == "/snap"
+    )
+    assert (
+        model_downloads.hf_hub_download(
+            "acme/model", "config.json", local_files_only=True
+        )
+        == "/file"
+    )
+    assert _mirror.pinned_snapshot_download("acme/model", _REVISION) == "/snap"
+    assert snap_calls == [
+        ("acme/model", {"local_files_only": True}),
+        ("acme/model", {"revision": _REVISION}),
+    ]
+    assert file_calls == [("acme/model", "config.json", {"local_files_only": True})]

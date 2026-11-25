@@ -9,10 +9,83 @@ way to provision models and is not affected.
 
 from __future__ import annotations
 
+import http.client
 import os
-from typing import Any
+import time
+import urllib.error
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from ._env import env_truthy
+
+_T = TypeVar("_T")
+_TRANSIENT_RETRY_ATTEMPTS = 3
+_TRANSIENT_BACKOFF_BASE_SECONDS = 1.0
+_TRANSIENT_BACKOFF_MAX_SECONDS = 4.0
+
+
+def _is_transient_hub_failure(exc: BaseException) -> bool:
+    """True for bounded-retry transport/rate-limit/5xx failures on an explicit cause chain."""
+    import httpx
+    from huggingface_hub.errors import (
+        HfHubHTTPError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+    from requests import exceptions as requests_exceptions
+
+    transient = False
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (OfflineModeIsEnabled, RepositoryNotFoundError)):
+            return False
+        status: int | None = None
+        if isinstance(current, urllib.error.HTTPError):
+            status = current.code
+        elif isinstance(current, HfHubHTTPError):
+            status = getattr(current.response, "status_code", None)
+        if status in (401, 403, 404):
+            return False
+        if status == 429 or (status is not None and 500 <= status < 600):
+            transient = True
+        if isinstance(
+            current,
+            (
+                httpx.TransportError,
+                requests_exceptions.ConnectionError,
+                requests_exceptions.Timeout,
+                requests_exceptions.ChunkedEncodingError,
+                http.client.HTTPException,
+                ConnectionError,
+                TimeoutError,
+                urllib.error.URLError,
+            ),
+        ) and not isinstance(current, urllib.error.HTTPError):
+            transient = True
+        current = current.__cause__
+    return transient
+
+
+def _retry_transient_hub_call(
+    operation: Callable[[], _T],
+    *,
+    max_attempts: int = _TRANSIENT_RETRY_ATTEMPTS,
+    base_delay: float = _TRANSIENT_BACKOFF_BASE_SECONDS,
+    max_delay: float = _TRANSIENT_BACKOFF_MAX_SECONDS,
+) -> _T:
+    """Retry transient Hub transfers with bounded exponential backoff, preserving cached files."""
+    attempts = max(1, max_attempts)
+    for attempt in range(attempts - 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if not _is_transient_hub_failure(exc):
+                raise
+            time.sleep(min(max_delay, base_delay * (2**attempt)))
+    return operation()
+
 
 ENV_VAR = "RAPID_MLX_DISABLE_MODEL_DOWNLOADS"
 FLAG = "--disable-model-downloads"
@@ -90,7 +163,11 @@ def snapshot_download(repo_id: str, **kwargs: Any) -> str:
         kwargs["revision"] = revision
         repo_id = resolve_hub_model(repo_id)
     if not disabled():
-        return str(hub_snapshot_download(repo_id, **kwargs))
+        if kwargs.get("local_files_only"):
+            return str(hub_snapshot_download(repo_id, **kwargs))
+        return str(
+            _retry_transient_hub_call(lambda: hub_snapshot_download(repo_id, **kwargs))
+        )
     local_kwargs = dict(kwargs)
     local_kwargs["local_files_only"] = True
     try:
@@ -116,7 +193,13 @@ def hf_hub_download(repo_id: str, filename: str, **kwargs: Any) -> str:
         kwargs["revision"] = revision
         repo_id = resolve_hub_model(repo_id)
     if not disabled():
-        return str(hub_file_download(repo_id, filename, **kwargs))
+        if kwargs.get("local_files_only"):
+            return str(hub_file_download(repo_id, filename, **kwargs))
+        return str(
+            _retry_transient_hub_call(
+                lambda: hub_file_download(repo_id, filename, **kwargs)
+            )
+        )
     local_kwargs = dict(kwargs)
     local_kwargs["local_files_only"] = True
     try:

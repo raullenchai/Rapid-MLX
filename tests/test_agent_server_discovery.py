@@ -11,6 +11,9 @@ import pytest
 from rapid_mlx import cli
 from rapid_mlx.agents import adapter, setup, telemetry
 from rapid_mlx.agents import server_discovery as discovery
+
+# Captured at collection time, before the autouse conftest stub replaces it.
+_REAL_DEFAULT_READY = discovery._default_endpoint_ready
 from rapid_mlx.agents.server_hint import ServerNotRunningError
 from rapid_mlx.cli_parser import build_parser
 
@@ -928,6 +931,93 @@ def test_default_endpoint_ready_states(monkeypatch):
     ]:
         monkeypatch.setattr(discovery.urllib.request, "urlopen", respond(outcome))
         assert discovery._default_endpoint_ready() == expected
+
+    # /health returns HTTP 200 with ready=false while weights are loading;
+    # discovery must treat it as answered-not-ready so it attaches the PID.
+    class BodyResponse(BytesIO):
+        status = 200
+
+    for body, expected in [
+        (b'{"status": "healthy", "ready": false}', (False, True)),
+        (b'{"status": "healthy", "ready": true}', (True, True)),
+        (b'{"status": "healthy"}', (True, True)),
+    ]:
+        monkeypatch.setattr(
+            discovery.urllib.request,
+            "urlopen",
+            lambda _url, _body=body, **_k: BodyResponse(_body),
+        )
+        assert discovery._default_endpoint_ready() == expected
+
+    # A truncated body cannot prove readiness: the HTTP 200 listener answered
+    # but is reported not-ready so discovery attaches its PID and waits.
+    import http.client
+
+    class TruncatedResponse:
+        status = 200
+
+        def read(self, _n=-1):
+            raise http.client.IncompleteRead(b'{"statu', 8)
+
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(TruncatedResponse()),
+    )
+    assert discovery._default_endpoint_ready() == (False, True)
+
+    class MalformedResponse:
+        status = 200
+
+        def read(self, _n=-1):
+            return b"<html>loading</html>"
+
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(MalformedResponse()),
+    )
+    assert discovery._default_endpoint_ready() == (False, True)
+
+    class HugeResponse:
+        status = 200
+
+        def read(self, n=-1):
+            # Never-ending body: the bounded reader must give up at the limit.
+            return b" " * (discovery._HEALTH_READ_CHUNK if n < 0 else n)
+
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(HugeResponse()),
+    )
+    assert discovery._default_endpoint_ready() == (False, True)
+
+    class DripResponse:
+        status = 200
+
+        def __init__(self):
+            self.calls = 0
+
+        def read(self, n=-1):  # pragma: no cover - must not be used
+            raise AssertionError("probe must use read1 when available")
+
+        def read1(self, n=-1):
+            # One byte per call, each call pretending to take 0.3s of wall time.
+            self.calls += 1
+            clock["now"] += 0.3
+            return b"{" if self.calls < 1000 else b""
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(discovery.time, "monotonic", lambda: clock["now"])
+    drip = DripResponse()
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_k: contextlib.nullcontext(drip),
+    )
+    assert discovery._default_endpoint_ready() == (False, True)
+    assert drip.calls <= 3
 
 
 def test_refresh_skips_other_pids_and_unbound_rescans(monkeypatch):
@@ -1983,3 +2073,23 @@ def test_qualified_repo_matches_local_only_via_resolver(monkeypatch):
         lambda value: "/models/tiny" if value == "org-a/tiny" else value,
     )
     assert discovery._same_model("org-a/tiny", "/models/tiny")
+
+
+def test_resolve_endpoint_attaches_pid_when_default_health_not_ready(monkeypatch):
+    class LoadingHealth(BytesIO):
+        status = 200
+
+    # Swap only the conftest stub for the real probe captured at import time.
+    monkeypatch.setattr(discovery, "_default_endpoint_ready", _REAL_DEFAULT_READY)
+    loading_server = discovery.Server(4321, 8000, "qwen3.5-4b-4bit", listening=True)
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [loading_server])
+    monkeypatch.setattr(discovery, "requires_missing_key", lambda _port: False)
+    monkeypatch.setattr(discovery, "_probe_chat_eligibility", lambda *_a: (None, False))
+    monkeypatch.setattr(
+        discovery.urllib.request,
+        "urlopen",
+        lambda _url, **_kw: LoadingHealth(b'{"status": "healthy", "ready": false}'),
+    )
+    endpoint = discovery.resolve_endpoint(agent="opencode")
+    assert endpoint.base_url == "http://localhost:8000/v1"
+    assert endpoint.server == loading_server
