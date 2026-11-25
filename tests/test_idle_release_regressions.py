@@ -45,6 +45,53 @@ async def empty_receive():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("modality", ["text", "mllm", "image-gen", "video-gen"])
+@pytest.mark.parametrize("idle_seconds", [0, 300])
+async def test_residency_reports_primary_idle_monitor(
+    monkeypatch, modality, idle_seconds
+):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.auth import verify_api_key
+    from rapid_mlx.routes import residency
+    from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
+
+    lifecycle = (
+        PrimaryModelLifecycle(
+            SimpleNamespace(_loaded=True),
+            lazy_load=True,
+            idle_unload_seconds=idle_seconds,
+        )
+        if modality in {"text", "mllm"}
+        else None
+    )
+    monkeypatch.setattr(get_config(), "primary_model_lifecycle", lifecycle)
+    monkeypatch.setattr(
+        residency, "_manager", lambda: SimpleNamespace(snapshot=lambda: {"models": []})
+    )
+    app = FastAPI()
+    app.include_router(residency.router)
+    app.dependency_overrides[verify_api_key] = lambda: None
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+    ) as client:
+
+        async def active():
+            response = await client.get("/v1/models/residency")
+            assert response.status_code == 200
+            return response.json()["primary_idle_unload_active"]
+
+        assert await active() is False
+        try:
+            if lifecycle is not None:
+                await lifecycle.start()
+            assert await active() is (lifecycle is not None and idle_seconds > 0)
+        finally:
+            if lifecycle is not None:
+                await lifecycle.shutdown()
+        assert await active() is False
+
+
+@pytest.mark.asyncio
 async def test_dedicated_residency_tracks_open_stream(monkeypatch):
     from rapid_mlx.speculative.dflash.server import _build_app
 

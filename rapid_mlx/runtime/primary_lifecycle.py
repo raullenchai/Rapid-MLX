@@ -87,6 +87,18 @@ class PrimaryModelLifecycle:
         return self.lazy_load or self.idle_unload_seconds > 0
 
     @property
+    def idle_unload_active(self) -> bool:
+        """Whether this primary currently has a live idle-unload monitor."""
+        task = self._monitor_task
+        return (
+            not self._closed
+            and not self._detached
+            and self.idle_unload_seconds > 0
+            and task is not None
+            and not task.done()
+        )
+
+    @property
     def last_error(self) -> str | None:
         return self._last_error
 
