@@ -158,7 +158,6 @@ For Claude Desktop, [set up its in-app Gateway](https://rapidmlx.com/docs/claude
   <a href="https://github.com/QwenLM/qwen-code"><img src="https://img.shields.io/badge/Qwen_Code-F3F4F6?style=flat&amp;logo=alibabacloud&amp;logoColor=111827" alt="Qwen Code"></a>
   <a href="https://github.com/All-Hands-AI/OpenHands"><img src="https://img.shields.io/badge/OpenHands-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="OpenHands"></a>
   <a href="https://github.com/NousResearch/hermes-agent"><img src="https://img.shields.io/badge/Hermes_Agent-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="Hermes Agent"></a>
-  <a href="https://github.com/ShenSeanChen/waku-agent"><img src="https://img.shields.io/badge/Waku_Agent-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="Waku Agent"></a>
   <a href="https://aider.chat"><img src="https://img.shields.io/badge/Aider-F3F4F6?style=flat&amp;logo=git&amp;logoColor=111827" alt="Aider"></a>
   <a href="https://github.com/Kilo-Org/kilocode"><img src="https://img.shields.io/badge/Kilo_Code-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="Kilo Code"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DeepSeek_Harness-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="DeepSeek Harness"></a>
