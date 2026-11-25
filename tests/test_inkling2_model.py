@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "5352037a5c08c2c11b24b24c641694a5fa9a427af68615a7193b19cfdf4266ab",
-    "kernels.py": "b4fb58609f86bbefd4cf4c55634fa4d8e79e259c51a19550134db48c1c6185f1",
+    "kernels.py": "e9dd5d5e327586d41e1c078fcdf2d3c0bd57f9a7e42c064aaad2393cb3dc5371",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -677,10 +677,12 @@ def test_short_conv_decode_parity(
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
 @pytest.mark.parametrize("experts", [2, 4, 8])
-def test_expert_conv_residual_exact(metal_runtime, dtype, experts):
+def test_expert_conv_residual_exact(metal_runtime, monkeypatch, dtype, experts):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
+    launch = Mock(wraps=kernels._expert_conv_residual_factory())
+    monkeypatch.setattr(kernels, "_expert_conv_residual_factory", lambda: launch)
     dtype = getattr(mx, dtype)
     for seed in (3, 29, 71):
         mx.random.seed(seed)
@@ -697,9 +699,11 @@ def test_expert_conv_residual_exact(metal_runtime, dtype, experts):
                 combined = layers._combine_experts(x, mix).astype(dtype)
                 convolved, window = conv(combined, state, mask, lengths=lengths)
                 expected = layers._residual_output(convolved, residual)
+                launch.reset_mock()
                 actual, retained = kernels.expert_conv_residual_decode(
                     x, mix, state, conv.conv1d.weight, mask, lengths, residual, dtype
                 )
+                assert any(c.kwargs["inputs"][0] is x for c in launch.call_args_list)
                 assert actual.dtype == expected.dtype == dtype
                 assert mx.array_equal(actual, expected).item()
                 bits = mx.uint32 if dtype == mx.float32 else mx.uint16
@@ -717,7 +721,14 @@ def test_expert_conv_residual_cached_logits(metal_runtime, monkeypatch, dtype):
     from rapid_mlx.models.inkling2 import layers
 
     model = create_model(metal_runtime, dtype=getattr(mx, dtype))
-    calls = Mock(wraps=layers.expert_conv_residual_decode)
+    fused = layers.expert_conv_residual_decode
+
+    def checked_fusion(*args):
+        result = fused(*args)
+        assert result is not None
+        return result
+
+    calls = Mock(side_effect=checked_fusion)
     factory = layers._expert_conv_residual_factory
     for seed in (3, 29, 71):
         mx.random.seed(seed)
@@ -738,19 +749,29 @@ def test_expert_conv_residual_cached_logits(metal_runtime, monkeypatch, dtype):
 
 
 @pytest.mark.requires_mlx
-@pytest.mark.parametrize("failure", ["probe", "invocation"])
+@pytest.mark.parametrize(
+    "failure", ["construction", "probe", "invocation", "evaluation"]
+)
 def test_expert_conv_residual_fallback(metal_runtime, monkeypatch, failure):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
-    unavailable = Mock(return_value=None)
+    unavailable = Mock(side_effect=AssertionError("unsupported input reached kernel"))
     weight = mx.zeros((64, 4, 1))
     with monkeypatch.context() as patch:
         patch.setattr(kernels, "_expert_conv_residual_factory", unavailable)
-        for batch, length, experts in ((2, 1, 2), (1, 2, 2), (1, 1, 16)):
+        for batch, length, experts, kind in (
+            (2, 1, 2, "shape"),
+            (1, 2, 2, "shape"),
+            (1, 1, 16, "shape"),
+            (1, 1, 2, "dtype"),
+            (1, 1, 2, "cache"),
+        ):
             x = mx.zeros((batch, length, experts, 64))
-            mix = mx.zeros(x.shape[:3])
-            state = mx.zeros((batch, 3, 64))
+            mix = mx.zeros(
+                x.shape[:3], dtype=mx.float16 if kind == "dtype" else mx.float32
+            )
+            state = None if kind == "cache" else mx.zeros((batch, 3, 64))
             outer = mx.zeros((batch, length, 64))
             assert (
                 kernels.expert_conv_residual_decode(
@@ -769,18 +790,33 @@ def test_expert_conv_residual_fallback(metal_runtime, monkeypatch, failure):
         patch.setattr(layers, "_expert_conv_residual_factory", lambda: None)
         expected = model(mx.array([[4]]), cache=reference)
         mx.eval(expected)
-    broken = Mock(side_effect=RuntimeError("lazy compilation unavailable"))
+    pending, real_eval = mx.zeros((1,)), mx.eval
+    broken = Mock(side_effect=RuntimeError("kernel invocation unavailable"))
+    factory = Mock(return_value=broken)
+    evaluation = Mock(side_effect=RuntimeError("probe evaluation unavailable"))
+
+    def evaluate(*arrays):
+        if any(a is pending for a in arrays):
+            return evaluation()
+        return real_eval(*arrays)
+
+    if failure == "construction":
+        factory.side_effect = RuntimeError("kernel construction unavailable")
+    if failure == "evaluation":
+        broken.side_effect, broken.return_value = None, [pending, pending]
     with monkeypatch.context() as patch:
-        patch.setattr(mx.fast, "metal_kernel", Mock(return_value=broken))
+        patch.setattr(mx.fast, "metal_kernel", factory)
+        patch.setattr(mx, "eval", evaluate)
         if failure == "invocation":
             patch.setattr(
                 kernels, "_probe_expert_conv_residual", lambda kernel, *args: kernel
             )
         actual = model(mx.array([[4]]), cache=cache)
         assert mx.array_equal(actual, expected).item()
-        broken.assert_called()
-        if failure == "probe":
-            broken.assert_called_once()
+        factory.assert_called_once()
+        expected_calls = {"construction": 0, "invocation": len(model.layers)}
+        assert broken.call_count == expected_calls.get(failure, 1)
+        assert evaluation.call_count == (1 if failure == "evaluation" else 0)
     kernels._expert_conv_residual_factory.cache_clear()
     kernels._probe_expert_conv_residual.cache_clear()
     # The existing setting and uncached/multi-token/batched calls bypass fusion.

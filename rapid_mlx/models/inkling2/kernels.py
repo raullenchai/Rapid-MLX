@@ -100,7 +100,12 @@ def _probe_expert_conv_residual(kernel, template, x_dtype):
 
 
 def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dtype):
-    """Combine routed experts and a cached static convolution for one token."""
+    """Combine routed experts and a cached static convolution for one token.
+
+    Fallback covers construction, the one-time evaluated probe per kernel
+    variant, and guarded invocation. Evaluation of real lazy outputs is
+    intentionally not wrapped because decode evaluates asynchronously.
+    """
     C, K = weight.shape[:2]
     types = (mx.float32, mx.bfloat16, mx.float16)
     if not (
