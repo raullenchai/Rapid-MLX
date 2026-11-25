@@ -953,6 +953,7 @@ class DecoderLayer(nn.Module):
         fused = None
         if (
             mlp_input.shape[:2] == (1, 1)
+            and conv is not None
             and conv_states[3] is not None
             and self.mlp.sharding_group is None
             and 1 < self.mlp.gate.top_k <= 8

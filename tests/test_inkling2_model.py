@@ -76,8 +76,8 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "6267f9b181479a2e43b4238d856a897df8a073a913bd019e50364b6bf5d1edcc",
-    "kernels.py": "1278793fc1218635f7b7b062fb832e5b4515aeab2849d6a20ad93426d4fb3edf",
+    "layers.py": "bffb29d6e239f1e2340e8da5fb2e80bc9b2e61ebbc96d71706a810292f2d69a3",
+    "kernels.py": "897d83edcf87ad981dc4d36eb901985a4d7471975f8eca078129c8fad097dc21",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -759,22 +759,36 @@ def test_expert_conv_residual_fallback(metal_runtime, monkeypatch):
             )
     unavailable.assert_not_called()
     model = create_model(metal_runtime, dtype=mx.float32, loop=False)
-    cache = model.make_cache()
-    mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+    cache, reference = model.make_cache(), model.make_cache()
+    for bank in (cache, reference):
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=bank))
     kernels._expert_conv_residual_factory.cache_clear()
+    kernels._probe_expert_conv_residual.cache_clear()
     with monkeypatch.context() as patch:
-        patch.setattr(
-            mx.fast, "metal_kernel", Mock(side_effect=RuntimeError("unavailable"))
-        )
-        assert kernels._expert_conv_residual_factory() is None
-        mx.eval(model(mx.array([[4]]), cache=cache))
+        patch.setattr(layers, "_expert_conv_residual_factory", lambda: None)
+        expected = model(mx.array([[4]]), cache=reference)
+        mx.eval(expected)
+    broken = Mock(side_effect=RuntimeError("lazy compilation unavailable"))
+    with monkeypatch.context() as patch:
+        patch.setattr(mx.fast, "metal_kernel", Mock(return_value=broken))
+        actual = model(mx.array([[4]]), cache=cache)
+        assert mx.array_equal(actual, expected).item()
+        broken.assert_called_once()
     kernels._expert_conv_residual_factory.cache_clear()
+    kernels._probe_expert_conv_residual.cache_clear()
     # The existing setting and uncached/multi-token/batched calls bypass fusion.
     monkeypatch.setattr(
         layers,
         "expert_conv_residual_decode",
         Mock(side_effect=AssertionError("unexpected fusion")),
     )
+    layer = model.layers[0]
+    x = mx.ones((1, 1, 64))
+    with monkeypatch.context() as patch:
+        patch.setattr(layer, "_self_attention", lambda hidden, *args: hidden)
+        expected = layer(x, None)[0]
+        actual = layer(x, None, cache=[model.make_cache()[0][0], None])[0]
+        assert mx.array_equal(actual, expected).item()
     for batch, length in ((1, 1), (1, 3), (2, 1)):
         ids = mx.ones((batch, length), dtype=mx.int32)
         mx.eval(model(ids))

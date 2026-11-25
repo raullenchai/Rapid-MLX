@@ -3,7 +3,7 @@
 
 import math
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache, lru_cache
 from typing import cast
 
 import mlx.core as mx
@@ -61,8 +61,38 @@ def _expert_conv_residual_factory():
             ensure_row_contiguous=False,
             compile_options={"math_mode": "safe"},
         )
-    except (RuntimeError, ValueError):
+    except Exception:
         return None
+
+
+@cache
+def _probe_expert_conv_residual(kernel, template, x_dtype):
+    """Force lazy Metal compilation once per specialization; cache failures too."""
+    T, W, C, K, E, masked, ragged = (value for _, value in template)
+    specs = (
+        ((1, 1, E, C), x_dtype),
+        ((1, 1, E), mx.float32),
+        ((1, K - 1, C), mx.float32),
+        ((C, K, 1), W),
+        ((1, 1), mx.bool_ if masked else mx.float32),
+        ((1,), mx.int32 if ragged else mx.float32),
+        ((1, 1, C), mx.float32),
+        ((), mx.float32),
+    )
+    try:
+        mx.eval(
+            kernel(
+                inputs=[mx.ones(s, dtype=d) for s, d in specs],
+                template=list(template),
+                grid=(C, 1, 1),
+                threadgroup=(256, 1, 1),
+                output_shapes=[(1, 1, C), (1, K - 1, C)],
+                output_dtypes=[T, mx.float32],
+            )
+        )
+    except Exception:
+        return None
+    return kernel
 
 
 def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dtype):
@@ -92,7 +122,7 @@ def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dty
     if kernel is None:
         return None
     empty = scalar(0.0).reshape(1)
-    return kernel(
+    launch = dict(
         inputs=[
             x,
             mix,
@@ -117,6 +147,9 @@ def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dty
         output_shapes=[outer.shape, state.shape],
         output_dtypes=[dtype, mx.float32],
     )
+    if _probe_expert_conv_residual(kernel, tuple(launch["template"]), x.dtype) is None:
+        return None
+    return kernel(**launch)
 
 
 # One thread owns a channel, including its FP32 history. Do not contract the
