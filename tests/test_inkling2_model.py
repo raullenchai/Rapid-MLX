@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "c191b46673402799251f30f58b60a3eb6aa415653441827e351c89be838da432",
-    "kernels.py": "8fad0b4a9576971865551d3486d960a2ae83172c5df3d20f3a38cf99df2869f1",
+    "kernels.py": "a43bf8394311c12f00fac336b2e2638184f1dcf8697b2b8720a8c05151e8ab57",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -880,20 +880,32 @@ def test_message_norm_cached_logits_exact(metal_runtime, monkeypatch, dtype):
 
 
 @pytest.mark.requires_mlx
-def test_message_norm_guards_and_construction_fallback(metal_runtime, monkeypatch):
+def test_message_norm_guards_and_evaluation_fallback(metal_runtime, monkeypatch):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
-    def unavailable():
-        raise RuntimeError("kernel construction unavailable")
+    kernels._get_message_norm.cache_clear()
+    failed = mx.zeros((1,))
+    evaluate = mx.eval
+    probes = []
 
-    monkeypatch.setattr(kernels, "_get_message_norm", unavailable)
+    def unavailable(*outputs):
+        if any(out is failed for out in outputs):
+            probes.append(True)
+            raise RuntimeError("kernel evaluation unavailable")
+        return evaluate(*outputs)
+
+    monkeypatch.setattr(mx, "eval", unavailable)
+    monkeypatch.setattr(mx.fast, "metal_kernel", lambda **kw: lambda **args: [failed])
     x = mx.ones((1, 1, 64))
     for helper, args in (
         (layers._message_input, (x, x, mx.float16)),
         (layers._norm_cast, (x, mx.ones((64,)), 1e-6, mx.float16)),
     ):
-        assert mx.array_equal(helper(*args, decode=True), helper(*args)).item()
+        for _ in range(2):
+            assert mx.array_equal(helper(*args, decode=True), helper(*args)).item()
+    assert len(probes) == 2  # One evaluation per input/output specialization.
+    kernels._get_message_norm.cache_clear()
     monkeypatch.setattr(
         kernels, "_get_message_norm", lambda: pytest.fail("unsupported path")
     )

@@ -3,7 +3,7 @@
 
 import math
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache
 from typing import cast
 
 import mlx.core as mx
@@ -161,16 +161,39 @@ _MESSAGE_NORM_SOURCE = """
 """
 
 
-@lru_cache(maxsize=1)
-def _get_message_norm():
-    return mx.fast.metal_kernel(
-        name="inkling2_message_norm_decode",
-        input_names=["x", "message", "weight", "eps"],
-        output_names=["out"],
-        source=_MESSAGE_NORM_SOURCE,
-        ensure_row_contiguous=False,
-        compile_options={"math_mode": "safe"},
-    )
+@cache
+def _get_message_norm(dim, output, input_dtype, dtype):
+    # Metal builds lazily: validate this exact specialization before caching it.
+    try:
+        kernel = mx.fast.metal_kernel(
+            name="inkling2_message_norm_decode",
+            input_names=["x", "message", "weight", "eps"],
+            output_names=["out"],
+            source=_MESSAGE_NORM_SOURCE,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+        x = mx.ones((1, 1, dim), dtype=input_dtype)
+        threads = ((dim + 127) // 128) * 32
+        mx.eval(
+            *kernel(
+                inputs=[x, x, mx.ones((dim,)), scalar(1e-6)],
+                template=[
+                    ("D", dim),
+                    ("OUTPUT", output),
+                    ("X", input_dtype),
+                    ("M", input_dtype),
+                    ("O", dtype),
+                ],
+                grid=(threads, 1, 1),
+                threadgroup=(threads, 1, 1),
+                output_shapes=[(1, 1, dim if output else 2 * dim)],
+                output_dtypes=[dtype],
+            )
+        )
+        return kernel
+    except Exception:
+        return None
 
 
 def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
@@ -195,9 +218,12 @@ def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
         )
     ):
         return None
+    kernel = _get_message_norm(D, output, x.dtype, dtype)
+    if kernel is None:
+        return None
     TG = ((D + 127) // 128) * 32
     try:
-        return _get_message_norm()(
+        return kernel(
             inputs=[
                 x,
                 x if output else message,
