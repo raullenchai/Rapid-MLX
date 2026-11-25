@@ -9,6 +9,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+ADAPTER_METADATA = "rapid_mlx_adapter.json"
+
 
 @dataclass(frozen=True)
 class Adapter:
@@ -73,10 +75,21 @@ def validate_adapter(path: str, model: str) -> Adapter:
         raise ValueError(f"--adapter invalid adapter_config.json: {exc}") from exc
     if not isinstance(config, dict) or not isinstance(config.get("model"), str):
         raise ValueError("--adapter adapter_config.json must declare its base 'model'")
-    if _base_identity(config["model"]) != _base_identity(model):
-        raise ValueError(
-            f"--adapter base mismatch: trained on {config['model']!r}, serving {model!r}"
-        )
+    bases = [config["model"]]
+    if (metadata := directory / ADAPTER_METADATA).exists():
+        try:
+            base = json.loads(metadata.read_text())["base_model"]
+            if not isinstance(base, str) or not base:
+                raise ValueError("base_model must be a nonempty string")
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            raise ValueError(f"--adapter invalid {ADAPTER_METADATA}: {exc}") from exc
+        bases.insert(0, base)
+    selected_base = _base_identity(model)
+    for base in bases:
+        if _base_identity(base) != selected_base:
+            raise ValueError(
+                f"--adapter base mismatch: trained on {base!r}, serving {model!r}"
+            )
     if config.get("fine_tune_type", "lora") != "lora":
         raise ValueError("--adapter currently supports only mlx-lm LoRA adapters")
     return Adapter(str(directory), digest.hexdigest())

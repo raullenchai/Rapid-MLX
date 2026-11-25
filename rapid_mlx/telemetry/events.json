@@ -377,9 +377,12 @@
         "recipe", "ls", "version", "help", "pull", "import", "rm", "alias",
         "ps", "top", "upgrade", "update", "chat", "run", "info", "agents", "start",
         "connect", "doctor", "telemetry", "feedback", "share", "launch",
-        "service", "status", "log", "jobs", "bare", "other"
+        "service", "status", "log", "jobs", "finetune", "lora", "bare", "other"
       ]
     },
+    "finetune_status": {"values": ["ok", "oom", "err", "abort"]},
+    "finetune_duration_bucket": {"values": ["<1m", "1-5m", "5m+"]},
+    "finetune_rows_bucket": {"values": ["0", "<100", "100-999", "1000+"]},
     "agent_failure_cause": {
       "_about": "Coarse readiness failure detail, from status codes and exception types only. Never endpoint, model, path or exception text.",
       "values": [
@@ -673,6 +676,15 @@
       "props": {
         "command": {"kind": "enum", "enum": "cli_command", "required": false},
         "trigger": {"kind": "enum", "enum": "desktop_open_trigger", "required": false}
+      }
+    },
+    "finetune_completed": {
+      "_about": "Once per fine-tuning command completion. Buckets cover elapsed time and validated train plus validation rows. No dataset, model or path identifiers.",
+      "props": {
+        "cmd_status": {"kind": "enum", "enum": "finetune_status", "required": true},
+        "duration_bucket": {"kind": "enum", "enum": "finetune_duration_bucket", "required": true},
+        "rows_bucket": {"kind": "enum", "enum": "finetune_rows_bucket", "required": true},
+        "has_valid_split": {"kind": "bool", "required": true}
       }
     },
     "server_start_state": {

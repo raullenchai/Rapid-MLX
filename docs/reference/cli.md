@@ -20,6 +20,7 @@ rapid-mlx <command> --help
 - **Coding agent:** `rapid-mlx launch codex` selects a model, starts a local server if needed, and opens Codex with a private profile. Run it again next time. `rapid-mlx launch codex --remove` removes that profile.
 - **Terminal chat:** `rapid-mlx chat` downloads a starter model if needed and opens a chat session.
 - **Local API:** `rapid-mlx serve qwen3.5-4b-4bit` prints the server address. Use the printed `/v1` endpoint for compatible clients.
+- **LoRA fine-tuning** is available via `rapid-mlx finetune` (alias `rapid-mlx lora`). See [LoRA fine-tuning on your Mac](../guides/finetune.md).
 - **Choose a model:** `rapid-mlx recipe` recommends models for this Mac; `rapid-mlx models` lists aliases; `rapid-mlx info <alias>` shows one model profile.
 - **Check installation:** `rapid-mlx doctor` reports environment and dependency checks.
 
@@ -100,7 +101,9 @@ rapid-mlx serve mlx-community/Qwen3-0.6B-4bit --adapter ./adapters --port 8613
 ```
 
 `PATH` must contain `adapter_config.json` and `adapters.safetensors`; its declared
-training base must match the served model. Only eager text serving is supported.
+base model must match the served model. The base recorded in
+`rapid_mlx_adapter.json` must also match when that file is present.
+Only eager text serving is supported.
 Vision/media/diffusion, disk streaming, fp8 repacking, MTP/speculative heads,
 lazy loading, idle unloading, and runtime replacement of the adapter primary fail
 with a clear error. Automatic speculative decoding is disabled for this mode.

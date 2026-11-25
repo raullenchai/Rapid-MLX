@@ -89,6 +89,7 @@
     "cua": "Native-accessibility computer-use agent with configurable planner",
     "doctor": "Check environment health (Python, packages, HF cache, network, ...)",
     "feedback": "Tell us what you want from Rapid-MLX (opens the community Discord)",
+    "finetune": "LoRA fine-tuning for local text models",
     "help": "Show help for a subcommand",
     "import": "Convert a bf16/fp16 safetensors model to quantized MLX (explicit, cancel-safe)",
     "info": "Show the per-model profile for a model name or alias",
@@ -3239,6 +3240,190 @@
      "mutually_exclusive": [],
      "prog": "rapid-mlx feedback"
     },
+    "finetune": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": "rapid_mlx._completion.alias_completer",
+       "const": null,
+       "default": null,
+       "dest": "model",
+       "help": "Model alias, Hub repo, or local checkpoint",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [],
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "data",
+       "help": "JSONL file or train/valid directory",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--data"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "out",
+       "help": "New adapter directory (default: ~/.rapid-mlx/adapters/<model>-<timestamp>)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--out"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1000,
+       "dest": "iters",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--iters"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 4,
+       "dest": "batch_size",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--batch-size"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 16,
+       "dest": "num_layers",
+       "help": "Layers to adapt (-1 for all)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--num-layers"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1e-05,
+       "dest": "learning_rate",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--learning-rate"
+       ],
+       "required": false,
+       "type": "builtins.float"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 2048,
+       "dest": "max_seq_length",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--max-seq-length"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "resume",
+       "help": "Path to existing LoRA safetensors weights",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--resume"
+       ],
+       "required": false,
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [
+        "model"
+       ],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "data",
+        "out",
+        "iters",
+        "batch_size",
+        "num_layers",
+        "learning_rate",
+        "max_seq_length",
+        "resume"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx finetune"
+    },
     "help": {
      "actions": [
       {
@@ -4026,6 +4211,190 @@
      ],
      "mutually_exclusive": [],
      "prog": "rapid-mlx log"
+    },
+    "lora": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": "rapid_mlx._completion.alias_completer",
+       "const": null,
+       "default": null,
+       "dest": "model",
+       "help": "Model alias, Hub repo, or local checkpoint",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [],
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "data",
+       "help": "JSONL file or train/valid directory",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--data"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "out",
+       "help": "New adapter directory (default: ~/.rapid-mlx/adapters/<model>-<timestamp>)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--out"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1000,
+       "dest": "iters",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--iters"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 4,
+       "dest": "batch_size",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--batch-size"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 16,
+       "dest": "num_layers",
+       "help": "Layers to adapt (-1 for all)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--num-layers"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 1e-05,
+       "dest": "learning_rate",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--learning-rate"
+       ],
+       "required": false,
+       "type": "builtins.float"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 2048,
+       "dest": "max_seq_length",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--max-seq-length"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "resume",
+       "help": "Path to existing LoRA safetensors weights",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--resume"
+       ],
+       "required": false,
+       "type": null
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [
+        "model"
+       ],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "data",
+        "out",
+        "iters",
+        "batch_size",
+        "num_layers",
+        "learning_rate",
+        "max_seq_length",
+        "resume"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx finetune"
     },
     "ls": {
      "actions": [
