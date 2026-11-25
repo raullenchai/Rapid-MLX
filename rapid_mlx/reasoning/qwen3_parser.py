@@ -146,6 +146,34 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                             # the raw preamble fall through to the client.
     """
 
+    _content_only = False
+
+    def configure_request(
+        self,
+        *,
+        enable_thinking: bool | None = None,
+        prompt_thinking_active: bool = False,
+    ) -> None:
+        self.reset_state()
+        self._content_only = enable_thinking is False and not prompt_thinking_active
+
+    def extract_reasoning_streaming(
+        self, previous_text: str, current_text: str, delta_text: str
+    ) -> DeltaMessage | None:
+        head = current_text.lstrip()
+        if self._content_only and not (
+            head.startswith(self.start_token)
+            or (head and self.start_token.startswith(head))
+        ):
+            held = self._held_tag_suffix_len
+            self._held_tag_suffix_len = 0
+            return DeltaMessage(
+                content=(previous_text[-held:] if held else "") + delta_text
+            )
+        return super().extract_reasoning_streaming(
+            previous_text, current_text, delta_text
+        )
+
     @property
     def start_token(self) -> str:
         return "<think>"
@@ -184,6 +212,12 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         Returns:
             (reasoning, content) tuple.
         """
+        if (
+            enable_thinking is False
+            and not prompt_thinking_active
+            and not model_output.lstrip().startswith(self.start_token)
+        ):
+            return None, model_output
         # #1778: Qwen chat templates prime the structural ``<think>`` in
         # the prompt, so an opener generated after ordinary answer text is
         # an echoed literal, not a new reasoning boundary.  The streaming
@@ -346,6 +380,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            that shape. The bare-text-preamble label fallback still
            routes to ``reasoning`` (preserves #570).
         """
+        if self._content_only and not accumulated_text.lstrip().startswith(
+            self.start_token
+        ):
+            return None
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
             return None

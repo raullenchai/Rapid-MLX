@@ -3584,6 +3584,8 @@ class BatchedEngine(BaseEngine):
                 admission_token, clear_context=owns_admission
             )
 
+        clean_enable_thinking: bool | None = kwargs.pop("_clean_enable_thinking", None)
+        clean_prompt_active: bool = kwargs.pop("_clean_prompt_active", False)
         continue_final_message = kwargs.pop("_continue_final_message", False)
         initial_channel = kwargs.pop("_output_router_initial_channel", None)
         request_prompt_tokens = kwargs.pop("_prompt_tokens", None)
@@ -3662,7 +3664,11 @@ class BatchedEngine(BaseEngine):
 
             reasoning, content, tool_calls = self._route_tokens_for_channels(
                 output.output_token_ids,
-                fallback_text=clean_output_text(mllm_full_text),
+                fallback_text=clean_output_text(
+                    mllm_full_text,
+                    enable_thinking=clean_enable_thinking,
+                    prompt_thinking_active=clean_prompt_active,
+                ),
                 initial_channel=(initial_channel or "content")
                 if continue_final_message
                 else None,
@@ -3788,7 +3794,12 @@ class BatchedEngine(BaseEngine):
             # parser sees the complete wire envelope.
             output_text = assistant_text_prefix + (output.output_text or "")
             output.output_text = output_text
-        text = clean_output_text(output.output_text, muse_wire=self._muse_wire_model())
+        text = clean_output_text(
+            output.output_text,
+            muse_wire=self._muse_wire_model(),
+            enable_thinking=clean_enable_thinking,
+            prompt_thinking_active=clean_prompt_active,
+        )
         # Token-level channel extraction via ``OutputRouter`` — the SAME
         # state machine the streaming path already uses
         # (``_stream_with_output_router``). For non-streaming we feed the
@@ -3900,6 +3911,8 @@ class BatchedEngine(BaseEngine):
         # disconnect_guard can force-abort the scheduler on client
         # disconnect. Popped from kwargs so it never reaches the
         # scheduler's add_request (which would reject unknown kwargs).
+        clean_enable_thinking: bool | None = kwargs.pop("_clean_enable_thinking", None)
+        clean_prompt_active: bool = kwargs.pop("_clean_prompt_active", False)
         request_id_holder = kwargs.pop("request_id_holder", None)
         admission_token, owns_admission = self._ensure_generation_admission()
         request_committed = False
@@ -3993,7 +4006,10 @@ class BatchedEngine(BaseEngine):
                 # ``logprobs=true, top_logprobs=K``.
                 yield GenerationOutput(
                     text=clean_output_text(
-                        output.output_text, muse_wire=self._muse_wire_model()
+                        output.output_text,
+                        muse_wire=self._muse_wire_model(),
+                        enable_thinking=clean_enable_thinking,
+                        prompt_thinking_active=clean_prompt_active,
                     ),
                     new_text=output.new_text,
                     tokens=output.new_token_ids,
@@ -4114,7 +4130,10 @@ class BatchedEngine(BaseEngine):
         try:
             async for output in self._engine.stream_outputs(request_id):
                 text = clean_output_text(
-                    output.output_text, muse_wire=self._muse_wire_model()
+                    output.output_text,
+                    muse_wire=self._muse_wire_model(),
+                    enable_thinking=clean_enable_thinking,
+                    prompt_thinking_active=clean_prompt_active,
                 )
 
                 yield GenerationOutput(
@@ -4412,6 +4431,10 @@ class BatchedEngine(BaseEngine):
                     request_prompt_tokens,
                 )
 
+        kwargs["_clean_enable_thinking"] = enable_thinking
+        kwargs["_clean_prompt_active"] = (
+            context is not None and context.initial_channel == "reasoning"
+        )
         output = await self.generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -5423,6 +5446,10 @@ class BatchedEngine(BaseEngine):
 
         if forced_assistant_prefix and kwargs.get("request_admitted_event") is None:
             kwargs["request_admitted_event"] = asyncio.Event()
+        kwargs["_clean_enable_thinking"] = enable_thinking
+        kwargs["_clean_prompt_active"] = (
+            context is not None and context.initial_channel == "reasoning"
+        )
         stream = self.stream_generate(
             prompt=prompt,
             max_tokens=max_tokens,

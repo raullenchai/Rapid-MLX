@@ -2467,7 +2467,16 @@ async def _non_stream(
         if channels_owned:
             final_content = strip_special_tokens(cleaned_text)
         else:
-            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            clean_context = getattr(output, "prompt_parse_context", None)
+            final_content = strip_thinking_tags(
+                clean_output_text(
+                    cleaned_text,
+                    enable_thinking=resolved_thinking,
+                    prompt_thinking_active=bool(
+                        clean_context and clean_context.initial_channel == "reasoning"
+                    ),
+                )
+            )
             final_content = sanitize_output(
                 final_content,
                 strip_tool_markup=bool(tool_parse_request.tools),

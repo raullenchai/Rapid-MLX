@@ -1071,7 +1071,17 @@ async def create_anthropic_message(
             if channels_owned:
                 final_content = strip_special_tokens(cleaned_text)
             else:
-                final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+                clean_context = getattr(output, "prompt_parse_context", None)
+                final_content = strip_thinking_tags(
+                    clean_output_text(
+                        cleaned_text,
+                        enable_thinking=resolved_thinking,
+                        prompt_thinking_active=bool(
+                            clean_context
+                            and clean_context.initial_channel == "reasoning"
+                        ),
+                    )
+                )
                 # Final defense against special-token / markup leakage — mirrors
                 # chat.py:669 so the two surfaces don't diverge on what they
                 # consider "sanitized" client-facing content. Pre-existing gap

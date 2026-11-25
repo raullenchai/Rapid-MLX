@@ -321,3 +321,53 @@ def test_legacy_continuation_context_without_history_render():
     )
     assert context.initial_channel == "reasoning"
     assert context.template_contract == "unknown"
+
+
+@pytest.mark.parametrize("thinking", [False, True, None])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_reasoning_cleaner_receives_request_mode(
+    engine, monkeypatch, thinking, stream
+):
+    raw = "Visible bash: ls\n</think>Answer"
+    core_output = SimpleNamespace(
+        output_text=raw,
+        output_token_ids=[],
+        new_text=raw,
+        new_token_ids=[],
+        prompt_tokens=1,
+        completion_tokens=1,
+        cached_tokens=0,
+        finished=True,
+        finish_reason="stop",
+        logprobs=None,
+    )
+
+    class Core:
+        async def generate(self, **kwargs):
+            return core_output
+
+        async def add_request(self, **kwargs):
+            return "request"
+
+        async def stream_outputs(self, request_id):
+            yield core_output
+
+        def abort_request(self, request_id):
+            pass
+
+    engine._engine = Core()
+    monkeypatch.setattr(engine, "_ensure_generation_admission", lambda: (None, False))
+    monkeypatch.setattr(
+        engine,
+        "_route_tokens_for_channels",
+        lambda ids, *, fallback_text, **kw: ("", fallback_text, None),
+    )
+    messages = [{"role": "user", "content": "hello"}]
+    if stream:
+        outputs = [
+            out async for out in engine.stream_chat(messages, enable_thinking=thinking)
+        ]
+        output = outputs[-1]
+    else:
+        output = await engine.chat(messages, enable_thinking=thinking)
+    assert output.text == (raw if thinking is False else "<think>" + raw)
