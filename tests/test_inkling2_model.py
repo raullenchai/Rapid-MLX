@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "ac24004d36900bb3da40ed458f263bf0d85be1cbab721cf3dea55bee3eabbea5",
-    "kernels.py": "abb21f1a7fda1b2dc391df6c5c994f1036f0a51f2a0ff6e8559e9bc786b20a64",
+    "kernels.py": "1421bed51f55c18b85cf9b79695819a7c09c2fb64dd1d6552a2a95e2c06c52b6",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -924,6 +924,26 @@ def test_router_topk_gates_and_failure(metal_runtime, monkeypatch, failure):
             assert attempts == stages[: stages.index(failure) + 1]
     finally:
         kernels._route_topk.cache_clear()
+
+
+@pytest.mark.requires_mlx
+def test_router_topk_real_invocation_failure(metal_runtime, monkeypatch):
+    mx, inkling2 = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    monkeypatch.setattr(layers, "expert_routing", None)
+    router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
+    x = mx.ones((1, 1, 64))
+    expected = router(x)
+    # Warm the cache with a successful construction and evaluated probe.
+    assert kernels._route_topk(4, 2) is not None
+    launch = Mock(side_effect=RuntimeError("real kernel invocation failed"))
+    monkeypatch.setattr(kernels, "_route_topk", lambda n, k: launch)
+    actual = router(x, True)
+    mx.eval(*actual)
+    launch.assert_called_once()
+    for a, e in zip(actual, expected):
+        assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
 
 
 @pytest.mark.requires_mlx

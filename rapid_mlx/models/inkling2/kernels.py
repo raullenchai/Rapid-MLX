@@ -332,19 +332,24 @@ def _route_topk(n, k):
         return None
 
 
-def route_topk_decode(logits, bias, k, scale):
+def route_topk_decode(
+    logits: mx.array, bias: mx.array, k: int, scale: float
+) -> tuple[mx.array, mx.array] | None:
     """Single-row FP32 scoring/selection, with existing decode normalization."""
     kernel = _route_topk(logits.shape[-1], k)
     if kernel is None:
         return None
-    indices, scores = kernel(
-        inputs=[logits, bias],
-        template=[("N", logits.shape[-1]), ("K", k)],
-        grid=(128, 1, 1),
-        threadgroup=(128, 1, 1),
-        output_shapes=[(1, 1, k), logits.shape],
-        output_dtypes=[mx.uint32, mx.float32],
-    )
+    try:
+        indices, scores = kernel(
+            inputs=[logits, bias],
+            template=[("N", logits.shape[-1]), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), logits.shape],
+            output_dtypes=[mx.uint32, mx.float32],
+        )
+    except Exception:
+        return None
     return indices, route_weights_decode(scores, indices, scale)
 
 
