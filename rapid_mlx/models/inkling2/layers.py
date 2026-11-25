@@ -30,6 +30,7 @@ from rapid_mlx.models.inkling2.kernels import (
     depth_attention,
     message_mix_decode,
     relative_attention,
+    route_topk_decode,
     route_weights_decode,
     short_convolution_decode,
 )
@@ -847,8 +848,27 @@ class TopKRouter(nn.Module):
         self.weight = mx.zeros((num_experts, dims), dtype=mx.float32)
         self.e_score_correction_bias = mx.zeros((num_experts,), dtype=mx.float32)
 
-    def __call__(self, hidden_states: mx.array) -> tuple[mx.array, mx.array]:
+    def __call__(
+        self, hidden_states: mx.array, cached_decode: bool = False
+    ) -> tuple[mx.array, mx.array]:
         logits = hidden_states.astype(mx.float32) @ self.weight.T
+        if (
+            cached_decode
+            and hidden_states.shape[:2] == (1, 1)
+            and _fast_decode_enabled()
+            and _use_kernels()
+            and expert_routing is None
+            and 1 <= self.top_k <= logits.shape[-1] <= 128
+            and logits.dtype == self.e_score_correction_bias.dtype == mx.float32
+        ):
+            routed = route_topk_decode(
+                logits,
+                self.e_score_correction_bias,
+                self.top_k,
+                self.routed_scaling_factor,
+            )
+            if routed is not None:
+                return routed
         if (
             _use_kernels()
             and expert_routing is not None
@@ -886,11 +906,13 @@ class SparseMoeBlock(nn.Module):
         self.experts = Experts(args)
         self.sharding_group: mx.distributed.Group | None = None
 
-    def __call__(self, hidden_states: mx.array) -> mx.array:
+    def __call__(
+        self, hidden_states: mx.array, *, cached_decode: bool = False
+    ) -> mx.array:
         group = self.sharding_group
         if group is not None:
             hidden_states = sum_gradients(group)(hidden_states)
-        final_hidden_states = self._forward(hidden_states)
+        final_hidden_states = self._forward(hidden_states, cached_decode)
         if group is not None:
             final_hidden_states = mx.distributed.all_sum(
                 final_hidden_states, group=group
@@ -898,8 +920,8 @@ class SparseMoeBlock(nn.Module):
         return final_hidden_states.astype(hidden_states.dtype)
 
     @_block_decode_only
-    def _forward(self, hidden_states):
-        selected_experts, routing_weights = self.gate(hidden_states)
+    def _forward(self, hidden_states, cached_decode=False):
+        selected_experts, routing_weights = self.gate(hidden_states, cached_decode)
         expert_states = self.experts(hidden_states, selected_experts)
         return _combine_experts(expert_states, routing_weights)
 
@@ -1039,6 +1061,12 @@ class DecoderLayer(nn.Module):
         conv_mask: mx.array | None = None,
         messages: mx.array | None = None,
     ) -> tuple[mx.array, mx.array]:
+        cached_decode = (
+            hidden_states.shape[:2] == (1, 1)
+            and cache is not None
+            and isinstance(cache[0].offset, int)
+            and cache[0].offset > 0
+        )
         conv = cache[1] if cache is not None else None
         conv_states: list[mx.array | None] = (
             list(conv.cache) if conv is not None else [None] * 4
@@ -1072,7 +1100,8 @@ class DecoderLayer(nn.Module):
 
         assert block_states is not None
         hidden_states = self.mlp(
-            self._mlp_states(hidden_states, block_states, messages, block_residual)
+            self._mlp_states(hidden_states, block_states, messages, block_residual),
+            cached_decode=cached_decode,
         )
         hidden_states, conv_states[3] = self.post_mlp_convolution(
             hidden_states,
