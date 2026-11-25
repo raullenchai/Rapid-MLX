@@ -3,6 +3,7 @@
 
 import math
 from collections.abc import Callable
+from functools import lru_cache
 from typing import cast
 
 import mlx.core as mx
@@ -118,6 +119,105 @@ def short_convolution_decode(
         output_dtypes=[x.dtype, mx.float32],
     )
     return out, state
+
+
+# Four consecutive values per thread preserve the stock row reduction order.
+_MESSAGE_NORM_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint tid = thread_position_in_threadgroup.x;
+    const uint lane = thread_index_in_simdgroup;
+    const uint sg = simdgroup_index_in_threadgroup;
+    threadgroup float scratch[32];
+    threadgroup float inv;
+    for (uint side = 0; side < (OUTPUT ? 1 : 2); ++side) {
+        float values[4];
+        float sum = 0.0f;
+        for (uint j = 0; j < 4; ++j) {
+            uint d = tid * 4 + j;
+            values[j] = d >= D ? 0.0f : (side == 0
+                ? float(x[d * x_strides[2]])
+                : float(message[d * message_strides[2]]));
+            sum = metal::fma(values[j], values[j], sum);
+        }
+        sum = simd_sum(sum);
+        if (sg == 0) scratch[lane] = 0.0f;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (lane == 0) scratch[sg] = sum;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sg == 0) {
+            sum = simd_sum(scratch[lane]);
+            if (lane == 0) inv = metal::precise::rsqrt(sum / float(D) + eps);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint j = 0; j < 4; ++j) {
+            uint d = tid * 4 + j;
+            if (d >= D) continue;
+            float n = side == 0 ? float(X(values[j] * inv))
+                                : float(M(values[j] * inv));
+            out[side * D + d] = O(OUTPUT ? n * float(weight[d * weight_strides[0]]) : n);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+"""
+
+
+@lru_cache(maxsize=1)
+def _get_message_norm():
+    return mx.fast.metal_kernel(
+        name="inkling2_message_norm_decode",
+        input_names=["x", "message", "weight", "eps"],
+        output_names=["out"],
+        source=_MESSAGE_NORM_SOURCE,
+        ensure_row_contiguous=False,
+        compile_options={"math_mode": "safe"},
+    )
+
+
+def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
+    """Normalize/concatenate controller inputs, or normalize/cast mixed output."""
+    D = x.shape[-1]
+    output = message is None
+    supported = (mx.float32, mx.float16, mx.bfloat16)
+    if (
+        x.ndim != 3
+        or x.shape[:2] != (1, 1)
+        or not 0 < D <= 4096
+        or x.dtype not in supported
+        or dtype not in supported
+        or (not output and (message.shape != x.shape or message.dtype != x.dtype))
+        or (
+            output
+            and (
+                x.dtype != mx.float32
+                or weight.shape != (D,)
+                or weight.dtype != mx.float32
+            )
+        )
+    ):
+        return None
+    TG = ((D + 127) // 128) * 32
+    try:
+        return _get_message_norm()(
+            inputs=[
+                x,
+                x if output else message,
+                scalar(1.0).reshape(1) if not output else weight,
+                scalar(eps),
+            ],
+            template=[
+                ("D", D),
+                ("OUTPUT", output),
+                ("X", x.dtype),
+                ("M", x.dtype),
+                ("O", dtype),
+            ],
+            grid=(TG, 1, 1),
+            threadgroup=(TG, 1, 1),
+            output_shapes=[x.shape if output else (1, 1, 2 * D)],
+            output_dtypes=[dtype],
+        )[0]
+    except (RuntimeError, ValueError):
+        return None
 
 
 # One SIMD group computes both low-rank expansion dot products for a channel.

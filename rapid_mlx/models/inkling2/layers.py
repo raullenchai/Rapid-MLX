@@ -28,6 +28,7 @@ from rapid_mlx.models.inkling2.kernels import (
     attention_mask_decode,
     depth_attention,
     message_mix_decode,
+    message_norm_decode,
     relative_attention,
     route_weights_decode,
     short_convolution_decode,
@@ -121,7 +122,11 @@ def unweighted_rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
     return mx.fast.rms_norm(x, None, eps)
 
 
-def _norm_cast(x, weight, eps, dtype):
+def _norm_cast(x, weight, eps, dtype, decode=False):
+    if decode and _fast_decode_enabled() and _use_kernels():
+        out = message_norm_decode(x, None, dtype, weight, eps)
+        if out is not None:
+            return out
     # Dtype objects are not valid mx.compile arguments. Cast outside the graph.
     return _norm(x, weight, eps).astype(dtype)
 
@@ -181,7 +186,11 @@ def _combine_experts(states, weights):
     return (states.astype(mx.float32) * weights[..., None]).sum(axis=-2)
 
 
-def _message_input(states, message, dtype):
+def _message_input(states, message, dtype, decode=False):
+    if decode and _fast_decode_enabled() and _use_kernels():
+        out = message_norm_decode(states, message, dtype)
+        if out is not None:
+            return out
     return _normalized_message_input(states, message).astype(dtype)
 
 
@@ -816,8 +825,12 @@ class MessageGate(nn.Module):
         self.forget_gate_proj = nn.Linear(rank, dims, bias=False)
         self.message_gate_proj = nn.Linear(rank, dims, bias=False)
 
-    def __call__(self, hidden_states: mx.array, message: mx.array) -> mx.array:
-        states = _message_input(hidden_states, message, self.down_proj.weight.dtype)
+    def __call__(
+        self, hidden_states: mx.array, message: mx.array, decode=False
+    ) -> mx.array:
+        states = _message_input(
+            hidden_states, message, self.down_proj.weight.dtype, decode
+        )
         states = self.down_proj(states)
         if (
             hidden_states.shape[1] == 1
@@ -880,26 +893,34 @@ class DecoderLayer(nn.Module):
             self.mlp_message_gate = MessageGate(dims, rank)
 
     def _mix_messages(
-        self, states: tuple[mx.array, mx.array, mx.array], messages: mx.array
+        self,
+        states: tuple[mx.array, mx.array, mx.array],
+        messages: mx.array,
+        decode=False,
     ) -> tuple[mx.array, mx.array, mx.array]:
         q_states, k_states, v_states = states
         return (
-            self.q_message_gate(q_states, messages[..., 0, :]),
-            self.k_message_gate(k_states, messages[..., 1, :]),
-            self.v_message_gate(v_states, messages[..., 2, :]),
+            self.q_message_gate(q_states, messages[..., 0, :], decode),
+            self.k_message_gate(k_states, messages[..., 1, :], decode),
+            self.v_message_gate(v_states, messages[..., 2, :], decode),
         )
 
     @_block_decode_only
-    def _mlp_states(self, hidden_states, block_states, messages, dtype_source):
+    def _mlp_states(
+        self, hidden_states, block_states, messages, dtype_source, decode=False
+    ):
         normed_states = unweighted_rms_norm(hidden_states)
         hidden_states = self.mlp_input(block_states, normed_states)[..., 0, :]
         if messages is not None:
-            hidden_states = self.mlp_message_gate(hidden_states, messages[..., 3, :])
+            hidden_states = self.mlp_message_gate(
+                hidden_states, messages[..., 3, :], decode
+            )
         return _norm_cast(
             hidden_states,
             self.post_attention_layernorm.weight,
             self.post_attention_layernorm.eps,
             dtype_source.dtype,
+            decode and messages is not None,
         )
 
     def __call__(
@@ -944,7 +965,9 @@ class DecoderLayer(nn.Module):
 
         assert block_states is not None
         hidden_states = self.mlp(
-            self._mlp_states(hidden_states, block_states, messages, block_residual)
+            self._mlp_states(
+                hidden_states, block_states, messages, block_residual, cache is not None
+            )
         )
         hidden_states, conv_states[3] = self.post_mlp_convolution(
             hidden_states,
@@ -978,14 +1001,18 @@ class SlidingDecoderLayer(DecoderLayer):
         messages: mx.array | None,
     ) -> mx.array:
         return self.self_attn(
-            *self._attention_states(hidden_states, attention_inputs, messages),
+            *self._attention_states(
+                hidden_states, attention_inputs, messages, cache is not None
+            ),
             cache=cache,
             conv_states=conv_states,
             conv_mask=conv_mask,
         )
 
     @_block_decode_only
-    def _attention_states(self, hidden_states, attention_inputs, messages):
+    def _attention_states(
+        self, hidden_states, attention_inputs, messages, decode=False
+    ):
         dtype = hidden_states.dtype
         if attention_inputs is not None:
             hidden_states = attention_inputs[..., 0, :]
@@ -999,10 +1026,14 @@ class SlidingDecoderLayer(DecoderLayer):
                 ),
             ) * 3
         else:
-            states = self._mix_messages((hidden_states,) * 3, messages)
+            states = self._mix_messages((hidden_states,) * 3, messages, decode)
             states = [
                 _norm_cast(
-                    s, self.input_layernorm.weight, self.input_layernorm.eps, dtype
+                    s,
+                    self.input_layernorm.weight,
+                    self.input_layernorm.eps,
+                    dtype,
+                    decode,
                 )
                 for s in states
             ]
@@ -1028,14 +1059,18 @@ class FullDecoderLayer(DecoderLayer):
         messages: mx.array | None,
     ) -> mx.array:
         return self.self_attn(
-            *self._attention_states(hidden_states, attention_inputs, messages),
+            *self._attention_states(
+                hidden_states, attention_inputs, messages, cache is not None
+            ),
             cache=cache,
             conv_states=conv_states,
             conv_mask=conv_mask,
         )
 
     @_block_decode_only
-    def _attention_states(self, hidden_states, attention_inputs, messages):
+    def _attention_states(
+        self, hidden_states, attention_inputs, messages, decode=False
+    ):
         dtype = hidden_states.dtype
         if attention_inputs is None:
             query_states = key_states = value_states = hidden_states
@@ -1045,7 +1080,7 @@ class FullDecoderLayer(DecoderLayer):
             )
         if messages is not None:
             query_states, key_states, value_states = self._mix_messages(
-                (query_states, key_states, value_states), messages
+                (query_states, key_states, value_states), messages, decode
             )
         return (
             _norm_cast(
@@ -1053,17 +1088,20 @@ class FullDecoderLayer(DecoderLayer):
                 self.q_input_layernorm.weight,
                 self.q_input_layernorm.eps,
                 dtype,
+                decode and messages is not None,
             ),
             _norm_cast(
                 key_states,
                 self.k_input_layernorm.weight,
                 self.k_input_layernorm.eps,
                 dtype,
+                decode and messages is not None,
             ),
             _norm_cast(
                 value_states,
                 self.v_input_layernorm.weight,
                 self.v_input_layernorm.eps,
                 dtype,
+                decode and messages is not None,
             ),
         )
