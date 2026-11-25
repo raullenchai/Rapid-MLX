@@ -2744,6 +2744,29 @@ def _add_upgrade_parser(
     )
 
 
+def _add_dataset_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "dataset", help="Build a local dataset from documents"
+    )
+    parser.add_argument(
+        "--from", dest="dataset_source", choices=("docs",), required=True
+    )
+    parser.add_argument("--input", required=True, help="Prose file or directory")
+    parser.add_argument("--out", required=True, help="New or empty dataset directory")
+    parser.add_argument(
+        "--model", default="qwen3.5-4b-4bit", help="Local outline model alias"
+    )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=0.15,
+        help="Target fraction of documents for eval",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Seed for splits and prompt selection"
+    )
+
+
 def _add_chat_parser(
     subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
 ) -> None:
@@ -3283,6 +3306,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_alias_parser(subparsers)
     _add_upgrade_parser(subparsers)
     _add_chat_parser(subparsers)
+    _add_dataset_parser(subparsers)
     _add_info_parser(subparsers)
     _add_agents_parser(subparsers)
 

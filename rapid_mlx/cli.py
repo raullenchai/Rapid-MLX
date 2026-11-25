@@ -17743,7 +17743,9 @@ def main(*, _supervise=False):
         # ``--no-telemetry`` is a per-run override; thread it into the
         # process-level kill switch so every emit site sees it without
         # having to plumb the flag through every signature.
-        set_cli_kill_switch(getattr(args, "no_telemetry", False))
+        set_cli_kill_switch(
+            getattr(args, "no_telemetry", False) or args.command == "dataset"
+        )
 
         consent_runtime.startup(long_lived=getattr(args, "command", None) == "serve")
         _start_v2_lifecycle(getattr(args, "command", None))
@@ -18342,6 +18344,10 @@ def main(*, _supervise=False):
 
             record_last_model(getattr(args, "_original_alias", None))
         chat_command(args)
+    elif args.command == "dataset":
+        from .dataset import dataset_command
+
+        raise SystemExit(dataset_command(args))
     elif args.command == "info":
         info_command(args)
     elif args.command == "agents":

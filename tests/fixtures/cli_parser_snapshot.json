@@ -87,6 +87,7 @@
     "chat": "Interactive chat REPL with a model",
     "connect": "Show the server's connection info and wire up a tool",
     "cua": "Native-accessibility computer-use agent with configurable planner",
+    "dataset": "Build a local dataset from documents",
     "doctor": "Check environment health (Python, packages, HF cache, network, ...)",
     "feedback": "Tell us what you want from Rapid-MLX (opens the community Discord)",
     "help": "Show help for a subcommand",
@@ -2888,6 +2889,147 @@
      ],
      "mutually_exclusive": [],
      "prog": "rapid-mlx cua"
+    },
+    "dataset": {
+     "actions": [
+      {
+       "class": "argparse._HelpAction",
+       "completer": null,
+       "const": null,
+       "default": "==SUPPRESS==",
+       "dest": "help",
+       "help": "show this help message and exit",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "choices": [
+        "docs"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "dataset_source",
+       "help": null,
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--from"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "input",
+       "help": "Prose file or directory",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--input"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "out",
+       "help": "New or empty dataset directory",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--out"
+       ],
+       "required": true,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "qwen3.5-4b-4bit",
+       "dest": "model",
+       "help": "Local outline model alias",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--model"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 0.15,
+       "dest": "val_ratio",
+       "help": "Target fraction of documents for eval",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--val-ratio"
+       ],
+       "required": false,
+       "type": "builtins.float"
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 0,
+       "dest": "seed",
+       "help": "Seed for splits and prompt selection",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--seed"
+       ],
+       "required": false,
+       "type": "builtins.int"
+      }
+     ],
+     "allow_abbrev": true,
+     "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
+     "defaults": {},
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse.HelpFormatter",
+     "groups": [
+      {
+       "description": null,
+       "dests": [],
+       "title": "positional arguments"
+      },
+      {
+       "description": null,
+       "dests": [
+        "help",
+        "dataset_source",
+        "input",
+        "out",
+        "model",
+        "val_ratio",
+        "seed"
+       ],
+       "title": "options"
+      }
+     ],
+     "mutually_exclusive": [],
+     "prog": "rapid-mlx dataset"
     },
     "doctor": {
      "actions": [
