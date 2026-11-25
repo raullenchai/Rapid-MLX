@@ -128,6 +128,10 @@ async def model_residency(request: Request):
     from ..middleware.activity import activity_tracker
 
     snapshot["audio_lanes"] = audio_worker.snapshot()
+    lifecycle = getattr(get_config(), "primary_model_lifecycle", None)
+    snapshot["primary_idle_unload_active"] = bool(
+        lifecycle is not None and lifecycle.idle_unload_active
+    )
     from ..cua.service import get_cua_service
     from .agents import active_agent_runs
     from .video import active_video_jobs

@@ -673,6 +673,7 @@ final class ServerManager {
 
     private(set) var audioIdleUnloadSupportedAtSpawn = false
     private(set) var idleUnloadSecondsAtSpawn: Int?
+    private(set) var audioIdleUnloadSecondsAtSpawn: Int?
 
     private(set) var localSearchEnabledAtSpawn = false
     private(set) var localSearchSupportedAtSpawn: Bool?
@@ -3249,6 +3250,7 @@ final class ServerManager {
 
         audioIdleUnloadSupportedAtSpawn = runtimeCapabilities.supportsAudioLaneIdleUnload
         idleUnloadSecondsAtSpawn = runtimeCapabilities.supportsPrimaryIdleUnload ? idleUnloadSeconds : nil
+        audioIdleUnloadSecondsAtSpawn = runtimeCapabilities.supportsAudioLaneIdleUnload ? idleUnloadSeconds : nil
         configureIdleModelRelease(idleUnloadSeconds)
         localSearchEnabledAtSpawn = arguments.contains("--enable-local-search")
         localSearchSupportedAtSpawn = runtimeCapabilities.supportsLocalSearch
@@ -3608,10 +3610,8 @@ final class ServerManager {
         _ = await stop(preservingLastServedAlias: false)
     }
 
-    /// Native idle unload frees chat models with the API online. The engine
-    /// has no idle release for audio lanes yet, so the poll keeps stopping
-    /// the process when an idle dictation/speech lane still holds memory, and
-    /// remains the whole mechanism for runtimes without the native flag.
+    /// Native idle unload frees supported primaries with the API online.
+    /// Other primaries and audio lanes without native unload use process stop.
     /// The server's activity clock decides idleness, while observed busy
     /// intervals also reset the local clock. Missing activity disables release.
     func configureIdleModelRelease(_ setting: Int) {
@@ -3630,7 +3630,7 @@ final class ServerManager {
 
     func applyIdleModelRelease(_ setting: Int) async {
         configureIdleModelRelease(setting)
-        guard case .ready = state, let secondsAtSpawn = idleUnloadSecondsAtSpawn,
+        guard case .ready = state, let secondsAtSpawn = idleUnloadSecondsAtSpawn ?? audioIdleUnloadSecondsAtSpawn,
               IdleModelReleasePreference.choices.contains(setting), setting != secondsAtSpawn else { return }
         let session = activeServerSessionID
         let refreshed = await refreshResidency()
@@ -3641,6 +3641,7 @@ final class ServerManager {
         let decision = IdleModelReleasePreference.restartDecision(
             setting: setting,
             secondsAtSpawn: idleUnloadSecondsAtSpawn,
+            audioSecondsAtSpawn: audioIdleUnloadSecondsAtSpawn,
             isReady: isReady,
             isOperating: !refreshed || isOperating || communityBenchmarkReserved || runtimeProbeOperation != nil,
             hasActiveRequests: residency.hasActiveRequests
@@ -3660,11 +3661,15 @@ final class ServerManager {
         }
     }
 
-    /// The running child supports native unload. Chat-only children are then
-    /// never stopped by the poll, even when a busy child deferred the restart
-    /// that would apply a newly enabled setting: stopping it would take the
-    /// API offline, which is exactly what native unload exists to avoid.
-    private var nativeIdleUnloadSupported: Bool { idleUnloadSecondsAtSpawn != nil }
+    /// The live server owns primary capability truth; older runtimes fall
+    /// back to their advertised flag support when the status field is absent.
+    private var nativeIdleUnloadSupported: Bool {
+        IdleModelReleasePreference.mode(
+            setting: IdleModelReleasePreference.value(),
+            runtimeSupportsNativeUnload: idleUnloadSecondsAtSpawn != nil,
+            primaryIdleUnloadActive: residency.primaryIdleUnloadActive
+        ) == .native
+    }
 
     private func checkIdleModelRelease(setting: Int) async {
         guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
