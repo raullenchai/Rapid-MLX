@@ -3,6 +3,7 @@
 
 import json
 import math
+import os
 import random
 import shlex
 import signal
@@ -21,7 +22,7 @@ from . import __version__, model_downloads
 from ._download_gate import _format_size
 from .launch._common import atomic_write_json
 from .local_model_path import raise_if_missing_local_model, resolved_model_ref
-from .lora_adapter import ADAPTER_METADATA
+from .lora_adapter import ADAPTER_METADATA, _base_identity
 from .model_aliases import resolve_model, resolve_revision, resolve_subfolder
 from .model_metadata import read_model_metadata, resolve_offline_cached_snapshot
 from .model_reference import normalize_model_reference
@@ -32,6 +33,7 @@ from .telemetry.track import track
 
 _MEMORY_TIP = "Try smaller --batch-size, --num-layers or --max-seq-length, or stop the local server."
 _TUNER_FLAGS = ("iters", "batch_size", "num_layers", "learning_rate", "max_seq_length")
+_STOP_GRACE_SECONDS = 2.0
 # Match the mlx-lm downloader when materializing a pinned checkpoint.
 _MODEL_FILES = [
     "*.json",
@@ -127,7 +129,8 @@ def _print_plan(args, out, train, valid):
     try:
         metadata = read_model_metadata(args.model)
         config = (metadata.config or {}) if metadata else {}
-        config = config.get("text_config") or config
+        if (text_config := config.get("text_config")) is not None:
+            config = text_config
         weights = size_bytes(args.model)
         if metadata and metadata.snapshot_dir:
             shards = metadata.snapshot_dir.glob("model*.safetensors")
@@ -135,8 +138,12 @@ def _print_plan(args, out, train, valid):
         # Approximate saved activations across layers. Actual peaks vary by model.
         hidden = config.get("hidden_size") or 4096
         layers = max(args.num_layers, 0) or config.get("num_hidden_layers") or 32
-        activations = 16 * hidden * layers * args.batch_size * args.max_seq_length
-        estimate = (weights or 0) + activations
+        tokens = args.batch_size * args.max_seq_length
+        activations = 16 * hidden * layers * tokens
+        # Allow one float32 buffer each for the full-vocabulary logits and their
+        # gradient during cross-entropy training.
+        logits_and_grad = 8 * (config.get("vocab_size") or 0) * tokens
+        estimate = (weights or 0) + activations + logits_and_grad
         suffix = " plus unknown base weights" if weights is None else ""
         available = psutil.virtual_memory().available
         print(
@@ -146,14 +153,14 @@ def _print_plan(args, out, train, valid):
         )
         if estimate > available:
             print(f"Warning: low available memory. {_MEMORY_TIP}", file=sys.stderr)
-    except (OSError, TypeError, ValueError, psutil.Error):
+    except Exception:
         print("Estimated unified memory: unavailable.", flush=True)
     try:
         running = any(
             serve_subcommand_index(p.info.get("cmdline") or []) is not None
             for p in psutil.process_iter(["cmdline"])
         )
-    except (OSError, psutil.Error):
+    except Exception:
         running = False
     if running:
         print(
@@ -176,6 +183,62 @@ def _training_model(model, reference):
         allow_patterns=[prefix + pattern for pattern in _MODEL_FILES],
     )
     return str(Path(snapshot) / (subfolder or ""))
+
+
+def _validate_resume(weights, model, num_layers):
+    if not weights.is_file():
+        raise ValueError("--resume must point to an existing LoRA weights file.")
+    found_metadata = layers_verified = False
+    for filename, base_key, type_key in (
+        ("adapter_config.json", "model", "fine_tune_type"),
+        (ADAPTER_METADATA, "base_model", "adapter_type"),
+    ):
+        path = weights.parent / filename
+        if not path.exists():
+            continue
+        found_metadata = True
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+            base = config.get(base_key) if isinstance(config, dict) else None
+            if not isinstance(base, str) or not base.strip():
+                raise ValueError(f"{base_key} must be a nonempty string")
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"--resume invalid {filename}: {exc}") from exc
+        if _base_identity(base) != _base_identity(model):
+            raise ValueError(
+                f"--resume base mismatch in {filename}: trained on {base!r}, selected {model!r}"
+            )
+        if config.get(type_key, "lora") != "lora":
+            raise ValueError(f"--resume {filename} must declare a LoRA adapter")
+        if "num_layers" in config:
+            saved = config["num_layers"]
+            if type(saved) is not int or saved != num_layers:
+                raise ValueError(
+                    f"--resume layer mismatch in {filename}: saved num_layers={saved!r}, "
+                    f"requested --num-layers={num_layers}"
+                )
+            layers_verified = True
+    if found_metadata and not layers_verified:
+        raise ValueError("--resume adapter metadata is missing num_layers")
+
+
+def _stop_training(child):
+    try:
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+            deadline = time.monotonic() + _STOP_GRACE_SECONDS
+            # The group can outlive its leader, so keep checking after reaping it.
+            while time.monotonic() < deadline:
+                child.poll()
+                os.killpg(child.pid, 0)
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            pass  # A second Ctrl-C skips the rest of the grace period.
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # The whole group already exited.
+    finally:
+        child.wait()
 
 
 def _train(args, model, data, out):
@@ -216,11 +279,11 @@ def _train(args, model, data, out):
                     classify_engine_abort(line) == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
                 )
             code = child.wait()
-        finally:
-            if child.poll() is None:
-                child.kill()
-    if code in (-signal.SIGINT, 130):
-        raise KeyboardInterrupt
+            if code in (-signal.SIGINT, 130):
+                raise KeyboardInterrupt
+        except BaseException:
+            _stop_training(child)
+            raise
     if code and oom:
         raise MemoryError
     if code:
@@ -243,8 +306,6 @@ def finetune_command(args):
             )
         if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
             raise ValueError("Use a positive, finite --learning-rate.")
-        if args.resume and not Path(args.resume).expanduser().is_file():
-            raise ValueError("--resume must point to an existing LoRA weights file.")
         reference = resolved_model_ref(normalize_model_reference(args.model))
         raise_if_missing_local_model(reference)
         args.model = resolve_model(reference)
@@ -255,6 +316,10 @@ def finetune_command(args):
                 raise ValueError(
                     f"Unknown model alias {args.model!r}. Run rapid-mlx models to list aliases."
                 )
+        if args.resume:
+            _validate_resume(
+                Path(args.resume).expanduser(), args.model, args.num_layers
+            )
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         default = f"~/.rapid-mlx/adapters/{Path(reference).name}-{stamp}"
         out = Path(args.out or default).expanduser().absolute()
@@ -277,6 +342,7 @@ def finetune_command(args):
                     "base_model": model if local else args.model,
                     "quantization_bits": quant.get("bits"),
                     "adapter_type": "lora",
+                    "num_layers": args.num_layers,
                     "rapid_mlx_version": __version__,
                     "mlx_lm_version": version("mlx-lm"),
                 },
@@ -288,7 +354,7 @@ def finetune_command(args):
     except KeyboardInterrupt:
         status = "abort"
         print(
-            "Fine-tuning aborted. Use --resume with saved weights if available.",
+            "Fine-tuning aborted. The adapter directory may hold an incomplete checkpoint.",
             file=sys.stderr,
         )
         return 130
