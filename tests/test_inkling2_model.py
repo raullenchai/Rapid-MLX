@@ -76,8 +76,8 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "b75d045c657d894471fbc90b669c431127461ab15a65c2da8913d29c5e2de3cd",
-    "kernels.py": "a06df094acc4eb4d5a870fa6c5ab06f455e0dc65bd59b2317a2e5f43804c5adc",
+    "layers.py": "f30e646d49cc4f36450cf99f4465862a22448e1998d9d83d020f5f01217c9217",
+    "kernels.py": "355670b093d3cdf23e435fd90b14bfb12bdd0d681d8c2e940dc9bf603e2195bc",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -298,9 +298,19 @@ def test_route_topk_cpu_probe(decode_cpu, failure):
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "construction", "probe", "evaluation", "invocation", "ineligible"]
+    "failure",
+    [
+        None,
+        "construction",
+        "probe",
+        "evaluation",
+        "invocation",
+        "ineligible",
+        "disabled",
+    ],
 )
-def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure):
+@pytest.mark.parametrize("boundary", ["first", "append", "inner"])
+def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure, boundary):
     """A failed probe uses stock MoE; failed invocation reuses evaluated experts."""
     layers, mx = decode_cpu.layers, decode_cpu.mx
     x = np.ones((1, 1, 32), np.float32)
@@ -338,16 +348,17 @@ def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure):
 
     layer = layers.DecoderLayer.__new__(layers.DecoderLayer)
     layer.mlp = MLP()
-    layer.attention_input = None
-    layer.is_block_boundary = True
+    layer.attention_input = None if boundary == "first" else Mock(return_value=x)
+    layer.is_block_boundary = boundary != "inner"
     layer._self_attention = lambda hidden, *args: hidden
-    layer._mlp_states = lambda hidden, *args: hidden
+    layer._mlp_states = Mock(side_effect=lambda hidden, *args: hidden)
     layer.post_attention_convolution = layer.post_mlp_convolution = Conv()
     monkeypatch.setattr(layers, "unweighted_rms_norm", lambda hidden: hidden)
     monkeypatch.setattr(layers, "_conv_state", lambda window, *args: window)
     history = np.zeros((1, 3, 32), np.float32)
     cache = [SimpleNamespace(offset=3), Cache([history] * 4)]
-    outputs = [np.full_like(x, 3), history]
+    expected = np.full_like(x, 4 if boundary == "inner" else 3)
+    outputs = [expected, history]
     launch = Mock(return_value=outputs)
     mx.fast.metal_kernel.return_value = launch
     if failure == "construction":
@@ -364,21 +375,65 @@ def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure):
         ]
     elif failure == "ineligible":
         layer.mlp.gate.top_k = 1
+    elif failure == "disabled":
+        monkeypatch.setenv("RAPID_MLX_INKLING2_EXPERT_CONV_RESIDUAL", "0")
     for step in range(2):
-        actual, _ = layer(x, None, cache=cache)
-        np.testing.assert_array_equal(actual, np.full_like(x, 3))
+        block_states = None if boundary == "first" else x[None]
+        actual, block = layer(x, block_states, cache=cache)
+        assert block.shape[0] == (2 if boundary == "append" else 1)
+        assert layer._mlp_states.call_args.args[-1] is True
+        np.testing.assert_array_equal(actual, expected)
         assert mlp.experts.call_count == mlp.gate.call_count == step + 1
     assert stock.call_count == (0 if failure in (None, "invocation") else 2)
     assert launch.call_count == (
         0
-        if failure in ("construction", "ineligible")
+        if failure in ("construction", "ineligible", "disabled")
         else 1
         if failure in ("probe", "evaluation")
         else 3
     )
     assert mx.eval.call_count == (
-        0 if failure in ("construction", "ineligible", "probe") else 1
+        0 if failure in ("construction", "ineligible", "disabled", "probe") else 1
     )
+
+
+@pytest.mark.parametrize(
+    "feature", ["MESSAGE_NORM", "ROUTE_TOPK", "EXPERT_CONV_RESIDUAL"]
+)
+def test_decode_cpu_independent_switches(decode_cpu, monkeypatch, feature):
+    layers = decode_cpu.layers
+    features = ("MESSAGE_NORM", "ROUTE_TOPK", "EXPERT_CONV_RESIDUAL")
+    for name in features:
+        monkeypatch.delenv(f"RAPID_MLX_INKLING2_{name}", raising=False)
+    assert all(layers._fast_decode_enabled(name) for name in features)
+    monkeypatch.setenv(f"RAPID_MLX_INKLING2_{feature}", "0")
+    assert layers._fast_decode_enabled()
+    for name in features:
+        assert layers._fast_decode_enabled(name) is (name != feature)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+    assert not any(layers._fast_decode_enabled(name) for name in (*features, None))
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_route_topk_cpu_switch_and_fallback(
+    decode_cpu, monkeypatch, disabled, unavailable
+):
+    layers, mx = decode_cpu.layers, decode_cpu.mx
+    router = layers.TopKRouter.__new__(layers.TopKRouter)
+    router.weight = np.ones((4, 32), np.float32)
+    router.e_score_correction_bias = np.zeros((4,), np.float32)
+    router.top_k, router.routed_scaling_factor = 2, 2.0
+    expected = (np.array([[[0, 1]]], np.uint32), np.ones((1, 1, 2), np.float32))
+    fused = Mock(return_value=None if unavailable else expected)
+    stock = Mock(return_value=expected)
+    monkeypatch.setattr(layers, "route_topk_decode", fused)
+    monkeypatch.setattr(layers, "_route_weights", stock)
+    monkeypatch.setattr(mx, "sigmoid", lambda x: 1 / (1 + np.exp(-x)), raising=False)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_ROUTE_TOPK", "0" if disabled else "1")
+    assert router(np.ones((1, 1, 32), np.float32), cached_decode=True) is expected
+    assert fused.call_count == int(not disabled)
+    assert stock.call_count == int(disabled or unavailable)
 
 
 @pytest.fixture
@@ -423,6 +478,190 @@ def compat_loader(glue_loader):
         return result
 
     return load
+
+
+@pytest.fixture
+def message_cpu(glue_loader, compat_loader, monkeypatch):
+    """Load the real wrappers with NumPy arrays and inert Metal construction."""
+    compat_loader()
+    mx = glue_loader.mx
+    mx.bfloat16 = object()  # Distinct supported dtype; NumPy has no bf16.
+    mx.ones = lambda shape, dtype=np.float32: mx.array(np.ones(shape, dtype=dtype))
+    mx.compile = lambda fn, **kwargs: fn
+    mx.fast = SimpleNamespace(
+        metal_kernel=Mock(return_value=Mock()),
+        rms_norm=lambda x, w, eps: (
+            (
+                x
+                / np.sqrt(
+                    np.mean(x.astype(np.float32) ** 2, axis=-1, keepdims=True) + eps
+                )
+            )
+            * (1 if w is None else w)
+        ),
+    )
+    kernels = glue_loader.load("kernels")
+    glue_loader.module("mlx.nn.layers.distributed", sum_gradients=Mock())
+    glue_loader.module(
+        "mlx_lm.models.cache", BatchRotatingKVCache=object, RotatingKVCache=object
+    )
+    glue_loader.module("rapid_mlx.models.inkling2.config", TextArgs=object)
+    layers = glue_loader.load("layers")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    return mx, kernels, layers
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "call"]
+)
+def test_message_norm_cpu_probe_and_fallback(message_cpu, monkeypatch, failure):
+    mx, kernels, layers = message_cpu
+    x, w = mx.ones((1, 1, 17)), mx.ones((17,))
+    probe_output = object()
+    launches = []
+
+    def launch(**kw):
+        launches.append(kw)
+        if len(launches) == 1:
+            if failure == "probe":
+                raise RuntimeError("probe invocation")
+            return [probe_output]
+        if failure == "call":
+            raise RuntimeError("real invocation")
+        a, b, weight, eps = kw["inputs"]
+        output = dict(kw["template"])["OUTPUT"]
+        value = mx.fast.rms_norm(a, weight if output else None, eps)
+        if not output:
+            value = np.concatenate((value, mx.fast.rms_norm(b, None, eps)), axis=-1)
+        return [value.astype(kw["output_dtypes"][0])]
+
+    factory = Mock(
+        side_effect=RuntimeError("construction") if failure == "construction" else None,
+        return_value=launch,
+    )
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    if failure == "evaluation":
+        mx.eval.side_effect = RuntimeError("probe evaluation")
+    for helper, args in (
+        (layers._message_input, (x, x, mx.float16)),
+        (layers._norm_cast, (x, w, 1e-6, mx.float16)),
+    ):
+        launches.clear()
+        for _ in range(2):
+            np.testing.assert_array_equal(helper(*args, decode=True), helper(*args))
+        assert len(launches) == (
+            0
+            if failure == "construction"
+            else 1
+            if failure in ("probe", "evaluation")
+            else 3
+        )
+    assert factory.call_count == 2  # Cached success/failure, once per variant.
+    assert mx.eval.call_count == (0 if failure in ("construction", "probe") else 2)
+    if failure not in ("construction", "probe"):
+        assert all(call.args == (probe_output,) for call in mx.eval.call_args_list)
+
+
+def test_message_norm_cpu_guards(message_cpu, monkeypatch):
+    mx, kernels, layers = message_cpu
+    forbidden = Mock(side_effect=AssertionError("unsupported input launched a kernel"))
+    monkeypatch.setattr(kernels, "_get_message_norm", forbidden)
+    x = mx.ones((1, 1, 17))
+    # Output mode's default weight must return the sentinel, not dereference None.
+    assert kernels.message_norm_decode(x, None, mx.float32) is None
+    for value, message, dtype, weight in (
+        (mx.ones((1, 17)), x, mx.float32, None),
+        (mx.ones((2, 1, 17)), x, mx.float32, None),
+        (mx.ones((1, 1, 0)), x, mx.float32, None),
+        (mx.ones((1, 1, 4097)), x, mx.float32, None),
+        (x.astype(np.int32), x, mx.float32, None),
+        (x, x, np.int32, None),
+        (x, mx.ones((1, 1, 16)), mx.float32, None),
+        (x, x.astype(np.float16), mx.float32, None),
+        (x.astype(np.float16), None, mx.float32, mx.ones((17,))),
+        (x, None, mx.float32, mx.ones((16,))),
+        (x, None, mx.float32, mx.ones((17,), np.float16)),
+    ):
+        assert kernels.message_norm_decode(value, message, dtype, weight) is None
+    forbidden.assert_not_called()
+    monkeypatch.setattr(layers, "message_norm_decode", forbidden)
+    for decode, enabled, device in (
+        (False, "1", True),
+        (True, "0", True),
+        (True, "1", False),
+    ):
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", enabled)
+        monkeypatch.setattr(layers, "_use_kernels", lambda device=device: device)
+        layers._message_input(x, x, mx.float16, decode)
+        layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, decode)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    monkeypatch.setenv("RAPID_MLX_INKLING2_MESSAGE_NORM", "0")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    layers._message_input(x, x, mx.float16, True)
+    layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, True)
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["SlidingDecoderLayer", "FullDecoderLayer"])
+@pytest.mark.parametrize("decode", [False, True])
+@pytest.mark.parametrize("with_messages", [False, True])
+def test_message_norm_cpu_forwarding(
+    message_cpu, monkeypatch, kind, decode, with_messages
+):
+    """Exercise real layer call sites with CPU state and recorded leaf operations."""
+    mx, kernels, layers = message_cpu
+    x = mx.ones((1, 1, 17))
+    messages = mx.ones((1, 1, 4, 17)) if with_messages else None
+    norm = SimpleNamespace(weight=mx.ones((17,)), eps=1e-6)
+    cls = getattr(layers, kind)
+    layer = cls.__new__(cls)
+    layer.state = {}
+    layer.input_layernorm = norm
+    layer.q_input_layernorm = layer.k_input_layernorm = layer.v_input_layernorm = norm
+    layer.post_attention_layernorm = norm
+    gates = [Mock(side_effect=lambda a, b, d: a + b) for _ in range(4)]
+    (
+        layer.q_message_gate,
+        layer.k_message_gate,
+        layer.v_message_gate,
+        layer.mlp_message_gate,
+    ) = gates
+    layer.mlp_input = Mock(side_effect=lambda block, a: a[..., None, :])
+    layer.self_attn = Mock(side_effect=lambda q, k, v, **kw: q)
+    layer.attention_input = None
+    layer.is_block_boundary = True
+    layer.mlp = Mock(side_effect=lambda a, **kw: a)
+    layer.post_attention_convolution = layer.post_mlp_convolution = (
+        lambda a, state, mask, **kw: (a, state)
+    )
+    calls = Mock(return_value=None)
+    monkeypatch.setattr(layers, "message_norm_decode", calls)
+    cache = [SimpleNamespace(offset=0), None] if decode else None
+    result, block = layer(x, None, cache=cache, messages=messages)
+    assert result.shape == x.shape and block.shape == (1, *x.shape)
+    for gate in gates:
+        assert gate.call_count == int(with_messages)
+        if with_messages:
+            assert gate.call_args.args[-1] is decode
+    assert calls.call_count == (4 if decode and with_messages else 0)
+    # Also cover the attention-input path with independently supplied Q/K/V.
+    attention = np.stack((x, x, x), axis=-2)
+    layer._self_attention(x, attention, cache, [None] * 4, None, messages)
+    for gate in gates[:3]:
+        assert gate.call_count == (2 if with_messages else 0)
+    # MessageGate must pass decode to the normalization helper itself.
+    gate = layers.MessageGate.__new__(layers.MessageGate)
+    gate.down_proj = Mock(side_effect=lambda a: a[..., :17])
+    gate.down_proj.weight = x
+    gate.forget_gate_proj = gate.message_gate_proj = Mock()
+    gate.forget_gate_proj.weight = x.astype(np.float16)  # Use eager expansion.
+    gate.forget_gate_proj.return_value = x
+    mx.tanh = np.tanh
+    seen = Mock(wraps=layers._message_input)
+    monkeypatch.setattr(layers, "_message_input", seen)
+    assert gate(x, x, decode).shape == x.shape
+    seen.assert_called_once_with(x, x, x.dtype, decode)
 
 
 def _expert_layer(switch_layers, mx, *, global_scale):
@@ -1209,6 +1448,187 @@ def test_decode_message_controller(metal_runtime, monkeypatch, dtype):
                 else 5e-6
             )
             np.testing.assert_allclose(actual, expected, atol=tolerance, rtol=tolerance)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_message_norm_exact(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    select = kernels._get_message_norm
+    launches = Mock()
+
+    def selected(*args):
+        kernel = select(*args)
+        assert kernel is not None
+        return lambda **kw: (launches(), kernel(**kw))[1]
+
+    monkeypatch.setattr(kernels, "_get_message_norm", selected)
+    dtype = getattr(mx, dtype)
+    for seed in (0, 17, 38):
+        mx.random.seed(seed)
+        for dims in (17, 64, 2304, 4096):
+            for scale in (0.0, 1e-4, 1.0, 1000.0):
+                # Non-contiguous inputs exercise the controller message views.
+                x, message = [
+                    (mx.random.normal((1, 1, 2 * dims)) * scale).astype(dtype)[..., ::2]
+                    for _ in range(2)
+                ]
+                for target in (mx.float32, mx.float16, mx.bfloat16):
+                    expected = layers._message_input(x, message, target)
+                    launches.reset_mock()
+                    actual = kernels.message_norm_decode(x, message, target)
+                    launches.assert_called_once()
+                    assert actual is not None and actual.dtype == expected.dtype
+                    assert mx.array_equal(actual, expected).item()
+                    assert mx.array_equal(
+                        actual.view(mx.uint8), expected.view(mx.uint8)
+                    ).item()
+                mixed = x.astype(mx.float32)
+                weight = mx.random.normal((2 * dims,))[::2]
+                expected = layers._norm_cast(mixed, weight, 1e-6, dtype)
+                launches.reset_mock()
+                actual = kernels.message_norm_decode(mixed, None, dtype, weight)
+                launches.assert_called_once()
+                assert actual is not None and actual.dtype == expected.dtype
+                assert mx.array_equal(actual, expected).item()
+                assert mx.array_equal(
+                    actual.view(mx.uint8), expected.view(mx.uint8)
+                ).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_message_norm_cached_logits_exact(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    # Probe outside compilation; retrace each step so instrumentation runs.
+    kernels._get_message_norm.cache_clear()
+    for source in (mx.float32, getattr(mx, dtype)):
+        for target in (mx.float32, getattr(mx, dtype)):
+            for output in (False, True):
+                assert kernels._get_message_norm(64, output, source, target)
+    stock = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    fused = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    stock_cache, fused_cache = stock.make_cache(), fused.make_cache()
+    tokens = mx.random.randint(0, 120, (1, 14))
+    assert mx.array_equal(
+        stock(tokens[:, :6], cache=stock_cache), fused(tokens[:, :6], cache=fused_cache)
+    ).item()
+    norm = layers.message_norm_decode
+    seen = set()
+
+    def record(x, message, *args):
+        out = norm(x, message, *args)
+        if out is not None:
+            seen.add(message is None)
+        return out
+
+    # Disable only this delta: all existing decode fusions stay enabled.
+    for step in range(6, 14):
+        monkeypatch.setattr(layers, "message_norm_decode", lambda *args: None)
+        expected = stock(tokens[:, step : step + 1], cache=stock_cache)
+        monkeypatch.setattr(layers, "message_norm_decode", record)
+        seen.clear()
+        for module in fused.modules():
+            for name in list(vars(module)):
+                if name.startswith("_block_compiled_"):
+                    delattr(module, name)
+        actual = fused(tokens[:, step : step + 1], cache=fused_cache)
+        # Output fusion requires FP32 norm weights; cast fixtures use stock.
+        assert seen == ({False, True} if dtype == "float32" else {False})
+        assert actual.dtype == expected.dtype
+        assert mx.array_equal(actual, expected).item()
+        assert mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("error", [RuntimeError, ValueError, TypeError])
+def test_message_norm_invocation_fallback(metal_runtime, monkeypatch, error):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    kernel = Mock(side_effect=error("kernel invocation unavailable"))
+    monkeypatch.setattr(kernels, "_get_message_norm", lambda *args: kernel)
+    x = mx.ones((1, 1, 64))
+    for helper, args in (
+        (layers._message_input, (x, x, mx.float16)),
+        (layers._norm_cast, (x, mx.ones((64,)), 1e-6, mx.float16)),
+    ):
+        assert mx.array_equal(helper(*args, decode=True), helper(*args)).item()
+    assert kernel.call_count == 2
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("failure", ["construction", "invocation", "evaluation"])
+def test_message_norm_guards_and_probe_fallback(metal_runtime, monkeypatch, failure):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    kernels._get_message_norm.cache_clear()
+    failed = mx.zeros((1,))
+    evaluate = mx.eval
+    probes = []
+
+    def unavailable(*outputs):
+        if any(out is failed for out in outputs):
+            probes.append(True)
+            raise RuntimeError("kernel evaluation unavailable")
+        return evaluate(*outputs)
+
+    monkeypatch.setattr(mx, "eval", unavailable)
+
+    probe_kernel = Mock(
+        side_effect=RuntimeError("probe invocation unavailable")
+        if failure == "invocation"
+        else None,
+        return_value=[failed],
+    )
+
+    def construct(**kwargs):
+        if failure == "construction":
+            raise RuntimeError("kernel construction unavailable")
+        return probe_kernel
+
+    factory = Mock(side_effect=construct)
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    x = mx.ones((1, 1, 64))
+    for helper, args in (
+        (layers._message_input, (x, x, mx.float16)),
+        (layers._norm_cast, (x, mx.ones((64,)), 1e-6, mx.float16)),
+    ):
+        for _ in range(2):
+            assert mx.array_equal(helper(*args, decode=True), helper(*args)).item()
+    assert factory.call_count == 2  # One probe attempt per kernel variant.
+    assert probe_kernel.call_count == (0 if failure == "construction" else 2)
+    assert len(probes) == (2 if failure == "evaluation" else 0)
+    kernels._get_message_norm.cache_clear()
+    monkeypatch.setattr(
+        kernels, "_get_message_norm", lambda *args: pytest.fail("unsupported path")
+    )
+    for shape in ((2, 1, 64), (1, 2, 64), (1, 1, 4097)):
+        value = mx.ones(shape)
+        assert kernels.message_norm_decode(value, value, mx.float32) is None
+        assert (
+            kernels.message_norm_decode(value, None, mx.float32, mx.ones(shape[-1:]))
+            is None
+        )
+    assert kernels.message_norm_decode(x.astype(mx.int32), x, mx.float32) is None
+    assert kernels.message_norm_decode(x, x, mx.int32) is None
+    monkeypatch.setattr(
+        layers,
+        "message_norm_decode",
+        lambda *args: pytest.fail("bypassed fast function"),
+    )
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+    mx.eval(layers._message_input(x, x, mx.float16, decode=True))
+    mx.eval(layers._norm_cast(x, mx.ones((64,)), 1e-6, mx.float16, decode=True))
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    mx.eval(layers._message_input(x, x, mx.float16))
+    # A singleton forward without a caller-provided cache must remain stock.
+    mx.eval(create_model(metal_runtime)(mx.array([[1]])))
 
 
 @pytest.mark.requires_mlx
