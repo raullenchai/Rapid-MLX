@@ -679,7 +679,7 @@
       }
     },
     "finetune_completed": {
-      "_about": "Once per fine-tuning command completion. Buckets cover elapsed time and validated train plus validation rows. No dataset, model or path identifiers.",
+      "_about": "Once per fine-tuning command completion. Buckets cover elapsed time and validated train plus validation rows. has_valid_split is true when preflight accepted a user-supplied validation split. No dataset, model or path identifiers.",
       "props": {
         "cmd_status": {"kind": "enum", "enum": "finetune_status", "required": true},
         "duration_bucket": {"kind": "enum", "enum": "finetune_duration_bucket", "required": true},

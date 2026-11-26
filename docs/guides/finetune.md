@@ -49,4 +49,5 @@ prints the serve command. To start a new run from saved LoRA weights, pass
 `--resume path/to/adapters.safetensors` with the same base model and layer settings.
 
 When telemetry is enabled, the completion event contains the outcome, elapsed
-time and row-count buckets, and whether validation data was prepared.
+time and row-count buckets, and whether preflight accepted a validation split you
+supplied.

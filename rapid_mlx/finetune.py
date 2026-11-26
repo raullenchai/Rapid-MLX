@@ -7,6 +7,7 @@ import os
 import random
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 
 import psutil
 from huggingface_hub.utils import validate_repo_id
+from safetensors import SafetensorError, safe_open
 
 from . import __version__, model_downloads
 from ._download_gate import _format_size
@@ -43,6 +45,7 @@ _VAL_LOSS = re.compile(r"^Iter \d+: Val loss (-?(?:\d+(?:\.\d+)?|inf|nan))(?=,|\
 _DEFAULT_EPOCHS = 3
 _MAX_DEFAULT_ITERS = 1000
 _STOP_GRACE_SECONDS = 2.0
+_NUMBERED_ADAPTER = re.compile(r"\d{7,}_adapters\.safetensors")
 # Match the mlx-lm downloader when materializing a pinned checkpoint.
 _MODEL_FILES = [
     "*.json",
@@ -57,6 +60,46 @@ _MODEL_FILES = [
 ]
 
 
+def _validate_message(message):
+    if not isinstance(message, dict) or not isinstance(message.get("role"), str):
+        raise ValueError("each message must be an object with a string role")
+    content = message.get("content")
+    if isinstance(content, list) and not all(
+        isinstance(part, dict)
+        and part.get("type") == "text"
+        and isinstance(part.get("text"), str)
+        for part in content
+    ):
+        raise ValueError("message content list must contain text objects")
+    if "tool_calls" in message:
+        calls = message["tool_calls"]
+        if not isinstance(calls, list) or not calls:
+            raise ValueError("message tool_calls must be a non-empty list of objects")
+        for call in calls:
+            if not isinstance(call, dict):
+                raise ValueError(
+                    "message tool_calls must be a non-empty list of objects"
+                )
+            function = call.get("function", call)
+            name = function.get("name") if isinstance(function, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("each tool call must have a non-empty function name")
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    arguments = None
+            if not isinstance(arguments, dict):
+                raise ValueError(
+                    "tool call arguments must be an object or a JSON object string"
+                )
+        if content is None:
+            return
+    if not isinstance(content, (str, list)):
+        raise ValueError("message content must be a string or a list of text objects")
+
+
 def _row_format(row):
     if isinstance(row, dict):
         if "prompt" in row and "completion" in row:
@@ -64,19 +107,9 @@ def _row_format(row):
                 return "prompt/completion"
         elif "messages" in row:
             messages = row["messages"]
-            if (
-                isinstance(messages, list)
-                and messages
-                and all(
-                    isinstance(message, dict)
-                    and isinstance(message.get("role"), str)
-                    and (
-                        isinstance(message.get("content"), (str, list))
-                        or message.get("tool_calls")
-                    )
-                    for message in messages
-                )
-            ):
+            if isinstance(messages, list) and messages:
+                for message in messages:
+                    _validate_message(message)
                 return "messages"
         elif isinstance(row.get("text"), str) and row["text"]:
             return "text"
@@ -102,7 +135,8 @@ def _read_rows(path):
 
 
 def _prepare_data(path, scratch, batch_size):
-    if path.is_dir():
+    has_valid_split = path.is_dir()
+    if has_valid_split:
         train, valid = (
             _read_rows(path / name) for name in ("train.jsonl", "valid.jsonl")
         )
@@ -127,7 +161,7 @@ def _prepare_data(path, scratch, batch_size):
             f"Each split needs at least --batch-size={batch_size} rows "
             f"(train={len(train)}, valid={len(valid)}). Add data or lower --batch-size."
         )
-    return path, len(train), len(valid)
+    return path, len(train), len(valid), has_valid_split
 
 
 def _print_plan(args, out, train, valid):
@@ -320,9 +354,45 @@ def _train(args, model, data, out):
         )
 
 
+def _recover_output(out):
+    try:
+        numbered = sorted(
+            (path for path in out.iterdir() if _NUMBERED_ADAPTER.fullmatch(path.name)),
+            key=lambda path: int(path.name.split("_", 1)[0]),
+            reverse=True,
+        )
+        for checkpoint in (out / "adapters.safetensors", *numbered):
+            if not checkpoint.is_file():
+                continue
+            try:
+                with safe_open(str(checkpoint), framework="np") as weights:
+                    if not weights.keys():
+                        continue
+            except SafetensorError:
+                continue
+            retry = shlex.join(["--resume", str(checkpoint), "--out", f"{out}-retry"])
+            print(
+                f"Saved adapter weights are available. Retry with the same model, data "
+                f"and training options, replacing --resume and --out with {retry}. "
+                "Choose a fresh --out path if that directory exists.",
+                file=sys.stderr,
+            )
+            return
+        shutil.rmtree(out)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(
+            f"Could not clean up {out}: {exc}. Retry with a fresh --out directory.",
+            file=sys.stderr,
+        )
+
+
 def finetune_command(args):
     started = time.monotonic()
     train = valid = 0
+    has_valid_split = False
+    created_out = None
     status = "err"
     try:
         if (
@@ -361,7 +431,7 @@ def finetune_command(args):
         default = f"~/.rapid-mlx/adapters/{Path(reference).name}-{stamp}"
         out = Path(args.out or default).expanduser().absolute()
         with tempfile.TemporaryDirectory(prefix="rapid-mlx-finetune-") as scratch:
-            data, train, valid = _prepare_data(
+            data, train, valid, has_valid_split = _prepare_data(
                 Path(args.data).expanduser(), scratch, args.batch_size
             )
             if args.iters is None:
@@ -375,7 +445,12 @@ def finetune_command(args):
                 )
             _print_plan(args, out, train, valid)
             model = _training_model(args.model, reference)
-            out.mkdir(parents=True, exist_ok=False)
+            try:
+                out.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                print("Fine-tuning error: use a new --out directory.", file=sys.stderr)
+                return 1
+            created_out = out
             _train(args, model, data, out)
             metadata = read_model_metadata(model)
             config = (metadata.config or {}) if metadata else {}
@@ -399,22 +474,18 @@ def finetune_command(args):
         return 0
     except KeyboardInterrupt:
         status = "abort"
-        print(
-            "Fine-tuning aborted. The adapter directory may hold an incomplete checkpoint.",
-            file=sys.stderr,
-        )
+        print("Fine-tuning aborted.", file=sys.stderr)
         return 130
     except MemoryError:
         status = "oom"
         print(f"Fine-tuning ran out of memory. {_MEMORY_TIP}", file=sys.stderr)
         return 1
-    except FileExistsError:
-        print("Fine-tuning error: use a new --out directory.", file=sys.stderr)
-        return 1
     except Exception as exc:
         print(f"Fine-tuning error: {exc}", file=sys.stderr)
         return 1
     finally:
+        if created_out is not None and status != "ok":
+            _recover_output(created_out)
         elapsed = time.monotonic() - started
         rows = train + valid
         duration = "<1m" if elapsed < 60 else "1-5m" if elapsed < 300 else "5m+"
@@ -425,6 +496,6 @@ def finetune_command(args):
                 "cmd_status": status,
                 "duration_bucket": duration,
                 "rows_bucket": "1000+" if rows >= 1000 else rows_bucket,
-                "has_valid_split": bool(valid),
+                "has_valid_split": has_valid_split,
             },
         )
