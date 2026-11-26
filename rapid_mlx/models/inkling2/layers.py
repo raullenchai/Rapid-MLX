@@ -37,6 +37,7 @@ from rapid_mlx.models.inkling2.kernels import (
     route_weights_decode,
     short_convolution_decode,
 )
+from rapid_mlx.models.inkling2.visit_norm import visit_norm_decode
 
 __all__ = [
     "Attention",
@@ -101,6 +102,7 @@ _FAST_DECODE_FEATURES = {
     "MESSAGE_NORM": True,
     "ROUTE_TOPK": True,
     "EXPERT_CONV_RESIDUAL": True,
+    "VISIT_NORM": True,
 }
 
 
@@ -1122,12 +1124,29 @@ class DecoderLayer(nn.Module):
             list(conv.cache) if conv is not None else [None] * 4
         )
         block_residual = hidden_states
-        normed_residual = unweighted_rms_norm(block_residual.astype(mx.float32))
-
-        attention_inputs = None
-        if self.attention_input is not None:
-            assert block_states is not None
-            attention_inputs = self.attention_input(block_states, normed_residual)
+        visit = None
+        if (
+            cached_decode
+            and self.attention_input is not None
+            and block_states is not None
+            and _fast_decode_enabled("VISIT_NORM")
+            and _use_kernels()
+        ):
+            visit = visit_norm_decode(
+                block_states,
+                block_residual,
+                self.attention_input.query.reshape(-1, block_residual.shape[-1]),
+                append_block=self.is_block_boundary,
+            )
+        if visit is not None:
+            attention_inputs, normed_residual, residual_fp32 = visit
+        else:
+            residual_fp32 = block_residual.astype(mx.float32)
+            normed_residual = unweighted_rms_norm(residual_fp32)
+            attention_inputs = None
+            if self.attention_input is not None:
+                assert block_states is not None
+                attention_inputs = self.attention_input(block_states, normed_residual)
         hidden_states = self._self_attention(
             hidden_states, attention_inputs, cache, conv_states, conv_mask, messages
         )
@@ -1140,13 +1159,16 @@ class DecoderLayer(nn.Module):
 
         residual = hidden_states = hidden_states.astype(mx.float32)
         if self.is_block_boundary:
-            block = normed_residual[None]
-            if block_states is None:
-                block_states = block
+            if visit is not None:
+                block_states = normed_residual
             else:
-                block_states = mx.concatenate([block_states, block])
+                block = normed_residual[None]
+                if block_states is None:
+                    block_states = block
+                else:
+                    block_states = mx.concatenate([block_states, block])
         else:
-            residual = hidden_states = block_residual.astype(mx.float32) + hidden_states
+            residual = hidden_states = residual_fp32 + hidden_states
 
         assert block_states is not None
         mlp_input = self._mlp_states(
