@@ -589,7 +589,7 @@ def finetune_command(args):
                 atomic_write_json(
                     sidecar,
                     {
-                        "base_model": model if local else args.model,
+                        "base_model": serve_model,
                         "quantization_bits": quant.get("bits"),
                         "adapter_type": "lora",
                         "num_layers": args.num_layers,

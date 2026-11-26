@@ -5,6 +5,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -213,6 +214,8 @@ def test_bad_row(tmp_path, row):
 @pytest.mark.parametrize(
     ("fields", "error"),
     [
+        ({"role": 123, "content": "hello"}, "string role"),
+        ({"content": 123}, "content must be a string or a list"),
         ({"tool_calls": "invalid"}, "tool_calls"),
         ({"content": "hello", "tool_calls": "invalid"}, "tool_calls"),
         ({"tool_calls": []}, "tool_calls"),
@@ -298,6 +301,32 @@ def test_preflight_error(tmp_path, monkeypatch, capsys, overrides, error):
     event, props = track.call_args.args
     assert validate(event, props) == props
     assert list(props.values()) == ["err", "<1m", "0", False]
+
+
+@pytest.mark.parametrize(
+    ("model_ref", "error"),
+    [
+        ("local", "missing or invalid config.json"),
+        ("flux3-klein", "supports text models only"),
+    ],
+)
+def test_model_preflight_error(tmp_path, monkeypatch, capsys, model_ref, error):
+    model = tmp_path / "model"
+    model.mkdir()
+    out = tmp_path / "adapter"
+    args = cli.build_parser().parse_args(
+        [
+            "finetune",
+            str(model) if model_ref == "local" else model_ref,
+            "--data=unused.jsonl",
+            f"--out={out}",
+        ]
+    )
+    monkeypatch.setattr(ft, "track", MagicMock())
+    assert ft.finetune_command(args) == 1
+    stderr = capsys.readouterr().err
+    assert "Cannot fine-tune" in stderr and error in stderr
+    assert not out.exists()
 
 
 @pytest.mark.parametrize(
@@ -562,20 +591,32 @@ def test_resume_rejected_before_launch(
     launch.assert_not_called()
 
 
-def test_output_collision(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("late_collision", [False, True])
+def test_output_collision(tmp_path, monkeypatch, capsys, late_collision):
     monkeypatch.setattr(ft, "_print_plan", MagicMock())
     monkeypatch.setattr(ft.model_downloads, "disabled", lambda: False)
     for split in ("train", "valid"):
         (tmp_path / f"{split}.jsonl").write_text('{"text":"example"}')
+    (tmp_path / "config.json").write_text('{"model_type":"qwen3"}')
     assert ft._training_model(str(tmp_path), REPO) == str(tmp_path)
     out = tmp_path / "existing"
-    out.mkdir()
     owned = out / "user-file"
-    owned.write_text("keep me")
+
+    def create_user_output(*_args):
+        out.mkdir()
+        owned.write_text("keep me")
+
+    if late_collision:
+        monkeypatch.setattr(ft, "_print_plan", create_user_output)
+    else:
+        create_user_output()
+    train = MagicMock()
+    monkeypatch.setattr(ft, "_train", train)
+    monkeypatch.setattr(ft, "track", MagicMock())
     args = cli.build_parser().parse_args(
         [
             "finetune",
-            "test-org/test-repo",
+            str(tmp_path),
             f"--data={tmp_path}",
             f"--out={out}",
             "--batch-size=1",
@@ -584,6 +625,7 @@ def test_output_collision(tmp_path, monkeypatch, capsys):
     assert ft.finetune_command(args) == 1
     assert "use a new --out directory" in capsys.readouterr().err
     assert owned.read_text() == "keep me"
+    train.assert_not_called()
 
 
 def test_resume_rejects_different_snapshot_of_same_repo(tmp_path, monkeypatch):
@@ -645,7 +687,8 @@ def test_failed_output_can_be_retried(
             (out / "user-file").write_text("keep me")
             (out / ft.ADAPTER_METADATA).write_text("user-owned sidecar")
             (out / "adapters.safetensors").write_bytes(b"truncated")
-            (out / "0000100_adapters.safetensors").write_bytes(b"truncated")
+            (out / "0000100_adapters.safetensors").symlink_to(out / "user-file")
+            (out / "0000200_adapters.safetensors").write_bytes(b"truncated")
         if failure == "train" and checkpoint:
             (out / "adapters.safetensors").rename(saved)
         if failure in {"train", "user-file"}:
@@ -680,12 +723,17 @@ def test_failed_output_can_be_retried(
         argv = [*argv, f"--out={retry_out}", f"--resume={saved}"]
     if failure == "user-file":
         assert {path.name for path in out.iterdir()} == {
+            "0000100_adapters.safetensors",
             "user-file",
             ft.ADAPTER_METADATA,
         }
         assert (out / "user-file").read_text() == "keep me"
         assert (out / ft.ADAPTER_METADATA).read_text() == "user-owned sidecar"
-        assert f"Kept {ft.ADAPTER_METADATA!r}, 'user-file'" in stderr
+        assert (out / "0000100_adapters.safetensors").is_symlink()
+        assert (
+            f"Kept '0000100_adapters.safetensors', {ft.ADAPTER_METADATA!r}, 'user-file'"
+            in stderr
+        )
         assert "Retry with a fresh --out directory" in stderr
         argv = [*argv, f"--out={out}-retry"]
     if failure == "collision":
@@ -699,11 +747,36 @@ def test_failed_output_can_be_retried(
     assert ft.finetune_command(parser.parse_args(argv)) == 0
 
 
+@pytest.mark.parametrize("removed", [False, True])
+def test_recover_output_rmdir_failure(tmp_path, monkeypatch, capsys, removed):
+    out = tmp_path / "adapter"
+    out.mkdir()
+    rmdir = Path.rmdir
+
+    def blocked_rmdir(path):
+        assert path == out
+        if removed:
+            rmdir(path)
+            rmdir(path)
+        raise PermissionError("output directory cannot be removed")
+
+    monkeypatch.setattr(Path, "rmdir", blocked_rmdir)
+    ft._recover_output(out, "unused", 16, None)
+    stderr = capsys.readouterr().err
+    if removed:
+        assert stderr == ""
+        assert not out.exists()
+    else:
+        assert f"Could not clean up {out}." in stderr
+        assert out.is_dir()
+
+
 @pytest.mark.parametrize(
     ("artifact", "error"),
     [
         ("missing", "missing required file"),
         ("missing config", "adapter_config.json"),
+        ("missing layers", "must declare the trained num_layers"),
         ("truncated", "safetensors"),
         ("empty", "non-empty LoRA tensor pairs"),
         ("unrelated tensor", "invalid LoRA tensor"),
@@ -733,6 +806,10 @@ def test_zero_exit_requires_usable_adapter(
         config = out / "adapter_config.json"
         if artifact == "missing config":
             config.unlink()
+        elif artifact == "missing layers":
+            params = json.loads(config.read_text())
+            del params["num_layers"]
+            config.write_text(json.dumps(params))
         elif artifact == "truncated":
             weights.write_bytes(b"truncated")
         elif artifact == "empty":
@@ -763,14 +840,26 @@ def test_zero_exit_requires_usable_adapter(
     assert track.call_args.args[1]["cmd_status"] == "err"
 
 
-@pytest.mark.parametrize("revision", [None, "a" * 40])
-def test_cached_subfolder_used_for_preflight_and_training(
-    tmp_path, monkeypatch, revision
+@pytest.mark.parametrize(
+    ("model_ref", "pinned", "subfolder"),
+    [
+        ("alias", False, None),
+        ("repo", False, None),
+        ("repo", True, None),
+        ("alias", True, None),
+        ("alias", False, "4bit"),
+        ("alias", True, "4bit"),
+        ("local", False, None),
+    ],
+)
+def test_printed_serve_command_accepts_trained_adapter(
+    tmp_path, monkeypatch, capsys, model_ref, pinned, subfolder
 ):
-    alias = "test-subfolder"
+    alias = "test-alias"
     repo = "test-org/test-repo"
+    sha = "a" * 40
     profile = model_aliases.AliasProfile(
-        hf_path=repo, revision=revision, subfolder="4bit"
+        hf_path=repo, revision=sha if pinned else None, subfolder=subfolder
     )
     monkeypatch.setattr(model_aliases, "_aliases", {alias: profile})
     monkeypatch.setattr(model_aliases, "_hf_to_alias", {repo.lower(): alias})
@@ -779,7 +868,11 @@ def test_cached_subfolder_used_for_preflight_and_training(
     repo_root = tmp_path / "models--test-org--test-repo"
     (repo_root / "refs").mkdir(parents=True)
     (repo_root / "refs" / "main").write_text("b" * 40)
-    checkpoint = repo_root / "snapshots" / (revision or "a" * 40) / "4bit"
+    checkpoint = (
+        tmp_path / "local"
+        if model_ref == "local"
+        else repo_root / "snapshots" / sha / (subfolder or "")
+    )
     checkpoint.mkdir(parents=True)
     (checkpoint / "config.json").write_text('{"model_type":"qwen3"}')
     (checkpoint / "model.safetensors").write_bytes(b"weights")
@@ -790,8 +883,36 @@ def test_cached_subfolder_used_for_preflight_and_training(
             MagicMock(side_effect=AssertionError("expected a cache hit")),
         )
 
-    ft._check_checkpoint(repo, alias)
-    assert ft._training_model(repo, alias) == str(checkpoint)
+    model = {"alias": alias, "repo": repo, "local": str(checkpoint)}[model_ref]
+    data = tmp_path / "data.jsonl"
+    data.write_text('{"text":"example"}\n' * 2)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        ft, "datetime", SimpleNamespace(now=lambda: datetime(2026, 11, 26, 1, 2, 3))
+    )
+    monkeypatch.setattr(ft, "version", lambda _: "0.31.3")
+    monkeypatch.setattr(ft, "track", MagicMock())
+    train = MagicMock(side_effect=_save_adapter)
+    monkeypatch.setattr(ft, "_train", train)
+    args = cli.build_parser().parse_args(
+        ["finetune", model, f"--data={data}", "--batch-size=1"]
+    )
+    assert ft.finetune_command(args) == 0
+    out = tmp_path / ".rapid-mlx" / "adapters" / f"{Path(model).name}-20261126-010203"
+    serve = shlex.split(capsys.readouterr().out.splitlines()[-1])
+    assert serve == [
+        "rapid-mlx",
+        "serve",
+        model if pinned else str(checkpoint),
+        "--adapter",
+        str(out),
+    ]
+    assert train.call_args.args[1] == str(checkpoint)
+    assert validate_adapter(serve[4], serve[2]).path == str(out)
+    assert validate_adapter(
+        serve[4], model_aliases.resolve_model(serve[2])
+    ).path == str(out)
+    assert json.loads((out / ft.ADAPTER_METADATA).read_text())["base_model"] == serve[2]
 
 
 def test_materialized_checkpoint_is_checked_before_launch(
