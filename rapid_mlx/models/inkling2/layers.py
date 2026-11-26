@@ -448,9 +448,10 @@ def _decode_attention_bias(position_bias, distance, visible, extent):
 def _packed_quantized_projections(owner, name, projections, x):
     """Pack once after loading; parameter slices share the packed allocation.
 
-    Packing construction/evaluation and matmul invocation failures return None.
-    Real lazy matmul output evaluation is intentionally not wrapped: decode
-    evaluates asynchronously.
+    Each pack variant gets a one-time evaluated matmul probe before publication.
+    Construction/probe failures disable the pack; guarded real invocations return
+    None on synchronous failure. Real lazy outputs are not evaluated or wrapped:
+    later asynchronous evaluation failures are not covered by this fallback.
     """
     if any(type(p) is not nn.QuantizedLinear or "bias" in p for p in projections):
         return None
@@ -488,6 +489,18 @@ def _packed_quantized_projections(owner, name, projections, x):
                     for f in fields
                 }
                 mx.eval(*packed.values())
+                mx.eval(
+                    mx.quantized_matmul(
+                        mx.zeros((1, 1, x.shape[-1]), dtype=x.dtype),
+                        packed["weight"],
+                        scales=packed["scales"],
+                        biases=packed.get("biases"),
+                        transpose=True,
+                        group_size=config[0],
+                        bits=config[1],
+                        mode=config[2],
+                    )
+                )
                 ends = []
                 start = 0
                 replacements = []

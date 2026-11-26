@@ -78,7 +78,7 @@ CONFIG["text_config"]["loop_config"] = {
 # .coveragerc. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "fccca19798afdfd9c1416a9b423a815d500acca064c1d1b3b8d1afdd98067d19",
+    "layers.py": "1349f130e6506bd3f344ef95443b3900f50b308ab4bf54b8534a69fd61b821a6",
     "kernels.py": "1421bed51f55c18b85cf9b79695819a7c09c2fb64dd1d6552a2a95e2c06c52b6",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
@@ -1206,12 +1206,12 @@ def test_packed_quantized_projections_exact(
 
     mx, _ = metal_runtime
 
-    def packed_call(owner, projections, x):
+    def packed_call(owner, projections, x, *, launches=2):
         with monkeypatch.context() as m:
             launch = Mock(wraps=mx.quantized_matmul)
             m.setattr(mx, "quantized_matmul", launch)
             output = _packed_quantized_projections(owner, "query", projections, x)
-            launch.assert_called_once()
+            assert launch.call_count == launches
             assert output is not None
             return output
 
@@ -1238,7 +1238,7 @@ def test_packed_quantized_projections_exact(
         mx.synchronize()
         before = mx.get_active_memory()
         packed = owner._decode_pack_query
-        actual = packed_call(owner, projections, x)
+        actual = packed_call(owner, projections, x, launches=1)
         mx.eval(actual)
         del actual
         gc.collect()
@@ -1271,7 +1271,7 @@ def test_packed_projection_fallbacks(metal_runtime, monkeypatch, failure):
     mx.eval(expected)
     with monkeypatch.context() as m:
         target = "concatenate" if failure == "concatenate" else "eval"
-        failure_at = 2 if failure == "second_eval" else 1
+        failure_at = 3 if failure == "second_eval" else 1
         evaluate = Mock(
             wraps=getattr(mx, target),
             side_effect=[DEFAULT] * (failure_at - 1) + [RuntimeError("packing failed")],
@@ -1333,6 +1333,7 @@ def test_packed_projection_invocation_failure(metal_runtime, monkeypatch):
     x = mx.ones((1, 1, 64))
     expected = [p(x) for p in projections]
     mx.eval(expected)
+    assert _packed_quantized_projections(owner, "query", projections, x) is not None
     with monkeypatch.context() as m:
         invoke = Mock(side_effect=RuntimeError("invocation failed"))
         m.setattr(mx, "quantized_matmul", invoke)
@@ -1949,3 +1950,338 @@ mx.save(sys.argv[2], model(mx.array([[1, 2, 3]])))
     assert mx.allclose(
         source(mx.array([[1, 2, 3]])), mx.load(str(output)), atol=1e-4
     ).item()
+
+
+@pytest.fixture
+def projection_cpu(glue_loader, monkeypatch):
+    """Load the real layer code with NumPy projections and inert kernel imports."""
+
+    class Module(dict):
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError:
+                raise AttributeError(name) from None
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    class QuantizedLinear(Module):
+        def __init__(self, width=4, size=2, *, biases=True):
+            super().__init__()
+            self.group_size, self.bits, self.mode = 4, 4, "affine"
+            self.weight = np.arange(size * width, dtype=np.float32).reshape(size, width)
+            self.scales = np.ones((size, 1), dtype=np.float32)
+            if biases:
+                self.biases = np.zeros((size, 1), dtype=np.float32)
+            self.calls = Mock()
+
+        def __call__(self, x):
+            self.calls(x)
+            return x @ self.weight.T
+
+    nn = SimpleNamespace(
+        Module=Module,
+        QuantizedLinear=QuantizedLinear,
+        Linear=lambda width, size, **kw: QuantizedLinear(width, size),
+        Conv1d=Mock(),
+    )
+    glue_loader.module("mlx.nn", **vars(nn))
+    monkeypatch.setattr(sys.modules["mlx"], "nn", nn)
+    glue_loader.module("mlx.nn.layers", __path__=[])
+    glue_loader.module("mlx.nn.layers.distributed", sum_gradients=lambda x: x)
+    glue_loader.module(
+        "mlx_lm.models.cache",
+        RotatingKVCache=type("Ring", (), {}),
+        BatchRotatingKVCache=type("BatchRing", (), {}),
+    )
+    glue_loader.module(
+        "rapid_mlx.models.inkling2.compat",
+        SwitchLinear=Module,
+        _gather_sort=Mock(),
+        _scatter_unsort=Mock(),
+        expert_routing=None,
+        scalar=lambda x, *a: np.asarray(x),
+    )
+    glue_loader.module("rapid_mlx.models.inkling2.config", TextArgs=object)
+    kernels = glue_loader.module(
+        "rapid_mlx.models.inkling2.kernels",
+        **{
+            name: Mock()
+            for name in (
+                "attention_mask_decode",
+                "depth_attention",
+                "message_mix_decode",
+                "relative_attention",
+                "route_topk_decode",
+                "route_weights_decode",
+                "short_convolution_decode",
+            )
+        },
+    )
+    mx = glue_loader.mx
+    for name in (
+        "zeros",
+        "ones",
+        "zeros_like",
+        "stack",
+        "log",
+        "maximum",
+        "arange",
+        "int32",
+    ):
+        monkeypatch.setattr(mx, name, getattr(np, name), raising=False)
+    monkeypatch.setattr(
+        mx, "split", lambda x, ends, axis: np.split(x, ends, axis), raising=False
+    )
+    monkeypatch.setattr(mx, "compile", lambda fn, **kw: fn, raising=False)
+    monkeypatch.setattr(
+        mx,
+        "quantized_matmul",
+        Mock(side_effect=lambda x, w, **kw: x @ w.T),
+        raising=False,
+    )
+    layers = glue_loader.load("layers")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    monkeypatch.setattr(layers, "_fast_decode_enabled", lambda: True)
+
+    def attention(dynamic=False):
+        cls = layers.FullAttention if dynamic else layers.SlidingAttention
+        attn = cls(SimpleNamespace(**CONFIG["text_config"]))
+        for name in ("q", "k", "v", "r", "gate", "sink"):
+            setattr(attn, name + "_proj", QuantizedLinear())
+        for name in ("k_sconv", "v_sconv"):
+            conv = (
+                layers.DynamicShortConvolution.__new__(layers.DynamicShortConvolution)
+                if dynamic
+                else Mock()
+            )
+            if dynamic:
+                conv.weight_proj = QuantizedLinear()
+            setattr(attn, name, conv)
+        return attn
+
+    return SimpleNamespace(
+        layers=layers, mx=mx, nn=nn, attention=attention, kernels=kernels
+    )
+
+
+@pytest.mark.parametrize("biases", [False, True])
+def test_packed_projection_cpu_reuse_and_replacement(projection_cpu, biases):
+    cpu = projection_cpu
+    owner = cpu.nn.Module()
+    projections = [cpu.nn.QuantizedLinear(biases=biases) for _ in range(2)]
+    x = np.ones((1, 1, 4), dtype=np.float32)
+    pack = cpu.layers._packed_quantized_projections
+    for step in range(3):
+        if step == 2:
+            projections[0].weight = projections[0].weight + 1
+        expected = [p(x) for p in projections]
+        actual = pack(owner, "test", projections, x)
+        assert actual is not None
+        for a, e in zip(actual, expected):
+            np.testing.assert_array_equal(a, e)
+        assert cpu.mx.quantized_matmul.call_count == (2, 3, 5)[step]
+        assert cpu.mx.eval.call_count == (3, 3, 6)[step]
+    for p in projections:
+        assert np.shares_memory(p.weight, owner._decode_pack_test[2]["weight"])
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["construction", "probe_invocation", "probe_evaluation", "slices", "invocation"],
+)
+def test_packed_projection_cpu_failure_decode(projection_cpu, monkeypatch, failure):
+    cpu = projection_cpu
+    attn = cpu.attention()
+    x = np.ones((1, 1, 4), dtype=np.float32)
+    cache = [SimpleNamespace(offset=2)]
+    pending = object()
+    real_eval = cpu.mx.eval
+    real_launch = cpu.mx.quantized_matmul
+    originals = [attn.q_proj.weight, attn.k_proj.weight]
+    if failure == "invocation":
+        attn._project_inputs(x, x, x, cache)
+        cpu.mx.quantized_matmul.reset_mock()
+    for name in ("q", "k", "v", "r", "gate", "sink"):
+        getattr(attn, name + "_proj").calls.reset_mock()
+    attempts = Mock()
+
+    def evaluate(*arrays):
+        if any(a is pending for a in arrays):
+            attempts("probe_evaluation")
+            raise RuntimeError("lazy packed output failed during probe")
+        if failure == "slices" and len(arrays) == 1 and isinstance(arrays[0], list):
+            raise RuntimeError("slice evaluation failed")
+        return real_eval(*arrays)
+
+    def launch(*args, **kwargs):
+        attempts("launch")
+        if failure in ("probe_invocation", "invocation"):
+            raise RuntimeError("packed invocation failed")
+        return (
+            pending if failure == "probe_evaluation" else real_launch(*args, **kwargs)
+        )
+
+    if failure == "construction":
+        monkeypatch.setattr(
+            cpu.mx,
+            "concatenate",
+            Mock(side_effect=RuntimeError("pack construction failed")),
+        )
+    monkeypatch.setattr(cpu.mx, "quantized_matmul", launch)
+    monkeypatch.setattr(cpu.mx, "eval", evaluate)
+    for _ in range(2):
+        q, k, v, r, gates, kw, vw = attn._project_inputs(x, x, x, cache)
+        for name, actual in (("q", q), ("k", k), ("v", v), ("r", r)):
+            projection = getattr(attn, name + "_proj")
+            np.testing.assert_array_equal(actual, x @ projection.weight.T)
+            assert projection.calls.call_count > 0  # Unpacked projections ran.
+        assert gates == [] and kw is vw is None
+    if failure != "invocation":
+        assert attn._decode_pack_query is False and attn._decode_pack_kv is False
+        assert attn.q_proj.weight is originals[0] and attn.k_proj.weight is originals[1]
+    if failure == "probe_evaluation":
+        assert [c.args[0] for c in attempts.call_args_list] == [
+            "launch",
+            "probe_evaluation",
+        ] * 2
+    if failure == "construction":
+        assert attempts.call_count == 0
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_projection_cpu_attention_paths(projection_cpu, monkeypatch, dynamic):
+    cpu = projection_cpu
+    attn = cpu.attention(dynamic)
+    x = np.ones((1, 1, 4), dtype=np.float32)
+    cache = [SimpleNamespace(offset=2), SimpleNamespace(lengths=None)]
+    expected = [getattr(attn, n + "_proj")(x) for n in ("q", "k", "v", "r")]
+    for n in ("q", "k", "v", "r", "gate", "sink"):
+        getattr(attn, n + "_proj").calls.reset_mock()
+    actual = attn._project_inputs(x, x, x, cache)
+    for a, e in zip(actual[:4], expected):
+        np.testing.assert_array_equal(a, e)
+    assert len(actual[4]) == 2
+    for n in ("q", "k", "v", "r", "gate", "sink"):
+        getattr(attn, n + "_proj").calls.assert_not_called()
+    assert cpu.mx.quantized_matmul.call_count == (6 if dynamic else 4)
+    if dynamic:
+        assert actual[5] is not None and actual[6] is not None
+    for name in ("k_sconv", "v_sconv"):
+        setattr(attn, name, Mock(side_effect=lambda h, *a, **kw: (h, h)))
+    object.__setattr__(attn, "_attend", Mock(return_value=x))
+    attn.log_scaling_n_floor, attn.log_scaling_alpha = 4, 0.1
+    for length in (1, 2):
+        h = np.ones((1, length, 4), dtype=np.float32)
+        assert attn(h, h, h, cache=cache, conv_states=[None, None], conv_mask=None) is x
+        assert len(attn._attend.call_args.kwargs["gate_sinks"]) == (
+            2 if length == 1 else 0
+        )
+
+
+@pytest.mark.parametrize("dynamic", [None, "provided"])
+@pytest.mark.parametrize("fast", [False, True])
+def test_projection_cpu_dynamic_convolution(projection_cpu, monkeypatch, dynamic, fast):
+    cpu = projection_cpu
+    layer = cpu.layers.DynamicShortConvolution.__new__(
+        cpu.layers.DynamicShortConvolution
+    )
+    layer.kernel_size, layer.num_heads = 2, 1
+    layer.static_weight = np.zeros((2, 2), dtype=np.float32)
+    layer.weight_proj = Mock(return_value=np.ones((1, 1, 2), dtype=np.float32))
+    monkeypatch.setattr(cpu.layers, "_use_kernels", lambda: fast)
+    x = np.ones((1, 1, 2), dtype=np.float32)
+    supplied = None if dynamic is None else np.ones((1, 1, 2), dtype=np.float32)
+    layer(x, x, None, None, dynamic=supplied)
+    assert layer.weight_proj.call_count == (1 if supplied is None else 0)
+    assert cpu.kernels.short_convolution_decode.call_count == int(fast)
+    if fast:
+        np.testing.assert_array_equal(
+            cpu.kernels.short_convolution_decode.call_args.kwargs["dynamic"],
+            np.ones_like(x),
+        )
+
+
+def test_projection_cpu_guards_and_lock_recheck(projection_cpu, monkeypatch):
+    cpu = projection_cpu
+    x = np.ones((1, 1, 4), dtype=np.float32)
+    pack = cpu.layers._packed_quantized_projections
+    p, q = [cpu.nn.QuantizedLinear() for _ in range(2)]
+    for field, invalid in (
+        ("bits", 8),
+        ("biases", None),
+        ("scales", np.ones((2, 0))),
+        ("scales", q.scales.astype(np.float16)),
+        ("bias", np.zeros(2)),
+    ):
+        with monkeypatch.context() as patch:
+            patch.setitem(q, field, invalid)
+            assert pack(cpu.nn.Module(), "test", (p, q), x) is None
+    assert pack(cpu.nn.Module(), "test", (p, Mock()), x) is None
+    cpu.mx.quantized_matmul.assert_not_called()
+    # Simulate another caller publishing while this caller waits for the lock.
+    owner = cpu.nn.Module()
+
+    class RacingLock:
+        def __enter__(self):
+            object.__setattr__(owner, "_decode_pack_test", False)
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(cpu.layers, "_DECODE_PACK_LOCK", RacingLock())
+    assert pack(owner, "test", (p, q), x) is None
+    cpu.mx.quantized_matmul.assert_not_called()
+    spy = Mock(side_effect=AssertionError("excluded packed path"))
+    monkeypatch.setattr(cpu.layers, "_packed_quantized_projections", spy)
+    attn = cpu.attention()
+    for batch, length, cache, enabled, gpu in (
+        (1, 2, [SimpleNamespace(offset=2)], True, True),
+        (2, 1, [SimpleNamespace(offset=2)], True, True),
+        (1, 1, None, True, True),
+        (1, 1, [None], True, True),
+        (1, 1, [SimpleNamespace(offset=0)], True, True),
+        (1, 1, [SimpleNamespace(offset=2)], False, True),
+        (1, 1, [SimpleNamespace(offset=2)], True, False),
+    ):
+        monkeypatch.setattr(
+            cpu.layers, "_fast_decode_enabled", lambda enabled=enabled: enabled
+        )
+        monkeypatch.setattr(cpu.layers, "_use_kernels", lambda gpu=gpu: gpu)
+        h = np.ones((batch, length, 4), dtype=np.float32)
+        attn._project_inputs(h, h, h, cache)
+    spy.assert_not_called()
+    monkeypatch.setattr(cpu.layers, "_fast_decode_enabled", lambda: True)
+    monkeypatch.setattr(cpu.layers, "_use_kernels", lambda: True)
+    spy.side_effect, spy.return_value = None, None
+    attn._project_inputs(x, x, x + 1, [SimpleNamespace(offset=2)])
+    assert [c.args[1] for c in spy.call_args_list] == ["query"]
+
+
+@pytest.mark.parametrize("provided", [False, True])
+def test_projection_cpu_attend_gate_sinks(projection_cpu, monkeypatch, provided):
+    cpu = projection_cpu
+    attn = cpu.attention()
+    attn.num_heads = attn.num_key_value_heads = 1
+    attn.eps = 1e-6
+    for name in ("q_l2_clip", "k_l2_clip", "rel_l2_clip", "rel_logits_proj", "o_proj"):
+        setattr(attn, name, lambda x: x)
+    monkeypatch.setattr(cpu.layers, "_value_norm", lambda x, eps: x)
+    monkeypatch.setattr(cpu.layers, "_gate_attention", lambda x, gate: x + gate)
+    object.__setattr__(
+        attn, "_attention", Mock(side_effect=lambda q, *a: q.transpose(0, 2, 1, 3))
+    )
+    x = np.ones((1, 1, 4), dtype=np.float32)
+    gates = (attn.gate_proj(x), attn.sink_proj(x)) if provided else None
+    attn.gate_proj.calls.reset_mock()
+    attn.sink_proj.calls.reset_mock()
+    result = attn._attend(
+        x, x[..., :2], x[..., :2], x[..., :2], x[..., :2], None, gate_sinks=gates
+    )
+    np.testing.assert_array_equal(result, x[..., :2] + x @ attn.gate_proj.weight.T)
+    assert (
+        attn.gate_proj.calls.call_count
+        == attn.sink_proj.calls.call_count
+        == int(not provided)
+    )
