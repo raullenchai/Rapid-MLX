@@ -79,8 +79,8 @@ CONFIG["text_config"]["loop_config"] = {
 # decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "7fd850db9e407c4bcac5305a1bdbee48f7276a56ec63135f54b1d717e86698ad",
-    "kernels.py": "a35df502ec1a85cd3961f99b1b09dbae0978ebc7e176ff35ce6eb6160c614897",
+    "layers.py": "a0519e11bec89c1c6df4edbce9cc401c295c95cdb6b51ed207d6318830b70b50",
+    "kernels.py": "4812f734b49c9165cfbae48f4a4e45e4b5ce9ffb8245051e09a15a256cf7dee5",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -3515,6 +3515,7 @@ def projection_cpu(glue_loader, monkeypatch):
             name: Mock()
             for name in (
                 "_expert_conv_residual_ready",
+                "attend_clip_decode",
                 "expert_conv_residual_decode",
                 "attention_mask_decode",
                 "depth_attention",
@@ -3840,3 +3841,540 @@ def test_router_shared_decode_switch(projection_cpu, monkeypatch):
     assert not cpu.layers._fast_decode_enabled()
     fallback.assert_called_once()
     forbidden.assert_not_called()
+
+
+@pytest.fixture
+def attend_cpu(message_cpu, monkeypatch):
+    mx, kernels, layers = message_cpu
+    for name in ("sqrt", "minimum"):
+        monkeypatch.setattr(mx, name, getattr(np, name), raising=False)
+    return mx, kernels, layers
+
+
+def _attend_args(mx, dk=16, dr=4, dtype=None, tau=True):
+    dtype = mx.float32 if dtype is None else dtype
+    return [
+        mx.ones((1, 1, 4, dk), dtype=dtype),
+        mx.ones((1, 1, 2, dk), dtype=dtype),
+        mx.ones((1, 1, 4, dr), dtype=dtype),
+        mx.ones((4, dk)),
+        mx.ones((4, dr)),
+        3.0,
+        2.0,
+        mx.ones((1,)) if tau else None,
+    ]
+
+
+@pytest.mark.parametrize("tau", [False, True])
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "call"]
+)
+def test_attend_clip_cpu_failures(attend_cpu, monkeypatch, tau, failure):
+    mx, kernels, layers = attend_cpu
+    args = _attend_args(mx, tau=tau)
+    probe = [object(), object(), object()]
+    events = []
+
+    def launch(**kw):
+        events.append("launch")
+        if len(events) == 1:
+            if failure == "probe":
+                raise RuntimeError("probe invocation")
+            return probe
+        if failure == "call":
+            raise RuntimeError("real invocation")
+        q, k, r, qs, rs, qt, rt, t = kw["inputs"]
+        out = [
+            layers._l2_clip(x, s, threshold)
+            for x, s, threshold in ((q, qs, qt), (k, 1.0, qt), (r, rs, rt))
+        ]
+        if tau:
+            out[0], out[2] = [layers._scale_states(out[i], t) for i in (0, 2)]
+        return out
+
+    def evaluate(*outputs):
+        assert outputs == tuple(probe)
+        events.append("evaluate")
+        if failure == "evaluation":
+            raise RuntimeError("lazy compilation")
+
+    factory = Mock(
+        side_effect=RuntimeError("construction") if failure == "construction" else None,
+        return_value=launch,
+    )
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    mx.eval.side_effect = evaluate
+    for _ in range(2):
+        actual = kernels.attend_clip_decode(*args, row_contiguous=True)
+        if failure:
+            assert actual is None
+        else:
+            assert actual is not None
+            np.testing.assert_array_equal(
+                actual[0], layers._l2_clip(args[0], args[3], 3)
+            )
+    factory.assert_called_once()
+    assert factory.call_args.kwargs["ensure_row_contiguous"] is True
+    assert "_strides" not in factory.call_args.kwargs["source"]
+    if failure == "construction":
+        assert events == []
+    elif failure == "probe":
+        assert events == ["launch"]
+    elif failure == "evaluation":
+        assert events == ["launch", "evaluate"]
+    elif failure == "call":
+        assert events == ["launch", "evaluate", "launch"]
+    else:
+        assert events == ["launch", "evaluate", "launch", "launch"]
+    assert len(kernels._ATTEND_CLIP_CACHE) == 1
+
+
+@pytest.mark.parametrize("tau", [False, True])
+def test_attend_clip_cpu_invocation_failure_is_variant_local(
+    attend_cpu, monkeypatch, tau
+):
+    mx, kernels, _ = attend_cpu
+
+    class LockedCache(dict):
+        def __setitem__(self, variant, value):
+            assert kernels._ATTEND_CLIP_LOCK.locked()
+            super().__setitem__(variant, value)
+
+    monkeypatch.setattr(kernels, "_ATTEND_CLIP_CACHE", LockedCache())
+    outputs = [object(), object(), object()]
+    broken = Mock(side_effect=[outputs, RuntimeError("real invocation")])
+    working = Mock(return_value=outputs)
+    factory = Mock(side_effect=[broken, working])
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    args = _attend_args(mx, tau=tau)
+    for _ in range(2):
+        assert kernels.attend_clip_decode(*args, row_contiguous=True) is None
+    factory.assert_called_once()
+    assert broken.call_count == 2  # Probe succeeds; only the first real call runs.
+    assert list(kernels._ATTEND_CLIP_CACHE.values()) == [None]
+    args[-1] = None if tau else mx.ones((1,))
+    assert kernels.attend_clip_decode(*args, row_contiguous=True) is outputs
+    assert factory.call_count == working.call_count == mx.eval.call_count == 2
+    args[-1] = mx.ones((1,)) if tau else None
+    assert kernels.attend_clip_decode(*args, row_contiguous=True) is None
+    assert factory.call_count == broken.call_count == 2
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_attend_clip_cpu_concurrent_first_use(attend_cpu, monkeypatch, failed):
+    mx, kernels, _ = attend_cpu
+    barrier = Barrier(2)
+    lock = kernels._ATTEND_CLIP_LOCK
+
+    class ContendedLock:
+        def __enter__(self):
+            # Both callers have missed the unlocked lookup before either probes.
+            barrier.wait(timeout=5)
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    monkeypatch.setattr(kernels, "_ATTEND_CLIP_LOCK", ContendedLock())
+    outputs = [object(), object(), object()]
+    factory = Mock(side_effect=lambda **kw: Mock(return_value=outputs))
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    if failed:
+        mx.eval.side_effect = RuntimeError("lazy probe failed")
+    variant = (4, 2, 16, 4, mx.float32, mx.float32, mx.float32, False)
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda _: kernels._get_attend_clip(*variant), range(2)))
+    assert results[0] is results[1]
+    assert (results[0] is None) == failed
+    factory.assert_called_once()
+    mx.eval.assert_called_once_with(*outputs)
+    assert len(kernels._ATTEND_CLIP_CACHE) == 1
+    if not failed:
+        results[0].assert_called_once()
+    # Cached failures and successes never enter the contended lock again.
+    assert kernels._get_attend_clip(*variant) is results[0]
+
+
+@pytest.mark.parametrize("case", range(26))
+def test_attend_clip_cpu_guards(attend_cpu, monkeypatch, case):
+    mx, kernels, _ = attend_cpu
+    args = _attend_args(mx)
+    changes = [
+        *[(i, None) for i in range(7)],
+        (0, mx.ones((1, 4, 16))),
+        (0, mx.ones((2, 1, 4, 16))),
+        (0, mx.ones((1, 2, 4, 16))),
+        (1, mx.ones((1, 1, 2, 16), dtype=mx.float16)),
+        (0, mx.ones((1, 1, 4, 16), dtype=np.int32)),
+        (0, mx.ones((1, 1, 0, 16))),
+        (0, mx.ones((1, 1, 129, 16))),
+        (1, mx.ones((1, 1, 0, 16))),
+        (1, mx.ones((1, 1, 129, 16))),
+        (2, mx.ones((1, 1, 3, 4))),
+        (1, mx.ones((1, 1, 2, 32))),
+        (0, mx.ones((1, 1, 4, 8))),
+        (2, mx.ones((1, 1, 4, 128))),
+        (3, mx.ones((4, 15))),
+        (4, mx.ones((4, 3))),
+        (3, mx.ones((4, 16), dtype=np.int32)),
+        (4, mx.ones((4, 4), dtype=np.int32)),
+        (7, mx.ones((2,))),
+        (7, mx.ones((1,), dtype=mx.float16)),
+    ]
+    i, value = changes[case]
+    args[i] = value
+    forbidden = Mock(side_effect=AssertionError("unsupported kernel"))
+    monkeypatch.setattr(kernels, "_get_attend_clip", forbidden)
+    assert kernels.attend_clip_decode(*args, row_contiguous=True) is None
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("tau", [False, True])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "fast",
+        "fallback",
+        "prefill",
+        "uncached",
+        "off",
+        "cpu",
+        "table",
+        "construction",
+        "probe",
+        "evaluation",
+        "call",
+        "unproven",
+        "reverse_q",
+        "reverse_k",
+        "reverse_r",
+        "reverse_qs",
+        "reverse_rs",
+        "transpose_k",
+    ],
+)
+def test_attend_clip_cpu_attention(attend_cpu, monkeypatch, tau, mode):
+    mx, kernels, layers = attend_cpu
+    q, k, r, qs, rs, qt, rt, t = _attend_args(mx, tau=tau)
+    unproven = mode == "unproven" or mode.startswith(("reverse_", "transpose_"))
+    if unproven:
+        # Losing the trailing ones in a serial FP32 sum changes clip(3).
+        q[..., 0] = k[..., 0] = r[..., 0] = 4096
+        args = [q, k, r, qs, rs]
+        if mode.startswith("reverse_"):
+            i = ("q", "k", "r", "qs", "rs").index(mode.removeprefix("reverse_"))
+            args[i] = args[i][..., ::-1]
+        elif mode == "transpose_k":
+            args[1] = np.ascontiguousarray(k.swapaxes(-1, -2)).swapaxes(-1, -2)
+        q, k, r, qs, rs = args
+        forbidden = Mock(side_effect=AssertionError("unproven layout probed"))
+        monkeypatch.setattr(kernels, "_get_attend_clip", forbidden)
+        assert kernels.attend_clip_decode(q, k, r, qs, rs, qt, rt, t) is None
+    if mode == "prefill":
+        q, k, r = [np.repeat(a, 2, axis=1) for a in (q, k, r)]
+    shape = q.shape[:2] + (64,)
+    hidden = mx.ones(shape)
+    clipped = [
+        layers._l2_clip(x, s, threshold)
+        for x, s, threshold in ((q, qs, qt), (k, 1.0, qt), (r, rs, rt))
+    ]
+    if tau:
+        clipped[0], clipped[2] = [layers._scale_states(clipped[i], t) for i in (0, 2)]
+    failed = mode in ("construction", "probe", "evaluation", "call")
+    if failed:
+        outputs = [object(), object(), object()]
+        kernel = Mock(
+            side_effect=RuntimeError("probe") if mode == "probe" else None,
+            return_value=outputs,
+        )
+        if mode == "call":
+            kernel.side_effect = [outputs, RuntimeError("real invocation")]
+        factory = Mock(
+            side_effect=RuntimeError("construction")
+            if mode == "construction"
+            else None,
+            return_value=kernel,
+        )
+        monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+        if mode == "evaluation":
+            mx.eval.side_effect = RuntimeError("lazy compilation")
+        fast = Mock(wraps=kernels.attend_clip_decode)
+    elif unproven:
+        fast = Mock(wraps=kernels.attend_clip_decode)
+    else:
+        fast = Mock(return_value=clipped if mode == "fast" else None)
+    monkeypatch.setattr(layers, "attend_clip_decode", fast)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0" if mode == "off" else "1")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: mode != "cpu")
+    monkeypatch.setitem(layers._DECODE_FUSIONS, "attend_clip", mode != "table")
+
+    def clip(scale, threshold):
+        result = Mock(side_effect=lambda x: layers._l2_clip(x, scale, threshold))
+        result.scale, result.threshold = scale, threshold
+        return result
+
+    attn = SimpleNamespace(
+        num_heads=4,
+        num_key_value_heads=2,
+        eps=1e-6,
+        q_l2_clip=clip(qs, qt),
+        k_l2_clip=clip(1.0, qt),
+        rel_l2_clip=clip(rs, rt),
+        gate_proj=Mock(return_value=hidden),
+        sink_proj=Mock(return_value=hidden),
+        rel_logits_proj=Mock(side_effect=lambda x: x),
+        _attention=Mock(side_effect=lambda q, *a: q.transpose(0, 2, 1, 3)),
+        o_proj=Mock(side_effect=lambda x: x),
+    )
+    cache = (
+        None
+        if mode == "uncached"
+        else SimpleNamespace(update_and_fetch=Mock(side_effect=lambda k, v: (k, v)))
+    )
+    norm = Mock(side_effect=lambda x, eps: x)
+    monkeypatch.setattr(layers, "_value_norm", norm)
+    monkeypatch.setattr(layers, "_gate_attention", lambda x, gate: x)
+    result = layers.Attention._attend(
+        attn,
+        hidden,
+        q,
+        k,
+        k,
+        r,
+        cache,
+        t,
+        **({} if unproven else {"row_contiguous": True}),
+    )
+    assert fast.call_count == int(mode in ("fast", "fallback") or failed or unproven)
+    if unproven:
+        forbidden.assert_not_called()
+    if failed:
+        factory.assert_called_once()
+        assert kernel.call_count == (
+            0 if mode == "construction" else 2 if mode == "call" else 1
+        )
+        assert mx.eval.call_count == (0 if mode in ("construction", "probe") else 1)
+    for c in (attn.q_l2_clip, attn.k_l2_clip, attn.rel_l2_clip):
+        assert c.call_count == (0 if mode == "fast" else 1)
+    norm.assert_called_once()
+    np.testing.assert_array_equal(
+        attn._attention.call_args.args[0], clipped[0].transpose(0, 2, 1, 3)
+    )
+    np.testing.assert_array_equal(attn.rel_logits_proj.call_args.args[0], clipped[2])
+    np.testing.assert_array_equal(
+        attn._attention.call_args.args[1], clipped[1].transpose(0, 2, 1, 3)
+    )
+    if mode == "call":
+        # The failed invocation and every later visit use exactly the existing path.
+        repeated = layers.Attention._attend(
+            attn, hidden, q, k, k, r, cache, t, row_contiguous=True
+        )
+        assert (
+            result.tobytes()
+            == repeated.tobytes()
+            == clipped[0].reshape(result.shape).tobytes()
+        )
+        assert kernel.call_count == 2  # One probe and one failed real invocation.
+        factory.assert_called_once()
+        assert mx.eval.call_count == 1
+        for actual, expected in (
+            (attn._attention.call_args.args[0], clipped[0].transpose(0, 2, 1, 3)),
+            (attn._attention.call_args.args[1], clipped[1].transpose(0, 2, 1, 3)),
+            (attn.rel_logits_proj.call_args.args[0], clipped[2]),
+        ):
+            assert actual.tobytes() == expected.tobytes()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("heads", [(4, 2), (32, 32)])
+def test_attend_clip_exact(metal_runtime, monkeypatch, dtype, heads):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    original = kernels._get_attend_clip
+    launches = Mock()
+
+    def selected(*args):
+        kernel = original(*args)
+        assert kernel is not None
+        return lambda **kw: (launches(), kernel(**kw))[1]
+
+    monkeypatch.setattr(kernels, "_get_attend_clip", selected)
+    dtype = getattr(mx, dtype)
+    hq, hk = heads  # Exercise both row_reduce_looped and row_reduce_simple at 128.
+    mx.random.seed(41)
+    for dk, dr in ((4, 4), (16, 16), (32, 32), (64, 64), (128, 4), (128, 64)):
+        for tau in (None, mx.array([1.137])):
+            for magnitude in (0.0, 0.1, 10.0):
+                for scale_dtype in (mx.float32, dtype):
+                    q, k, r = [
+                        (mx.random.normal((1, 1, h, d)) * magnitude).astype(dtype)
+                        for h, d in ((hq, dk), (hk, dk), (hq, dr))
+                    ]
+                    qs, rs = [
+                        mx.random.normal((hq, d)).astype(scale_dtype) for d in (dk, dr)
+                    ]
+                    expected = [
+                        layers._l2_clip(x, s, threshold)
+                        for x, s, threshold in (
+                            (q, qs, 3.0),
+                            (k, 1.0, 3.0),
+                            (r, rs, 2.0),
+                        )
+                    ]
+                    if tau is not None:
+                        expected[0], expected[2] = [
+                            layers._scale_states(expected[i], tau) for i in (0, 2)
+                        ]
+                    launches.reset_mock()
+                    actual = kernels.attend_clip_decode(
+                        q, k, r, qs, rs, 3.0, 2.0, tau, row_contiguous=True
+                    )
+                    launches.assert_called_once()
+                    assert actual is not None
+                    for a, e in zip(actual, expected):
+                        assert a.dtype == e.dtype
+                        assert mx.array_equal(a.view(mx.uint8), e.view(mx.uint8)).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_attend_clip_layouts(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    get_kernel = Mock(wraps=kernels._get_attend_clip)
+    monkeypatch.setattr(kernels, "_get_attend_clip", get_kernel)
+    for dk in (4, 16, 32, 64, 128):
+        args = _attend_args(mx, dk, min(dk, 64), getattr(mx, dtype), tau=False)
+        # The review counterexample: every head starts [4096, 1, ..., 1].
+        for i in range(3):
+            values = np.ones(args[i].shape, dtype=np.float32)
+            values[..., 0] = 4096
+            args[i] = mx.array(values).astype(getattr(mx, dtype))
+        args[6] = 3.0
+        row_key = layers._l2_clip(args[1], 1.0, 3.0)
+        for layout in ("row", "transpose_k", *range(5)):
+            inputs = list(args)
+            if layout == "transpose_k":
+                inputs[1] = mx.contiguous(inputs[1].swapaxes(-1, -2)).swapaxes(-1, -2)
+                assert not memoryview(inputs[1]).c_contiguous
+            elif isinstance(layout, int):
+                inputs[layout] = inputs[layout][..., ::-1]
+                assert memoryview(inputs[layout]).strides[-1] < 0
+            get_kernel.reset_mock()
+            actual = kernels.attend_clip_decode(
+                *inputs, **({"row_contiguous": True} if layout == "row" else {})
+            )
+            expected = [
+                layers._l2_clip(x, s, threshold)
+                for x, s, threshold in (
+                    (inputs[0], inputs[3], 3.0),
+                    (inputs[1], 1.0, 3.0),
+                    (inputs[2], inputs[4], 3.0),
+                )
+            ]
+            mx.eval(*expected)
+            if layout == "row":
+                get_kernel.assert_called_once()
+                assert actual is not None
+                for a, e in zip(actual, expected):
+                    assert mx.array_equal(a.view(mx.uint8), e.view(mx.uint8)).item()
+            else:
+                assert actual is None  # Caller must run the existing path.
+                get_kernel.assert_not_called()
+                if layout == "transpose_k" and dtype == "float32" and dk == 16:
+                    assert not mx.array_equal(expected[1], row_key).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("quantized", [False, True])
+def test_attend_clip_cached_logits_exact(metal_runtime, monkeypatch, dtype, quantized):
+    mx, _ = metal_runtime
+    from mlx import nn
+
+    from rapid_mlx.models.inkling2 import layers
+
+    stock = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    fused = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    if quantized:
+        for model in (stock, fused):
+            nn.quantize(
+                model,
+                group_size=64,
+                class_predicate=lambda p, m: any(
+                    p.endswith("." + n + "_proj")
+                    for n in ("q", "k", "v", "r", "gate", "sink", "weight")
+                ),
+            )
+    caches = stock.make_cache(), fused.make_cache()
+    tokens = mx.array([[1, 17, 35, 7, 8, 11, 12, 13]])
+    assert mx.array_equal(
+        stock(tokens[:, :4], cache=caches[0]), fused(tokens[:, :4], cache=caches[1])
+    ).item()
+    fast = layers.attend_clip_decode
+    seen = []
+
+    def record(*args, **kwargs):
+        # Test-only evaluation exposes actual storage, including the nonzero
+        # offsets of packed Q/R slices and both static/dynamic K convolutions.
+        mx.eval(*args[:5])
+        for x in args[:5]:
+            layout = memoryview(x)
+            assert layout.c_contiguous
+            assert layout.strides[-1] == x.itemsize
+            assert layout.strides[-2] == x.shape[-1] * x.itemsize
+        assert kwargs == {"row_contiguous": True}
+        out = fast(*args, **kwargs)
+        assert out is not None
+        seen.append(args[-1] is not None)
+        return out
+
+    monkeypatch.setattr(layers, "attend_clip_decode", record)
+    for step in range(4, 8):
+        monkeypatch.setitem(layers._DECODE_FUSIONS, "attend_clip", False)
+        expected = stock(tokens[:, step : step + 1], cache=caches[0])
+        monkeypatch.setitem(layers._DECODE_FUSIONS, "attend_clip", True)
+        seen.clear()
+        actual = fused(tokens[:, step : step + 1], cache=caches[1])
+        assert set(seen) == {False, True}
+        assert mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()
+
+
+def test_attend_clip_cpu_probe_variants(attend_cpu, monkeypatch):
+    mx, kernels, _ = attend_cpu
+    kernel = Mock(return_value=[object(), object(), object()])
+    factory = Mock(return_value=kernel)
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    variants = []
+    for dk, dr, dtype, qs_dtype, rs_dtype, tau in (
+        (16, 4, mx.float32, mx.float32, mx.float32, False),
+        (16, 4, mx.float32, mx.float32, mx.float32, True),
+        (128, 4, mx.float32, mx.float32, mx.float32, False),
+        (16, 64, mx.float32, mx.float32, mx.float32, False),
+        (16, 4, mx.float16, mx.float32, mx.float32, False),
+        (16, 4, mx.float32, mx.float16, mx.float32, False),
+        (16, 4, mx.float32, mx.float32, mx.float16, False),
+    ):
+        args = _attend_args(mx, dk, dr, dtype, tau)
+        args[3], args[4] = args[3].astype(qs_dtype), args[4].astype(rs_dtype)
+        variants.append(args)
+    # Head counts also belong to the evaluated specialization.
+    args = _attend_args(mx, tau=False)
+    args[0], args[2], args[3], args[4] = [args[i][..., :1, :] for i in (0, 2, 3, 4)]
+    args[1] = args[1][..., :1, :]
+    variants.append(args)
+    for index, args in enumerate(variants, 1):
+        for _ in range(2):
+            assert kernels.attend_clip_decode(*args, row_contiguous=True) is not None
+        assert factory.call_count == mx.eval.call_count == index
+        probe, real, repeated = kernel.call_args_list[-3:]
+        for call in (probe, real, repeated):
+            kw = call.kwargs
+            assert kw["grid"] == ((2 * args[0].shape[2] + args[1].shape[2]) * 32, 1, 1)
+            assert kw["threadgroup"] == (32, 1, 1)
+            assert kw["output_shapes"] == [a.shape for a in args[:3]]
+            assert kw["output_dtypes"] == [a.dtype for a in args[:3]]
+    assert kernel.call_count == 3 * len(variants)

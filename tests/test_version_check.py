@@ -898,13 +898,16 @@ def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
     local_bin.mkdir(parents=True)
     venv_bin = home / ".rapid-mlx" / "bin"
     venv_bin.mkdir(parents=True)
-    fake_binary = str(local_bin / "rapid-mlx")
-    fake_realpath = str(venv_bin / "rapid-mlx")
+    binary = local_bin / "rapid-mlx"
+    launcher = venv_bin / "rapid-mlx"
+    launcher.touch()
+    binary.symlink_to(launcher)
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
-    monkeypatch.setattr("shutil.which", lambda _name: fake_binary)
     monkeypatch.setattr(
-        "os.path.realpath",
-        lambda p: fake_realpath if p == fake_binary else p,
+        "shutil.which", lambda name: str(binary) if name == "rapid-mlx" else None
+    )
+    monkeypatch.setattr(
+        "importlib.util.find_spec", lambda name: object() if name == "pip" else None
     )
     monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
@@ -1086,20 +1089,20 @@ def test_install_sh_root_symlink_is_normalized_before_comparison(tmp_path, monke
     """Normalize the install.sh root as well as its resolved launcher."""
     home = tmp_path / "home"
     binary = home / ".local/bin/rapid-mlx"
-    expected_root = home / ".rapid-mlx"
-    canonical_root = Path("/private") / expected_root.relative_to("/")
-    canonical_binary = canonical_root / "bin/rapid-mlx"
+    canonical_root = tmp_path / "venv"
+    launcher = canonical_root / "bin/rapid-mlx"
+    launcher.parent.mkdir(parents=True)
+    launcher.touch()
+    binary.parent.mkdir(parents=True)
+    (home / ".rapid-mlx").symlink_to(canonical_root, target_is_directory=True)
+    binary.symlink_to(home / ".rapid-mlx/bin/rapid-mlx")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
-    monkeypatch.setattr("shutil.which", lambda _name: str(binary))
-
-    def fake_realpath(path):
-        if Path(path) == binary:
-            return str(canonical_binary)
-        if Path(path) == expected_root:
-            return str(canonical_root)
-        return str(path)
-
-    monkeypatch.setattr("os.path.realpath", fake_realpath)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: str(binary) if name == "rapid-mlx" else None
+    )
+    monkeypatch.setattr(
+        "importlib.util.find_spec", lambda name: object() if name == "pip" else None
+    )
     monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _p: True)
 
     info = vc.detect_install_method()
