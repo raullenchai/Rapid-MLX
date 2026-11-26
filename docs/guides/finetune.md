@@ -14,7 +14,8 @@ yet. Fine-tuning checks serve compatibility before loading weights. See the
 ## Prepare data and run
 
 Supply a JSONL file or a directory with `train.jsonl` and `valid.jsonl`.
-Use one format within each file, with one JSON object per line:
+Use the same format across all splits, including `test.jsonl` if present, with
+one JSON object per line:
 
 - Chat: `{"messages":[{"role":"user","content":"Say hello"},{"role":"assistant","content":"Hello!"}]}`
 - Prompt and completion: `{"prompt":"Say hello","completion":"Hello!"}`

@@ -134,19 +134,30 @@ def _read_rows(path):
             rows.append(line)
     if not rows:
         raise ValueError(f"{path}: expected at least one JSONL row")
-    return rows
+    return rows, expected
 
 
 def _prepare_data(path, scratch, batch_size):
     has_valid_split = path.is_dir()
     if has_valid_split:
-        train, valid = (
-            _read_rows(path / name) for name in ("train.jsonl", "valid.jsonl")
-        )
-        if (path / "test.jsonl").exists():
-            _read_rows(path / "test.jsonl")  # mlx-lm opens it even without --test.
+        train_path = path / "train.jsonl"
+        train, train_format = _read_rows(train_path)
+
+        def read_matching_split(split_path):
+            rows, kind = _read_rows(split_path)
+            if kind != train_format:
+                raise ValueError(
+                    f"{split_path} uses {kind} data, but {train_path} uses "
+                    f"{train_format} data. Use the same format in every split."
+                )
+            return rows
+
+        valid = read_matching_split(path / "valid.jsonl")
+        test_path = path / "test.jsonl"
+        if test_path.exists():
+            read_matching_split(test_path)  # mlx-lm opens it even without --test.
     elif path.suffix == ".jsonl":
-        rows = _read_rows(path)
+        rows, _ = _read_rows(path)
         random.Random(0).shuffle(rows)
         valid_count = max(batch_size, (len(rows) + 9) // 10)
         valid, train = rows[:valid_count], rows[valid_count:]
@@ -511,13 +522,13 @@ def finetune_command(args):
     sidecar_stat = None
     status = "err"
     try:
-        if (
-            min(args.batch_size, args.max_seq_length) < 1
-            or (args.iters is not None and args.iters < 1)
-            or args.num_layers < -1
-        ):
+        if args.batch_size < 1 or (args.iters is not None and args.iters < 1):
+            raise ValueError("Use positive --iters and --batch-size.")
+        if args.num_layers != -1 and args.num_layers < 1:
+            raise ValueError("--num-layers must be -1 or at least 1.")
+        if args.max_seq_length < 2:
             raise ValueError(
-                "Use positive --iters, --batch-size and --max-seq-length, and --num-layers >= -1."
+                "--max-seq-length must be at least 2 for next-token training."
             )
         if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
             raise ValueError("Use a positive, finite --learning-rate.")

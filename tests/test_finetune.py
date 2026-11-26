@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
+import re
 import select
 import shlex
 import signal
@@ -260,28 +261,69 @@ def test_structured_chat_message(tmp_path):
         ]
     }
     data.write_text(json.dumps(row))
-    assert ft._read_rows(data) == [data.read_bytes()]
+    assert ft._read_rows(data) == ([data.read_bytes()], "messages")
 
 
 def test_directory_data(tmp_path):
-    (tmp_path / "train.jsonl").write_text(
-        '{"messages":[{"role":"user","content":"hey"}]}\n'
-    )
-    (tmp_path / "valid.jsonl").write_text('{"prompt":"a","completion":"b"}\n')
-    (tmp_path / "test.jsonl").write_text('{"text":"a"}\n')
+    for split in ("train", "valid", "test"):
+        (tmp_path / f"{split}.jsonl").write_text('{"text":"a"}\n')
     assert ft._prepare_data(tmp_path, "", 1) == (tmp_path, 1, 1, True)
     with pytest.raises(ValueError, match="Each split needs"):
         ft._prepare_data(tmp_path, "", 2)
-    (tmp_path / "train.jsonl").write_text("")
-    with pytest.raises(ValueError, match="at least one JSONL row"):
-        ft._prepare_data(tmp_path, "", 1)
+
+
+@pytest.mark.parametrize(
+    ("split", "row", "error"),
+    [
+        (
+            "valid",
+            '{"messages":[{"role":"user","content":"hey"}]}\n',
+            r"valid\.jsonl.*messages.*train\.jsonl.*text",
+        ),
+        (
+            "test",
+            '{"prompt":"a","completion":"b"}\n',
+            r"test\.jsonl.*prompt/completion.*train\.jsonl.*text",
+        ),
+        ("train", "", r"train\.jsonl.*at least one JSONL row"),
+        ("valid", "", r"valid\.jsonl.*at least one JSONL row"),
+        ("test", "", r"test\.jsonl.*at least one JSONL row"),
+    ],
+)
+def test_invalid_directory_split(tmp_path, monkeypatch, capsys, split, row, error):
+    for required in ("train", "valid"):
+        (tmp_path / f"{required}.jsonl").write_text('{"text":"a"}\n')
+    (tmp_path / f"{split}.jsonl").write_text(row)
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text('{"model_type":"qwen3"}')
+    load = MagicMock(side_effect=AssertionError("model materialization reached"))
+    monkeypatch.setattr(ft, "_training_model", load)
+    monkeypatch.setattr(ft, "track", MagicMock())
+    args = cli.build_parser().parse_args(
+        [
+            "finetune",
+            str(model),
+            f"--data={tmp_path}",
+            f"--out={tmp_path / 'out'}",
+            "--batch-size=1",
+        ]
+    )
+    assert ft.finetune_command(args) == 1
+    assert re.search(error, capsys.readouterr().err)
+    load.assert_not_called()
 
 
 @pytest.mark.parametrize(
     ("overrides", "error"),
     [
         (["--iters", "0"], "Use positive"),
+        (["--batch-size", "0"], "--batch-size"),
+        (["--num-layers", "0"], "--num-layers must be -1 or at least 1"),
+        (["--num-layers", "-2"], "--num-layers must be -1 or at least 1"),
+        (["--max-seq-length", "1"], "--max-seq-length must be at least 2"),
         (["--learning-rate", "nan"], "positive, finite"),
+        (["--learning-rate", "0"], "positive, finite"),
         (["--resume", "missing"], "existing LoRA weights"),
         ([], "--data must be"),
     ],
