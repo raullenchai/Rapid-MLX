@@ -4,6 +4,7 @@ import pytest
 
 from rapid_mlx.api.utils import clean_output_text
 from rapid_mlx.prompt_parse_context import PromptParseContext
+from rapid_mlx.reasoning.hy3_parser import Hy3ReasoningParser
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from tests.parser_migration.harness import route
 
@@ -13,6 +14,52 @@ LITERAL = "Answer mentions <think>private</think> literally."
 
 def chunks(text, size):
     return [text[i : i + size] for i in range(0, len(text), size)]
+
+
+@pytest.mark.parametrize("size", [1, 3, 1000])
+def test_hy3_thinking_off_retains_main_behavior(size):
+    raw = "Secret.</think:opensource>Answer"
+    parser = Hy3ReasoningParser()
+    assert parser.extract_reasoning(raw, enable_thinking=False) == ("Secret.", "Answer")
+    parser.configure_request(enable_thinking=False)
+    main_behavior = Hy3ReasoningParser()
+    previous = ""
+    reasoning, content = "", ""
+    for delta in chunks(raw, size):
+        current = previous + delta
+        message = parser.extract_reasoning_streaming(previous, current, delta)
+        assert message == main_behavior.extract_reasoning_streaming(
+            previous, current, delta
+        )
+        if message:
+            reasoning += message.reasoning or ""
+            content += message.content or ""
+        previous = current
+    assert parser.finalize_streaming(raw) == main_behavior.finalize_streaming(raw)
+    assert (reasoning, content) == ("Secret.", "Answer")
+
+
+@pytest.mark.parametrize("raw", ["<th", "<", "<thinkx", "<think>Secret.</think>Answer"])
+def test_thinking_off_opener_prefix_streaming_buffered_parity(raw):
+    parser = Qwen3ReasoningParser()
+    expected = parser.extract_reasoning(raw, enable_thinking=False)
+    parser.configure_request(enable_thinking=False)
+    previous = ""
+    reasoning, content = "", ""
+    for delta in raw:
+        current = previous + delta
+        message = parser.extract_reasoning_streaming(previous, current, delta)
+        if message:
+            reasoning += message.reasoning or ""
+            content += message.content or ""
+        if current == "<thinkx":
+            assert content == current  # Release as soon as the prefix is invalid.
+        previous = current
+    message = parser.finalize_streaming(raw)
+    if message:
+        reasoning += message.reasoning or ""
+        content += message.content or ""
+    assert (reasoning or None, content or None) == expected
 
 
 @pytest.mark.parametrize("raw", [REPRO, LITERAL, "</think>Answer", "Hello", " \nHello"])

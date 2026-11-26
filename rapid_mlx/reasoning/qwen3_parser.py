@@ -155,7 +155,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         prompt_thinking_active: bool = False,
     ) -> None:
         self.reset_state()
-        self._content_only = enable_thinking is False and not prompt_thinking_active
+        self._content_only = (
+            type(self) is Qwen3ReasoningParser
+            and enable_thinking is False
+            and not prompt_thinking_active
+        )
 
     def extract_reasoning_streaming(
         self, previous_text: str, current_text: str, delta_text: str
@@ -213,7 +217,8 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             (reasoning, content) tuple.
         """
         if (
-            enable_thinking is False
+            type(self) is Qwen3ReasoningParser
+            and enable_thinking is False
             and not prompt_thinking_active
             and not model_output.lstrip().startswith(self.start_token)
         ):
@@ -383,6 +388,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         if self._content_only and not accumulated_text.lstrip().startswith(
             self.start_token
         ):
+            held = self._held_tag_suffix_len
+            self._held_tag_suffix_len = 0
+            if held:
+                return DeltaMessage(content=accumulated_text[-held:])
             return None
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
