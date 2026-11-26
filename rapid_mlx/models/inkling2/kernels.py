@@ -4,6 +4,7 @@
 import math
 from collections.abc import Callable
 from functools import cache
+from threading import Lock
 from typing import cast
 
 import mlx.core as mx
@@ -586,23 +587,36 @@ def route_weights_decode(scores, indices, route_scale):
     )[0]
 
 
-@cache
+_route_topk_lock = Lock()
+_route_topk_kernels: dict[tuple[int, int], Callable[..., list[mx.array]] | None] = {}
+
+
 def _route_topk(n, k):
+    key = (n, k)
+    if key not in _route_topk_kernels:
+        with _route_topk_lock:
+            if key not in _route_topk_kernels:
+                _route_topk_kernels[key] = _build_route_topk(n, k)
+    return _route_topk_kernels[key]
+
+
+def _build_route_topk(n, k):
     try:
         kernel = mx.fast.metal_kernel(
             name="inkling2_route_topk_decode",
-            input_names=["logits", "bias"],
-            output_names=["indices", "out_scores"],
+            input_names=["logits", "bias", "scale"],
+            output_names=["indices", "weights"],
             source="""
                 #pragma clang fp contract(off)
                 const uint tid = thread_position_in_threadgroup.x;
+                const uint lane = thread_index_in_simdgroup;
                 threadgroup float scores[N], order[N];
+                threadgroup uint picked[K];
                 if (tid < N) {
-                    float x = logits[tid * logits_strides[2]];
+                    float x = logits[tid];
                     float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(x)));
                     scores[tid] = x < 0.0f ? y : 1.0f - y;
-                    out_scores[tid] = scores[tid];
-                    order[tid] = -(scores[tid] + bias[tid * bias_strides[0]]);
+                    order[tid] = -(scores[tid] + bias[tid]);
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
                 if (tid < N) {
@@ -616,20 +630,32 @@ def _route_topk(n, k):
                         rank += less || (equal && j < tid);
                     }
                     if (rank < K) {
+                        picked[rank] = tid;
                         indices[rank] = tid;
                     }
                 }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                // Match the existing decode weight kernel's lane ownership,
+                // accumulation, SIMD reduction, epsilon, division, and scale.
+                if (tid < 32) {
+                    float total = 0.0f;
+                    for (uint j = lane; j < K; j += 32)
+                        total += scores[picked[j]];
+                    total = simd_sum(total) + 1e-20f;
+                    for (uint j = lane; j < K; j += 32)
+                        weights[j] = (scores[picked[j]] / total) * scale;
+                }
             """,
-            ensure_row_contiguous=False,
+            ensure_row_contiguous=True,
             compile_options={"math_mode": "safe"},
         )
         return _probe_metal(
             kernel,
-            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,))],
+            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,)), scalar(1.0)],
             template=[("N", n), ("K", k)],
             grid=(128, 1, 1),
             threadgroup=(128, 1, 1),
-            output_shapes=[(1, 1, k), (1, 1, n)],
+            output_shapes=[(1, 1, k)] * 2,
             output_dtypes=[mx.uint32, mx.float32],
         )
     except Exception:
@@ -640,22 +666,39 @@ def _route_topk(n, k):
 def route_topk_decode(
     logits: mx.array, bias: mx.array, k: int, scale: float
 ) -> tuple[mx.array, mx.array] | None:
-    """Single-row FP32 scoring/selection, with existing decode normalization."""
-    kernel = _route_topk(logits.shape[-1], k)
+    """Single-row FP32 scoring, selection, and existing decode normalization.
+
+    Fallback covers a one-time evaluated probe per (expert count, top-k)
+    variant and guarded invocation; either failure disables that variant.
+    Real lazy output evaluation is intentionally not wrapped.
+    """
+    if logits is None or bias is None or logits.ndim != 3:
+        return None
+    n = logits.shape[-1]
+    if not (
+        logits.shape == (1, 1, n)
+        and bias.shape == (n,)
+        and logits.dtype == bias.dtype == mx.float32
+        and 1 <= k <= n <= 128
+    ):
+        return None
+    kernel = _route_topk(n, k)
     if kernel is None:
         return None
     try:
-        indices, scores = kernel(
-            inputs=[logits, bias],
-            template=[("N", logits.shape[-1]), ("K", k)],
+        indices, weights = kernel(
+            inputs=[logits, bias, scalar(scale)],
+            template=[("N", n), ("K", k)],
             grid=(128, 1, 1),
             threadgroup=(128, 1, 1),
-            output_shapes=[(1, 1, k), logits.shape],
+            output_shapes=[(1, 1, k)] * 2,
             output_dtypes=[mx.uint32, mx.float32],
         )
     except Exception:
+        with _route_topk_lock:
+            _route_topk_kernels[n, k] = None
         return None
-    return indices, route_weights_decode(scores, indices, scale)
+    return indices, weights
 
 
 # Attention of learned queries over the depth sources of each token, in one

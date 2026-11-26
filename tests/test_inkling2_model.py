@@ -4,6 +4,7 @@
 # rapid_mlx/models/inkling2/NOTICE, under its accompanying MIT license.
 """Text-only catalog, loop/cache, quantization and loader regressions."""
 
+import copy
 import functools
 import hashlib
 import importlib.util
@@ -79,7 +80,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "7fd850db9e407c4bcac5305a1bdbee48f7276a56ec63135f54b1d717e86698ad",
-    "kernels.py": "81b26675fecc7fb1f11596bc6ab4767b09446357173a31c19c3dce443f77945f",
+    "kernels.py": "790b27d1573740618637a8de4a2ec10da5801f319c1c5639824177deb2652349",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -486,6 +487,123 @@ def test_route_topk_cpu_switch_and_fallback(
     assert router(np.ones((1, 1, 32), np.float32), cached_decode=True) is expected
     assert fused.call_count == int(not disabled)
     assert stock.call_count == int(disabled or unavailable)
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "invocation"]
+)
+def test_router_complete_cpu_lifecycle(decode_cpu, monkeypatch, failure):
+    k, layers, mx = decode_cpu.kernels, decode_cpu.layers, decode_cpu.mx
+    router = layers.TopKRouter.__new__(layers.TopKRouter)
+    router.weight = np.eye(4, dtype=np.float32)
+    router.e_score_correction_bias = np.zeros(4, np.float32)
+    router.top_k, router.routed_scaling_factor = 2, 2.0
+    x = np.zeros((1, 1, 4), np.float32)
+    expected = (np.array([[[0, 1]]], np.uint32), np.ones((1, 1, 2), np.float32))
+    stock = Mock(return_value=expected)
+    monkeypatch.setattr(layers, "_route_weights", stock)
+    monkeypatch.setattr(mx, "sigmoid", lambda x: x, raising=False)
+    monkeypatch.setattr(k, "route_weights_decode", Mock(side_effect=AssertionError))
+    launch = Mock(return_value=expected)
+    factory = Mock(return_value=launch)
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    if failure == "construction":
+        factory.side_effect = RuntimeError("construction")
+    elif failure == "probe":
+        launch.side_effect = RuntimeError("probe")
+    elif failure == "evaluation":
+        mx.eval.side_effect = RuntimeError("evaluation")
+    elif failure == "invocation":
+        launch.side_effect = [expected, RuntimeError("invocation")]
+    for _ in range(3):
+        actual = router(x, cached_decode=True)
+        for a, e in zip(actual, expected):
+            np.testing.assert_array_equal(a.view(np.uint32), e.view(np.uint32))
+    assert stock.call_count == (3 if failure else 0)
+    assert factory.call_count == 1
+    assert (
+        launch.call_count
+        == {None: 4, "construction": 0, "probe": 1, "evaluation": 1, "invocation": 2}[
+            failure
+        ]
+    )
+    assert mx.eval.call_count == int(failure not in ("construction", "probe"))
+    if failure != "construction":
+        spec = factory.call_args.kwargs
+        assert spec["ensure_row_contiguous"] is True
+        assert "_strides" not in spec["source"]
+        call = launch.call_args.kwargs
+        assert call["output_shapes"] == [(1, 1, 2)] * 2
+        assert len(call["inputs"]) == 3
+    k.route_weights_decode.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_router_complete_cpu_concurrent_first_use(decode_cpu, monkeypatch, failure):
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    barrier = Barrier(8)
+    expected = (np.zeros((1, 1, 2), np.uint32), np.ones((1, 1, 2), np.float32))
+
+    launch = Mock(return_value=expected)
+    factory = Mock(return_value=launch)
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    if failure:
+        mx.eval.side_effect = RuntimeError("evaluation")
+    x, bias = np.ones((1, 1, 4), np.float32), np.zeros(4, np.float32)
+
+    def run(_):
+        barrier.wait(timeout=10)
+        return k.route_topk_decode(x, bias, 2, 2.0)
+
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(run, range(8)))
+    assert all((r is None) == failure for r in results)
+    assert factory.call_count == mx.eval.call_count == 1
+    assert launch.call_count == (1 if failure else 9)
+    if not failure:
+
+        def invoke(**kw):
+            assert k._route_topk_lock.acquire(blocking=False)
+            k._route_topk_lock.release()
+            return expected
+
+        launch.side_effect = invoke
+        assert k.route_topk_decode(x, bias, 2, 2.0) is not None
+        launch.side_effect = None
+    # A distinct width is a distinct evaluated variant, including after failure.
+    k.route_topk_decode(np.ones((1, 1, 5), np.float32), np.zeros(5, np.float32), 2, 1.0)
+    assert factory.call_count == mx.eval.call_count == 2
+    k.route_topk_decode(x, bias, 1, 1.0)
+    assert factory.call_count == mx.eval.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "shape,bias_shape,dtype,bias_dtype,top_k",
+    [
+        (None, (4,), np.float32, np.float32, 2),
+        ((1, 1, 4), None, np.float32, np.float32, 2),
+        ((), (4,), np.float32, np.float32, 2),
+        ((1, 4), (4,), np.float32, np.float32, 2),
+        ((2, 1, 4), (4,), np.float32, np.float32, 2),
+        ((1, 2, 4), (4,), np.float32, np.float32, 2),
+        ((1, 1, 4), (1, 4), np.float32, np.float32, 2),
+        ((1, 1, 4), (4,), np.float16, np.float32, 2),
+        ((1, 1, 4), (4,), np.float32, np.float16, 2),
+        ((1, 1, 4), (4,), np.float32, np.float32, 0),
+        ((1, 1, 4), (4,), np.float32, np.float32, 5),
+        ((1, 1, 129), (129,), np.float32, np.float32, 2),
+    ],
+)
+def test_router_complete_cpu_rejected(
+    decode_cpu, shape, bias_shape, dtype, bias_dtype, top_k
+):
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    mx.fast.metal_kernel.reset_mock()
+    logits = None if shape is None else np.ones(shape, dtype)
+    bias = None if bias_shape is None else np.ones(bias_shape, bias_dtype)
+    assert k.route_topk_decode(logits, bias, top_k, 2.0) is None
+    mx.fast.metal_kernel.assert_not_called()
+    mx.eval.assert_not_called()
 
 
 @pytest.fixture
@@ -2089,23 +2207,58 @@ def test_router_topk_exact(metal_runtime, monkeypatch, seed):
             ):
                 router.e_score_correction_bias = bias
                 expected = router(logits)
-                scores = mx.sigmoid(logits.astype(mx.float32))
-                indices, actual_scores = kernels._route_topk(n, k)(
-                    inputs=[logits.astype(mx.float32), bias],
+                indices, actual_weights = kernels._route_topk(n, k)(
+                    inputs=[logits.astype(mx.float32), bias, mx.array(2.0)],
                     template=[("N", n), ("K", k)],
                     grid=(128, 1, 1),
                     threadgroup=(128, 1, 1),
-                    output_shapes=[(1, 1, k), logits.shape],
+                    output_shapes=[(1, 1, k)] * 2,
                     output_dtypes=[mx.uint32, mx.float32],
                 )
                 assert mx.array_equal(indices, expected[0]).item()
                 assert mx.array_equal(
-                    actual_scores.view(mx.uint32), scores.view(mx.uint32)
+                    actual_weights.view(mx.uint32), expected[1].view(mx.uint32)
                 ).item()
-                actual = router(logits, True)
+                with monkeypatch.context() as patch:
+                    patch.setattr(
+                        layers, "_route_weights", Mock(side_effect=AssertionError)
+                    )
+                    patch.setattr(
+                        kernels,
+                        "route_weights_decode",
+                        Mock(side_effect=AssertionError),
+                    )
+                    actual = router(logits, True)
                 for a, e in zip(actual, expected):
                     assert a.dtype == e.dtype
                     assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    "n,k", [(1, 1), (31, 3), (32, 32), (33, 31), (65, 64), (128, 127)]
+)
+def test_router_complete_strided_exact(metal_runtime, n, k):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    mx.random.seed(73)
+    # Non-contiguous inputs must be copied by the kernel API before flat loads.
+    logits = mx.random.normal((1, 1, n * 2))[..., ::2]
+    bias = mx.random.normal((n * 2,))[::2]
+    for values, correction in (
+        (logits, bias),
+        (mx.zeros_like(logits), mx.zeros_like(bias)),
+        (logits * 1000, bias),
+        (logits, mx.where(mx.arange(n) % 2 == 0, float("nan"), bias)),
+        (mx.full(logits.shape, -100.0), bias),
+    ):
+        for scale in (0.0, 0.3, 2.0):
+            expected = layers._route_weights(mx.sigmoid(values), correction, k, scale)
+            actual = kernels.route_topk_decode(values, correction, k, scale)
+            assert actual is not None  # No silent fallback can satisfy parity.
+            for a, e in zip(actual, expected):
+                assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
 
 
 @pytest.mark.requires_mlx
@@ -2164,7 +2317,7 @@ def test_router_topk_gates_and_failure(metal_runtime, monkeypatch, failure):
     router = layers.TopKRouter(inkling2.ModelArgs.from_dict(CONFIG).text)
     x = mx.ones((1, 1, 64))
     expected = router(x)
-    kernels._route_topk.cache_clear()
+    kernels._route_topk_kernels.clear()
     try:
         with monkeypatch.context() as patch:
             patch.setattr(mx.fast, "metal_kernel", broken)
@@ -2177,7 +2330,7 @@ def test_router_topk_gates_and_failure(metal_runtime, monkeypatch, failure):
             stages = ["construction", "invocation", "evaluation"]
             assert attempts == stages[: stages.index(failure) + 1]
     finally:
-        kernels._route_topk.cache_clear()
+        kernels._route_topk_kernels.clear()
 
 
 @pytest.mark.requires_mlx
@@ -2192,12 +2345,16 @@ def test_router_topk_real_invocation_failure(metal_runtime, monkeypatch):
     # Warm the cache with a successful construction and evaluated probe.
     assert kernels._route_topk(4, 2) is not None
     launch = Mock(side_effect=RuntimeError("real kernel invocation failed"))
-    monkeypatch.setattr(kernels, "_route_topk", lambda n, k: launch)
-    actual = router(x, True)
-    mx.eval(*actual)
-    launch.assert_called_once()
-    for a, e in zip(actual, expected):
-        assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+    monkeypatch.setitem(kernels._route_topk_kernels, (4, 2), launch)
+    try:
+        for _ in range(3):
+            actual = router(x, True)
+            mx.eval(*actual)
+            for a, e in zip(actual, expected):
+                assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+        launch.assert_called_once()
+    finally:
+        kernels._route_topk_kernels.clear()
 
 
 @pytest.mark.requires_mlx
@@ -2210,7 +2367,14 @@ def test_router_topk_cached_logits_exact(metal_runtime, monkeypatch, dtype):
     models = [create_model(metal_runtime, dtype=getattr(mx, dtype)) for _ in range(2)]
     caches = [model.make_cache() for model in models]
     tokens = mx.array([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
-    calls = Mock(wraps=layers.route_topk_decode)
+    real_route = layers.route_topk_decode
+
+    def required_fast(*args):
+        result = real_route(*args)
+        assert result is not None
+        return result
+
+    calls = Mock(side_effect=required_fast)
     for step in range(10):
         outputs = []
         for i, (model, cache) in enumerate(zip(models, caches)):
@@ -2225,6 +2389,10 @@ def test_router_topk_cached_logits_exact(metal_runtime, monkeypatch, dtype):
         assert mx.array_equal(
             outputs[0].view(mx.uint32), outputs[1].view(mx.uint32)
         ).item()
+        if step == 4:
+            # Serving copies warmed caches; process-level kernel locks must
+            # never become attributes of any cache object.
+            caches[1] = copy.deepcopy(caches[1])
         if step == 0:
             assert calls.call_count == 0  # A one-token prefill has no cached history.
     assert calls.call_count > 0
