@@ -781,10 +781,10 @@ def _build_route_topk(n, k):
                 const uint lane = thread_index_in_simdgroup;
                 threadgroup float scores[N], order[N];
                 threadgroup uint picked[K];
-                // Every slot has a valid index even before ranks are written.
+                // Initialize threadgroup picks; unique ranks write each output
+                // index exactly once, including NaNs tied by input order.
                 if (tid < K) {
                     picked[tid] = tid;
-                    indices[tid] = tid;
                 }
                 if (tid < N) {
                     float x = logits[tid];
