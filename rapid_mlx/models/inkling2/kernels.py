@@ -99,7 +99,27 @@ def _probe_expert_conv_residual(kernel, template, x_dtype):
     )
 
 
-def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dtype):
+def _expert_conv_residual_ready(dtype, weight, experts, masked, ragged, x_dtype):
+    """Return a kernel after a one-time evaluated probe per variant, or None."""
+    kernel = _expert_conv_residual_factory()
+    if kernel is None:
+        return None
+    C, K = weight.shape[:2]
+    template = (
+        ("T", dtype),
+        ("W", weight.dtype),
+        ("C", C),
+        ("K", K),
+        ("E", experts),
+        ("HAS_MASK", masked),
+        ("HAS_LENGTHS", ragged),
+    )
+    return _probe_expert_conv_residual(kernel, template, x_dtype)
+
+
+def expert_conv_residual_decode(
+    x, mix, state, weight, mask, lengths, outer, dtype, *, kernel=None
+):
     """Combine routed experts and a cached static convolution for one token.
 
     Fallback covers construction, the one-time evaluated probe per kernel
@@ -127,7 +147,10 @@ def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dty
         and all(t in types for t in (dtype, x.dtype, weight.dtype))
     ):
         return None
-    kernel = _expert_conv_residual_factory()
+    if kernel is None or x.dtype != dtype:
+        kernel = _expert_conv_residual_ready(
+            dtype, weight, x.shape[2], mask is not None, lengths is not None, x.dtype
+        )
     if kernel is None:
         return None
     empty = scalar(0.0).reshape(1)
@@ -156,8 +179,6 @@ def expert_conv_residual_decode(x, mix, state, weight, mask, lengths, outer, dty
         output_shapes=[outer.shape, state.shape],
         output_dtypes=[dtype, mx.float32],
     )
-    if _probe_expert_conv_residual(kernel, tuple(launch["template"]), x.dtype) is None:
-        return None
     try:
         return kernel(**launch)
     except Exception:

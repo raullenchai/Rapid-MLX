@@ -25,7 +25,7 @@ from rapid_mlx.models.inkling2.compat import (
 )
 from rapid_mlx.models.inkling2.config import TextArgs
 from rapid_mlx.models.inkling2.kernels import (
-    _expert_conv_residual_factory,
+    _expert_conv_residual_ready,
     attention_mask_decode,
     depth_attention,
     expert_conv_residual_decode,
@@ -979,6 +979,7 @@ class DecoderLayer(nn.Module):
             hidden_states, block_states, messages, block_residual
         )
         fused = None
+        expert_states = None
         if (
             mlp_input.shape[:2] == (1, 1)
             and conv is not None
@@ -990,11 +991,21 @@ class DecoderLayer(nn.Module):
             and 2 <= self.post_mlp_convolution.kernel_size <= 5
             and _fast_decode_enabled()
             and _use_kernels()
-            and _expert_conv_residual_factory() is not None
+            and (
+                kernel := _expert_conv_residual_ready(
+                    mlp_input.dtype,
+                    self.post_mlp_convolution.conv1d.weight,
+                    self.mlp.gate.top_k,
+                    conv_mask is not None,
+                    conv.lengths is not None,
+                    mlp_input.dtype,
+                )
+            )
+            is not None
         ):
-            states, weights = self.mlp._forward(mlp_input, cached_decode, False)
+            expert_states, weights = self.mlp._forward(mlp_input, cached_decode, False)
             fused = expert_conv_residual_decode(
-                states,
+                expert_states,
                 weights,
                 conv_states[3],
                 self.post_mlp_convolution.conv1d.weight,
@@ -1002,9 +1013,15 @@ class DecoderLayer(nn.Module):
                 conv.lengths,
                 residual,
                 mlp_input.dtype,
+                kernel=kernel,
             )
         if fused is None:
-            hidden_states = self.mlp(mlp_input, cached_decode=cached_decode)
+            if expert_states is None:
+                hidden_states = self.mlp(mlp_input, cached_decode=cached_decode)
+            else:
+                hidden_states = _combine_experts(expert_states, weights).astype(
+                    mlp_input.dtype
+                )
             hidden_states, conv_states[3] = self.post_mlp_convolution(
                 hidden_states,
                 conv_states[3],
