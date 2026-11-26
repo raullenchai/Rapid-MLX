@@ -14,7 +14,7 @@ import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Lock, get_ident
 from types import ModuleType, SimpleNamespace
 from unittest.mock import DEFAULT, Mock
 
@@ -75,15 +75,16 @@ CONFIG["text_config"]["loop_config"] = {
 
 
 # Complete reviewed source of the five omitted numerical-core files and the
-# decode kernel. See NOTICE for provenance. Review edits before updating pins;
+# decode kernels. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "a0519e11bec89c1c6df4edbce9cc401c295c95cdb6b51ed207d6318830b70b50",
+    "layers.py": "945ffee6cbce2afde0166b854c578209c01c3380eb21f80695a18d3523802d99",
     "kernels.py": "1653a7baf90cbf85cfed31c21713780810e3bf1df7ca3437e822a580ffd1c444",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
     "nvfp4_decode.py": "b40d0dee816f30612de4b3541097f1f3de692251418d4b5c7f3493063d750360",
+    "visit_norm.py": "389750faffd0d7843e92ad1550a7f80790e3122ed26f40000be8ab200a75bc4d",
 }
 
 
@@ -99,7 +100,13 @@ def test_numerical_core_source_contract():
         for path in coverage["run"]["omit"].splitlines()
         if path.strip().startswith(prefix)
     }
-    assert omitted == _NUMERICAL_CORE_SHA256.keys() - {"nvfp4_decode.py"}
+    assert omitted == _NUMERICAL_CORE_SHA256.keys() - {
+        "nvfp4_decode.py",
+        "visit_norm.py",
+    }
+    assert _NUMERICAL_CORE_SHA256.keys() == {
+        path.name for path in (root / prefix).glob("*.py")
+    } - {"__init__.py", "compat.py", "config.py"}
     for filename, expected in _NUMERICAL_CORE_SHA256.items():
         assert hashlib.sha256((root / prefix / filename).read_bytes()).hexdigest() == (
             expected
@@ -187,10 +194,458 @@ def decode_cpu(glue_loader, monkeypatch):
     g.module("mlx.nn.layers", __path__=[])
     g.module("mlx.nn.layers.distributed", sum_gradients=Mock())
     kernels = g.load("kernels")
+    g.load("visit_norm")
     layers = g.load("layers")
     monkeypatch.setattr(layers, "_use_kernels", lambda: True)
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
     return SimpleNamespace(kernels=kernels, layers=layers, mx=mx)
+
+
+@pytest.fixture
+def visit_cpu(decode_cpu):
+    decode_cpu.mx.fast.metal_kernel.reset_mock()
+    visit = sys.modules["rapid_mlx.models.inkling2.visit_norm"]
+    args = (
+        np.ones((2, 1, 1, 64), np.float32),
+        np.ones((1, 1, 64), np.float16),
+        np.ones((3, 64), np.float32),
+    )
+    return SimpleNamespace(**vars(decode_cpu), visit=visit, args=args)
+
+
+@pytest.mark.parametrize("append", [False, True])
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "invocation"]
+)
+def test_visit_norm_cpu_lifecycle(visit_cpu, append, failure):
+    c = visit_cpu
+    probe, output = [object() for _ in range(3)], [object() for _ in range(3)]
+    kernel = Mock(side_effect=[probe, output, output, RuntimeError("invoke")])
+    c.mx.fast.metal_kernel.return_value = kernel
+    if failure == "construction":
+        c.mx.fast.metal_kernel.side_effect = RuntimeError("build")
+    elif failure == "probe":
+        kernel.side_effect = RuntimeError("probe")
+    elif failure == "evaluation":
+        c.mx.eval.side_effect = RuntimeError("eval")
+    elif failure == "invocation":
+        kernel.side_effect = [probe, RuntimeError("invoke")]
+    fn = functools.partial(c.visit.visit_norm_decode, *c.args, append_block=append)
+    if failure is None:
+        assert fn() == output and fn() == output
+        # Real lazy outputs are returned without evaluating them.
+        c.mx.eval.assert_called_once_with(*probe)
+        assert fn() is None
+    for _ in range(2):
+        assert fn() is None
+    c.mx.fast.metal_kernel.assert_called_once()
+    assert (
+        kernel.call_count
+        == {None: 4, "construction": 0, "probe": 1, "evaluation": 1, "invocation": 2}[
+            failure
+        ]
+    )
+    assert c.mx.eval.call_count == int(failure not in ("construction", "probe"))
+    if failure != "construction":
+        launch = kernel.call_args.kwargs
+        assert launch["output_shapes"] == [
+            (1, 1, 3, 64),
+            (3, 1, 1, 64) if append else (1, 1, 64),
+            (1, 1, 64),
+        ]
+        if failure in (None, "invocation"):
+            assert all(a is b for a, b in zip(launch["inputs"], c.args))
+            probe_launch = kernel.call_args_list[0].kwargs
+            for name in launch.keys() - {"inputs"}:
+                assert probe_launch[name] == launch[name]
+            for probe_input, real_input in zip(
+                probe_launch["inputs"], launch["inputs"]
+            ):
+                assert probe_input is not real_input
+                assert (probe_input.shape, probe_input.dtype) == (
+                    real_input.shape,
+                    real_input.dtype,
+                )
+        else:
+            assert all(a is not b for a, b in zip(launch["inputs"], c.args))
+    factory = c.mx.fast.metal_kernel.call_args.kwargs
+    assert factory["ensure_row_contiguous"] is True
+    assert "_strides" not in factory["source"]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_visit_norm_cpu_concurrent_first_use(visit_cpu, failure):
+    c, barrier = visit_cpu, Barrier(8)
+    kernel = Mock(return_value=[object(), object(), object()])
+    c.mx.fast.metal_kernel.return_value = kernel
+    if failure:
+        c.mx.eval.side_effect = RuntimeError("evaluation")
+
+    def run(_):
+        barrier.wait(timeout=10)
+        return c.visit.visit_norm_decode(*c.args)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(run, range(8)))
+    assert all((result is None) == failure for result in results)
+    c.mx.fast.metal_kernel.assert_called_once()
+    c.mx.eval.assert_called_once()
+    assert kernel.call_count == (1 if failure else 9)
+
+
+def test_visit_norm_cpu_concurrent_invocation_success(visit_cpu):
+    c, barrier = visit_cpu, Barrier(2)
+    output = [object(), object(), object()]
+    # Pre-probe so the barrier checks dispatch concurrency, not compilation.
+    kernel = Mock(return_value=output)
+    c.mx.fast.metal_kernel.return_value = kernel
+    assert c.visit.visit_norm_decode(*c.args) == output
+    assert c.visit.visit_norm_decode(*c.args, append_block=True) == output
+
+    def invoke(**kwargs):
+        barrier.wait(timeout=10)
+        assert not c.visit._LOCK.locked()
+        return output
+
+    kernel.side_effect = invoke
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(
+            pool.map(
+                lambda append: c.visit.visit_norm_decode(*c.args, append_block=append),
+                (False, True),
+            )
+        ) == [output, output]
+    assert c.mx.fast.metal_kernel.call_count == 2
+    assert c.mx.eval.call_count == 2
+
+
+def test_visit_norm_cpu_concurrent_invocation_failure(visit_cpu, monkeypatch):
+    c = visit_cpu
+    entered, contender, disabled = Event(), Event(), Event()
+    first_thread = []
+    kernel = Mock(return_value=[object(), object(), object()])
+    c.mx.fast.metal_kernel.return_value = kernel
+    assert c.visit.visit_norm_decode(*c.args) is not None
+    kernel.reset_mock()
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = Lock()
+
+        def __enter__(self):
+            if entered.is_set() and get_ident() != first_thread[0]:
+                contender.set()
+            self.lock.acquire()
+
+        def __exit__(self, *args):
+            self.lock.release()
+            if entered.is_set() and get_ident() != first_thread[0]:
+                assert disabled.wait(timeout=10)
+
+    state = next(iter(c.visit._KERNELS.values()))
+    monkeypatch.setattr(state, "lock", ObservedLock())
+    # The global lock must not be acquired on a warm variant lookup or dispatch.
+    monkeypatch.setattr(c.visit, "_LOCK", None)
+
+    def invoke(**kwargs):
+        first_thread.append(get_ident())
+        entered.set()
+        assert contender.wait(timeout=10)
+        raise RuntimeError("invoke")
+
+    def fail():
+        try:
+            return c.visit.visit_norm_decode(*c.args)
+        finally:
+            disabled.set()
+
+    kernel.side_effect = invoke
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(fail)
+        assert entered.wait(timeout=10)
+        second = pool.submit(c.visit.visit_norm_decode, *c.args)
+        assert first.result(timeout=10) is None
+        assert second.result(timeout=10) is None
+    assert kernel.call_count == 1  # No dispatch after the first caller disables it.
+    c.mx.fast.metal_kernel.assert_called_once()
+    c.mx.eval.assert_called_once()
+
+
+@pytest.mark.parametrize("position", range(3))
+@pytest.mark.parametrize("case", ["none", "shape", "dtype"])
+def test_visit_norm_cpu_guards(visit_cpu, position, case):
+    c, args = visit_cpu, list(visit_cpu.args)
+    args[position] = {
+        "none": None,
+        "shape": np.ones((2, 2), np.float32),
+        "dtype": args[position].astype(np.int32),
+    }[case]
+    assert c.visit.visit_norm_decode(*args) is None
+    c.mx.fast.metal_kernel.assert_not_called()
+
+
+def test_visit_norm_cpu_variant_isolation(visit_cpu):
+    c = visit_cpu
+    kernel = Mock(return_value=[object(), object(), object()])
+    c.mx.fast.metal_kernel.return_value = kernel
+    assert c.visit.visit_norm_decode(*c.args) is not None
+    c.mx.fast.metal_kernel.side_effect = RuntimeError("other variant")
+    assert c.visit.visit_norm_decode(*c.args, append_block=True) is None
+    assert c.visit.visit_norm_decode(*c.args) is not None
+    assert c.mx.fast.metal_kernel.call_count == 2
+
+
+@pytest.mark.parametrize("variant", ["width", "bank", "queries", "dtype", "append"])
+def test_visit_norm_cpu_probe_evaluation_variant_isolation(visit_cpu, variant):
+    c = visit_cpu
+    output = [object(), object(), object()]
+    kernel = Mock(return_value=output)
+    c.mx.fast.metal_kernel.return_value = kernel
+    assert c.visit.visit_norm_decode(*c.args) == output
+    dims, k, q = {"width": (129, 2, 3), "bank": (64, 3, 3), "queries": (64, 2, 1)}.get(
+        variant, (64, 2, 3)
+    )
+    args = (
+        np.ones((k, 1, 1, dims), np.float32),
+        np.ones((1, 1, dims), np.float32 if variant == "dtype" else np.float16),
+        np.ones((q, dims), np.float32),
+    )
+    c.mx.eval.side_effect = RuntimeError("variant execution")
+    for _ in range(2):
+        assert (
+            c.visit.visit_norm_decode(*args, append_block=variant == "append") is None
+        )
+    failed_probe = kernel.call_args.kwargs
+    c.mx.eval.side_effect = None
+    assert c.visit.visit_norm_decode(*c.args) == output
+    assert c.mx.fast.metal_kernel.call_count == c.mx.eval.call_count == 2
+    assert kernel.call_count == 4  # Two probes, two real calls on the healthy variant.
+    for probe_input, real_input in zip(failed_probe["inputs"], args):
+        assert probe_input is not real_input
+        assert (probe_input.shape, probe_input.dtype) == (
+            real_input.shape,
+            real_input.dtype,
+        )
+        assert not np.any(probe_input)
+    template = dict(failed_probe["template"])
+    assert (template["D"], template["K"], template["Q"], template["APPEND"]) == (
+        dims,
+        k,
+        q,
+        variant == "append",
+    )
+
+
+@pytest.mark.parametrize(
+    "dims,k,q", [(0, 1, 1), (4097, 1, 1), (64, 0, 1), (64, 33, 1), (64, 1, 2)]
+)
+def test_visit_norm_cpu_bounds(visit_cpu, dims, k, q):
+    c = visit_cpu
+    assert (
+        c.visit.visit_norm_decode(
+            np.zeros((k, 1, 1, dims), np.float32),
+            np.zeros((1, 1, dims), np.float32),
+            np.zeros((q, dims), np.float32),
+        )
+        is None
+    )
+    c.mx.fast.metal_kernel.assert_not_called()
+
+
+@pytest.mark.parametrize("append", [False, True])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "construction",
+        "probe",
+        "evaluation",
+        "invocation",
+        "disabled",
+        "prefill",
+        "no_attention",
+        "no_bank",
+        "no_gpu",
+    ],
+)
+def test_visit_norm_cpu_layer_fallback(visit_cpu, monkeypatch, append, failure):
+    c, layers = visit_cpu, visit_cpu.layers
+    blocks, x, queries = c.args
+    normed = x.astype(np.float32) * 0.5
+    bank = np.concatenate([blocks, normed[None]]) if append else normed
+    attention = np.ones((1, 1, 3, 64), np.float32)
+    layer = layers.DecoderLayer.__new__(layers.DecoderLayer)
+    layer.attention_input = Mock(return_value=attention)
+    layer.attention_input.query = queries
+    layer.is_block_boundary = append
+    layer._self_attention = Mock(side_effect=lambda hidden, *args: hidden)
+    layer._mlp_states = lambda hidden, *args: hidden
+    layer.mlp = lambda hidden, **kw: hidden
+    layer.post_attention_convolution = layer.post_mlp_convolution = (
+        lambda hidden, state, *a, **kw: (hidden, state)
+    )
+    stock_norm = Mock(return_value=normed)
+    monkeypatch.setattr(layers, "unweighted_rms_norm", stock_norm)
+    kernel = Mock(return_value=[attention, bank, x.astype(np.float32)])
+    c.mx.fast.metal_kernel.return_value = kernel
+    if failure == "construction":
+        c.mx.fast.metal_kernel.side_effect = RuntimeError("build")
+    elif failure == "probe":
+        kernel.side_effect = RuntimeError("probe")
+    elif failure == "evaluation":
+        c.mx.eval.side_effect = RuntimeError("eval")
+    elif failure == "invocation":
+        kernel.side_effect = [
+            [attention, bank, x.astype(np.float32)],
+            RuntimeError("invoke"),
+        ]
+    elif failure == "disabled":
+        monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "VISIT_NORM", False)
+    elif failure == "no_gpu":
+        monkeypatch.setattr(layers, "_use_kernels", lambda: False)
+    elif failure == "no_attention":
+        layer.attention_input = None
+    elif failure == "no_bank":
+        layer.attention_input = None
+        blocks = None
+        layer.is_block_boundary = True
+    cache = [SimpleNamespace(offset=0 if failure == "prefill" else 3), None]
+    for step in range(2):
+        result, result_bank = layer(x, blocks, cache=cache)
+        expected = x.astype(np.float32) * (2 if layer.is_block_boundary else 4)
+        np.testing.assert_array_equal(result, expected)
+        expected_bank = (
+            normed[None]
+            if blocks is None
+            else np.concatenate([blocks, normed[None]])
+            if append
+            else blocks
+        )
+        np.testing.assert_array_equal(result_bank, expected_bank)
+        assert stock_norm.call_count == (0 if failure is None else step + 1)
+        if layer.attention_input is not None:
+            assert layer.attention_input.call_count == (
+                0 if failure is None else step + 1
+            )
+    assert layer._self_attention.call_count == 2
+    assert kernel.call_count == {
+        None: 3,
+        "probe": 1,
+        "evaluation": 1,
+        "invocation": 2,
+    }.get(failure, 0)
+    assert c.mx.fast.metal_kernel.call_count == int(
+        failure in (None, "construction", "probe", "evaluation", "invocation")
+    )
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("append", [False, True])
+@pytest.mark.parametrize(
+    "dims,k,q",
+    [
+        (1, 1, 1),
+        (31, 3, 3),
+        (64, 2, 1),
+        (127, 3, 3),
+        (128, 1, 1),
+        (129, 2, 3),
+        (255, 3, 1),
+        (256, 1, 3),
+        (257, 2, 1),
+        (1152, 3, 3),
+        (2304, 32, 1),
+        (4096, 3, 3),
+    ],
+)
+def test_visit_norm_bitwise(metal_runtime, monkeypatch, dtype, append, dims, k, q):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers, visit_norm
+
+    real_ready, calls = visit_norm._ready, []
+
+    def ready(*args):
+        state = real_ready(*args)
+        assert state.kernel is not None
+        call = Mock(wraps=state.kernel)
+        calls.append(call)
+        monkeypatch.setattr(state, "kernel", call)
+        return state
+
+    monkeypatch.setattr(visit_norm, "_ready", ready)
+    mx.random.seed(42)
+    for layout in ("contiguous", "stepped", "reversed", "broadcast", "transposed"):
+
+        def values(shape, dtype, layout=layout):
+            if layout == "stepped":
+                return mx.random.normal((*shape[:-1], shape[-1] * 2)).astype(dtype)[
+                    ..., ::2
+                ]
+            x = (mx.random.normal(shape) * 0.7).astype(dtype)
+            if layout == "reversed":
+                return x[..., ::-1]
+            if layout == "broadcast":
+                return mx.broadcast_to(x[..., :1], shape)
+            if layout == "transposed" and len(shape) > 1:
+                return mx.random.normal(shape[::-1]).astype(dtype).transpose()
+            return x
+
+        blocks = values((k, 1, 1, dims), mx.float32)
+        partial = values((1, 1, dims), getattr(mx, dtype))
+        queries = values((q, dims), mx.float32)
+        normed = layers.unweighted_rms_norm(partial.astype(mx.float32))
+        expected = [
+            kernels.depth_attention(blocks, normed, queries, scale=dims**-0.5),
+            mx.concatenate([blocks, normed[None]]) if append else normed,
+            partial.astype(mx.float32),
+        ]
+        mx.eval(*expected)
+        actual = visit_norm.visit_norm_decode(
+            blocks, partial, queries, append_block=append
+        )
+        assert actual is not None
+        calls[-1].assert_called_once()
+        for a, b in zip(actual, expected):
+            assert a.shape == b.shape and a.dtype == b.dtype
+            assert mx.array_equal(a.view(mx.uint8), b.view(mx.uint8)).item(), layout
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_visit_norm_cached_logits_exact(metal_runtime, monkeypatch, dtype):
+    import copy
+
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    stock = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    fused = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    stock_cache, fused_cache = stock.make_cache(), fused.make_cache()
+    tokens = mx.random.randint(0, 120, (1, 10))
+    assert mx.array_equal(
+        stock(tokens[:, :6], cache=stock_cache), fused(tokens[:, :6], cache=fused_cache)
+    ).item()
+    real = layers.visit_norm_decode
+    calls = []
+
+    def record(*args, **kwargs):
+        result = real(*args, **kwargs)
+        assert result is not None
+        calls.append(kwargs["append_block"])
+        return result
+
+    for step in range(6, 10):
+        monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "VISIT_NORM", False)
+        expected = stock(tokens[:, step : step + 1], cache=stock_cache)
+        monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "VISIT_NORM", True)
+        monkeypatch.setattr(layers, "visit_norm_decode", record)
+        calls.clear()
+        actual = fused(tokens[:, step : step + 1], cache=fused_cache)
+        assert set(calls) == {False, True}
+        assert mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()
+    # Serving copies warm caches; only arrays and ordinary state may live there.
+    copy.deepcopy(fused_cache)
 
 
 @pytest.mark.parametrize(
@@ -552,6 +1007,7 @@ def message_cpu(glue_loader, compat_loader, monkeypatch):
         ),
     )
     kernels = glue_loader.load("kernels")
+    glue_loader.load("visit_norm")
     glue_loader.module("mlx.nn.layers.distributed", sum_gradients=Mock())
     glue_loader.module(
         "mlx_lm.models.cache", BatchRotatingKVCache=object, RotatingKVCache=object
@@ -3285,6 +3741,10 @@ def projection_cpu(glue_loader, monkeypatch):
         "quantized_matmul",
         Mock(side_effect=lambda x, w, **kw: x @ w.T),
         raising=False,
+    )
+    glue_loader.module(
+        "rapid_mlx.models.inkling2.visit_norm",
+        visit_norm_decode=Mock(return_value=None),
     )
     layers = glue_loader.load("layers")
     monkeypatch.setattr(layers, "_use_kernels", lambda: True)
