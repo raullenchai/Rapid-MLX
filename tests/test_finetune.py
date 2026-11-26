@@ -23,6 +23,31 @@ ALIAS = "qwen3-0.6b-4bit"
 REPO = "mlx-community/Qwen3-0.6B-4bit"
 
 
+def _save_weights(path):
+    save_file(
+        {
+            f"model.layers.0.self_attn.q_proj.lora_{name}": np.ones(
+                (8, 8), dtype=np.float32
+            )
+            for name in ("a", "b")
+        },
+        path,
+    )
+
+
+def _save_adapter(args, model, data, out):
+    (out / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "model": model,
+                "num_layers": args.num_layers,
+                "lora_parameters": {"rank": 8, "dropout": 0.0, "scale": 20.0},
+            }
+        )
+    )
+    _save_weights(out / "adapters.safetensors")
+
+
 @pytest.mark.parametrize(
     ("code", "output", "status", "exit_code"),
     [
@@ -41,6 +66,11 @@ def test_cli_finetune(tmp_path, monkeypatch, capsys, code, output, status, exit_
     snapshot = hub / "models--mlx-community--Qwen3-0.6B-4bit/snapshots/pin"
     snapshot.mkdir(parents=True)
     (snapshot / "model.safetensors").touch()
+    config_path = snapshot / "config.json"
+    config_path.write_text('{"model_type":"qwen3"}')
+    monkeypatch.setattr(
+        ft.model_downloads, "hf_hub_download", lambda *_a, **_kw: str(config_path)
+    )
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
     monkeypatch.setattr(
         ft, "resolve_offline_cached_snapshot", lambda _: snapshot if code == 0 else None
@@ -56,12 +86,12 @@ def test_cli_finetune(tmp_path, monkeypatch, capsys, code, output, status, exit_
     monkeypatch.setattr(ft, "read_model_metadata", lambda _: metadata)
     out = tmp_path / "adapter path"
     resume = tmp_path / "previous.safetensors"
-    resume.touch()
+    _save_weights(resume)
     if output == "Invalid text_config":
         (tmp_path / ft.ADAPTER_METADATA).write_text(
             json.dumps({"base_model": ALIAS, "num_layers": 16})
         )
-    elif code == 0:
+    else:
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"model": str(snapshot), "num_layers": 16})
         )
@@ -109,12 +139,7 @@ def test_cli_finetune(tmp_path, monkeypatch, capsys, code, output, status, exit_
         assert list(map(len, splits)) == [16, 4]
         assert len(set(splits[0] + splits[1])) == 20
         child.data = data
-        (out / "adapter_config.json").write_text(
-            json.dumps({"model": str(snapshot), "num_layers": 16})
-        )
-        save_file(
-            {"lora_a": np.ones((1, 1), dtype=np.float32)}, out / "adapters.safetensors"
-        )
+        _save_adapter(SimpleNamespace(num_layers=16), str(snapshot), data, out)
         return child
 
     monkeypatch.setattr(ft.subprocess, "Popen", fake_popen)
@@ -259,8 +284,11 @@ def test_directory_data(tmp_path):
     ],
 )
 def test_preflight_error(tmp_path, monkeypatch, capsys, overrides, error):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text('{"model_type":"qwen3"}')
     args = cli.build_parser().parse_args(
-        ["finetune", REPO, "--data", str(tmp_path / "bad"), *overrides]
+        ["finetune", str(model), "--data", str(tmp_path / "bad"), *overrides]
     )
     track = MagicMock()
     monkeypatch.setattr(ft, "track", track)
@@ -307,9 +335,8 @@ def test_incompatible_checkpoint_rejected_before_training(
     stdout, stderr = capsys.readouterr()
     assert model in stderr and reason in stderr and "Choose a text-only model" in stderr
     assert "Estimated unified memory" not in stdout
-    config_download.assert_called_once_with(
-        args.model, "config.json", local_files_only=True
-    )
+    repo = model if ft.resolve_revision(model) else args.model
+    config_download.assert_called_once_with(repo, "config.json", local_files_only=True)
     prepare.assert_not_called()
     load.assert_not_called()
     launch.assert_not_called()
@@ -340,7 +367,7 @@ def test_default_iterations_from_full_training_batches(
             f"--batch-size={batch}",
         ]
     )
-    launch = MagicMock()
+    launch = MagicMock(side_effect=_save_adapter)
     monkeypatch.setattr(ft, "_train", launch)
     monkeypatch.setattr(ft, "version", lambda _: "0.31.3")
     track = MagicMock()
@@ -476,6 +503,7 @@ def test_second_interrupt_skips_shutdown_grace(monkeypatch):
 @pytest.mark.parametrize(
     ("filename", "config", "error"),
     [
+        (None, None, "cannot verify the base and layers"),
         (
             "adapter_config.json",
             {"model": "other/model", "num_layers": 4},
@@ -483,6 +511,11 @@ def test_second_interrupt_skips_shutdown_grace(monkeypatch):
         ),
         (ft.ADAPTER_METADATA, {"base_model": REPO, "num_layers": 8}, "--num-layers=4"),
         (ft.ADAPTER_METADATA, {"base_model": REPO}, "missing num_layers"),
+        (
+            ft.ADAPTER_METADATA,
+            {"base_model": REPO, "num_layers": 4},
+            "invalid LoRA weights",
+        ),
         ("adapter_config.json", [], "invalid adapter_config.json"),
         ("adapter_config.json", {"model": REPO, "num_layers": "4"}, "--num-layers=4"),
         (
@@ -498,8 +531,12 @@ def test_resume_rejected_before_launch(
     for split in ("train", "valid"):
         (tmp_path / f"{split}.jsonl").write_text('{"text":"example"}')
     resume = tmp_path / "previous.safetensors"
-    resume.touch()
-    (tmp_path / filename).write_text(json.dumps(config))
+    if error == "invalid LoRA weights":
+        resume.write_bytes(b"truncated")
+    else:
+        _save_weights(resume)
+    if filename:
+        (tmp_path / filename).write_text(json.dumps(config))
     launch = MagicMock()
     monkeypatch.setattr(ft.subprocess, "Popen", launch)
     monkeypatch.setattr(ft, "track", MagicMock())
@@ -549,13 +586,32 @@ def test_output_collision(tmp_path, monkeypatch, capsys):
     assert owned.read_text() == "keep me"
 
 
+def test_resume_rejects_different_snapshot_of_same_repo(tmp_path, monkeypatch):
+    hub = tmp_path / "hub"
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
+    snapshots = hub / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots"
+    trained, selected = snapshots / "old", snapshots / "new"
+    trained.mkdir(parents=True)
+    selected.mkdir()
+    resume = tmp_path / "previous.safetensors"
+    _save_weights(resume)
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"model": str(trained), "num_layers": 4})
+    )
+    with pytest.raises(ValueError, match="--resume base mismatch"):
+        ft._validate_resume(resume, str(selected), 4)
+
+
 @pytest.mark.parametrize(
     ("failure", "checkpoint", "exit_code"),
     [
         ("train", False, 1),
+        ("train", True, 1),
         ("interrupt", False, 130),
-        ("metadata", False, 1),
         ("metadata", True, 1),
+        ("collision", True, 1),
+        ("publication", False, 130),
+        ("user-file", False, 1),
     ],
 )
 def test_failed_output_can_be_retried(
@@ -568,37 +624,175 @@ def test_failed_output_can_be_retried(
     data.write_text('{"text":"example"}\n' * 2)
     out = tmp_path / "adapter path"
     argv = ["finetune", str(model), f"--data={data}", f"--out={out}", "--batch-size=1"]
-    saved = out / "0000100_adapters.safetensors"
+    saved = out / (
+        "0000100_adapters.safetensors" if failure == "train" else "adapters.safetensors"
+    )
 
     def train(args, model, data, out):
-        (out / "adapter_config.json").write_text(
-            json.dumps({"model": model, "num_layers": args.num_layers})
-        )
-        (out / "adapters.safetensors").write_bytes(b"truncated")
-        if checkpoint:
-            save_file({"lora_a": np.ones((1, 1), dtype=np.float32)}, saved)
+        if checkpoint or failure == "publication":
+            _save_adapter(args, model, data, out)
+        else:
+            (out / "adapter_config.json").write_text(
+                json.dumps({"model": model, "num_layers": args.num_layers})
+            )
+        if failure == "collision":
+            (out / ft.ADAPTER_METADATA).write_text(
+                json.dumps({"base_model": model, "num_layers": args.num_layers})
+            )
         if failure == "interrupt":
             raise KeyboardInterrupt
-        if failure == "train":
+        if failure == "user-file":
+            (out / "user-file").write_text("keep me")
+            (out / ft.ADAPTER_METADATA).write_text("user-owned sidecar")
+            (out / "adapters.safetensors").write_bytes(b"truncated")
+            (out / "0000100_adapters.safetensors").write_bytes(b"truncated")
+        if failure == "train" and checkpoint:
+            (out / "adapters.safetensors").rename(saved)
+        if failure in {"train", "user-file"}:
             raise ValueError("tuner failed")
 
     monkeypatch.setattr(ft, "_train", train)
     monkeypatch.setattr(ft, "version", lambda _: "0.31.3")
     monkeypatch.setattr(ft, "track", MagicMock())
     write_metadata = ft.atomic_write_json
+    link = ft.os.link
     if failure == "metadata":
         monkeypatch.setattr(
             ft, "atomic_write_json", MagicMock(side_effect=OSError("metadata failed"))
         )
+    if failure == "publication":
+
+        def interrupt_after_link(source, dest):
+            link(source, dest)
+            saved.write_bytes(b"truncated")
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(ft.os, "link", interrupt_after_link)
     parser = cli.build_parser()
     assert ft.finetune_command(parser.parse_args(argv)) == exit_code
     stderr = capsys.readouterr().err
-    assert out.exists() == checkpoint
+    assert "[Errno" not in stderr
+    assert out.exists() == (checkpoint or failure == "user-file")
     if checkpoint:
         assert saved.is_file()
         retry_out = f"{out}-retry"
         assert shlex.join(["--resume", str(saved), "--out", retry_out]) in stderr
         argv = [*argv, f"--out={retry_out}", f"--resume={saved}"]
-    monkeypatch.setattr(ft, "_train", MagicMock())
+    if failure == "user-file":
+        assert {path.name for path in out.iterdir()} == {
+            "user-file",
+            ft.ADAPTER_METADATA,
+        }
+        assert (out / "user-file").read_text() == "keep me"
+        assert (out / ft.ADAPTER_METADATA).read_text() == "user-owned sidecar"
+        assert f"Kept {ft.ADAPTER_METADATA!r}, 'user-file'" in stderr
+        assert "Retry with a fresh --out directory" in stderr
+        argv = [*argv, f"--out={out}-retry"]
+    if failure == "collision":
+        assert json.loads((out / ft.ADAPTER_METADATA).read_text()) == {
+            "base_model": str(model),
+            "num_layers": 16,
+        }
+    monkeypatch.setattr(ft, "_train", _save_adapter)
     monkeypatch.setattr(ft, "atomic_write_json", write_metadata)
+    monkeypatch.setattr(ft.os, "link", link)
     assert ft.finetune_command(parser.parse_args(argv)) == 0
+
+
+@pytest.mark.parametrize(
+    ("artifact", "error"),
+    [
+        ("missing", "missing required file"),
+        ("missing config", "adapter_config.json"),
+        ("truncated", "safetensors"),
+        ("empty", "non-empty LoRA tensor pairs"),
+        ("unrelated tensor", "invalid LoRA tensor"),
+        ("unpaired", "non-empty LoRA tensor pairs"),
+        ("incomplete config", "usable lora_parameters"),
+        ("wrong rank", "does not match LoRA rank"),
+    ],
+)
+def test_zero_exit_requires_usable_adapter(
+    tmp_path, monkeypatch, capsys, artifact, error
+):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text('{"model_type":"qwen3"}')
+    data = tmp_path / "data.jsonl"
+    data.write_text('{"text":"example"}\n' * 2)
+    out = tmp_path / "adapter"
+    args = cli.build_parser().parse_args(
+        ["finetune", str(model), f"--data={data}", f"--out={out}", "--batch-size=1"]
+    )
+
+    def train(args, model, data, out):
+        if artifact == "missing":
+            return
+        _save_adapter(args, model, data, out)
+        weights = out / "adapters.safetensors"
+        config = out / "adapter_config.json"
+        if artifact == "missing config":
+            config.unlink()
+        elif artifact == "truncated":
+            weights.write_bytes(b"truncated")
+        elif artifact == "empty":
+            save_file({}, weights)
+        elif artifact in {"unpaired", "unrelated tensor"}:
+            key = "lora_a" if artifact == "unpaired" else "weight"
+            save_file({key: np.ones((8, 8), dtype=np.float32)}, weights)
+        elif artifact == "incomplete config":
+            config.write_text(
+                json.dumps({"model": model, "num_layers": args.num_layers})
+            )
+        elif artifact == "wrong rank":
+            params = json.loads(config.read_text())
+            params["lora_parameters"]["rank"] = 4
+            config.write_text(json.dumps(params))
+
+    monkeypatch.setattr(ft, "_train", train)
+    track = MagicMock()
+    monkeypatch.setattr(ft, "track", track)
+    assert ft.finetune_command(args) == 1
+    stdout, stderr = capsys.readouterr()
+    assert "mlx-lm did not produce a usable adapter" in stderr and error in stderr
+    assert "rapid-mlx serve " not in stdout
+    assert not (out / ft.ADAPTER_METADATA).exists()
+    if artifact == "missing config":
+        assert "--resume" not in stderr
+        assert not out.exists()
+    assert track.call_args.args[1]["cmd_status"] == "err"
+
+
+def test_materialized_checkpoint_is_checked_before_launch(
+    tmp_path, monkeypatch, capsys
+):
+    config = tmp_path / "config.json"
+    config.write_text('{"model_type":"qwen3"}')
+    monkeypatch.setattr(
+        ft.model_downloads, "hf_hub_download", lambda *_a, **_kw: str(config)
+    )
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text('{"model_type":"qwen3","vision_config":{}}')
+    monkeypatch.setattr(
+        ft.model_downloads, "snapshot_download", lambda *_a, **_kw: str(snapshot)
+    )
+    train = MagicMock()
+    monkeypatch.setattr(ft, "_train", train)
+    monkeypatch.setattr(ft, "track", MagicMock())
+    data = tmp_path / "data.jsonl"
+    data.write_text('{"text":"example"}\n' * 2)
+    out = tmp_path / "out"
+    args = cli.build_parser().parse_args(
+        [
+            "finetune",
+            "test-org/test-repo",
+            f"--data={data}",
+            f"--out={out}",
+            "--batch-size=1",
+        ]
+    )
+    assert ft.finetune_command(args) == 1
+    assert "vision/MLLM or audio" in capsys.readouterr().err
+    assert not out.exists()
+    train.assert_not_called()

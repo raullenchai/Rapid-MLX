@@ -7,8 +7,8 @@ import os
 import random
 import re
 import shlex
-import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,7 +28,9 @@ from .local_model_path import raise_if_missing_local_model, resolved_model_ref
 from .lora_adapter import (
     ADAPTER_METADATA,
     _base_identity,
-    validate_adapter_checkpoint,
+    _read_checkpoint_config,
+    _validate_checkpoint_config,
+    validate_adapter,
     validate_adapter_runtime,
 )
 from .model_aliases import resolve_model, resolve_revision, resolve_subfolder
@@ -46,7 +48,8 @@ _DEFAULT_EPOCHS = 3
 _MAX_DEFAULT_ITERS = 1000
 _STOP_GRACE_SECONDS = 2.0
 _NUMBERED_ADAPTER = re.compile(r"\d{7,}_adapters\.safetensors")
-# Match the mlx-lm downloader when materializing a pinned checkpoint.
+_LORA_TENSOR = re.compile(r"(?:^|\.)(lora_a|lora_b)(?:\.|$)")
+# Match the mlx-lm downloader when materializing a checkpoint.
 _MODEL_FILES = [
     "*.json",
     "model*.safetensors",
@@ -219,8 +222,6 @@ def _training_model(model, reference):
         return str(Path(model).absolute())
     subfolder = resolve_subfolder(reference)
     pinned = resolve_revision(reference)
-    if not (pinned or subfolder or model_downloads.disabled()):
-        return model
     if cached := resolve_offline_cached_snapshot(reference):
         return str(cached)
     prefix = f"{subfolder}/" if subfolder else ""
@@ -229,6 +230,82 @@ def _training_model(model, reference):
         allow_patterns=[prefix + pattern for pattern in _MODEL_FILES],
     )
     return str(Path(snapshot) / (subfolder or ""))
+
+
+def _check_checkpoint(model, reference):
+    try:
+        cached = (
+            None if Path(model).is_dir() else resolve_offline_cached_snapshot(reference)
+        )
+        config = _read_checkpoint_config(str(cached) if cached else model, reference)
+        if not config:
+            raise ValueError(f"missing or invalid config.json for {model}")
+        _validate_checkpoint_config(config)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot fine-tune {reference!r} for serving with LoRA. {exc}. "
+            "Choose a text-only model that supports LoRA adapters."
+        ) from exc
+
+
+def _validate_weights(path, rank=None):
+    try:
+        with safe_open(str(path), framework="np") as weights:
+            groups = {}
+            keys = weights.keys()
+            for key in keys:
+                match = _LORA_TENSOR.search(key)
+                shape = weights.get_slice(key).get_shape()
+                if not match or len(shape) not in (2, 3) or not all(shape):
+                    raise ValueError(f"{path} contains an invalid LoRA tensor: {key}")
+                # Expert LoRA adds an expert axis and transposes the dense layout.
+                rank_axis = -2 if (match[1] == "lora_a") == (len(shape) == 3) else -1
+                if rank is not None and shape[rank_axis] != rank:
+                    raise ValueError(
+                        f"{path} tensor {key} does not match LoRA rank {rank}"
+                    )
+                start, end = match.span(1)
+                groups.setdefault((key[:start], key[end:]), set()).add(match[1])
+            if not groups or any(
+                pair != {"lora_a", "lora_b"} for pair in groups.values()
+            ):
+                raise ValueError(f"{path} must contain non-empty LoRA tensor pairs")
+    except (OSError, SafetensorError) as exc:
+        raise ValueError(f"cannot read {path}: {exc}") from exc
+
+
+def _validate_output(out, model, num_layers):
+    try:
+        validate_adapter(str(out), model)
+        config = json.loads((out / "adapter_config.json").read_text(encoding="utf-8"))
+        if (
+            type(config.get("num_layers")) is not int
+            or config["num_layers"] != num_layers
+        ):
+            raise ValueError("adapter_config.json must declare the trained num_layers")
+        params = config.get("lora_parameters")
+        if (
+            not isinstance(params, dict)
+            or type(params.get("rank")) is not int
+            or params["rank"] < 1
+            or any(
+                type(params.get(key)) not in (int, float)
+                or not math.isfinite(params[key])
+                for key in ("dropout", "scale")
+            )
+            or not 0 <= params["dropout"] < 1
+            or (
+                (keys := params.get("keys")) is not None
+                and (
+                    not isinstance(keys, list)
+                    or not all(isinstance(key, str) for key in keys)
+                )
+            )
+        ):
+            raise ValueError("adapter_config.json is missing usable lora_parameters")
+        _validate_weights(out / "adapters.safetensors", params["rank"])
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"mlx-lm did not produce a usable adapter: {exc}") from exc
 
 
 def _validate_resume(weights, model, num_layers):
@@ -250,7 +327,13 @@ def _validate_resume(weights, model, num_layers):
                 raise ValueError(f"{base_key} must be a nonempty string")
         except (OSError, ValueError) as exc:
             raise ValueError(f"--resume invalid {filename}: {exc}") from exc
-        if _base_identity(base) != _base_identity(model):
+        saved_path = Path(base).expanduser()
+        selected_path = Path(model).expanduser()
+        if _base_identity(base) != _base_identity(model) or (
+            saved_path.is_dir()
+            and selected_path.is_dir()
+            and saved_path.resolve() != selected_path.resolve()
+        ):
             raise ValueError(
                 f"--resume base mismatch in {filename}: trained on {base!r}, selected {model!r}"
             )
@@ -264,8 +347,17 @@ def _validate_resume(weights, model, num_layers):
                     f"requested --num-layers={num_layers}"
                 )
             layers_verified = True
-    if found_metadata and not layers_verified:
+    if not found_metadata:
+        raise ValueError(
+            f"--resume cannot verify the base and layers without {ADAPTER_METADATA} "
+            "or adapter_config.json beside the weights"
+        )
+    if not layers_verified:
         raise ValueError("--resume adapter metadata is missing num_layers")
+    try:
+        _validate_weights(weights)
+    except ValueError as exc:
+        raise ValueError(f"--resume invalid LoRA weights: {exc}") from exc
 
 
 def _stop_training(child):
@@ -354,21 +446,18 @@ def _train(args, model, data, out):
         )
 
 
-def _recover_output(out):
+def _recover_output(out, model, num_layers, sidecar_stat):
     try:
         numbered = sorted(
             (path for path in out.iterdir() if _NUMBERED_ADAPTER.fullmatch(path.name)),
             key=lambda path: int(path.name.split("_", 1)[0]),
             reverse=True,
         )
-        for checkpoint in (out / "adapters.safetensors", *numbered):
-            if not checkpoint.is_file():
-                continue
+        checkpoints = (out / "adapters.safetensors", *numbered)
+        for checkpoint in checkpoints:
             try:
-                with safe_open(str(checkpoint), framework="np") as weights:
-                    if not weights.keys():
-                        continue
-            except SafetensorError:
+                _validate_resume(checkpoint, model, num_layers)
+            except ValueError:
                 continue
             retry = shlex.join(["--resume", str(checkpoint), "--out", f"{out}-retry"])
             print(
@@ -378,12 +467,37 @@ def _recover_output(out):
                 file=sys.stderr,
             )
             return
-        shutil.rmtree(out)
+        sidecar = out / ADAPTER_METADATA
+        artifacts = (out / "adapter_config.json", *checkpoints, sidecar)
+        for path in artifacts:
+            try:
+                file_stat = path.lstat()
+                if not stat.S_ISREG(file_stat.st_mode):
+                    continue
+                if path == sidecar and (
+                    sidecar_stat is None
+                    or not os.path.samestat(file_stat, sidecar_stat)
+                ):
+                    continue
+                path.unlink()
+            except OSError:
+                # Report any files that could not be removed along with user files.
+                continue
+        try:
+            out.rmdir()
+        except OSError:
+            kept = ", ".join(repr(path.name) for path in sorted(out.iterdir()))
+            if not kept:
+                raise
+            print(
+                f"Kept {kept} in {out}. Retry with a fresh --out directory.",
+                file=sys.stderr,
+            )
     except FileNotFoundError:
         pass
-    except OSError as exc:
+    except OSError:
         print(
-            f"Could not clean up {out}: {exc}. Retry with a fresh --out directory.",
+            f"Could not clean up {out}. Retry with a fresh --out directory.",
             file=sys.stderr,
         )
 
@@ -393,6 +507,7 @@ def finetune_command(args):
     train = valid = 0
     has_valid_split = False
     created_out = None
+    sidecar_stat = None
     status = "err"
     try:
         if (
@@ -417,19 +532,21 @@ def finetune_command(args):
                 )
         try:
             validate_adapter_runtime(args.model)
-            validate_adapter_checkpoint(args.model)
         except ValueError as exc:
             raise ValueError(
                 f"Cannot fine-tune {reference!r} for serving with LoRA. {exc}. "
                 "Choose a text-only model that supports LoRA adapters."
             ) from exc
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        default = f"~/.rapid-mlx/adapters/{Path(reference).name}-{stamp}"
+        out = Path(args.out or default).expanduser().absolute()
+        if os.path.lexists(out):
+            raise ValueError("use a new --out directory.")
         if args.resume:
             _validate_resume(
                 Path(args.resume).expanduser(), args.model, args.num_layers
             )
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        default = f"~/.rapid-mlx/adapters/{Path(reference).name}-{stamp}"
-        out = Path(args.out or default).expanduser().absolute()
+        _check_checkpoint(args.model, args.model if local else reference)
         with tempfile.TemporaryDirectory(prefix="rapid-mlx-finetune-") as scratch:
             data, train, valid, has_valid_split = _prepare_data(
                 Path(args.data).expanduser(), scratch, args.batch_size
@@ -445,30 +562,44 @@ def finetune_command(args):
                 )
             _print_plan(args, out, train, valid)
             model = _training_model(args.model, reference)
+            if model != args.model:
+                _check_checkpoint(model, reference)
+                if args.resume:
+                    _validate_resume(
+                        Path(args.resume).expanduser(), model, args.num_layers
+                    )
+            serve_model = (
+                reference if not local and resolve_revision(reference) else model
+            )
             try:
-                out.mkdir(parents=True, exist_ok=False)
-            except FileExistsError:
-                print("Fine-tuning error: use a new --out directory.", file=sys.stderr)
-                return 1
+                out.mkdir(mode=0o700, parents=True, exist_ok=False)
+            except FileExistsError as exc:
+                raise ValueError("use a new --out directory.") from exc
             created_out = out
             _train(args, model, data, out)
+            _validate_output(out, serve_model, args.num_layers)
             metadata = read_model_metadata(model)
             config = (metadata.config or {}) if metadata else {}
             quant = (
                 config.get("quantization") or config.get("quantization_config") or {}
             )
-            atomic_write_json(
-                out / ADAPTER_METADATA,
-                {
-                    "base_model": model if local else args.model,
-                    "quantization_bits": quant.get("bits"),
-                    "adapter_type": "lora",
-                    "num_layers": args.num_layers,
-                    "rapid_mlx_version": __version__,
-                    "mlx_lm_version": version("mlx-lm"),
-                },
-            )
-        serve_model = model if local and reference == args.model else reference
+            with tempfile.TemporaryDirectory(dir=out) as staging:
+                sidecar = Path(staging) / ADAPTER_METADATA
+                atomic_write_json(
+                    sidecar,
+                    {
+                        "base_model": model if local else args.model,
+                        "quantization_bits": quant.get("bits"),
+                        "adapter_type": "lora",
+                        "num_layers": args.num_layers,
+                        "rapid_mlx_version": __version__,
+                        "mlx_lm_version": version("mlx-lm"),
+                    },
+                )
+                # Record the inode before linking so cleanup also covers an interrupt
+                # immediately after publication, while preserving a colliding file.
+                sidecar_stat = sidecar.stat()
+                os.link(sidecar, out / ADAPTER_METADATA)
         print(shlex.join(["rapid-mlx", "serve", serve_model, "--adapter", str(out)]))
         status = "ok"
         return 0
@@ -480,12 +611,16 @@ def finetune_command(args):
         status = "oom"
         print(f"Fine-tuning ran out of memory. {_MEMORY_TIP}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        reason = exc.strerror or "system operation failed"
+        print(f"Fine-tuning error: {reason}.", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"Fine-tuning error: {exc}", file=sys.stderr)
         return 1
     finally:
         if created_out is not None and status != "ok":
-            _recover_output(created_out)
+            _recover_output(created_out, model, args.num_layers, sidecar_stat)
         elapsed = time.monotonic() - started
         rows = train + valid
         duration = "<1m" if elapsed < 60 else "1-5m" if elapsed < 300 else "5m+"

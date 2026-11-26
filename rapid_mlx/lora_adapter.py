@@ -109,10 +109,34 @@ def reject_adapter_options(
 
 
 def validate_adapter_checkpoint(model: str) -> None:
-    from .spec_decode.mtp.detect import _mtp_num_hidden_layers
-    from .utils.tokenizer import _read_model_config_json, _read_num_mtp_layers
+    try:
+        config = _read_checkpoint_config(model, model)
+    except Exception:
+        return  # Serve can inspect the config again after resolving the snapshot.
+    _validate_checkpoint_config(config or {})
 
-    config = _read_model_config_json(model) or {}
+
+def _read_checkpoint_config(model: str, reference: str) -> dict | None:
+    from . import model_downloads
+    from .model_aliases import resolve_revision, resolve_subfolder
+    from .model_metadata import _read_json
+
+    path = Path(model)
+    if path.is_dir():
+        return _read_json(path / "config.json")
+    subfolder = resolve_subfolder(reference)
+    filename = f"{subfolder}/config.json" if subfolder else "config.json"
+    repo = reference if resolve_revision(reference) else model
+    try:
+        config = model_downloads.hf_hub_download(repo, filename, local_files_only=True)
+    except Exception:
+        config = model_downloads.hf_hub_download(repo, filename)
+    return _read_json(Path(config))
+
+
+def _validate_checkpoint_config(config: dict) -> None:
+    from .spec_decode.mtp.detect import _mtp_num_hidden_layers
+
     if (
         any(key in config for key in ("vision_config", "audio_config"))
         or config.get("model_type") == "lfm3_vl"
@@ -123,6 +147,14 @@ def validate_adapter_checkpoint(model: str) -> None:
     quant = config.get("quantization_config") or {}
     if "fp8" in str(quant).lower():
         raise ValueError("--adapter is unsupported with fp8 repack checkpoints")
+
+
+def _read_num_mtp_layers(config: dict) -> int:
+    """Read num_nextn_predict_layers from the root or nested text config."""
+    n = config.get("num_nextn_predict_layers", 0)
+    if n == 0 and isinstance(text_config := config.get("text_config"), dict):
+        n = text_config.get("num_nextn_predict_layers", 0)
+    return n
 
 
 def validate_adapter_runtime(model: str, *, cua_only: bool = False) -> None:
