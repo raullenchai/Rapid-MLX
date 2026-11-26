@@ -14,7 +14,7 @@ import pytest
 from huggingface_hub import constants
 from safetensors.numpy import save_file
 
-from rapid_mlx import cli
+from rapid_mlx import cli, model_aliases
 from rapid_mlx import finetune as ft
 from rapid_mlx.lora_adapter import validate_adapter
 from rapid_mlx.telemetry.registry import validate
@@ -761,6 +761,37 @@ def test_zero_exit_requires_usable_adapter(
         assert "--resume" not in stderr
         assert not out.exists()
     assert track.call_args.args[1]["cmd_status"] == "err"
+
+
+@pytest.mark.parametrize("revision", [None, "a" * 40])
+def test_cached_subfolder_used_for_preflight_and_training(
+    tmp_path, monkeypatch, revision
+):
+    alias = "test-subfolder"
+    repo = "test-org/test-repo"
+    profile = model_aliases.AliasProfile(
+        hf_path=repo, revision=revision, subfolder="4bit"
+    )
+    monkeypatch.setattr(model_aliases, "_aliases", {alias: profile})
+    monkeypatch.setattr(model_aliases, "_hf_to_alias", {repo.lower(): alias})
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    repo_root = tmp_path / "models--test-org--test-repo"
+    (repo_root / "refs").mkdir(parents=True)
+    (repo_root / "refs" / "main").write_text("b" * 40)
+    checkpoint = repo_root / "snapshots" / (revision or "a" * 40) / "4bit"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"model_type":"qwen3"}')
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    for method in ("hf_hub_download", "snapshot_download"):
+        monkeypatch.setattr(
+            ft.model_downloads,
+            method,
+            MagicMock(side_effect=AssertionError("expected a cache hit")),
+        )
+
+    ft._check_checkpoint(repo, alias)
+    assert ft._training_model(repo, alias) == str(checkpoint)
 
 
 def test_materialized_checkpoint_is_checked_before_launch(

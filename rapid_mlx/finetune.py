@@ -220,24 +220,25 @@ def _print_plan(args, out, train, valid):
 def _training_model(model, reference):
     if Path(model).exists():
         return str(Path(model).absolute())
-    subfolder = resolve_subfolder(reference)
-    pinned = resolve_revision(reference)
-    if cached := resolve_offline_cached_snapshot(reference):
+    repo = reference if resolve_revision(reference) else model
+    # The cache resolver already returns the checkpoint directory.
+    if cached := resolve_offline_cached_snapshot(repo):
         return str(cached)
+    subfolder = resolve_subfolder(reference)
     prefix = f"{subfolder}/" if subfolder else ""
     snapshot = model_downloads.snapshot_download(
-        reference if pinned else model,
-        allow_patterns=[prefix + pattern for pattern in _MODEL_FILES],
+        repo, allow_patterns=[prefix + pattern for pattern in _MODEL_FILES]
     )
     return str(Path(snapshot) / (subfolder or ""))
 
 
 def _check_checkpoint(model, reference):
     try:
-        cached = (
-            None if Path(model).is_dir() else resolve_offline_cached_snapshot(reference)
-        )
-        config = _read_checkpoint_config(str(cached) if cached else model, reference)
+        if not Path(model).is_dir():
+            repo = reference if resolve_revision(reference) else model
+            if cached := resolve_offline_cached_snapshot(repo):
+                model = str(cached)
+        config = _read_checkpoint_config(model, reference)
         if not config:
             raise ValueError(f"missing or invalid config.json for {model}")
         _validate_checkpoint_config(config)

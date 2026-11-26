@@ -149,12 +149,14 @@ def _validate_checkpoint_config(config: dict) -> None:
         raise ValueError("--adapter is unsupported with fp8 repack checkpoints")
 
 
-def _read_num_mtp_layers(config: dict) -> int:
+def _read_num_mtp_layers(config: dict[str, object]) -> int:
     """Read num_nextn_predict_layers from the root or nested text config."""
-    n = config.get("num_nextn_predict_layers", 0)
-    if n == 0 and isinstance(text_config := config.get("text_config"), dict):
-        n = text_config.get("num_nextn_predict_layers", 0)
-    return n
+    count = config.get("num_nextn_predict_layers")
+    if type(count) is int and count:
+        return count
+    if isinstance(text_config := config.get("text_config"), dict):
+        count = text_config.get("num_nextn_predict_layers")
+    return count if type(count) is int else 0
 
 
 def validate_adapter_runtime(model: str, *, cua_only: bool = False) -> None:
