@@ -7284,5 +7284,233 @@
       "content_deltas": 0,
       "input_chunks": 40
     }
+  },
+  {
+    "suite": "focused",
+    "key": [
+      "qwen3",
+      "hermes",
+      "implicit",
+      false,
+      "absent",
+      "chat",
+      false,
+      "chars"
+    ],
+    "changed_fields": [
+      "content",
+      "reasoning"
+    ],
+    "classification": "intended-fix",
+    "confidence": "regression-tested",
+    "reasons": [
+      "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+    ],
+    "baseline": {
+      "content": "Answer",
+      "reasoning": "Secret.",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    },
+    "main": {
+      "content": "Secret.Answer",
+      "reasoning": "",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    }
+  },
+  {
+    "suite": "focused",
+    "key": [
+      "qwen3",
+      "hermes",
+      "implicit",
+      false,
+      "absent",
+      "responses",
+      false,
+      "chars"
+    ],
+    "changed_fields": [
+      "content",
+      "reasoning"
+    ],
+    "classification": "intended-fix",
+    "confidence": "regression-tested",
+    "reasons": [
+      "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+    ],
+    "baseline": {
+      "content": "Answer",
+      "reasoning": "Secret.",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    },
+    "main": {
+      "content": "Secret.Answer",
+      "reasoning": "",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    }
+  },
+  {
+    "suite": "focused",
+    "key": [
+      "qwen3",
+      "hermes",
+      "implicit",
+      false,
+      "absent",
+      "messages",
+      false,
+      "chars"
+    ],
+    "changed_fields": [
+      "content",
+      "reasoning"
+    ],
+    "classification": "intended-fix",
+    "confidence": "regression-tested",
+    "reasons": [
+      "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+    ],
+    "baseline": {
+      "content": "Answer",
+      "reasoning": "Secret.",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    },
+    "main": {
+      "content": "Secret.Answer",
+      "reasoning": "",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    }
+  },
+  {
+    "suite": "focused",
+    "key": [
+      "qwen3",
+      "hermes",
+      "implicit",
+      false,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "changed_fields": [
+      "content",
+      "reasoning"
+    ],
+    "classification": "intended-fix",
+    "confidence": "regression-tested",
+    "reasons": [
+      "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+    ],
+    "baseline": {
+      "content": "Answer",
+      "reasoning": "Secret.",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    },
+    "main": {
+      "content": "Secret.Answer",
+      "reasoning": "",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    }
+  },
+  {
+    "suite": "focused",
+    "key": [
+      "qwen3",
+      "hermes",
+      "implicit",
+      false,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "changed_fields": [
+      "content",
+      "reasoning"
+    ],
+    "classification": "intended-fix",
+    "confidence": "regression-tested",
+    "reasons": [
+      "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+    ],
+    "baseline": {
+      "content": "Answer",
+      "reasoning": "Secret.",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    },
+    "main": {
+      "content": "Secret.Answer",
+      "reasoning": "",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    }
+  },
+  {
+    "suite": "focused",
+    "key": [
+      "qwen3",
+      "hermes",
+      "implicit",
+      false,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "changed_fields": [
+      "content",
+      "reasoning"
+    ],
+    "classification": "intended-fix",
+    "confidence": "regression-tested",
+    "reasons": [
+      "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+    ],
+    "baseline": {
+      "content": "Answer",
+      "reasoning": "Secret.",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    },
+    "main": {
+      "content": "Secret.Answer",
+      "reasoning": "",
+      "calls": [],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 21
+    }
   }
 ]

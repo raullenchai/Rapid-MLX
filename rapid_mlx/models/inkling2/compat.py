@@ -3,8 +3,6 @@
 """Text runtime helpers; provenance and compatibility scope are in NOTICE."""
 
 from functools import lru_cache
-from inspect import signature
-from typing import TYPE_CHECKING
 
 import mlx.core as mx
 from mlx import nn
@@ -13,14 +11,7 @@ from ... import _mlx_compat as _mlx_compat
 
 _mlx_compat.install()
 
-from mlx_lm.models.switch_layers import SwitchLinear as _NativeSwitchLinear
-
-if TYPE_CHECKING:
-    from .switch_layers import SwitchLinear, _gather_sort, _scatter_unsort
-elif "global_scale" in signature(_NativeSwitchLinear.to_quantized).parameters:
-    from mlx_lm.models.switch_layers import SwitchLinear, _gather_sort, _scatter_unsort
-else:
-    from .switch_layers import SwitchLinear, _gather_sort, _scatter_unsort
+from .switch_layers import SwitchLinear, _gather_sort, _scatter_unsort
 
 try:
     from mlx_lm.kernels.expert_routing import expert_routing
