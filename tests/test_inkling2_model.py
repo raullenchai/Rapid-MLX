@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "b75d045c657d894471fbc90b669c431127461ab15a65c2da8913d29c5e2de3cd",
-    "kernels.py": "5a8ae1e3c635bab00944aa7ed667eff628c98f7718ed718ee109d26dd9ebf055",
+    "kernels.py": "a06df094acc4eb4d5a870fa6c5ab06f455e0dc65bd59b2317a2e5f43804c5adc",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",

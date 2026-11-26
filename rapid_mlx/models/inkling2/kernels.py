@@ -38,6 +38,8 @@ def _expert_conv_residual_factory():
                 "mask",
                 "lengths",
                 "outer",
+                # Scalar input: bound by reference in the kernel, so it is used
+                # directly rather than indexed.
                 "divisor",
             ],
             output_names=["out", "next_state"],
