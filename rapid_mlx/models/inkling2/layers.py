@@ -3,6 +3,7 @@
 
 import math
 import os
+import threading
 from functools import partial, wraps
 from typing import Any, cast
 
@@ -60,6 +61,7 @@ __all__ = [
 ]
 
 
+_DECODE_PACK_LOCK = threading.RLock()
 _ROUTER_SCORE_EPS = 1e-20
 
 
@@ -356,9 +358,11 @@ class DynamicShortConvolution(nn.Module):
         conv_mask: mx.array | None,
         *,
         lengths: mx.array | None = None,
+        dynamic: mx.array | None = None,
     ) -> tuple[mx.array, mx.array]:
         B, L, C = hidden_states.shape
         K, H = self.kernel_size, self.num_heads
+        dynamic = self.weight_proj(dynamic_input) if dynamic is None else dynamic
         if L == 1 and _fast_decode_enabled() and _use_kernels():
             return short_convolution_decode(
                 hidden_states,
@@ -366,11 +370,11 @@ class DynamicShortConvolution(nn.Module):
                 self.static_weight,
                 conv_mask,
                 K,
-                dynamic=self.weight_proj(dynamic_input),
+                dynamic=dynamic,
                 num_heads=H,
                 lengths=lengths,
             )
-        dynamic_weights = self.weight_proj(dynamic_input).astype(mx.float32)
+        dynamic_weights = dynamic.astype(mx.float32)
         dynamic_weights = dynamic_weights.reshape(B, L, H, 1, K)
         static_weights = self.static_weight.astype(mx.float32).T.reshape(H, -1, K)
         weights = static_weights + dynamic_weights
@@ -461,6 +465,94 @@ def _decode_attention_bias(position_bias, distance, visible, extent):
     return mx.where(visible, bias, -mx.inf)
 
 
+def _packed_quantized_projections(owner, name, projections, x):
+    """Pack once after loading; parameter slices share the packed allocation.
+
+    Each pack variant gets a one-time evaluated matmul probe before publication.
+    Construction or evaluated-probe failure disables the pack before publication,
+    so it is never used and callers keep the unpacked projections. Real calls use
+    stock quantized matmul on concatenated weights and return lazy outputs;
+    invocation and later evaluation failures propagate without runtime fallback.
+    """
+    if any(type(p) is not nn.QuantizedLinear or "bias" in p for p in projections):
+        return None
+    first = projections[0]
+    config = (first.group_size, first.bits, first.mode)
+    fields = ("weight", "scales") + (
+        ("biases",) if first.get("biases") is not None else ()
+    )
+    if any(
+        (p.group_size, p.bits, p.mode) != config
+        or (p.get("biases") is None) != (first.get("biases") is None)
+        or any(
+            p[f].dtype != first[f].dtype or p[f].shape[1:] != first[f].shape[1:]
+            for f in fields
+        )
+        for p in projections
+    ):
+        return None
+    sources = tuple(p[f] for p in projections for f in fields)
+    attr = f"_decode_pack_{name}"
+    cached = getattr(owner, attr, None)
+    if cached is False:
+        return None
+    if (
+        cached is None
+        or cached[0] != config
+        or any(a is not b for a, b in zip(sources, cached[1]))
+    ):
+        with _DECODE_PACK_LOCK:
+            if getattr(owner, attr, None) is not cached:
+                return _packed_quantized_projections(owner, name, projections, x)
+            try:
+                packed = {
+                    f: mx.concatenate([p[f] for p in projections], axis=0)
+                    for f in fields
+                }
+                mx.eval(*packed.values())
+                mx.eval(
+                    mx.quantized_matmul(
+                        mx.zeros((1, 1, x.shape[-1]), dtype=x.dtype),
+                        packed["weight"],
+                        scales=packed["scales"],
+                        biases=packed.get("biases"),
+                        transpose=True,
+                        group_size=config[0],
+                        bits=config[1],
+                        mode=config[2],
+                    )
+                )
+                ends = []
+                start = 0
+                replacements = []
+                for p in projections:
+                    end = start + p.weight.shape[0]
+                    replacements.extend(packed[f][start:end] for f in fields)
+                    ends.append(end)
+                    start = end
+                mx.eval(replacements)
+            except Exception:
+                object.__setattr__(owner, attr, False)
+                return None
+            sources = tuple(replacements)
+            for p, offset in zip(projections, range(0, len(sources), len(fields))):
+                for i, f in enumerate(fields):
+                    p[f] = sources[offset + i]
+            cached = (config, sources, packed, ends[:-1])
+            object.__setattr__(owner, attr, cached)
+    output = mx.quantized_matmul(
+        x,
+        cached[2]["weight"],
+        scales=cached[2]["scales"],
+        biases=cached[2].get("biases"),
+        transpose=True,
+        group_size=config[0],
+        bits=config[1],
+        mode=config[2],
+    )
+    return mx.split(output, cached[3], axis=-1)
+
+
 class Attention(nn.Module):
     def __init__(self, args: TextArgs, *, sliding: bool):
         super().__init__()
@@ -498,6 +590,45 @@ class Attention(nn.Module):
         )
         self.eps = args.rms_norm_eps
 
+    def _project_inputs(self, hidden, key, value, cache):
+        primary = kv = kp = vp = None
+        if (
+            hidden.shape[:2] == (1, 1)
+            and key.shape[:2] == value.shape[:2] == (1, 1)
+            and cache is not None
+            and cache[0] is not None
+            and cache[0].offset > 0
+            and _fast_decode_enabled()
+            and _use_kernels()
+        ):
+            primary = _packed_quantized_projections(
+                self,
+                "query",
+                (self.q_proj, self.r_proj, self.gate_proj, self.sink_proj),
+                hidden,
+            )
+            if isinstance(self.k_sconv, DynamicShortConvolution):
+                kp = _packed_quantized_projections(
+                    self, "k", (self.k_proj, self.k_sconv.weight_proj), key
+                )
+                vp = _packed_quantized_projections(
+                    self, "v", (self.v_proj, self.v_sconv.weight_proj), value
+                )
+            elif key is value:
+                kv = _packed_quantized_projections(
+                    self, "kv", (self.k_proj, self.v_proj), key
+                )
+        q, r, *gate_sinks = (
+            primary
+            if primary is not None
+            else (self.q_proj(hidden), self.r_proj(hidden))
+        )
+        k = kp[0] if kp is not None else kv[0] if kv is not None else self.k_proj(key)
+        v = vp[0] if vp is not None else kv[1] if kv is not None else self.v_proj(value)
+        kw = kp[1] if kp is not None else None
+        vw = vp[1] if vp is not None else None
+        return q, k, v, r, gate_sinks, kw, vw
+
     def _attend(
         self,
         hidden_states: mx.array,
@@ -507,10 +638,13 @@ class Attention(nn.Module):
         relative_states: mx.array,
         cache: Any | None,
         tau: mx.array | None = None,
+        gate_sinks=None,
     ) -> mx.array:
         B, L, _ = hidden_states.shape
-        gate = self.gate_proj(hidden_states)
-        sinks = self.sink_proj(hidden_states)
+        gate, sinks = gate_sinks or (
+            self.gate_proj(hidden_states),
+            self.sink_proj(hidden_states),
+        )
 
         query_states = query_states.reshape(B, L, self.num_heads, -1)
         key_states = key_states.reshape(B, L, self.num_key_value_heads, -1)
@@ -611,25 +745,29 @@ class SlidingAttention(Attention):
         conv_mask: mx.array | None,
     ) -> mx.array:
         kv_cache = cache[0] if cache is not None else None
+        q, k, v, r, gate_sinks, _, _ = self._project_inputs(
+            hidden_states, key_hidden_states, value_hidden_states, cache
+        )
         key_states, conv_states[0] = self.k_sconv(
-            self.k_proj(key_hidden_states),
+            k,
             conv_states[0],
             conv_mask,
             lengths=cache[1].lengths if cache is not None else None,
         )
         value_states, conv_states[1] = self.v_sconv(
-            self.v_proj(value_hidden_states),
+            v,
             conv_states[1],
             conv_mask,
             lengths=cache[1].lengths if cache is not None else None,
         )
         return self._attend(
             hidden_states,
-            self.q_proj(hidden_states),
+            q,
             key_states,
             value_states,
-            self.r_proj(hidden_states),
+            r,
             kv_cache,
+            gate_sinks=gate_sinks,
         )
 
 
@@ -654,19 +792,24 @@ class FullAttention(Attention):
         conv_mask: mx.array | None,
     ) -> mx.array:
         kv_cache = cache[0] if cache is not None else None
+        q, k, v, r, gate_sinks, kw, vw = self._project_inputs(
+            hidden_states, key_hidden_states, value_hidden_states, cache
+        )
         key_states, conv_states[0] = self.k_sconv(
-            self.k_proj(key_hidden_states),
+            k,
             key_hidden_states,
             conv_states[0],
             conv_mask,
             lengths=cache[1].lengths if cache is not None else None,
+            dynamic=kw,
         )
         value_states, conv_states[1] = self.v_sconv(
-            self.v_proj(value_hidden_states),
+            v,
             value_hidden_states,
             conv_states[1],
             conv_mask,
             lengths=cache[1].lengths if cache is not None else None,
+            dynamic=vw,
         )
 
         offset = kv_cache.offset if kv_cache is not None else 0
@@ -685,12 +828,13 @@ class FullAttention(Attention):
             )
         return self._attend(
             hidden_states,
-            self.q_proj(hidden_states),
+            q,
             key_states,
             value_states,
-            self.r_proj(hidden_states),
+            r,
             kv_cache,
             tau=tau[..., None, None],
+            gate_sinks=gate_sinks,
         )
 
 

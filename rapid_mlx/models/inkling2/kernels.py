@@ -128,6 +128,10 @@ def expert_conv_residual_decode(
     variant, and guarded invocation. Evaluation of real lazy outputs is
     intentionally not wrapped because decode evaluates asynchronously.
     """
+    if any(value is None for value in (x, mix, state, weight, outer)):
+        return None
+    if weight.ndim != 3:
+        return None
     C, K = weight.shape[:2]
     types = (mx.float32, mx.bfloat16, mx.float16)
     if not (
@@ -146,6 +150,8 @@ def expert_conv_residual_decode(
         and 2 <= K <= 5
         and outer.shape == (1, 1, C)
         and outer.dtype == mx.float32
+        and (mask is None or (mask.shape == (1, 1) and mask.dtype == mx.bool_))
+        and (lengths is None or (lengths.shape == (1,) and lengths.dtype == mx.int32))
         and all(t in types for t in (dtype, x.dtype, weight.dtype))
     ):
         return None
