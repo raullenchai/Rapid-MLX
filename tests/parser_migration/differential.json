@@ -15383,8 +15383,8 @@
         "chars"
       ],
       "result": {
-        "content": "Answer",
-        "reasoning": "Secret.",
+        "content": "Secret.Answer",
+        "reasoning": "",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -15471,8 +15471,8 @@
         "chars"
       ],
       "result": {
-        "content": "Answer",
-        "reasoning": "Secret.",
+        "content": "Secret.Answer",
+        "reasoning": "",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -15559,8 +15559,8 @@
         "chars"
       ],
       "result": {
-        "content": "Answer",
-        "reasoning": "Secret.",
+        "content": "Secret.Answer",
+        "reasoning": "",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -15647,8 +15647,8 @@
         "chars"
       ],
       "result": {
-        "content": "Answer",
-        "reasoning": "Secret.",
+        "content": "Secret.Answer",
+        "reasoning": "",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -15735,8 +15735,8 @@
         "chars"
       ],
       "result": {
-        "content": "Answer",
-        "reasoning": "Secret.",
+        "content": "Secret.Answer",
+        "reasoning": "",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -15823,8 +15823,8 @@
         "chars"
       ],
       "result": {
-        "content": "Answer",
-        "reasoning": "Secret.",
+        "content": "Secret.Answer",
+        "reasoning": "",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,

@@ -82,6 +82,8 @@ LENGTH_STOP_REASON = (
     "no notice or reasoning tail is copied into content (#5295)."
 )
 
+THINKING_OFF_REASON = "Thinking disabled without a prompt-opened reasoning channel requires a leading <think>; implicit-style output remains content, with existing content sanitation unchanged."
+
 DATA = json.loads(
     Path(__file__).with_name("prompt_owner_differential.json").read_text()
 )
@@ -92,9 +94,7 @@ def test_prompt_owner_differential(row):
     assert replay(row["key"]) == row["candidate"]
     assert bool(row["reason"]) == (row["baseline"] != row["candidate"])
     if row["key"][0] == "qwen3.5":
-        # The Flint/LFM2.5 owner does not reach qwen3.5; its rows may differ
-        # from the baseline only by the length-stop rule: no content, and the
-        # unfinished trace stays reasoning (buffered Messages used to trim it).
+        # Keep the two intentional Qwen behavior changes explicit.
         if row["reason"] == LENGTH_STOP_REASON:
             assert row["key"][4] == "truncated"
             assert row["candidate"] == {
@@ -103,6 +103,14 @@ def test_prompt_owner_differential(row):
                 "reasoning": "private unfinished plan",
                 "first_content_index": None,
                 "content_deltas": 0,
+            }
+        elif row["reason"] == THINKING_OFF_REASON:
+            assert row["key"][2] is False
+            assert row["key"][4] == "stray_close"
+            assert row["candidate"] == {
+                **row["baseline"],
+                "content": "unmarkedanswer",
+                "reasoning": "",
             }
         else:
             assert row["candidate"] == row["baseline"]
