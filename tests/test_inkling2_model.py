@@ -78,8 +78,8 @@ CONFIG["text_config"]["loop_config"] = {
 # decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "4e467ff1ed00642a193c7197fa79b7ceca32faeda8bbed5b4095a9cb2aed0ed7",
-    "kernels.py": "453a7ae4235d28de5e378247a32057f88dc7baecd6540d4905dd752d3a35d0b6",
+    "layers.py": "3aa97bf3a164be51542fc27c6f5e067328dae509873397e4259039790293e099",
+    "kernels.py": "29adfdf175cc55e8b36b113de88b1f9071a283d686826d2bf72df9c79da3eba1",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -2742,6 +2742,7 @@ def projection_cpu(glue_loader, monkeypatch):
         **{
             name: Mock()
             for name in (
+                "attend_clip_decode",
                 "attention_mask_decode",
                 "depth_attention",
                 "message_mix_decode",
@@ -3066,3 +3067,342 @@ def test_router_shared_decode_switch(projection_cpu, monkeypatch):
     assert not cpu.layers._fast_decode_enabled()
     fallback.assert_called_once()
     forbidden.assert_not_called()
+
+
+@pytest.fixture
+def attend_cpu(message_cpu, monkeypatch):
+    mx, kernels, layers = message_cpu
+    for name in ("sqrt", "minimum"):
+        monkeypatch.setattr(mx, name, getattr(np, name), raising=False)
+    return mx, kernels, layers
+
+
+def _attend_args(mx, dk=16, dr=4, dtype=None, tau=True):
+    dtype = mx.float32 if dtype is None else dtype
+    return [
+        mx.ones((1, 1, 4, dk), dtype=dtype),
+        mx.ones((1, 1, 2, dk), dtype=dtype),
+        mx.ones((1, 1, 4, dr), dtype=dtype),
+        mx.ones((4, dk)),
+        mx.ones((4, dr)),
+        3.0,
+        2.0,
+        mx.ones((1,)) if tau else None,
+    ]
+
+
+@pytest.mark.parametrize("tau", [False, True])
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "call"]
+)
+def test_attend_clip_cpu_failures(attend_cpu, monkeypatch, tau, failure):
+    mx, kernels, layers = attend_cpu
+    args = _attend_args(mx, tau=tau)
+    probe = [object(), object(), object()]
+    events = []
+
+    def launch(**kw):
+        events.append("launch")
+        if len(events) == 1:
+            if failure == "probe":
+                raise RuntimeError("probe invocation")
+            return probe
+        if failure == "call":
+            raise RuntimeError("real invocation")
+        q, k, r, qs, rs, qt, rt, t = kw["inputs"]
+        out = [
+            layers._l2_clip(x, s, threshold)
+            for x, s, threshold in ((q, qs, qt), (k, 1.0, qt), (r, rs, rt))
+        ]
+        if tau:
+            out[0], out[2] = [layers._scale_states(out[i], t) for i in (0, 2)]
+        return out
+
+    def evaluate(*outputs):
+        assert outputs == tuple(probe)
+        events.append("evaluate")
+        if failure == "evaluation":
+            raise RuntimeError("lazy compilation")
+
+    factory = Mock(
+        side_effect=RuntimeError("construction") if failure == "construction" else None,
+        return_value=launch,
+    )
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    mx.eval.side_effect = evaluate
+    for _ in range(2):
+        actual = kernels.attend_clip_decode(*args)
+        if failure:
+            assert actual is None
+        else:
+            assert actual is not None
+            np.testing.assert_array_equal(
+                actual[0], layers._l2_clip(args[0], args[3], 3)
+            )
+    factory.assert_called_once()
+    if failure == "construction":
+        assert events == []
+    elif failure == "probe":
+        assert events == ["launch"]
+    elif failure == "evaluation":
+        assert events == ["launch", "evaluate"]
+    else:
+        assert events == ["launch", "evaluate", "launch", "launch"]
+    # Distinct dimensions, dtypes, scale dtypes and tau modes get separate probes.
+    assert kernels._get_attend_clip.cache_info().hits == 1
+    assert kernels._get_attend_clip.cache_info().misses == 1
+
+
+@pytest.mark.parametrize("case", range(26))
+def test_attend_clip_cpu_guards(attend_cpu, monkeypatch, case):
+    mx, kernels, _ = attend_cpu
+    args = _attend_args(mx)
+    changes = [
+        *[(i, None) for i in range(7)],
+        (0, mx.ones((1, 4, 16))),
+        (0, mx.ones((2, 1, 4, 16))),
+        (0, mx.ones((1, 2, 4, 16))),
+        (1, mx.ones((1, 1, 2, 16), dtype=mx.float16)),
+        (0, mx.ones((1, 1, 4, 16), dtype=np.int32)),
+        (0, mx.ones((1, 1, 0, 16))),
+        (0, mx.ones((1, 1, 129, 16))),
+        (1, mx.ones((1, 1, 0, 16))),
+        (1, mx.ones((1, 1, 129, 16))),
+        (2, mx.ones((1, 1, 3, 4))),
+        (1, mx.ones((1, 1, 2, 32))),
+        (0, mx.ones((1, 1, 4, 8))),
+        (2, mx.ones((1, 1, 4, 128))),
+        (3, mx.ones((4, 15))),
+        (4, mx.ones((4, 3))),
+        (3, mx.ones((4, 16), dtype=np.int32)),
+        (4, mx.ones((4, 4), dtype=np.int32)),
+        (7, mx.ones((2,))),
+        (7, mx.ones((1,), dtype=mx.float16)),
+    ]
+    i, value = changes[case]
+    args[i] = value
+    forbidden = Mock(side_effect=AssertionError("unsupported kernel"))
+    monkeypatch.setattr(kernels, "_get_attend_clip", forbidden)
+    assert kernels.attend_clip_decode(*args) is None
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("tau", [False, True])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "fast",
+        "fallback",
+        "prefill",
+        "uncached",
+        "off",
+        "cpu",
+        "table",
+        "construction",
+        "probe",
+        "evaluation",
+        "call",
+    ],
+)
+def test_attend_clip_cpu_attention(attend_cpu, monkeypatch, tau, mode):
+    mx, kernels, layers = attend_cpu
+    q, k, r, qs, rs, qt, rt, t = _attend_args(mx, tau=tau)
+    if mode == "prefill":
+        q, k, r = [np.repeat(a, 2, axis=1) for a in (q, k, r)]
+    shape = q.shape[:2] + (64,)
+    hidden = mx.ones(shape)
+    clipped = [
+        layers._l2_clip(x, s, threshold)
+        for x, s, threshold in ((q, qs, qt), (k, 1.0, qt), (r, rs, rt))
+    ]
+    if tau:
+        clipped[0], clipped[2] = [layers._scale_states(clipped[i], t) for i in (0, 2)]
+    failed = mode in ("construction", "probe", "evaluation", "call")
+    if failed:
+        outputs = [object(), object(), object()]
+        kernel = Mock(
+            side_effect=RuntimeError("probe") if mode == "probe" else None,
+            return_value=outputs,
+        )
+        if mode == "call":
+            kernel.side_effect = [outputs, RuntimeError("real invocation")]
+        factory = Mock(
+            side_effect=RuntimeError("construction")
+            if mode == "construction"
+            else None,
+            return_value=kernel,
+        )
+        monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+        if mode == "evaluation":
+            mx.eval.side_effect = RuntimeError("lazy compilation")
+        fast = Mock(wraps=kernels.attend_clip_decode)
+    else:
+        fast = Mock(return_value=clipped if mode == "fast" else None)
+    monkeypatch.setattr(layers, "attend_clip_decode", fast)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0" if mode == "off" else "1")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: mode != "cpu")
+    monkeypatch.setitem(layers._DECODE_FUSIONS, "attend_clip", mode != "table")
+
+    def clip(scale, threshold):
+        result = Mock(side_effect=lambda x: layers._l2_clip(x, scale, threshold))
+        result.scale, result.threshold = scale, threshold
+        return result
+
+    attn = SimpleNamespace(
+        num_heads=4,
+        num_key_value_heads=2,
+        eps=1e-6,
+        q_l2_clip=clip(qs, qt),
+        k_l2_clip=clip(1.0, qt),
+        rel_l2_clip=clip(rs, rt),
+        gate_proj=Mock(return_value=hidden),
+        sink_proj=Mock(return_value=hidden),
+        rel_logits_proj=Mock(side_effect=lambda x: x),
+        _attention=Mock(side_effect=lambda q, *a: q.transpose(0, 2, 1, 3)),
+        o_proj=Mock(side_effect=lambda x: x),
+    )
+    cache = (
+        None
+        if mode == "uncached"
+        else SimpleNamespace(update_and_fetch=Mock(side_effect=lambda k, v: (k, v)))
+    )
+    norm = Mock(side_effect=lambda x, eps: x)
+    monkeypatch.setattr(layers, "_value_norm", norm)
+    monkeypatch.setattr(layers, "_gate_attention", lambda x, gate: x)
+    layers.Attention._attend(attn, hidden, q, k, k, r, cache, t)
+    assert fast.call_count == (1 if mode in ("fast", "fallback") or failed else 0)
+    if failed:
+        factory.assert_called_once()
+        assert kernel.call_count == (
+            0 if mode == "construction" else 2 if mode == "call" else 1
+        )
+        assert mx.eval.call_count == (0 if mode in ("construction", "probe") else 1)
+    for c in (attn.q_l2_clip, attn.k_l2_clip, attn.rel_l2_clip):
+        assert c.call_count == (0 if mode == "fast" else 1)
+    norm.assert_called_once()
+    np.testing.assert_array_equal(
+        attn._attention.call_args.args[0], clipped[0].transpose(0, 2, 1, 3)
+    )
+    np.testing.assert_array_equal(attn.rel_logits_proj.call_args.args[0], clipped[2])
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_attend_clip_exact(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    original = kernels._get_attend_clip
+    launches = Mock()
+
+    def selected(*args):
+        kernel = original(*args)
+        assert kernel is not None
+        return lambda **kw: (launches(), kernel(**kw))[1]
+
+    monkeypatch.setattr(kernels, "_get_attend_clip", selected)
+    dtype = getattr(mx, dtype)
+    mx.random.seed(41)
+    for dk, dr in ((4, 4), (16, 16), (32, 32), (64, 64), (128, 4), (128, 64)):
+        for tau in (None, mx.array([1.137])):
+            for magnitude in (0.0, 0.1, 10.0):
+                for scale_dtype in (mx.float32, dtype):
+                    q, k, r = [
+                        (mx.random.normal((1, 1, h, d * 2)) * magnitude).astype(dtype)[
+                            ..., ::2
+                        ]
+                        for h, d in ((4, dk), (2, dk), (4, dr))
+                    ]
+                    qs, rs = [
+                        mx.random.normal((4, 2 * d)).astype(scale_dtype)[:, ::2]
+                        for d in (dk, dr)
+                    ]
+                    expected = [
+                        layers._l2_clip(x, s, threshold)
+                        for x, s, threshold in (
+                            (q, qs, 3.0),
+                            (k, 1.0, 3.0),
+                            (r, rs, 2.0),
+                        )
+                    ]
+                    if tau is not None:
+                        expected[0], expected[2] = [
+                            layers._scale_states(expected[i], tau) for i in (0, 2)
+                        ]
+                    launches.reset_mock()
+                    actual = kernels.attend_clip_decode(q, k, r, qs, rs, 3.0, 2.0, tau)
+                    launches.assert_called_once()
+                    assert actual is not None
+                    for a, e in zip(actual, expected):
+                        assert a.dtype == e.dtype
+                        assert mx.array_equal(a.view(mx.uint8), e.view(mx.uint8)).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+def test_attend_clip_cached_logits_exact(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    stock = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    fused = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    caches = stock.make_cache(), fused.make_cache()
+    tokens = mx.array([[1, 17, 35, 7, 8, 11, 12, 13]])
+    assert mx.array_equal(
+        stock(tokens[:, :4], cache=caches[0]), fused(tokens[:, :4], cache=caches[1])
+    ).item()
+    fast = layers.attend_clip_decode
+    seen = []
+
+    def record(*args):
+        out = fast(*args)
+        assert out is not None
+        seen.append(args[-1] is not None)
+        return out
+
+    monkeypatch.setattr(layers, "attend_clip_decode", record)
+    for step in range(4, 8):
+        monkeypatch.setitem(layers._DECODE_FUSIONS, "attend_clip", False)
+        expected = stock(tokens[:, step : step + 1], cache=caches[0])
+        monkeypatch.setitem(layers._DECODE_FUSIONS, "attend_clip", True)
+        seen.clear()
+        actual = fused(tokens[:, step : step + 1], cache=caches[1])
+        assert set(seen) == {False, True}
+        assert mx.array_equal(actual.view(mx.uint8), expected.view(mx.uint8)).item()
+
+
+def test_attend_clip_cpu_probe_variants(attend_cpu, monkeypatch):
+    mx, kernels, _ = attend_cpu
+    kernel = Mock(return_value=[object(), object(), object()])
+    factory = Mock(return_value=kernel)
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    variants = []
+    for dk, dr, dtype, qs_dtype, rs_dtype, tau in (
+        (16, 4, mx.float32, mx.float32, mx.float32, False),
+        (16, 4, mx.float32, mx.float32, mx.float32, True),
+        (128, 4, mx.float32, mx.float32, mx.float32, False),
+        (16, 64, mx.float32, mx.float32, mx.float32, False),
+        (16, 4, mx.float16, mx.float32, mx.float32, False),
+        (16, 4, mx.float32, mx.float16, mx.float32, False),
+        (16, 4, mx.float32, mx.float32, mx.float16, False),
+    ):
+        args = _attend_args(mx, dk, dr, dtype, tau)
+        args[3], args[4] = args[3].astype(qs_dtype), args[4].astype(rs_dtype)
+        variants.append(args)
+    # Head counts also belong to the evaluated specialization.
+    args = _attend_args(mx, tau=False)
+    args[0], args[2], args[3], args[4] = [args[i][..., :1, :] for i in (0, 2, 3, 4)]
+    args[1] = args[1][..., :1, :]
+    variants.append(args)
+    for index, args in enumerate(variants, 1):
+        for _ in range(2):
+            assert kernels.attend_clip_decode(*args) is not None
+        assert factory.call_count == mx.eval.call_count == index
+        probe, real, repeated = kernel.call_args_list[-3:]
+        for call in (probe, real, repeated):
+            kw = call.kwargs
+            assert kw["grid"] == ((2 * args[0].shape[2] + args[1].shape[2]) * 32, 1, 1)
+            assert kw["threadgroup"] == (32, 1, 1)
+            assert kw["output_shapes"] == [a.shape for a in args[:3]]
+            assert kw["output_dtypes"] == [a.dtype for a in args[:3]]
+    assert kernel.call_count == 3 * len(variants)

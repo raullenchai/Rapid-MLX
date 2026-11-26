@@ -26,6 +26,7 @@ from rapid_mlx.models.inkling2.compat import (
 )
 from rapid_mlx.models.inkling2.config import TextArgs
 from rapid_mlx.models.inkling2.kernels import (
+    attend_clip_decode,
     attention_mask_decode,
     depth_attention,
     message_mix_decode,
@@ -61,6 +62,7 @@ __all__ = [
 
 _DECODE_PACK_LOCK = threading.RLock()
 _ROUTER_SCORE_EPS = 1e-20
+_DECODE_FUSIONS = {"attend_clip": True}
 
 
 def _block_decode_only(fn):
@@ -639,13 +641,34 @@ class Attention(nn.Module):
         key_states = key_states.reshape(B, L, self.num_key_value_heads, -1)
         value_states = value_states.reshape(B, L, self.num_key_value_heads, -1)
         relative_states = relative_states.reshape(B, L, self.num_heads, -1)
-        query_states = self.q_l2_clip(query_states)
-        key_states = self.k_l2_clip(key_states)
+        clipped = None
+        if (
+            L == 1
+            and cache is not None
+            and _fast_decode_enabled()
+            and _use_kernels()
+            and _DECODE_FUSIONS["attend_clip"]
+        ):
+            clipped = attend_clip_decode(
+                query_states,
+                key_states,
+                relative_states,
+                self.q_l2_clip.scale,
+                self.rel_l2_clip.scale,
+                self.q_l2_clip.threshold,
+                self.rel_l2_clip.threshold,
+                tau,
+            )
+        if clipped is None:
+            query_states = self.q_l2_clip(query_states)
+            key_states = self.k_l2_clip(key_states)
+            relative_states = self.rel_l2_clip(relative_states)
+            if tau is not None:
+                query_states = _scale_states(query_states, tau)
+                relative_states = _scale_states(relative_states, tau)
+        else:
+            query_states, key_states, relative_states = clipped
         value_states = _value_norm(value_states, self.eps)
-        relative_states = self.rel_l2_clip(relative_states)
-        if tau is not None:
-            query_states = _scale_states(query_states, tau)
-            relative_states = _scale_states(relative_states, tau)
         position_bias = self.rel_logits_proj(relative_states)
 
         query_states = query_states.transpose(0, 2, 1, 3)
