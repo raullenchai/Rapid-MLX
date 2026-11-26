@@ -307,6 +307,24 @@ def test_unsupported_options(option):
 
 
 @pytest.mark.parametrize(
+    "probe",
+    [
+        "rapid_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_revision",
+        "rapid_mlx.model_metadata.read_model_metadata",
+    ],
+)
+def test_checkpoint_probe_failure_defers_validation(adapter, monkeypatch, probe):
+    _, base = adapter
+
+    def fail_probe(_model):
+        raise ValueError("checkpoint metadata unavailable")
+
+    monkeypatch.setattr(probe, fail_probe)
+    assert validate_adapter_checkpoint(str(base)) is False
+
+
+@pytest.mark.parametrize(
     "config",
     [
         {"vision_config": {"layers": 2}},

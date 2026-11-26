@@ -138,16 +138,18 @@ def validate_adapter_checkpoint(model: str) -> bool:
     from .model_aliases import resolve_model, resolve_revision
     from .model_metadata import read_model_metadata
 
-    resolved = resolve_model(model)
-    reference = model if resolve_revision(model) else resolved
-    metadata = read_model_metadata(resolved if Path(resolved).is_dir() else reference)
-    config = metadata.config if metadata else None
-    snapshot = metadata.snapshot_dir if metadata else None
-    if not config:
-        try:
+    try:
+        resolved = resolve_model(model)
+        reference = model if resolve_revision(model) else resolved
+        metadata = read_model_metadata(
+            resolved if Path(resolved).is_dir() else reference
+        )
+        config = metadata.config if metadata else None
+        snapshot = metadata.snapshot_dir if metadata else None
+        if not config:
             config = _read_checkpoint_config(resolved, model)
-        except Exception:
-            return False  # Serve checks again after resolving the snapshot.
+    except Exception:
+        return False  # Serve checks again after resolving the snapshot.
     return _validate_checkpoint_config(config or {}, snapshot)
 
 
