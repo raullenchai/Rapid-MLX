@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import math
+import threading
 from collections.abc import Callable
 from functools import cache
 from typing import cast
@@ -253,8 +254,12 @@ def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
 
 
 # Decode clipping preserves MLX's separate FP32 product/sum and the token-dtype
-# rounding before optional log scaling. Small row sums are serial; 128-wide
-# rows use four consecutive values per SIMD lane, as the stock row reducer.
+# rounding before optional log scaling. For row-contiguous input, MLX's
+# row_reduce_general_dispatch selects row_reduce_small at D <= 64, with no
+# non-row reductions: thread_reduce adds consecutive FP32 squares serially.
+# At D == 128, row_reduce_simple/looped read four consecutive values per lane
+# then SIMD-sum (one 32-lane group). Column-contiguous storage differs; callers
+# must establish the row layout before opting in, without evaluating metadata.
 _ATTEND_CLIP_SOURCE = """
             const uint row = threadgroup_position_in_grid.x;
             const uint lane = thread_index_in_simdgroup;
@@ -264,14 +269,12 @@ _ATTEND_CLIP_SOURCE = """
             const uint h = isq ? row : (isk ? row - HQ : row - HQ - HK);
             const uint D = isq || isk ? DK : DR;
             const device T* x = isq ? q : (isk ? k : r);
-            const uint hs = isq ? q_strides[2] : (isk ? k_strides[2] : r_strides[2]);
-            const uint ds = isq ? q_strides[3] : (isk ? k_strides[3] : r_strides[3]);
             float vals[4], total = 0.0f;
             if (D <= 64) {
                 if (lane == 0) {
                     for (uint d = 0; d < D; ++d) {
-                        float s = isk ? 1.0f : (isq ? qs[h * qs_strides[0] + d * qs_strides[1]] : rs[h * rs_strides[0] + d * rs_strides[1]]);
-                        float v = float(x[h * hs + d * ds]) * s;
+                        float s = isk ? 1.0f : (isq ? qs[h * D + d] : rs[h * D + d]);
+                        float v = float(x[h * D + d]) * s;
                         total = total + v * v;
                     }
                 }
@@ -279,8 +282,8 @@ _ATTEND_CLIP_SOURCE = """
             } else {
                 for (uint j = 0; j < 4; ++j) {
                     uint d = lane * 4 + j;
-                    float s = isk ? 1.0f : qs[h * qs_strides[0] + d * qs_strides[1]];
-                    vals[j] = float(x[h * hs + d * ds]) * s;
+                    float s = isk ? 1.0f : qs[h * D + d];
+                    vals[j] = float(x[h * D + d]) * s;
                     total = total + vals[j] * vals[j];
                 }
                 total = simd_sum(total);
@@ -289,8 +292,8 @@ _ATTEND_CLIP_SOURCE = """
             float ratio = (isk || isq ? qt : rt) / (norm + 1e-6f);
             float factor = metal::isnan(ratio) ? ratio : (ratio < 1.0f ? ratio : 1.0f);
             for (uint d = lane; d < D; d += 32) {
-                float s = isk ? 1.0f : (isq ? qs[h * qs_strides[0] + d * qs_strides[1]] : rs[h * rs_strides[0] + d * rs_strides[1]]);
-                T v = T((float(x[h * hs + d * ds]) * s) * factor);
+                float s = isk ? 1.0f : (isq ? qs[h * D + d] : rs[h * D + d]);
+                T v = T((float(x[h * D + d]) * s) * factor);
                 if (HAS_TAU && !isk) v = T(float(v) * tau[0]);
                 if (isq) qo[h * D + d] = v;
                 else if (isk) ko[h * D + d] = v;
@@ -326,8 +329,19 @@ def _launch_attend_clip(kernel, q, k, r, qs, rs, qt, rt, tau):
     )
 
 
-@cache
-def _get_attend_clip(hq, hk, dk, dr, dtype, qs_dtype, rs_dtype, has_tau):
+_ATTEND_CLIP_LOCK = threading.Lock()
+_ATTEND_CLIP_CACHE: dict[tuple, Callable | None] = {}
+
+
+def _get_attend_clip(*variant):
+    if variant not in _ATTEND_CLIP_CACHE:
+        with _ATTEND_CLIP_LOCK:
+            if variant not in _ATTEND_CLIP_CACHE:
+                _ATTEND_CLIP_CACHE[variant] = _probe_attend_clip(*variant)
+    return _ATTEND_CLIP_CACHE[variant]
+
+
+def _probe_attend_clip(hq, hk, dk, dr, dtype, qs_dtype, rs_dtype, has_tau):
     try:
         kernel = mx.fast.metal_kernel(
             name="inkling2_attend_clip_decode",
@@ -335,7 +349,7 @@ def _get_attend_clip(hq, hk, dk, dr, dtype, qs_dtype, rs_dtype, has_tau):
             output_names=["qo", "ko", "ro"],
             header="#pragma clang fp contract(off)\n",
             source=_ATTEND_CLIP_SOURCE,
-            ensure_row_contiguous=False,
+            ensure_row_contiguous=True,
             compile_options={"math_mode": "safe"},
         )
         mx.eval(
@@ -356,15 +370,20 @@ def _get_attend_clip(hq, hk, dk, dr, dtype, qs_dtype, rs_dtype, has_tau):
         return None
 
 
-def attend_clip_decode(q, k, r, qs, rs, qt, rt, tau):
+def attend_clip_decode(q, k, r, qs, rs, qt, rt, tau, *, row_contiguous=False):
     """Clip Q/K/relative states and optionally apply log scaling, or return None.
 
     A one-time evaluated probe per kernel variant detects probe failures;
     invocation is guarded. Real lazy output evaluation is not wrapped.
+
+    Only known row-contiguous producers may opt in. MLX has no unevaluated
+    Python stride accessor; copying an arbitrary layout here would change the
+    reference reduction order. Unproven layouts must use the existing path.
     """
     supported = (mx.float32, mx.float16, mx.bfloat16)
     if (
-        any(x is None for x in (q, k, r, qs, rs, qt, rt))
+        not row_contiguous
+        or any(x is None for x in (q, k, r, qs, rs, qt, rt))
         or not all(x.ndim == 4 and x.shape[:2] == (1, 1) for x in (q, k, r))
         or not q.dtype == k.dtype == r.dtype
         or q.dtype not in supported

@@ -78,8 +78,8 @@ CONFIG["text_config"]["loop_config"] = {
 # decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "3aa97bf3a164be51542fc27c6f5e067328dae509873397e4259039790293e099",
-    "kernels.py": "29adfdf175cc55e8b36b113de88b1f9071a283d686826d2bf72df9c79da3eba1",
+    "layers.py": "4d8d5ac590173add69f974f2728ab1e33470a7c1d5b049227ccdec4b8c7807d7",
+    "kernels.py": "0eaecce7d80034febfa14cc082fbad1f43c052ff33dba6f35f7e12472da5506d",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -3131,7 +3131,7 @@ def test_attend_clip_cpu_failures(attend_cpu, monkeypatch, tau, failure):
     monkeypatch.setattr(mx.fast, "metal_kernel", factory)
     mx.eval.side_effect = evaluate
     for _ in range(2):
-        actual = kernels.attend_clip_decode(*args)
+        actual = kernels.attend_clip_decode(*args, row_contiguous=True)
         if failure:
             assert actual is None
         else:
@@ -3140,6 +3140,8 @@ def test_attend_clip_cpu_failures(attend_cpu, monkeypatch, tau, failure):
                 actual[0], layers._l2_clip(args[0], args[3], 3)
             )
     factory.assert_called_once()
+    assert factory.call_args.kwargs["ensure_row_contiguous"] is True
+    assert "_strides" not in factory.call_args.kwargs["source"]
     if failure == "construction":
         assert events == []
     elif failure == "probe":
@@ -3148,9 +3150,42 @@ def test_attend_clip_cpu_failures(attend_cpu, monkeypatch, tau, failure):
         assert events == ["launch", "evaluate"]
     else:
         assert events == ["launch", "evaluate", "launch", "launch"]
-    # Distinct dimensions, dtypes, scale dtypes and tau modes get separate probes.
-    assert kernels._get_attend_clip.cache_info().hits == 1
-    assert kernels._get_attend_clip.cache_info().misses == 1
+    assert len(kernels._ATTEND_CLIP_CACHE) == 1
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_attend_clip_cpu_concurrent_first_use(attend_cpu, monkeypatch, failed):
+    mx, kernels, _ = attend_cpu
+    barrier = Barrier(2)
+    lock = kernels._ATTEND_CLIP_LOCK
+
+    class ContendedLock:
+        def __enter__(self):
+            # Both callers have missed the unlocked lookup before either probes.
+            barrier.wait(timeout=5)
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    monkeypatch.setattr(kernels, "_ATTEND_CLIP_LOCK", ContendedLock())
+    outputs = [object(), object(), object()]
+    factory = Mock(side_effect=lambda **kw: Mock(return_value=outputs))
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    if failed:
+        mx.eval.side_effect = RuntimeError("lazy probe failed")
+    variant = (4, 2, 16, 4, mx.float32, mx.float32, mx.float32, False)
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda _: kernels._get_attend_clip(*variant), range(2)))
+    assert results[0] is results[1]
+    assert (results[0] is None) == failed
+    factory.assert_called_once()
+    mx.eval.assert_called_once_with(*outputs)
+    assert len(kernels._ATTEND_CLIP_CACHE) == 1
+    if not failed:
+        results[0].assert_called_once()
+    # Cached failures and successes never enter the contended lock again.
+    assert kernels._get_attend_clip(*variant) is results[0]
 
 
 @pytest.mark.parametrize("case", range(26))
@@ -3183,7 +3218,7 @@ def test_attend_clip_cpu_guards(attend_cpu, monkeypatch, case):
     args[i] = value
     forbidden = Mock(side_effect=AssertionError("unsupported kernel"))
     monkeypatch.setattr(kernels, "_get_attend_clip", forbidden)
-    assert kernels.attend_clip_decode(*args) is None
+    assert kernels.attend_clip_decode(*args, row_contiguous=True) is None
     forbidden.assert_not_called()
 
 
@@ -3202,11 +3237,32 @@ def test_attend_clip_cpu_guards(attend_cpu, monkeypatch, case):
         "probe",
         "evaluation",
         "call",
+        "unproven",
+        "reverse_q",
+        "reverse_k",
+        "reverse_r",
+        "reverse_qs",
+        "reverse_rs",
+        "transpose_k",
     ],
 )
 def test_attend_clip_cpu_attention(attend_cpu, monkeypatch, tau, mode):
     mx, kernels, layers = attend_cpu
     q, k, r, qs, rs, qt, rt, t = _attend_args(mx, tau=tau)
+    unproven = mode == "unproven" or mode.startswith(("reverse_", "transpose_"))
+    if unproven:
+        # Losing the trailing ones in a serial FP32 sum changes clip(3).
+        q[..., 0] = k[..., 0] = r[..., 0] = 4096
+        args = [q, k, r, qs, rs]
+        if mode.startswith("reverse_"):
+            i = ("q", "k", "r", "qs", "rs").index(mode.removeprefix("reverse_"))
+            args[i] = args[i][..., ::-1]
+        elif mode == "transpose_k":
+            args[1] = np.ascontiguousarray(k.swapaxes(-1, -2)).swapaxes(-1, -2)
+        q, k, r, qs, rs = args
+        forbidden = Mock(side_effect=AssertionError("unproven layout probed"))
+        monkeypatch.setattr(kernels, "_get_attend_clip", forbidden)
+        assert kernels.attend_clip_decode(q, k, r, qs, rs, qt, rt, t) is None
     if mode == "prefill":
         q, k, r = [np.repeat(a, 2, axis=1) for a in (q, k, r)]
     shape = q.shape[:2] + (64,)
@@ -3235,6 +3291,8 @@ def test_attend_clip_cpu_attention(attend_cpu, monkeypatch, tau, mode):
         monkeypatch.setattr(mx.fast, "metal_kernel", factory)
         if mode == "evaluation":
             mx.eval.side_effect = RuntimeError("lazy compilation")
+        fast = Mock(wraps=kernels.attend_clip_decode)
+    elif unproven:
         fast = Mock(wraps=kernels.attend_clip_decode)
     else:
         fast = Mock(return_value=clipped if mode == "fast" else None)
@@ -3269,8 +3327,20 @@ def test_attend_clip_cpu_attention(attend_cpu, monkeypatch, tau, mode):
     norm = Mock(side_effect=lambda x, eps: x)
     monkeypatch.setattr(layers, "_value_norm", norm)
     monkeypatch.setattr(layers, "_gate_attention", lambda x, gate: x)
-    layers.Attention._attend(attn, hidden, q, k, k, r, cache, t)
-    assert fast.call_count == (1 if mode in ("fast", "fallback") or failed else 0)
+    layers.Attention._attend(
+        attn,
+        hidden,
+        q,
+        k,
+        k,
+        r,
+        cache,
+        t,
+        **({} if unproven else {"row_contiguous": True}),
+    )
+    assert fast.call_count == int(mode in ("fast", "fallback") or failed or unproven)
+    if unproven:
+        forbidden.assert_not_called()
     if failed:
         factory.assert_called_once()
         assert kernel.call_count == (
@@ -3284,11 +3354,15 @@ def test_attend_clip_cpu_attention(attend_cpu, monkeypatch, tau, mode):
         attn._attention.call_args.args[0], clipped[0].transpose(0, 2, 1, 3)
     )
     np.testing.assert_array_equal(attn.rel_logits_proj.call_args.args[0], clipped[2])
+    np.testing.assert_array_equal(
+        attn._attention.call_args.args[1], clipped[1].transpose(0, 2, 1, 3)
+    )
 
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
-def test_attend_clip_exact(metal_runtime, monkeypatch, dtype):
+@pytest.mark.parametrize("heads", [(4, 2), (32, 32)])
+def test_attend_clip_exact(metal_runtime, monkeypatch, dtype, heads):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
@@ -3302,20 +3376,18 @@ def test_attend_clip_exact(metal_runtime, monkeypatch, dtype):
 
     monkeypatch.setattr(kernels, "_get_attend_clip", selected)
     dtype = getattr(mx, dtype)
+    hq, hk = heads  # Exercise both row_reduce_looped and row_reduce_simple at 128.
     mx.random.seed(41)
     for dk, dr in ((4, 4), (16, 16), (32, 32), (64, 64), (128, 4), (128, 64)):
         for tau in (None, mx.array([1.137])):
             for magnitude in (0.0, 0.1, 10.0):
                 for scale_dtype in (mx.float32, dtype):
                     q, k, r = [
-                        (mx.random.normal((1, 1, h, d * 2)) * magnitude).astype(dtype)[
-                            ..., ::2
-                        ]
-                        for h, d in ((4, dk), (2, dk), (4, dr))
+                        (mx.random.normal((1, 1, h, d)) * magnitude).astype(dtype)
+                        for h, d in ((hq, dk), (hk, dk), (hq, dr))
                     ]
                     qs, rs = [
-                        mx.random.normal((4, 2 * d)).astype(scale_dtype)[:, ::2]
-                        for d in (dk, dr)
+                        mx.random.normal((hq, d)).astype(scale_dtype) for d in (dk, dr)
                     ]
                     expected = [
                         layers._l2_clip(x, s, threshold)
@@ -3330,7 +3402,9 @@ def test_attend_clip_exact(metal_runtime, monkeypatch, dtype):
                             layers._scale_states(expected[i], tau) for i in (0, 2)
                         ]
                     launches.reset_mock()
-                    actual = kernels.attend_clip_decode(q, k, r, qs, rs, 3.0, 2.0, tau)
+                    actual = kernels.attend_clip_decode(
+                        q, k, r, qs, rs, 3.0, 2.0, tau, row_contiguous=True
+                    )
                     launches.assert_called_once()
                     assert actual is not None
                     for a, e in zip(actual, expected):
@@ -3340,12 +3414,75 @@ def test_attend_clip_exact(metal_runtime, monkeypatch, dtype):
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
-def test_attend_clip_cached_logits_exact(metal_runtime, monkeypatch, dtype):
+def test_attend_clip_layouts(metal_runtime, monkeypatch, dtype):
     mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    get_kernel = Mock(wraps=kernels._get_attend_clip)
+    monkeypatch.setattr(kernels, "_get_attend_clip", get_kernel)
+    for dk in (4, 16, 32, 64, 128):
+        args = _attend_args(mx, dk, min(dk, 64), getattr(mx, dtype), tau=False)
+        # The review counterexample: every head starts [4096, 1, ..., 1].
+        for i in range(3):
+            values = np.ones(args[i].shape, dtype=np.float32)
+            values[..., 0] = 4096
+            args[i] = mx.array(values).astype(getattr(mx, dtype))
+        args[6] = 3.0
+        row_key = layers._l2_clip(args[1], 1.0, 3.0)
+        for layout in ("row", "transpose_k", *range(5)):
+            inputs = list(args)
+            if layout == "transpose_k":
+                inputs[1] = mx.contiguous(inputs[1].swapaxes(-1, -2)).swapaxes(-1, -2)
+                assert not memoryview(inputs[1]).c_contiguous
+            elif isinstance(layout, int):
+                inputs[layout] = inputs[layout][..., ::-1]
+                assert memoryview(inputs[layout]).strides[-1] < 0
+            get_kernel.reset_mock()
+            actual = kernels.attend_clip_decode(
+                *inputs, **({"row_contiguous": True} if layout == "row" else {})
+            )
+            expected = [
+                layers._l2_clip(x, s, threshold)
+                for x, s, threshold in (
+                    (inputs[0], inputs[3], 3.0),
+                    (inputs[1], 1.0, 3.0),
+                    (inputs[2], inputs[4], 3.0),
+                )
+            ]
+            mx.eval(*expected)
+            if layout == "row":
+                get_kernel.assert_called_once()
+                assert actual is not None
+                for a, e in zip(actual, expected):
+                    assert mx.array_equal(a.view(mx.uint8), e.view(mx.uint8)).item()
+            else:
+                assert actual is None  # Caller must run the existing path.
+                get_kernel.assert_not_called()
+                if layout == "transpose_k" and dtype == "float32" and dk == 16:
+                    assert not mx.array_equal(expected[1], row_key).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("quantized", [False, True])
+def test_attend_clip_cached_logits_exact(metal_runtime, monkeypatch, dtype, quantized):
+    mx, _ = metal_runtime
+    from mlx import nn
+
     from rapid_mlx.models.inkling2 import layers
 
     stock = create_model(metal_runtime, dtype=getattr(mx, dtype))
     fused = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    if quantized:
+        for model in (stock, fused):
+            nn.quantize(
+                model,
+                group_size=64,
+                class_predicate=lambda p, m: any(
+                    p.endswith("." + n + "_proj")
+                    for n in ("q", "k", "v", "r", "gate", "sink", "weight")
+                ),
+            )
     caches = stock.make_cache(), fused.make_cache()
     tokens = mx.array([[1, 17, 35, 7, 8, 11, 12, 13]])
     assert mx.array_equal(
@@ -3354,8 +3491,17 @@ def test_attend_clip_cached_logits_exact(metal_runtime, monkeypatch, dtype):
     fast = layers.attend_clip_decode
     seen = []
 
-    def record(*args):
-        out = fast(*args)
+    def record(*args, **kwargs):
+        # Test-only evaluation exposes actual storage, including the nonzero
+        # offsets of packed Q/R slices and both static/dynamic K convolutions.
+        mx.eval(*args[:5])
+        for x in args[:5]:
+            layout = memoryview(x)
+            assert layout.c_contiguous
+            assert layout.strides[-1] == x.itemsize
+            assert layout.strides[-2] == x.shape[-1] * x.itemsize
+        assert kwargs == {"row_contiguous": True}
+        out = fast(*args, **kwargs)
         assert out is not None
         seen.append(args[-1] is not None)
         return out
@@ -3396,7 +3542,7 @@ def test_attend_clip_cpu_probe_variants(attend_cpu, monkeypatch):
     variants.append(args)
     for index, args in enumerate(variants, 1):
         for _ in range(2):
-            assert kernels.attend_clip_decode(*args) is not None
+            assert kernels.attend_clip_decode(*args, row_contiguous=True) is not None
         assert factory.call_count == mx.eval.call_count == index
         probe, real, repeated = kernel.call_args_list[-3:]
         for call in (probe, real, repeated):

@@ -630,6 +630,7 @@ class Attention(nn.Module):
         cache: Any | None,
         tau: mx.array | None = None,
         gate_sinks=None,
+        row_contiguous=False,
     ) -> mx.array:
         B, L, _ = hidden_states.shape
         gate, sinks = gate_sinks or (
@@ -658,6 +659,7 @@ class Attention(nn.Module):
                 self.q_l2_clip.threshold,
                 self.rel_l2_clip.threshold,
                 tau,
+                row_contiguous=row_contiguous,
             )
         if clipped is None:
             query_states = self.q_l2_clip(query_states)
@@ -780,6 +782,9 @@ class SlidingAttention(Attention):
             r,
             kv_cache,
             gate_sinks=gate_sinks,
+            # Single-token projections (including packed last-axis slices)
+            # and convolution outputs are row-contiguous, as are loaded scales.
+            row_contiguous=True,
         )
 
 
@@ -847,6 +852,8 @@ class FullAttention(Attention):
             kv_cache,
             tau=tau[..., None, None],
             gate_sinks=gate_sinks,
+            # Same projection/convolution layout guarantee as SlidingAttention.
+            row_contiguous=True,
         )
 
 
