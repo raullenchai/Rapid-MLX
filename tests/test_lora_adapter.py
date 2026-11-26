@@ -316,6 +316,8 @@ def test_unsupported_options(option):
         {"text_config": {"mtp_num_hidden_layers": 1}},
         {"text_config": {"num_nextn_predict_layers": 1}},
         {"quantization_config": {"quant_method": "fp8"}},
+        {"model_type": "qwen3_5", "audio_config": {}},
+        {"model_type": "qwen3_5_moe", "vision_config": {}},
     ],
 )
 def test_checkpoint_paths(adapter, config):
@@ -344,11 +346,27 @@ def test_cli_rejects_before_alternate_dispatch(adapter, flag):
         prepare_adapter_cli(args)
 
 
-def test_cli_disables_automatic_draft_selection(adapter):
+@pytest.mark.parametrize("draft_tensor", [None, "model.mtp.layers.0.weight"])
+def test_qwen35_cli_selects_text_and_disables_draft(adapter, capsys, draft_tensor):
     directory, base = adapter
+    (base / "config.json").write_text(
+        '{"model_type":"qwen3_5","vision_config":{},"text_config":{"mtp_num_hidden_layers":1}}'
+    )
+    weight_name = draft_tensor or "model.language_model.layers.0.weight"
+    (base / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {weight_name: "model.safetensors"}})
+    )
     args = build_parser().parse_args(["serve", str(base), "--adapter", str(directory)])
+    if draft_tensor:
+        with pytest.raises(ValueError, match="MTP checkpoint heads"):
+            prepare_adapter_cli(args)
+        return
     prepare_adapter_cli(args)
+    assert args.no_mllm is True
     assert args.no_spec_decode is True
+    assert capsys.readouterr().out.splitlines() == [
+        "Serving text-only because --adapter is set; image inputs are disabled"
+    ]
 
 
 def test_without_adapter_does_not_mutate_options():
@@ -549,6 +567,7 @@ def test_real_text_loader_validates_shapes_before_loading(
         ("custom", False, "text"),
         ("custom:lora:verbatim", False, "text"),
         ("custom", True, "text"),
+        ("qwen35", False, "qwen3_5"),
         (None, False, "image-gen"),
     ],
 )
@@ -568,11 +587,17 @@ def test_server_propagates_adapter_and_publishes_identity(
 
         def __init__(self, **kwargs):
             constructed.append(kwargs)
+            self.is_mllm = not kwargs["force_text"]
 
     (base / "model.safetensors").write_bytes(b"stub weights")
+    if modality == "qwen3_5":
+        (base / "config.json").write_text('{"model_type":"qwen3_5","vision_config":{}}')
+        (base / "model.safetensors.index.json").write_text(
+            '{"weight_map":{"language_model.model.norm.weight":"model.safetensors"}}'
+        )
     monkeypatch.setattr(server, "BatchedEngine", Engine)
     monkeypatch.setattr(server, "_model_alias", str(base) if with_alias else None)
-    if modality != "text":
+    if modality == "image-gen":
         profile = model_aliases._coerce(
             "test",
             {"hf_path": str(base), "modality": modality, "supports_spec_decode": False},
@@ -585,7 +610,7 @@ def test_server_propagates_adapter_and_publishes_identity(
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _: None)
     monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
     before = disk_caches.disabled()
-    if modality != "text":
+    if modality == "image-gen":
         with pytest.raises(ValueError, match="--adapter supports text models only"):
             server.load_model(str(base), adapter_path=str(directory), force_text=True)
         assert constructed == []
@@ -595,10 +620,24 @@ def test_server_propagates_adapter_and_publishes_identity(
         adapter_path=str(directory),
         served_model_name=served_name,
         scheduler_config=scheduler_config_stub(response_cache_entries=8),
-        force_text=True,
+        force_text=modality != "qwen3_5",
     )
     assert constructed[0]["adapter_path"] == str(directory)
     assert constructed[0]["no_spec_decode"] is True
+    assert constructed[0]["force_text"] is True
+    if modality == "qwen3_5":
+        from fastapi.testclient import TestClient
+
+        image = {"type": "image_url", "image_url": {"url": "https://example.com/i.png"}}
+        response = TestClient(server.app).post(
+            "/v1/chat/completions",
+            json={
+                "model": served_name,
+                "messages": [{"role": "user", "content": [image]}],
+            },
+        )
+        assert response.status_code == 400
+        assert "image_input_unsupported" in response.text
     public_name = (
         served_name if served_name is not None else expected.model_identity(str(base))
     )

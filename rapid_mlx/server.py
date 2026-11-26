@@ -2694,7 +2694,11 @@ def load_model(
     """
     adapter = None
     if adapter_path is not None:
-        from .lora_adapter import reject_adapter_options, validate_adapter
+        from .lora_adapter import (
+            reject_adapter_options,
+            validate_adapter,
+            validate_adapter_checkpoint,
+        )
 
         reject_adapter_options(
             mllm=force_mllm,
@@ -2705,6 +2709,11 @@ def load_model(
             lazy=_primary_lazy_load or _primary_idle_unload_seconds > 0,
         )
         adapter = validate_adapter(adapter_path, model_name)
+        if not force_text and validate_adapter_checkpoint(model_name):
+            force_text = True
+            print(
+                "Serving text-only because --adapter is set; image inputs are disabled"
+            )
         no_spec_decode = True
 
     if force_mllm and force_text:

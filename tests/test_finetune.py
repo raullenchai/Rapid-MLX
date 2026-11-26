@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
 import re
+import runpy
 import select
 import shlex
 import signal
@@ -8,7 +9,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -37,7 +38,7 @@ def _save_weights(path):
     )
 
 
-def _save_adapter(args, model, data, out):
+def _save_adapter(args, model, data, out, *, qwen35=False):
     (out / "adapter_config.json").write_text(
         json.dumps(
             {
@@ -119,11 +120,10 @@ def test_cli_finetune(tmp_path, monkeypatch, capsys, code, output, status, exit_
 
     def fake_popen(argv, **kwargs):
         assert argv[0] == sys.executable
-        assert argv[1:7] == [
+        assert argv[1:6] == [
             "-u",
             "-m",
-            "mlx_lm",
-            "lora",
+            "rapid_mlx._finetune_runner",
             "--train",
             "--fine-tune-type=lora",
         ]
@@ -375,8 +375,8 @@ def test_model_preflight_error(tmp_path, monkeypatch, capsys, model_ref, error):
     ("model", "config", "reason"),
     [
         (
-            "qwen3.5-4b-4bit",
-            {"model_type": "qwen3_5", "vision_config": {}},
+            REPO,
+            {"model_type": "qwen3_vl", "vision_config": {}},
             "vision/MLLM or audio",
         ),
         (REPO, {"num_nextn_predict_layers": 1}, "MTP checkpoint heads"),
@@ -415,11 +415,147 @@ def test_incompatible_checkpoint_rejected_before_training(
     assert track.call_args.args[1]["cmd_status"] == "err"
 
 
+def test_downloaded_checkpoint_selects_qwen35_after_local_cache_miss(
+    tmp_path, monkeypatch
+):
+    model = "example-organ/model-without-family-in-name"
+    data = tmp_path / "data"
+    data.mkdir()
+    for split in ("train", "valid"):
+        (data / f"{split}.jsonl").write_text('{"text":"example"}\n')
+    snapshot = tmp_path / "snapshot"
+    out = tmp_path / "out"
+    preflight_config = tmp_path / "config.json"
+    preflight_config.write_text('{"model_type":"qwen3"}')
+    config_probe = MagicMock(
+        side_effect=[OSError("config unavailable locally"), str(preflight_config)]
+    )
+    monkeypatch.setattr(ft.model_downloads, "hf_hub_download", config_probe)
+    monkeypatch.setattr(ft, "resolve_offline_cached_snapshot", lambda _: None)
+
+    def download(repo_id, *, allow_patterns):
+        assert repo_id == model
+        assert "*.json" in allow_patterns
+        snapshot.mkdir()
+        (snapshot / "config.json").write_text(
+            '{"model_type":"qwen3_5","vision_config":{},"mtp_num_hidden_layers":1}'
+        )
+        return str(snapshot)
+
+    monkeypatch.setattr(ft.model_downloads, "snapshot_download", download)
+    monkeypatch.setattr(ft, "_print_plan", MagicMock())
+    launch = MagicMock(side_effect=_save_adapter)
+    monkeypatch.setattr(ft, "_train", launch)
+    monkeypatch.setattr(ft, "version", lambda _: "0.31.3")
+    monkeypatch.setattr(ft, "track", MagicMock())
+    args = cli.build_parser().parse_args(
+        ["finetune", model, f"--data={data}", f"--out={out}", "--batch-size=1"]
+    )
+
+    assert ft.finetune_command(args) == 0
+    assert [call.kwargs for call in config_probe.call_args_list] == [
+        {"local_files_only": True},
+        {},
+    ]
+    assert all(
+        call.args == (model, "config.json") for call in config_probe.call_args_list
+    )
+    launch.assert_called_once_with(args, str(snapshot), data, out, qwen35=True)
+
+
+@pytest.mark.parametrize(
+    ("tensor", "error"),
+    [
+        ("language_model.model.norm.weight", None),
+        ("language_model.mtp.layers.0.weight", "MTP checkpoint heads"),
+        (None, "cannot inspect Qwen3.5 checkpoint weights"),
+    ],
+)
+def test_qwen35_checkpoint_without_weight_index(tmp_path, tensor, error):
+    (tmp_path / "config.json").write_text(
+        '{"model_type":"qwen3_5","text_config":{"mtp_num_hidden_layers":1}}'
+    )
+    shard = tmp_path / "model.safetensors"
+    if tensor is None:
+        shard.write_bytes(b"truncated")
+    else:
+        save_file({tensor: np.ones((2,), dtype=np.float32)}, shard)
+    if error:
+        with pytest.raises(ValueError, match=error):
+            ft._check_checkpoint(str(tmp_path), str(tmp_path))
+    else:
+        assert ft._check_checkpoint(str(tmp_path), str(tmp_path)) is True
+
+
+@pytest.mark.parametrize(
+    "backend", ["stock", "missing_kernel", "missing_helper", "new_signature", "native"]
+)
+def test_finetune_runner_dispatch(monkeypatch, capsys, backend):
+    def fake_module(name, **attrs):
+        module = ModuleType(name)
+        vars(module).update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+        return module
+
+    events = []
+
+    def stock(q, k, v, a, b, A_log, dt_bias, state=None, mask=None, use_kernel=True):  # noqa: N803
+        return "stock"
+
+    original = (lambda *args: "stock") if backend == "new_signature" else stock
+    native = MagicMock(return_value="native")
+    compute_g = MagicMock(return_value="g")
+    sigmoid = MagicMock(return_value="beta")
+    fast = SimpleNamespace()
+    if backend != "missing_kernel":
+        fast.gated_delta_update = native
+    fake_module("mlx", core=fake_module("mlx.core", fast=fast, sigmoid=sigmoid))
+    model_update = fake_module("mlx_lm.models.gated_delta", gated_delta_update=original)
+    if backend != "missing_helper":
+        model_update.compute_g = compute_g
+    qwen = fake_module("mlx_lm.models.qwen3_5", gated_delta_update=original)
+    fake_module("mlx_lm.models", gated_delta=model_update, qwen3_5=qwen)
+    fake_module("mlx_lm")
+    fake_module(
+        "rapid_mlx.patches.qwen3_5_norm_shift",
+        install_qwen3_5_norm_shift_fix=lambda: events.append("norm fix"),
+    )
+
+    def lora_main():
+        events.append("LoRA")
+        assert sys.argv[1:] == ["--train"]
+        assert model_update.gated_delta_update is qwen.gated_delta_update
+        if backend != "native":
+            assert qwen.gated_delta_update is original
+            return
+
+        args = ("q", "k", "v", "a", "b", "A_log", "dt_bias")
+        update = qwen.gated_delta_update
+        assert update is not original
+        assert update(*args) == "stock"
+        assert update(*args, mask="mask", use_kernel=False) == "stock"
+        assert update(*args, state="state", use_kernel=False) == "native"
+        compute_g.assert_called_once_with("A_log", "a", "dt_bias")
+        sigmoid.assert_called_once_with("b")
+        native.assert_called_once_with("q", "k", "v", "g", "beta", "state", None)
+
+    fake_module("mlx_lm.lora", main=lora_main)
+    qwen_flag = [] if backend == "stock" else ["--qwen35"]
+    monkeypatch.setattr(sys, "argv", ["runner", *qwen_flag, "--train"])
+    runpy.run_module("rapid_mlx._finetune_runner", run_name="__main__")
+    assert events == (["norm fix", "LoRA"] if qwen_flag else ["LoRA"])
+    warning = "Qwen3.5 training will be slow and memory-hungry"
+    assert (warning in capsys.readouterr().err) == (
+        backend in {"missing_kernel", "missing_helper", "new_signature"}
+    )
+
+
+@pytest.mark.parametrize("qwen35", [False, True])
 @pytest.mark.parametrize(
     ("rows", "batch", "iters"), [(1, 1, 3), (53, 4, 39), (2000, 4, 1000)]
 )
 def test_default_iterations_from_full_training_batches(
-    tmp_path, monkeypatch, capsys, rows, batch, iters
+    tmp_path, monkeypatch, capsys, rows, batch, iters, qwen35
 ):
     data = tmp_path / "data"
     data.mkdir()
@@ -427,7 +563,12 @@ def test_default_iterations_from_full_training_batches(
     (data / "valid.jsonl").write_text('{"text":"validation"}\n' * batch)
     model = tmp_path / "model"
     model.mkdir()
-    (model / "config.json").write_text('{"model_type":"qwen3"}')
+    config = (
+        '{"model_type":"qwen3_5","vision_config":{},"mtp_num_hidden_layers":1}'
+        if qwen35
+        else '{"model_type":"qwen3"}'
+    )
+    (model / "config.json").write_text(config)
     out = tmp_path / "out"
     args = cli.build_parser().parse_args(
         [
@@ -444,7 +585,7 @@ def test_default_iterations_from_full_training_batches(
     track = MagicMock()
     monkeypatch.setattr(ft, "track", track)
     assert ft.finetune_command(args) == 0
-    launch.assert_called_once_with(args, str(model), data, out)
+    launch.assert_called_once_with(args, str(model), data, out, qwen35=qwen35)
     event, props = track.call_args.args
     assert validate(event, props) == props
     assert props["has_valid_split"] is True
@@ -503,20 +644,26 @@ def test_probes_are_advisory(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
-    ("hidden", "vocab", "weights", "batch", "estimate"),
+    ("hidden", "vocab", "weights", "batch", "estimate", "value_heads"),
     [
-        (1024, 151936, 335450584, 1, "3.8 GB"),  # Qwen3-0.6B
-        (2048, 65536, 658540250, 1, "4.3 GB"),  # LFM2.5-1.2B
-        (4096, 151936, 4607835174, 1, "10.9 GB"),  # Qwen3-8B
-        (3072, 128256, 1807496278, 2, "10.8 GB"),  # Llama-3.2-3B
+        (1024, 151936, 335450584, 1, "3.8 GB", 0),  # Qwen3-0.6B
+        (2048, 65536, 658540250, 1, "4.3 GB", 0),  # LFM2.5-1.2B
+        (4096, 151936, 4607835174, 1, "10.9 GB", 0),  # Qwen3-8B
+        (3072, 128256, 1807496278, 2, "10.8 GB", 0),  # Llama-3.2-3B
+        (4096, 248320, 5950221072, 1, "14.4 GB", 32),  # Qwen3.5-9B
+        (4096, 248320, 5950221072, 4, "36.0 GB", 32),
+        (5120, 248320, 16054546159, 1, "27.1 GB", 48),  # Qwen3.5-27B
+        (5120, 248320, 16054546159, 2, "36.9 GB", 48),
     ],
 )
 def test_memory_estimate_calibration(
-    tmp_path, monkeypatch, capsys, hidden, vocab, weights, batch, estimate
+    tmp_path, monkeypatch, capsys, hidden, vocab, weights, batch, estimate, value_heads
 ):
-    metadata = SimpleNamespace(
-        snapshot_dir=None, config={"hidden_size": hidden, "vocab_size": vocab}
-    )
+    config = {"hidden_size": hidden, "vocab_size": vocab}
+    if value_heads:
+        config.update(linear_num_value_heads=value_heads, linear_key_head_dim=128)
+        config = {"model_type": "qwen3_5", "text_config": config}
+    metadata = SimpleNamespace(snapshot_dir=None, config=config)
     monkeypatch.setattr(ft, "read_model_metadata", lambda _: metadata)
     monkeypatch.setattr(ft, "size_bytes", lambda _: weights)
     monkeypatch.setattr(ft.psutil, "process_iter", lambda _: [])
@@ -712,7 +859,8 @@ def test_failed_output_can_be_retried(
         "0000100_adapters.safetensors" if failure == "train" else "adapters.safetensors"
     )
 
-    def train(args, model, data, out):
+    def train(args, model, data, out, *, qwen35):
+        assert qwen35 is False
         if checkpoint or failure == "publication":
             _save_adapter(args, model, data, out)
         else:
@@ -757,6 +905,12 @@ def test_failed_output_can_be_retried(
     assert ft.finetune_command(parser.parse_args(argv)) == exit_code
     stderr = capsys.readouterr().err
     assert "[Errno" not in stderr
+    if failure in {"train", "interrupt", "metadata"}:
+        assert {
+            "train": "tuner failed",
+            "interrupt": "Fine-tuning aborted.",
+            "metadata": "system operation failed",
+        }[failure] in stderr
     assert out.exists() == (checkpoint or failure == "user-file")
     if checkpoint:
         assert saved.is_file()
@@ -840,7 +994,7 @@ def test_zero_exit_requires_usable_adapter(
         ["finetune", str(model), f"--data={data}", f"--out={out}", "--batch-size=1"]
     )
 
-    def train(args, model, data, out):
+    def train(args, model, data, out, *, qwen35):
         if artifact == "missing":
             return
         _save_adapter(args, model, data, out)

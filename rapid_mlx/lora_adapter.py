@@ -108,12 +108,47 @@ def reject_adapter_options(
             raise ValueError(f"--adapter is unsupported with {name}")
 
 
-def validate_adapter_checkpoint(model: str) -> None:
-    try:
-        config = _read_checkpoint_config(model, model)
-    except Exception:
-        return  # Serve can inspect the config again after resolving the snapshot.
-    _validate_checkpoint_config(config or {})
+def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
+    from . import checkpoint_integrity as integrity
+    from .model_metadata import MAX_WEIGHT_INDEX_BYTES, _read_json
+
+    index = (
+        _read_json(
+            snapshot / integrity.INDEX_FILENAME, max_bytes=MAX_WEIGHT_INDEX_BYTES
+        )
+        or {}
+    )
+    names = index.get("weight_map")
+    if not isinstance(names, dict) or not names:
+        try:
+            names = [
+                name
+                for shard in snapshot.glob("model*.safetensors")
+                for name in integrity._read_header(shard)
+            ]
+        except integrity._UnreadableHeaderError as exc:
+            raise ValueError(
+                "--adapter cannot inspect Qwen3.5 checkpoint weights"
+            ) from exc
+    return any("mtp" in name.split(".") for name in names)
+
+
+def validate_adapter_checkpoint(model: str) -> bool:
+    """Check adapter compatibility and return whether this is dense Qwen3.5."""
+    from .model_aliases import resolve_model, resolve_revision
+    from .model_metadata import read_model_metadata
+
+    resolved = resolve_model(model)
+    reference = model if resolve_revision(model) else resolved
+    metadata = read_model_metadata(resolved if Path(resolved).is_dir() else reference)
+    config = metadata.config if metadata else None
+    snapshot = metadata.snapshot_dir if metadata else None
+    if not config:
+        try:
+            config = _read_checkpoint_config(resolved, model)
+        except Exception:
+            return False  # Serve checks again after resolving the snapshot.
+    return _validate_checkpoint_config(config or {}, snapshot)
 
 
 def _read_checkpoint_config(model: str, reference: str) -> dict | None:
@@ -134,19 +169,27 @@ def _read_checkpoint_config(model: str, reference: str) -> dict | None:
     return _read_json(Path(config))
 
 
-def _validate_checkpoint_config(config: dict) -> None:
+def _validate_checkpoint_config(config: dict, snapshot: Path | None) -> bool:
     from .spec_decode.mtp.detect import _mtp_num_hidden_layers
 
+    qwen35 = config.get("model_type") == "qwen3_5"
     if (
-        any(key in config for key in ("vision_config", "audio_config"))
+        "audio_config" in config
+        or ("vision_config" in config and not qwen35)
         or config.get("model_type") == "lfm3_vl"
     ):
         raise ValueError("--adapter is unsupported with vision/MLLM or audio models")
-    if _read_num_mtp_layers(config) or _mtp_num_hidden_layers(config):
+    # Converted dense Qwen3.5 packs can retain MTP config without draft weights.
+    if (
+        _read_num_mtp_layers(config)
+        or (not qwen35 and _mtp_num_hidden_layers(config))
+        or (qwen35 and snapshot is not None and _has_qwen35_draft_tensors(snapshot))
+    ):
         raise ValueError("--adapter is unsupported with MTP checkpoint heads")
     quant = config.get("quantization_config") or {}
     if "fp8" in str(quant).lower():
         raise ValueError("--adapter is unsupported with fp8 repack checkpoints")
+    return qwen35
 
 
 def _read_num_mtp_layers(config: dict[str, object]) -> int:
@@ -217,6 +260,8 @@ def prepare_adapter_cli(args) -> None:
             )
         ),
     )
-    validate_adapter_checkpoint(model)
+    if validate_adapter_checkpoint(model) and not getattr(args, "no_mllm", False):
+        args.no_mllm = True
+        print("Serving text-only because --adapter is set; image inputs are disabled")
     # Automatic acceleration profiles must not select an unadapted draft head.
     args.no_spec_decode = True
