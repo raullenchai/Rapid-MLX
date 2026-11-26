@@ -26,8 +26,10 @@ from rapid_mlx.models.inkling2.compat import (
 )
 from rapid_mlx.models.inkling2.config import TextArgs
 from rapid_mlx.models.inkling2.kernels import (
+    _expert_conv_residual_ready,
     attention_mask_decode,
     depth_attention,
+    expert_conv_residual_decode,
     message_mix_decode,
     message_norm_decode,
     relative_attention,
@@ -95,8 +97,17 @@ def _block_decode_only(fn):
     return call
 
 
-def _fast_decode_enabled() -> bool:
-    return os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0"
+_FAST_DECODE_FEATURES = {
+    "MESSAGE_NORM": True,
+    "ROUTE_TOPK": True,
+    "EXPERT_CONV_RESIDUAL": True,
+}
+
+
+def _fast_decode_enabled(feature: str | None = None) -> bool:
+    return os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0" and (
+        feature is None or _FAST_DECODE_FEATURES[feature]
+    )
 
 
 def _decode_only(fn):
@@ -126,7 +137,7 @@ def unweighted_rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
 
 
 def _norm_cast(x, weight, eps, dtype, decode=False):
-    if decode and _fast_decode_enabled() and _use_kernels():
+    if decode and _fast_decode_enabled("MESSAGE_NORM") and _use_kernels():
         out = message_norm_decode(x, None, dtype, weight, eps)
         if out is not None:
             return out
@@ -190,7 +201,7 @@ def _combine_experts(states, weights):
 
 
 def _message_input(states, message, dtype, decode=False):
-    if decode and _fast_decode_enabled() and _use_kernels():
+    if decode and _fast_decode_enabled("MESSAGE_NORM") and _use_kernels():
         out = message_norm_decode(states, message, dtype)
         if out is not None:
             return out
@@ -880,7 +891,7 @@ class TopKRouter(nn.Module):
         if (
             cached_decode
             and hidden_states.shape[:2] == (1, 1)
-            and _fast_decode_enabled()
+            and _fast_decode_enabled("ROUTE_TOPK")
             and _use_kernels()
             and expert_routing is None
             and 1 <= self.top_k <= logits.shape[-1] <= 128
@@ -945,9 +956,11 @@ class SparseMoeBlock(nn.Module):
         return final_hidden_states.astype(hidden_states.dtype)
 
     @_block_decode_only
-    def _forward(self, hidden_states, cached_decode=False):
+    def _forward(self, hidden_states, cached_decode=False, combine=True):
         selected_experts, routing_weights = self.gate(hidden_states, cached_decode)
         expert_states = self.experts(hidden_states, selected_experts)
+        if not combine:
+            return expert_states, routing_weights
         return _combine_experts(expert_states, routing_weights)
 
 
@@ -1136,18 +1149,62 @@ class DecoderLayer(nn.Module):
             residual = hidden_states = block_residual.astype(mx.float32) + hidden_states
 
         assert block_states is not None
-        hidden_states = self.mlp(
-            self._mlp_states(
-                hidden_states, block_states, messages, block_residual, cache is not None
-            ),
-            cached_decode=cached_decode,
+        mlp_input = self._mlp_states(
+            hidden_states, block_states, messages, block_residual, cache is not None
         )
-        hidden_states, conv_states[3] = self.post_mlp_convolution(
-            hidden_states,
-            conv_states[3],
-            conv_mask,
-            lengths=conv.lengths if conv is not None else None,
-        )
+        fused = None
+        expert_states = None
+        if (
+            mlp_input.shape[:2] == (1, 1)
+            and conv is not None
+            and conv_states[3] is not None
+            and self.mlp.sharding_group is None
+            and 1 < self.mlp.gate.top_k <= 8
+            and mlp_input.shape[-1] >= 32
+            and mlp_input.shape[-1] % 4 == 0
+            and 2 <= self.post_mlp_convolution.kernel_size <= 5
+            and _fast_decode_enabled("EXPERT_CONV_RESIDUAL")
+            and _use_kernels()
+            and (
+                kernel := _expert_conv_residual_ready(
+                    mlp_input.dtype,
+                    self.post_mlp_convolution.conv1d.weight,
+                    self.mlp.gate.top_k,
+                    conv_mask is not None,
+                    conv.lengths is not None,
+                    mlp_input.dtype,
+                )
+            )
+            is not None
+        ):
+            expert_states, weights = self.mlp._forward(mlp_input, cached_decode, False)
+            fused = expert_conv_residual_decode(
+                expert_states,
+                weights,
+                conv_states[3],
+                self.post_mlp_convolution.conv1d.weight,
+                conv_mask,
+                conv.lengths,
+                residual,
+                mlp_input.dtype,
+                kernel=kernel,
+            )
+        if fused is None:
+            if expert_states is None:
+                hidden_states = self.mlp(mlp_input, cached_decode=cached_decode)
+            else:
+                hidden_states = _combine_experts(expert_states, weights).astype(
+                    mlp_input.dtype
+                )
+            hidden_states, conv_states[3] = self.post_mlp_convolution(
+                hidden_states,
+                conv_states[3],
+                conv_mask,
+                lengths=conv.lengths if conv is not None else None,
+            )
+            hidden_states = _residual_output(hidden_states, residual)
+        else:
+            hidden_states, conv_states[3] = fused
 
         if conv is not None:
             n = self.post_mlp_convolution.kernel_size - 1
@@ -1155,7 +1212,7 @@ class DecoderLayer(nn.Module):
                 assert window is not None
                 conv[i] = _conv_state(window, conv.lengths, n)
             conv.advance(block_residual.shape[1])
-        return _residual_output(hidden_states, residual), block_states
+        return hidden_states, block_states
 
 
 class SlidingDecoderLayer(DecoderLayer):

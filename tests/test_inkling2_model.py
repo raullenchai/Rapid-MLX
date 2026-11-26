@@ -78,8 +78,8 @@ CONFIG["text_config"]["loop_config"] = {
 # decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "4e467ff1ed00642a193c7197fa79b7ceca32faeda8bbed5b4095a9cb2aed0ed7",
-    "kernels.py": "453a7ae4235d28de5e378247a32057f88dc7baecd6540d4905dd752d3a35d0b6",
+    "layers.py": "7fd850db9e407c4bcac5305a1bdbee48f7276a56ec63135f54b1d717e86698ad",
+    "kernels.py": "81b26675fecc7fb1f11596bc6ab4767b09446357173a31c19c3dce443f77945f",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -155,6 +155,337 @@ def glue_loader(monkeypatch):
         return result
 
     return SimpleNamespace(load=load, module=module, mx=mx, shim=shim)
+
+
+@pytest.fixture
+def decode_cpu(glue_loader, monkeypatch):
+    """Import the real numerical modules with NumPy arrays and inert Metal APIs."""
+    g, mx = glue_loader, glue_loader.mx
+    for name, value in dict(
+        bfloat16=np.float16,
+        bool_=np.bool_,
+        int32=np.int32,
+        uint32=np.uint32,
+        ones=np.ones,
+        zeros=np.zeros,
+        compile=lambda fn=None, **kw: fn if fn is not None else lambda f: f,
+        fast=SimpleNamespace(metal_kernel=Mock(return_value=Mock())),
+    ).items():
+        monkeypatch.setattr(mx, name, value, raising=False)
+    g.module(
+        "rapid_mlx.models.inkling2.compat",
+        SwitchLinear=object,
+        _gather_sort=Mock(),
+        _scatter_unsort=Mock(),
+        expert_routing=None,
+        scalar=lambda x, dtype=np.float32: np.array(x, dtype=dtype),
+        row_threads=lambda size: 32,
+    )
+    g.module("rapid_mlx.models.inkling2.config", TextArgs=object)
+    g.module("mlx_lm.models.cache", BatchRotatingKVCache=object, RotatingKVCache=object)
+    g.module("mlx.nn", Module=object)
+    g.module("mlx.nn.layers", __path__=[])
+    g.module("mlx.nn.layers.distributed", sum_gradients=Mock())
+    kernels = g.load("kernels")
+    layers = g.load("layers")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    return SimpleNamespace(kernels=kernels, layers=layers, mx=mx)
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "invocation"]
+)
+@pytest.mark.parametrize("masked", [False, True])
+def test_expert_conv_cpu_guards(decode_cpu, failure, masked):
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    x = np.ones((1, 1, 2, 32), np.float32)
+    mix = np.ones((1, 1, 2), np.float32)
+    state = np.ones((1, 3, 32), np.float32)
+    weight = np.ones((32, 4, 1), np.float32)
+    outer = np.ones((1, 1, 32), np.float32)
+    mask, lengths = (
+        (np.ones((1, 1), bool), np.ones((1,), np.int32)) if masked else (None, None)
+    )
+    pending = [outer, state]
+    launch = Mock(return_value=pending)
+    mx.fast.metal_kernel.reset_mock()
+    mx.fast.metal_kernel.return_value = launch
+    if failure == "construction":
+        mx.fast.metal_kernel.side_effect = RuntimeError("construction")
+    elif failure == "probe":
+        launch.side_effect = RuntimeError("probe invocation")
+    elif failure == "evaluation":
+        mx.eval.side_effect = RuntimeError("probe evaluation")
+    elif failure == "invocation":
+        launch.side_effect = [
+            pending,
+            RuntimeError("real invocation"),
+            RuntimeError("real invocation"),
+        ]
+    for _ in range(2):
+        result = k.expert_conv_residual_decode(
+            x, mix, state, weight, mask, lengths, outer, np.float32
+        )
+        assert (result is None) == (failure is not None)
+        if result is not None:
+            assert result is pending
+    mx.fast.metal_kernel.assert_called_once()
+    assert launch.call_count == (
+        0
+        if failure == "construction"
+        else 1
+        if failure in ("probe", "evaluation")
+        else 3
+    )
+    assert mx.eval.call_count == (0 if failure in ("construction", "probe") else 1)
+    # Shape rejection must bypass even construction/probing.
+    mx.fast.metal_kernel.reset_mock()
+    assert (
+        k.expert_conv_residual_decode(
+            x[:, :, :1], mix, state, weight, mask, lengths, outer, np.float32
+        )
+        is None
+    )
+    mx.fast.metal_kernel.assert_not_called()
+
+
+def test_expert_conv_cpu_reprobes_promoted_experts(decode_cpu):
+    """An unexpected expert dtype still gets its own evaluated specialization."""
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    weight = np.ones((32, 4, 1), np.float32)
+    outer = np.ones((1, 1, 32), np.float32)
+    state = np.ones((1, 3, 32), np.float32)
+    launch = Mock(return_value=[outer, state])
+    mx.fast.metal_kernel.return_value = launch
+    ready = k._expert_conv_residual_ready(
+        np.float32, weight, 2, False, False, np.float32
+    )
+    for _ in range(2):
+        assert (
+            k.expert_conv_residual_decode(
+                np.ones((1, 1, 2, 32), np.float16),
+                np.ones((1, 1, 2), np.float32),
+                state,
+                weight,
+                None,
+                None,
+                outer,
+                np.float32,
+                kernel=ready,
+            )
+            is not None
+        )
+    assert mx.eval.call_count == 2
+    assert launch.call_count == 4
+    assert {dict(c.kwargs["template"])["T"] for c in launch.call_args_list} == {
+        np.float32
+    }
+
+
+@pytest.mark.parametrize("index", [0, 1, 2, 3, 6])
+def test_expert_conv_cpu_missing_inputs(decode_cpu, index):
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    mx.fast.metal_kernel.reset_mock()
+    args = [
+        np.ones((1, 1, 2, 32), np.float32),
+        np.ones((1, 1, 2), np.float32),
+        np.ones((1, 3, 32), np.float32),
+        np.ones((32, 4, 1), np.float32),
+        None,
+        None,
+        np.ones((1, 1, 32), np.float32),
+        np.float32,
+    ]
+    args[index] = None
+    assert k.expert_conv_residual_decode(*args) is None
+    mx.fast.metal_kernel.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "index,value",
+    [
+        (3, np.ones((32, 4), np.float32)),
+        (4, np.ones((0, 1), bool)),
+        (4, np.ones((1, 1), np.float32)),
+        (5, np.ones((0,), np.int32)),
+        (5, np.ones((1,), np.float32)),
+    ],
+)
+def test_expert_conv_cpu_unsafe_indices(decode_cpu, index, value):
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    mx.fast.metal_kernel.reset_mock()
+    args = [
+        np.ones((1, 1, 2, 32), np.float32),
+        np.ones((1, 1, 2), np.float32),
+        np.ones((1, 3, 32), np.float32),
+        np.ones((32, 4, 1), np.float32),
+        None,
+        None,
+        np.ones((1, 1, 32), np.float32),
+        np.float32,
+    ]
+    args[index] = value
+    assert k.expert_conv_residual_decode(*args) is None
+    mx.fast.metal_kernel.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [None, "construction", "probe", "evaluation"])
+def test_route_topk_cpu_probe(decode_cpu, failure):
+    k, mx = decode_cpu.kernels, decode_cpu.mx
+    launch = Mock(return_value=[np.zeros((1, 1, 2)), np.zeros((1, 1, 4))])
+    mx.fast.metal_kernel.return_value = launch
+    if failure == "construction":
+        mx.fast.metal_kernel.side_effect = RuntimeError("construction")
+    elif failure == "probe":
+        launch.side_effect = RuntimeError("probe")
+    elif failure == "evaluation":
+        mx.eval.side_effect = RuntimeError("evaluation")
+    for _ in range(2):
+        assert (k._route_topk(4, 2) is None) == (failure is not None)
+    assert launch.call_count == (0 if failure == "construction" else 1)
+    assert mx.eval.call_count == (0 if failure in ("construction", "probe") else 1)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "construction",
+        "probe",
+        "evaluation",
+        "invocation",
+        "ineligible",
+        "disabled",
+    ],
+)
+@pytest.mark.parametrize("boundary", ["first", "append", "inner"])
+def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure, boundary):
+    """A failed probe uses stock MoE; failed invocation reuses evaluated experts."""
+    layers, mx = decode_cpu.layers, decode_cpu.mx
+    x = np.ones((1, 1, 32), np.float32)
+    expert_states = np.full((1, 1, 2, 32), 2, np.float32)
+    weights = np.full((1, 1, 2), 0.5, np.float32)
+    mlp = layers.SparseMoeBlock.__new__(layers.SparseMoeBlock)
+    mlp.sharding_group = None
+    mlp.gate = Mock(return_value=(np.zeros((1, 1, 2), np.uint32), weights))
+    mlp.gate.top_k = 2
+    mlp.experts = Mock(return_value=expert_states)
+    mlp.state = {}
+    stock = Mock(wraps=mlp.__call__)
+
+    # Delegate __call__ while retaining the real _forward implementation.
+    class MLP:
+        sharding_group = None
+        gate = mlp.gate
+        _forward = mlp._forward
+        __call__ = staticmethod(stock)
+
+    class Conv:
+        kernel_size = 4
+        conv1d = SimpleNamespace(weight=np.ones((32, 4, 1), np.float32))
+        calls = Mock()
+
+        def __call__(self, hidden, history, mask, *, lengths):
+            self.calls()
+            return hidden, history
+
+    class Cache(list):
+        lengths = None
+        advance = Mock()
+
+        @property
+        def cache(self):
+            return self
+
+    layer = layers.DecoderLayer.__new__(layers.DecoderLayer)
+    layer.mlp = MLP()
+    layer.attention_input = None if boundary == "first" else Mock(return_value=x)
+    layer.is_block_boundary = boundary != "inner"
+    layer._self_attention = lambda hidden, *args: hidden
+    layer._mlp_states = Mock(side_effect=lambda hidden, *args: hidden)
+    layer.post_attention_convolution, layer.post_mlp_convolution = Conv(), Conv()
+    layer.post_mlp_convolution.calls = Mock()
+    monkeypatch.setattr(layers, "unweighted_rms_norm", lambda hidden: hidden)
+    monkeypatch.setattr(layers, "_conv_state", lambda window, *args: window)
+    history = np.zeros((1, 3, 32), np.float32)
+    cache = [SimpleNamespace(offset=3), Cache([history] * 4)]
+    expected = np.full_like(x, 4 if boundary == "inner" else 3)
+    outputs = [expected, history]
+    launch = Mock(return_value=outputs)
+    mx.fast.metal_kernel.return_value = launch
+    if failure == "construction":
+        mx.fast.metal_kernel.side_effect = RuntimeError("construction")
+    elif failure == "probe":
+        launch.side_effect = RuntimeError("probe")
+    elif failure == "evaluation":
+        mx.eval.side_effect = RuntimeError("evaluation")
+    elif failure == "invocation":
+        launch.side_effect = [
+            outputs,
+            RuntimeError("invocation"),
+            RuntimeError("invocation"),
+        ]
+    elif failure == "ineligible":
+        layer.mlp.gate.top_k = 1
+    elif failure == "disabled":
+        monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "EXPERT_CONV_RESIDUAL", False)
+    for step in range(2):
+        block_states = None if boundary == "first" else x[None]
+        actual, block = layer(x, block_states, cache=cache)
+        assert block.shape[0] == (2 if boundary == "append" else 1)
+        assert layer._mlp_states.call_args.args[-1] is True
+        np.testing.assert_array_equal(actual, expected)
+        assert mlp.experts.call_count == mlp.gate.call_count == step + 1
+    assert stock.call_count == (0 if failure in (None, "invocation") else 2)
+    assert layer.post_mlp_convolution.calls.call_count == (0 if failure is None else 2)
+    assert launch.call_count == (
+        0
+        if failure in ("construction", "ineligible", "disabled")
+        else 1
+        if failure in ("probe", "evaluation")
+        else 3
+    )
+    assert mx.eval.call_count == (
+        0 if failure in ("construction", "ineligible", "disabled", "probe") else 1
+    )
+
+
+@pytest.mark.parametrize(
+    "feature", ["MESSAGE_NORM", "ROUTE_TOPK", "EXPERT_CONV_RESIDUAL"]
+)
+def test_decode_cpu_independent_switches(decode_cpu, monkeypatch, feature):
+    layers = decode_cpu.layers
+    features = ("MESSAGE_NORM", "ROUTE_TOPK", "EXPERT_CONV_RESIDUAL")
+    assert all(layers._fast_decode_enabled(name) for name in features)
+    monkeypatch.setitem(layers._FAST_DECODE_FEATURES, feature, False)
+    assert layers._fast_decode_enabled()
+    for name in features:
+        assert layers._fast_decode_enabled(name) is (name != feature)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+    assert not any(layers._fast_decode_enabled(name) for name in (*features, None))
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_route_topk_cpu_switch_and_fallback(
+    decode_cpu, monkeypatch, disabled, unavailable
+):
+    layers, mx = decode_cpu.layers, decode_cpu.mx
+    router = layers.TopKRouter.__new__(layers.TopKRouter)
+    router.weight = np.ones((4, 32), np.float32)
+    router.e_score_correction_bias = np.zeros((4,), np.float32)
+    router.top_k, router.routed_scaling_factor = 2, 2.0
+    expected = (np.array([[[0, 1]]], np.uint32), np.ones((1, 1, 2), np.float32))
+    fused = Mock(return_value=None if unavailable else expected)
+    stock = Mock(return_value=expected)
+    monkeypatch.setattr(layers, "route_topk_decode", fused)
+    monkeypatch.setattr(layers, "_route_weights", stock)
+    monkeypatch.setattr(mx, "sigmoid", lambda x: 1 / (1 + np.exp(-x)), raising=False)
+    monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "ROUTE_TOPK", not disabled)
+    assert router(np.ones((1, 1, 32), np.float32), cached_decode=True) is expected
+    assert fused.call_count == int(not disabled)
+    assert stock.call_count == int(disabled or unavailable)
 
 
 @pytest.fixture
@@ -315,6 +646,11 @@ def test_message_norm_cpu_guards(message_cpu, monkeypatch):
         monkeypatch.setattr(layers, "_use_kernels", lambda device=device: device)
         layers._message_input(x, x, mx.float16, decode)
         layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, decode)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "MESSAGE_NORM", False)
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    layers._message_input(x, x, mx.float16, True)
+    layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, True)
     forbidden.assert_not_called()
 
 
@@ -1237,6 +1573,178 @@ def test_short_conv_decode_parity(
         assert _conv_state(next_state, lengths, width - 1) is next_state
         state = next_state
         x = (x.astype(mx.float32) * 0.75 + step * 0.125).astype(dtype)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
+@pytest.mark.parametrize("experts", [2, 4, 8])
+def test_expert_conv_residual_exact(metal_runtime, monkeypatch, dtype, experts):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    launch = Mock(wraps=kernels._expert_conv_residual_factory())
+    monkeypatch.setattr(kernels, "_expert_conv_residual_factory", lambda: launch)
+    dtype = getattr(mx, dtype)
+    for seed in (3, 29, 71):
+        mx.random.seed(seed)
+        for scale, channels, width in ((0.001, 32, 2), (1, 64, 4), (100, 2048, 5)):
+            conv = layers.ShortConvolution(channels, width)
+            conv.conv1d.weight = mx.random.normal((channels, width, 1)).astype(dtype)
+            x = (mx.random.normal((1, 1, experts, channels * 2)) * scale).astype(dtype)[
+                ..., ::2
+            ]
+            mix = mx.random.uniform(shape=(1, 1, experts))
+            state = mx.random.normal((1, width - 1, channels * 2))[..., ::2] * scale
+            residual = mx.random.normal((1, 1, channels)) * scale
+            for mask, lengths in ((None, None), (mx.array([[False]]), mx.array([0]))):
+                combined = layers._combine_experts(x, mix).astype(dtype)
+                convolved, window = conv(combined, state, mask, lengths=lengths)
+                expected = layers._residual_output(convolved, residual)
+                launch.reset_mock()
+                actual, retained = kernels.expert_conv_residual_decode(
+                    x, mix, state, conv.conv1d.weight, mask, lengths, residual, dtype
+                )
+                assert any(c.kwargs["inputs"][0] is x for c in launch.call_args_list)
+                assert actual.dtype == expected.dtype == dtype
+                assert mx.array_equal(actual, expected).item()
+                bits = mx.uint32 if dtype == mx.float32 else mx.uint16
+                assert mx.array_equal(actual.view(bits), expected.view(bits)).item()
+                assert retained.dtype == mx.float32
+                assert mx.array_equal(
+                    retained, layers._conv_state(window, lengths, width - 1)
+                ).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_expert_conv_residual_cached_logits(metal_runtime, monkeypatch, dtype):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import layers
+
+    model = create_model(metal_runtime, dtype=getattr(mx, dtype))
+    fused = layers.expert_conv_residual_decode
+
+    def checked_fusion(*args, **kwargs):
+        result = fused(*args, **kwargs)
+        assert result is not None
+        return result
+
+    calls = Mock(side_effect=checked_fusion)
+    factory = layers._expert_conv_residual_ready
+    for seed in (3, 29, 71):
+        mx.random.seed(seed)
+        tokens = mx.random.randint(0, 120, (1, 10))
+        caches = [model.make_cache(), model.make_cache()]
+        for cache in caches:
+            mx.eval(model(tokens[:, :6], cache=cache))
+        for step in range(6, 10):
+            monkeypatch.setattr(
+                layers, "_expert_conv_residual_ready", lambda *args: None
+            )
+            expected = model(tokens[:, step : step + 1], cache=caches[0])
+            mx.eval(expected)
+            monkeypatch.setattr(layers, "_expert_conv_residual_ready", factory)
+            monkeypatch.setattr(layers, "expert_conv_residual_decode", calls)
+            calls.reset_mock()
+            actual = model(tokens[:, step : step + 1], cache=caches[1])
+            assert calls.call_count > 0
+            assert mx.array_equal(actual, expected).item()
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    "failure", ["construction", "probe", "invocation", "evaluation"]
+)
+def test_expert_conv_residual_fallback(metal_runtime, monkeypatch, failure):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels, layers
+
+    unavailable = Mock(side_effect=AssertionError("unsupported input reached kernel"))
+    weight = mx.zeros((64, 4, 1))
+    with monkeypatch.context() as patch:
+        patch.setattr(kernels, "_expert_conv_residual_factory", unavailable)
+        for batch, length, experts, kind in (
+            (2, 1, 2, "shape"),
+            (1, 2, 2, "shape"),
+            (1, 1, 16, "shape"),
+            (1, 1, 2, "dtype"),
+            (1, 1, 2, "cache"),
+        ):
+            x = mx.zeros((batch, length, experts, 64))
+            mix = mx.zeros(
+                x.shape[:3], dtype=mx.float16 if kind == "dtype" else mx.float32
+            )
+            state = None if kind == "cache" else mx.zeros((batch, 3, 64))
+            outer = mx.zeros((batch, length, 64))
+            assert (
+                kernels.expert_conv_residual_decode(
+                    x, mix, state, weight, None, None, outer, mx.float32
+                )
+                is None
+            )
+    unavailable.assert_not_called()
+    model = create_model(metal_runtime, dtype=mx.float32, loop=False)
+    cache, reference = model.make_cache(), model.make_cache()
+    for bank in (cache, reference):
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=bank))
+    kernels._expert_conv_residual_factory.cache_clear()
+    kernels._probe_expert_conv_residual.cache_clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(layers, "_expert_conv_residual_ready", lambda *args: None)
+        expected = model(mx.array([[4]]), cache=reference)
+        mx.eval(expected)
+    pending, real_eval = mx.zeros((1,)), mx.eval
+    broken = Mock(side_effect=RuntimeError("kernel invocation unavailable"))
+    factory = Mock(return_value=broken)
+    evaluation = Mock(side_effect=RuntimeError("probe evaluation unavailable"))
+
+    def evaluate(*arrays):
+        if any(a is pending for a in arrays):
+            return evaluation()
+        return real_eval(*arrays)
+
+    if failure == "construction":
+        factory.side_effect = RuntimeError("kernel construction unavailable")
+    if failure == "evaluation":
+        broken.side_effect, broken.return_value = None, [pending, pending]
+    with monkeypatch.context() as patch:
+        patch.setattr(mx.fast, "metal_kernel", factory)
+        patch.setattr(mx, "eval", evaluate)
+        if failure == "invocation":
+            patch.setattr(
+                kernels, "_probe_expert_conv_residual", lambda kernel, *args: kernel
+            )
+        actual = model(mx.array([[4]]), cache=cache)
+        assert mx.array_equal(actual, expected).item()
+        factory.assert_called_once()
+        expected_calls = {"construction": 0, "invocation": len(model.layers)}
+        assert broken.call_count == expected_calls.get(failure, 1)
+        assert evaluation.call_count == (1 if failure == "evaluation" else 0)
+    kernels._expert_conv_residual_factory.cache_clear()
+    kernels._probe_expert_conv_residual.cache_clear()
+    # The existing setting and uncached/multi-token/batched calls bypass fusion.
+    monkeypatch.setattr(
+        layers,
+        "expert_conv_residual_decode",
+        Mock(side_effect=AssertionError("unexpected fusion")),
+    )
+    layer = model.layers[0]
+    x = mx.ones((1, 1, 64))
+    with monkeypatch.context() as patch:
+        patch.setattr(layer, "_self_attention", lambda hidden, *args: hidden)
+        expected = layer(x, None)[0]
+        actual = layer(x, None, cache=[model.make_cache()[0][0], None])[0]
+        assert mx.array_equal(actual, expected).item()
+    for batch, length in ((1, 1), (1, 3), (2, 1)):
+        ids = mx.ones((batch, length), dtype=mx.int32)
+        mx.eval(model(ids))
+        cache = model.make_cache()
+        mx.eval(model(mx.ones((batch, 3), dtype=mx.int32), cache=cache))
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+        mx.eval(model(ids, cache=cache))
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+        if batch > 1 or length > 1:
+            mx.eval(model(ids, cache=cache))
 
 
 @pytest.mark.requires_mlx
@@ -2742,6 +3250,8 @@ def projection_cpu(glue_loader, monkeypatch):
         **{
             name: Mock()
             for name in (
+                "_expert_conv_residual_ready",
+                "expert_conv_residual_decode",
                 "attention_mask_decode",
                 "depth_attention",
                 "message_mix_decode",
