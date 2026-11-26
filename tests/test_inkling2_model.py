@@ -72,15 +72,16 @@ CONFIG["text_config"]["loop_config"] = {
 }
 
 
-# Complete reviewed source of the five numerical-core files omitted by
-# .coveragerc. See NOTICE for provenance. Review edits before updating pins;
+# Complete reviewed source of the five omitted numerical-core files and the
+# decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "69350af13cd5eb058f21655ecdb6a78b1d0e7f0912bf6b108df175a8246208c2",
     "kernels.py": "453a7ae4235d28de5e378247a32057f88dc7baecd6540d4905dd752d3a35d0b6",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
-    "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
+    "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
+    "nvfp4_decode.py": "b40d0dee816f30612de4b3541097f1f3de692251418d4b5c7f3493063d750360",
 }
 
 
@@ -96,7 +97,7 @@ def test_numerical_core_source_contract():
         for path in coverage["run"]["omit"].splitlines()
         if path.strip().startswith(prefix)
     }
-    assert omitted == _NUMERICAL_CORE_SHA256.keys()
+    assert omitted == _NUMERICAL_CORE_SHA256.keys() - {"nvfp4_decode.py"}
     for filename, expected in _NUMERICAL_CORE_SHA256.items():
         assert hashlib.sha256((root / prefix / filename).read_bytes()).hexdigest() == (
             expected
@@ -167,7 +168,7 @@ def compat_loader(glue_loader):
                 def to_quantized(self):
                     pass
 
-        native = glue_loader.module(
+        glue_loader.module(
             "mlx_lm.models.switch_layers",
             SwitchLinear=Native,
             _gather_sort=object(),
@@ -188,9 +189,8 @@ def compat_loader(glue_loader):
             glue_loader.module("mlx_lm.kernels.expert_routing")
             router = None
         result = glue_loader.load("compat")
-        selected = native if global_scale else fallback
         for name in ("SwitchLinear", "_gather_sort", "_scatter_unsort"):
-            assert getattr(result, name) is getattr(selected, name)
+            assert getattr(result, name) is getattr(fallback, name)
         assert result.expert_routing is router
         glue_loader.shim.install.assert_called_once_with()
         return result
@@ -461,6 +461,390 @@ def test_expert_without_global_scale_never_passes_it(monkeypatch):
     monkeypatch.setattr(switch_layers.mx, "gather_qmm", spy)
     mx.eval(layer(x, indices))
     assert seen and all("global_scale" not in kwargs for kwargs in seen)
+
+
+@pytest.fixture
+def decode_launches(metal_runtime, monkeypatch):
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+
+    prepare, calls = nvfp4_decode.prepare, []
+
+    def traced(*args):
+        launch = prepare(*args)
+        assert launch.kernel is not None
+        launch.kernel = Mock(wraps=launch.kernel)
+        calls.append(launch.kernel)
+        return launch
+
+    monkeypatch.setattr(nvfp4_decode, "prepare", traced)
+    return calls
+
+
+@pytest.fixture
+def cpu_decode(glue_loader, monkeypatch):
+    """Run launch plumbing with NumPy metadata and inert kernels, without MLX."""
+    mx = glue_loader.mx
+    for name, value in dict(
+        int32=np.int32,
+        uint32=np.uint32,
+        uint8=np.uint8,
+        bfloat16=np.float16,
+        zeros=np.zeros,
+        full=np.full,
+        fast=SimpleNamespace(metal_kernel=Mock()),
+    ).items():
+        monkeypatch.setattr(mx, name, value, raising=False)
+    decode = glue_loader.load("nvfp4_decode")
+    x = np.zeros((1, 1, 128), np.float16)
+    w = np.zeros((4, 32, 16), np.uint32)
+    scales = np.zeros((4, 32, 8), np.uint8)
+    indices = np.array([0, 2], np.int32)
+    return SimpleNamespace(
+        mx=mx, decode=decode, args=(x, w, scales, indices), probe=object(), out=object()
+    )
+
+
+@pytest.mark.parametrize("has_scale", [False, True])
+def test_nvfp4_cpu_probe_and_guarded_invocation(cpu_decode, has_scale):
+    """Each variant evaluates one probe; real outputs remain lazy and unwrapped."""
+    c = cpu_decode
+    scale = np.ones(4) if has_scale else None
+    kernel = Mock(side_effect=[[c.probe], [c.out], [c.out], RuntimeError("invoke")])
+    c.mx.fast.metal_kernel.return_value = kernel
+    for _ in range(2):
+        assert c.decode.project(*c.args, scale) is c.out
+    c.mx.fast.metal_kernel.assert_called_once()
+    c.mx.eval.assert_called_once_with(c.probe)
+    inputs = kernel.call_args.kwargs["inputs"]
+    assert all(a is b for a, b in zip(inputs[:4], c.args))
+    assert inputs[4] is (scale if has_scale else c.args[2])
+    assert kernel.call_args.kwargs["output_shapes"] == [(2, 1, 32)]
+    assert c.decode.project(*c.args, scale) is None
+    assert kernel.call_count == 4
+    # An exception evaluating a real output is outside the fallback guarantee.
+    c.mx.eval.side_effect = RuntimeError("lazy output")
+    with pytest.raises(RuntimeError, match="lazy output"):
+        c.mx.eval(c.out)
+
+
+@pytest.mark.parametrize("failure", ["construction", "invocation", "evaluation"])
+def test_nvfp4_cpu_probe_failure_cached_per_variant(cpu_decode, failure):
+    c = cpu_decode
+    kernel = Mock(return_value=[c.probe])
+    c.mx.fast.metal_kernel.return_value = kernel
+    # A successful specialization must survive failure of a different variant.
+    assert c.decode._get_kernel() is kernel
+    c.mx.fast.metal_kernel.reset_mock()
+    kernel.reset_mock()
+    c.mx.eval.reset_mock()
+    error = RuntimeError(failure)
+    if failure == "construction":
+        c.mx.fast.metal_kernel.side_effect = error
+    elif failure == "invocation":
+        kernel.side_effect = error
+    else:
+        c.mx.eval.side_effect = error
+    for _ in range(2):
+        assert c.decode.project(*c.args, None) is None
+    c.mx.fast.metal_kernel.assert_called_once()
+    assert kernel.call_count == (failure != "construction")
+    assert c.mx.eval.call_count == (failure == "evaluation")
+    assert c.decode._get_kernel() is kernel
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_nvfp4_cpu_layer_dispatch(cpu_decode, glue_loader, monkeypatch, failure):
+    """Exercise the layer's cached dispatch and sticky invocation fallback on CPU."""
+    c = cpu_decode
+
+    class Module(dict):
+        __getattr__ = dict.__getitem__
+        __setattr__ = dict.__setitem__
+
+    monkeypatch.setattr(
+        sys.modules["mlx"], "nn", glue_loader.module("mlx.nn", Module=Module)
+    )
+    for name, value in dict(
+        gather_qmm=Mock(return_value=c.out),
+        default_device=lambda: "fake-gpu",
+        gpu="fake-gpu",
+        integer=np.integer,
+        issubdtype=np.issubdtype,
+        quantize=Mock(return_value=c.args[1:3]),
+    ).items():
+        monkeypatch.setattr(c.mx, name, value, raising=False)
+    sl = glue_loader.load("switch_layers")
+    layer = sl.QuantizedSwitchLinear.__new__(sl.QuantizedSwitchLinear)
+    layer.mode, layer.bits, layer.group_size = "nvfp4", 4, 16
+    layer._quantize(c.args[1])
+    kernel = (
+        Mock(side_effect=[[c.probe], RuntimeError("invoke")])
+        if failure
+        else Mock(return_value=[c.out])
+    )
+    c.mx.fast.metal_kernel.return_value = kernel
+    monkeypatch.delenv("RAPID_MLX_INKLING2_FAST_DECODE", raising=False)
+    for _ in range(2):
+        assert layer(c.args[0], c.args[3]) is c.out
+    c.mx.fast.metal_kernel.assert_called_once()
+    assert kernel.call_count == (2 if failure else 3)
+    assert c.mx.gather_qmm.call_count == (2 if failure else 0)
+    assert (layer._nvfp4_decode.kernel is None) == failure
+    # Unsupported inputs bypass even a warmed launch.
+    kernel.reset_mock()
+    layer(c.args[0].astype(np.float32), c.args[3])
+    kernel.assert_not_called()
+    assert c.mx.gather_qmm.call_count == (3 if failure else 1)
+
+
+@pytest.mark.parametrize(
+    "r,n,m,p",
+    [
+        (r, n, m, p)
+        for n, m, p in [
+            (16, 32, 2),
+            (64, 3, 2),
+            (96, 17, 16),
+            (512, 17, 2),
+            (528, 3, 2),
+            (1152, 2304, 8),
+            (2304, 1152, 8),
+            (2560, 2304, 8),
+            (768, 17, 16),
+        ]
+        for r in (1, p)
+    ],
+)
+@pytest.mark.parametrize("scale", [None, "native", "fallback"])
+@pytest.mark.parametrize("seed", [0, 42, 123])
+@pytest.mark.parametrize("wide", [False, True])
+def test_nvfp4_decode_matches_stock(
+    metal_runtime, monkeypatch, decode_launches, r, n, m, p, scale, seed, wide
+):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    if scale == "native" and not sl._GATHER_QMM_HAS_GLOBAL_SCALE:
+        pytest.skip("Native tensor scale unavailable")
+    mx.random.seed(seed)
+    layer = sl.QuantizedSwitchLinear(n, m, 20, False, 16, 4, "nvfp4", scale is not None)
+    if scale is not None:
+        layer.global_scale *= mx.linspace(0.25, 4.0, 20)
+    if scale == "fallback":
+        monkeypatch.setattr(sl, "_GATHER_QMM_HAS_GLOBAL_SCALE", False)
+    x = mx.random.normal((1, 1, r, 1, n))
+    if wide:
+        # Exercise rounding within qdot, beyond nearly exact bf16 products
+        # of similarly sized values, as well as cancellation across groups.
+        x *= 2.0 ** mx.random.randint(-16, 17, x.shape).astype(mx.float32)
+    x = x.astype(mx.bfloat16)
+    indices = mx.random.randint(0, 20, (1, 1, p))
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", False)
+    expected = layer(x, indices)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", True)
+    actual = layer(x, indices)
+    assert len(decode_launches) == 1
+    decode_launches[0].assert_called_once()
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype == mx.bfloat16
+    assert mx.array_equal(actual, expected).item()
+    repeated = layer(x, indices)
+    assert len(decode_launches) == 1 and decode_launches[0].call_count == 2
+    assert mx.array_equal(repeated, expected).item()
+
+
+def test_nvfp4_decode_formats(metal_runtime):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+
+    kernel = mx.fast.metal_kernel(
+        name="inkling2_nvfp4_formats",
+        input_names=["encoded"],
+        output_names=["values", "scales"],
+        header=nvfp4_decode._HEADER,
+        source="""
+            uint i = thread_position_in_grid.x;
+            uint c = encoded[i];
+            if (i < 16) values[i] = fp4(c);
+            scales[i] = scale8(c);
+        """,
+    )
+    values, scales = kernel(
+        inputs=[mx.arange(256, dtype=mx.uint32)],
+        grid=(256, 1, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[(16,), (256,)],
+        output_dtypes=[mx.float32, mx.float32],
+    )
+    # Every E2M1 code and E4M3 scale, including subnormals and signed zero.
+    magnitudes = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+    expected_values = mx.array(magnitudes + [-v for v in magnitudes], mx.float32)
+    expected_scales = []
+    for code in range(256):
+        e, m = (code >> 3) & 15, code & 7
+        value = m / 512 if e == 0 else (1 + m / 8) * 2 ** (e - 7)
+        expected_scales.append(-value if code & 128 else value)
+    finite = mx.array([c for c in range(256) if c & 127 != 127])
+    expected_scales = mx.array(expected_scales, mx.float32)
+    assert mx.array_equal(
+        values.view(mx.uint32), expected_values.view(mx.uint32)
+    ).item()
+    assert mx.array_equal(
+        scales[finite].view(mx.uint32), expected_scales[finite].view(mx.uint32)
+    ).item()
+    assert mx.all(mx.isnan(scales[mx.array([127, 255])])).item()
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize(
+    "case", ["float32", "sorted", "multi", "batched", "affine", "disabled"]
+)
+def test_nvfp4_decode_unsupported(metal_runtime, monkeypatch, case, warm):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    mode, group = ("affine", 32) if case == "affine" else ("nvfp4", 16)
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, group, 4, mode)
+    if warm and mode == "nvfp4":
+        # Unsupported calls must still fall back after warming the layer cache.
+        mx.eval(
+            layer(
+                mx.ones((1, 1, 1, 1, 128), mx.bfloat16),
+                mx.zeros((1, 1, 2), mx.uint32),
+            )
+        )
+    shape = (2 if case == "batched" else 1, 1, 1, 2 if case == "multi" else 1, 128)
+    x = mx.ones(shape, mx.float32 if case == "float32" else mx.bfloat16)
+    indices = mx.zeros((1, 1, 2), mx.uint32)
+    if case == "disabled":
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
+    dispatch = Mock(side_effect=lambda *a, **kw: pytest.fail("kernel dispatched"))
+    monkeypatch.setattr(nvfp4_decode, "prepare", dispatch)
+    if layer._nvfp4_decode is not None:
+        monkeypatch.setattr(layer._nvfp4_decode, "kernel", dispatch)
+    mx.eval(layer(x, indices, sorted_indices=case == "sorted"))
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("n,m", [(128, 32), (16, 1)])
+@pytest.mark.parametrize("failure", ["build", "call", "eval"])
+def test_nvfp4_decode_nondefault_build_failure(
+    metal_runtime, monkeypatch, failure, n, m
+):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    layer = sl.QuantizedSwitchLinear(n, m, 4, False, 16, 4, "nvfp4")
+    x = mx.ones((1, 1, 1, 1, n), mx.bfloat16)
+    indices = mx.zeros((1, 1, 2), mx.uint32)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", False)
+    expected = layer(x, indices)
+    mx.eval(expected)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", True)
+    error = RuntimeError("unavailable")
+    kernel = Mock(side_effect=error if failure == "call" else None)
+    build = Mock(side_effect=error if failure == "build" else None, return_value=kernel)
+    factory = functools.cache(nvfp4_decode._get_kernel.__wrapped__)
+    monkeypatch.setattr(nvfp4_decode, "_get_kernel", factory)
+    assert factory() is not None
+    monkeypatch.setattr(mx.fast, "metal_kernel", build)
+    with monkeypatch.context() as probe:
+        if failure == "eval":
+            kernel.return_value = [mx.zeros((1,), mx.bfloat16)]
+            evaluate = Mock(side_effect=error)
+            probe.setattr(mx, "eval", evaluate)
+        actual = [layer(x, indices), layer(x, indices)]
+    for output in actual:
+        assert mx.array_equal(output, expected).item()
+    assert factory(n, m, True, False, mx.uint32) is None and factory() is not None
+    build.assert_called_once()
+    assert kernel.call_count == (failure != "build")
+    if failure == "eval":
+        evaluate.assert_called_once()
+
+
+def test_nvfp4_decode_invocation_failure(metal_runtime, monkeypatch):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, 16, 4, "nvfp4")
+    x = mx.ones((1, 1, 1, 1, 128), mx.bfloat16)
+    indices = mx.zeros((1, 1, 2), mx.uint32)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", False)
+    expected = layer(x, indices)
+    mx.eval(expected)
+    monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", True)
+    factory = functools.cache(nvfp4_decode._get_kernel.__wrapped__)
+    monkeypatch.setattr(nvfp4_decode, "_get_kernel", factory)
+    # The one-time probe succeeds; only the real invocation raises.
+    kernel = Mock(side_effect=[[mx.zeros((1,), mx.bfloat16)], RuntimeError("invoke")])
+    monkeypatch.setattr(mx.fast, "metal_kernel", Mock(return_value=kernel))
+    for _ in range(2):
+        actual = layer(x, indices)
+        assert mx.array_equal(actual, expected).item()
+    assert factory(128, 32, True, False, mx.uint32) is kernel
+    assert kernel.call_count == 2
+    assert kernel.call_args.kwargs["inputs"][0] is x
+    assert kernel.call_args.kwargs["inputs"][3] is indices
+
+
+@pytest.mark.parametrize("dtype", ["int32", "uint32", "int64", "uint64"])
+def test_nvfp4_invalid_indices_no_crash_no_stock_parity(
+    metal_runtime, decode_launches, dtype
+):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import nvfp4_decode
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    layer = sl.QuantizedSwitchLinear(128, 32, 4, False, 16, 4, "nvfp4", True)
+    x = mx.ones((1, 1, 128), mx.bfloat16)
+    indices = mx.array([-1, 4, 2**31 - 1, 2**31, 2**32, 2**32 + 3], mx.int64).astype(
+        getattr(mx, dtype)
+    )
+    output = nvfp4_decode.project(
+        x, layer.weight, layer.scales, indices, layer.global_scale
+    )
+    mx.eval(output)
+    assert output.shape == (indices.size, 1, 32)
+    assert mx.all(mx.isfinite(output)).item()
+    expected = nvfp4_decode.project(
+        x,
+        layer.weight,
+        layer.scales,
+        mx.clip(indices.astype(mx.int32), 0, 3),
+        layer.global_scale,
+    )
+    assert len(decode_launches) == 2
+    for kernel in decode_launches:
+        kernel.assert_called_once()
+    assert mx.array_equal(output, expected).item()
+
+
+def test_nvfp4_decode_model_exact(metal_runtime, monkeypatch, decode_launches):
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import switch_layers as sl
+
+    model = create_model(metal_runtime, dtype=mx.bfloat16)
+    for layer in model.model.language_model.layers:
+        for name in ("gate_up_proj", "down_proj"):
+            proj = getattr(layer.mlp.experts, name)
+            setattr(layer.mlp.experts, name, proj.to_quantized(16, 4, "nvfp4", True))
+    outputs = []
+    for enabled in (False, True):
+        monkeypatch.setattr(sl, "_NVFP4_DECODE_ENABLED", enabled)
+        for layer in model.model.language_model.layers:
+            if hasattr(layer.mlp, "_block_compiled__forward"):
+                delattr(layer.mlp, "_block_compiled__forward")
+        cache = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+        outputs.append(model(mx.array([[4]]), cache=cache))
+        mx.eval(outputs[-1])
+    assert len(decode_launches) == 2 * len(model.model.language_model.layers)
+    assert all(kernel.call_count > 0 for kernel in decode_launches)
+    assert mx.array_equal(*outputs).item()
 
 
 @pytest.mark.parametrize("global_scale", [False, True])
