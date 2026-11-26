@@ -14,7 +14,7 @@ import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Barrier, Event, Lock, get_ident
 from types import ModuleType, SimpleNamespace
 from unittest.mock import DEFAULT, Mock
 
@@ -84,7 +84,7 @@ _NUMERICAL_CORE_SHA256 = {
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
     "nvfp4_decode.py": "b40d0dee816f30612de4b3541097f1f3de692251418d4b5c7f3493063d750360",
-    "visit_norm.py": "d4e28982343ac3955480dd3c3df0ca21306cd75939905c4af6436827ee108574",
+    "visit_norm.py": "389750faffd0d7843e92ad1550a7f80790e3122ed26f40000be8ab200a75bc4d",
 }
 
 
@@ -255,6 +255,17 @@ def test_visit_norm_cpu_lifecycle(visit_cpu, append, failure):
         ]
         if failure in (None, "invocation"):
             assert all(a is b for a, b in zip(launch["inputs"], c.args))
+            probe_launch = kernel.call_args_list[0].kwargs
+            for name in launch.keys() - {"inputs"}:
+                assert probe_launch[name] == launch[name]
+            for probe_input, real_input in zip(
+                probe_launch["inputs"], launch["inputs"]
+            ):
+                assert probe_input is not real_input
+                assert (probe_input.shape, probe_input.dtype) == (
+                    real_input.shape,
+                    real_input.dtype,
+                )
         else:
             assert all(a is not b for a, b in zip(launch["inputs"], c.args))
     factory = c.mx.fast.metal_kernel.call_args.kwargs
@@ -289,6 +300,7 @@ def test_visit_norm_cpu_concurrent_invocation_success(visit_cpu):
     kernel = Mock(return_value=output)
     c.mx.fast.metal_kernel.return_value = kernel
     assert c.visit.visit_norm_decode(*c.args) == output
+    assert c.visit.visit_norm_decode(*c.args, append_block=True) == output
 
     def invoke(**kwargs):
         barrier.wait(timeout=10)
@@ -298,34 +310,63 @@ def test_visit_norm_cpu_concurrent_invocation_success(visit_cpu):
     kernel.side_effect = invoke
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert list(
-            pool.map(lambda _: c.visit.visit_norm_decode(*c.args), range(2))
+            pool.map(
+                lambda append: c.visit.visit_norm_decode(*c.args, append_block=append),
+                (False, True),
+            )
         ) == [output, output]
-    c.mx.fast.metal_kernel.assert_called_once()
-    c.mx.eval.assert_called_once()
+    assert c.mx.fast.metal_kernel.call_count == 2
+    assert c.mx.eval.call_count == 2
 
 
 def test_visit_norm_cpu_concurrent_invocation_failure(visit_cpu, monkeypatch):
-    c, barrier = visit_cpu, Barrier(2)
-    disabled = Event()
-    kernel = Mock(side_effect=[[object(), object(), object()], RuntimeError("invoke")])
+    c = visit_cpu
+    entered, contender, disabled = Event(), Event(), Event()
+    first_thread = []
+    kernel = Mock(return_value=[object(), object(), object()])
     c.mx.fast.metal_kernel.return_value = kernel
-    real_ready = c.visit._ready
+    assert c.visit.visit_norm_decode(*c.args) is not None
+    kernel.reset_mock()
 
-    def ready(*args):
-        result = real_ready(*args)
-        if barrier.wait(timeout=10):  # Both hold a successfully probed kernel.
-            assert disabled.wait(timeout=10)
-        return result
+    class ObservedLock:
+        def __init__(self):
+            self.lock = Lock()
 
-    def run(_):
-        result = c.visit.visit_norm_decode(*c.args)
-        disabled.set()
-        return result
+        def __enter__(self):
+            if entered.is_set() and get_ident() != first_thread[0]:
+                contender.set()
+            self.lock.acquire()
 
-    monkeypatch.setattr(c.visit, "_ready", ready)
+        def __exit__(self, *args):
+            self.lock.release()
+            if entered.is_set() and get_ident() != first_thread[0]:
+                assert disabled.wait(timeout=10)
+
+    state = next(iter(c.visit._KERNELS.values()))
+    monkeypatch.setattr(state, "lock", ObservedLock())
+    # The global lock must not be acquired on a warm variant lookup or dispatch.
+    monkeypatch.setattr(c.visit, "_LOCK", None)
+
+    def invoke(**kwargs):
+        first_thread.append(get_ident())
+        entered.set()
+        assert contender.wait(timeout=10)
+        raise RuntimeError("invoke")
+
+    def fail():
+        try:
+            return c.visit.visit_norm_decode(*c.args)
+        finally:
+            disabled.set()
+
+    kernel.side_effect = invoke
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert list(pool.map(run, range(2))) == [None, None]
-    assert kernel.call_count == 2  # One probe, one failed invocation; no stale retry.
+        first = pool.submit(fail)
+        assert entered.wait(timeout=10)
+        second = pool.submit(c.visit.visit_norm_decode, *c.args)
+        assert first.result(timeout=10) is None
+        assert second.result(timeout=10) is None
+    assert kernel.call_count == 1  # No dispatch after the first caller disables it.
     c.mx.fast.metal_kernel.assert_called_once()
     c.mx.eval.assert_called_once()
 
@@ -352,6 +393,47 @@ def test_visit_norm_cpu_variant_isolation(visit_cpu):
     assert c.visit.visit_norm_decode(*c.args, append_block=True) is None
     assert c.visit.visit_norm_decode(*c.args) is not None
     assert c.mx.fast.metal_kernel.call_count == 2
+
+
+@pytest.mark.parametrize("variant", ["width", "bank", "queries", "dtype", "append"])
+def test_visit_norm_cpu_probe_evaluation_variant_isolation(visit_cpu, variant):
+    c = visit_cpu
+    output = [object(), object(), object()]
+    kernel = Mock(return_value=output)
+    c.mx.fast.metal_kernel.return_value = kernel
+    assert c.visit.visit_norm_decode(*c.args) == output
+    dims, k, q = {"width": (129, 2, 3), "bank": (64, 3, 3), "queries": (64, 2, 1)}.get(
+        variant, (64, 2, 3)
+    )
+    args = (
+        np.ones((k, 1, 1, dims), np.float32),
+        np.ones((1, 1, dims), np.float32 if variant == "dtype" else np.float16),
+        np.ones((q, dims), np.float32),
+    )
+    c.mx.eval.side_effect = RuntimeError("variant execution")
+    for _ in range(2):
+        assert (
+            c.visit.visit_norm_decode(*args, append_block=variant == "append") is None
+        )
+    failed_probe = kernel.call_args.kwargs
+    c.mx.eval.side_effect = None
+    assert c.visit.visit_norm_decode(*c.args) == output
+    assert c.mx.fast.metal_kernel.call_count == c.mx.eval.call_count == 2
+    assert kernel.call_count == 4  # Two probes, two real calls on the healthy variant.
+    for probe_input, real_input in zip(failed_probe["inputs"], args):
+        assert probe_input is not real_input
+        assert (probe_input.shape, probe_input.dtype) == (
+            real_input.shape,
+            real_input.dtype,
+        )
+        assert not np.any(probe_input)
+    template = dict(failed_probe["template"])
+    assert (template["D"], template["K"], template["Q"], template["APPEND"]) == (
+        dims,
+        k,
+        q,
+        variant == "append",
+    )
 
 
 @pytest.mark.parametrize(
@@ -484,11 +566,12 @@ def test_visit_norm_bitwise(metal_runtime, monkeypatch, dtype, append, dims, k, 
     real_ready, calls = visit_norm._ready, []
 
     def ready(*args):
-        kernel = real_ready(*args)
-        assert kernel is not None
-        call = Mock(wraps=kernel)
+        state = real_ready(*args)
+        assert state.kernel is not None
+        call = Mock(wraps=state.kernel)
         calls.append(call)
-        return call
+        monkeypatch.setattr(state, "kernel", call)
+        return state
 
     monkeypatch.setattr(visit_norm, "_ready", ready)
     mx.random.seed(42)

@@ -1,6 +1,11 @@
 # Copyright © 2026 Apple Inc.
 # SPDX-License-Identifier: MIT
-"""Cached single-token visit normalization with the stock depth reduction."""
+"""Cached single-token visit normalization with the stock depth reduction.
+
+Fallback covers construction, the one-time evaluated probe per kernel
+variant, and guarded invocation. Evaluation of real lazy outputs is
+intentionally not wrapped because decode evaluates asynchronously.
+"""
 
 import threading
 from typing import Any
@@ -52,13 +57,27 @@ _SOURCE = (
     .replace("o += w[i * Q + j] * x[i];", "o = metal::fma(w[i * Q + j], x[i], o);")
 )
 _LOCK = threading.Lock()
-_KERNELS: dict[tuple, Any] = {}
+
+
+class _Variant:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.kernel: Any = None
+        self.ready = False
+
+
+_KERNELS: dict[tuple, _Variant] = {}
 
 
 def _ready(key, launch):
     if key not in _KERNELS:
         with _LOCK:
             if key not in _KERNELS:
+                _KERNELS[key] = _Variant()
+    state = _KERNELS[key]
+    if not state.ready:
+        with state.lock:
+            if not state.ready:
                 try:
                     kernel = mx.fast.metal_kernel(
                         name="inkling2_visit_norm_decode",
@@ -69,8 +88,8 @@ def _ready(key, launch):
                         ensure_row_contiguous=True,
                         compile_options={"math_mode": "safe"},
                     )
-                    # Force lazy compilation on synthetic inputs of this exact
-                    # variant before publishing success. Cache failures too.
+                    # Force compilation and execution on synthetic inputs of
+                    # this exact variant before success. Cache failures too.
                     probe = dict(launch)
                     probe["inputs"] = [
                         mx.zeros(x.shape, x.dtype) for x in launch["inputs"]
@@ -78,16 +97,18 @@ def _ready(key, launch):
                     mx.eval(*kernel(**probe))
                 except Exception:
                     kernel = None
-                _KERNELS[key] = kernel
-    return _KERNELS[key]
+                state.kernel = kernel
+                state.ready = True
+    return state
 
 
 def visit_norm_decode(blocks, partial, queries, *, append_block=False):
     """Fuse visit RMSNorm, depth attention, residual cast and optional bank append.
 
-    A one-time evaluated probe per variant and guarded invocation detect
-    failures; a failed variant is never retried. Real lazy output evaluation
-    is intentionally not wrapped because decode evaluates asynchronously.
+    Fallback covers construction, the one-time evaluated probe per kernel
+    variant, and guarded invocation. Evaluation of real lazy outputs is
+    intentionally not wrapped because decode evaluates asynchronously.
+    A failed variant is never retried.
     Row-contiguous copies match stock RMSNorm's layout; widths above 4096
     use a different stock reduction and fall back.
     """
@@ -126,16 +147,15 @@ def visit_norm_decode(blocks, partial, queries, *, append_block=False):
         ],
         output_dtypes=[mx.float32] * 3,
     )
-    kernel = _ready(key, launch)
-    if kernel is None:
-        return None
-    with _LOCK:
-        # Another caller may have disabled this variant after our lookup.
-        if _KERNELS[key] is None:
+    state = _ready(key, launch)
+    with state.lock:
+        if state.kernel is None:
             return None
-    try:
-        return kernel(**launch)
-    except Exception:
-        with _LOCK:
-            _KERNELS[key] = None
-        return None
+        try:
+            # The call under this lock only constructs the lazy graph node.
+            # Evaluation of real lazy outputs is intentionally not wrapped
+            # because decode evaluates asynchronously.
+            return state.kernel(**launch)
+        except Exception:
+            state.kernel = None
+            return None
