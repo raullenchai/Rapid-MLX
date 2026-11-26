@@ -546,11 +546,16 @@ _ROUTE_WEIGHTS_SOURCE = """
     const uint row = threadgroup_position_in_grid.x;
     const uint lane = thread_index_in_simdgroup;
     float total = 0.0f;
-    for (uint j = lane; j < K; j += 32) {
+    // Stock row sum is sequential through 64, then four consecutive
+    // elements per lane followed by a SIMD sum (supported here through 128).
+    const uint start = K <= 64 ? 0 : lane * 4;
+    const uint end = K <= 64 ? K : min(start + 4, uint(K));
+    for (uint j = start; j < end; ++j) {
         total += scores[row * scores_strides[0]
                         + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
     }
-    total = simd_sum(total) + 1e-20f;
+    if (K > 64) total = simd_sum(total);
+    total += 1e-20f;
     for (uint j = lane; j < K; j += 32) {
         const float s = scores[row * scores_strides[0]
                         + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
@@ -573,6 +578,9 @@ _route_weights_kernel = cast(
 
 def route_weights_decode(scores, indices, route_scale):
     K = indices.shape[-1]
+    if K > 128:
+        weights = mx.take_along_axis(scores, indices, axis=-1)
+        return (weights / (weights.sum(axis=-1, keepdims=True) + 1e-20)) * route_scale
     return _route_weights_kernel(
         inputs=[
             scores.reshape(-1, scores.shape[-1]),
@@ -612,6 +620,11 @@ def _build_route_topk(n, k):
                 const uint lane = thread_index_in_simdgroup;
                 threadgroup float scores[N], order[N];
                 threadgroup uint picked[K];
+                // Every slot has a valid index even before ranks are written.
+                if (tid < K) {
+                    picked[tid] = tid;
+                    indices[tid] = tid;
+                }
                 if (tid < N) {
                     float x = logits[tid];
                     float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(x)));
@@ -622,11 +635,14 @@ def _build_route_topk(n, k):
                 if (tid < N) {
                     uint rank = 0;
                     const float a = order[tid];
+                    const bool an = metal::isnan(a);
                     for (uint j = 0; j < N; ++j) {
-                        float b = order[j];
-                        bool less = metal::isnan(a) ? !metal::isnan(b)
-                            : !metal::isnan(b) && b < a;
-                        bool equal = a == b || (metal::isnan(a) && metal::isnan(b));
+                        const float b = order[j];
+                        const bool bn = metal::isnan(b);
+                        // Stock ascending sort puts NaNs last, preserving
+                        // input order among NaNs and other equal values.
+                        const bool less = (!bn && an) || (!an && !bn && b < a);
+                        const bool equal = a == b || (an && bn);
                         rank += less || (equal && j < tid);
                     }
                     if (rank < K) {
@@ -635,15 +651,17 @@ def _build_route_topk(n, k):
                     }
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
-                // Match the existing decode weight kernel's lane ownership,
-                // accumulation, SIMD reduction, epsilon, division, and scale.
+                // Match the stock single-row sum's FP32 rounding points.
                 if (tid < 32) {
                     float total = 0.0f;
-                    for (uint j = lane; j < K; j += 32)
+                    const uint start = K <= 64 ? 0 : lane * 4;
+                    const uint end = K <= 64 ? K : min(start + 4, uint(K));
+                    for (uint j = start; j < end; ++j)
                         total += scores[picked[j]];
-                    total = simd_sum(total) + 1e-20f;
+                    if (K > 64) total = simd_sum(total);
+                    total += 1e-20f;
                     for (uint j = lane; j < K; j += 32)
-                        weights[j] = (scores[picked[j]] / total) * scale;
+                        weights[j] = (scores[picked[j]] / total) * scale[0];
                 }
             """,
             ensure_row_contiguous=True,
@@ -651,7 +669,7 @@ def _build_route_topk(n, k):
         )
         return _probe_metal(
             kernel,
-            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,)), scalar(1.0)],
+            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,)), scalar(1.0).reshape(1)],
             template=[("N", n), ("K", k)],
             grid=(128, 1, 1),
             threadgroup=(128, 1, 1),
@@ -666,7 +684,7 @@ def _build_route_topk(n, k):
 def route_topk_decode(
     logits: mx.array, bias: mx.array, k: int, scale: float
 ) -> tuple[mx.array, mx.array] | None:
-    """Single-row FP32 scoring, selection, and existing decode normalization.
+    """Single-row FP32 scoring, stable NaNs-last selection, and normalization.
 
     Fallback covers a one-time evaluated probe per (expert count, top-k)
     variant and guarded invocation; either failure disables that variant.
@@ -687,7 +705,7 @@ def route_topk_decode(
         return None
     try:
         indices, weights = kernel(
-            inputs=[logits, bias, scalar(scale)],
+            inputs=[logits, bias, scalar(scale).reshape(1)],
             template=[("N", n), ("K", k)],
             grid=(128, 1, 1),
             threadgroup=(128, 1, 1),
