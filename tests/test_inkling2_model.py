@@ -78,7 +78,7 @@ CONFIG["text_config"]["loop_config"] = {
 # decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "339c4cbf59ff66535a978e44212f862319227d5080ba176c13497920d255d26b",
+    "layers.py": "4e467ff1ed00642a193c7197fa79b7ceca32faeda8bbed5b4095a9cb2aed0ed7",
     "kernels.py": "453a7ae4235d28de5e378247a32057f88dc7baecd6540d4905dd752d3a35d0b6",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
@@ -2777,7 +2777,7 @@ def projection_cpu(glue_loader, monkeypatch):
     )
     layers = glue_loader.load("layers")
     monkeypatch.setattr(layers, "_use_kernels", lambda: True)
-    monkeypatch.setattr(layers, "_fast_decode_enabled", lambda: True)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
 
     def attention(dynamic=False):
         cls = layers.FullAttention if dynamic else layers.SlidingAttention
@@ -3017,9 +3017,9 @@ def test_projection_cpu_attend_gate_sinks(projection_cpu, monkeypatch, provided)
     )
 
 
-def test_message_norm_independent_switch(message_cpu, monkeypatch):
+def test_message_norm_shared_decode_switch(message_cpu, monkeypatch):
     mx, _, layers = message_cpu
-    monkeypatch.setenv("RAPID_MLX_INKLING2_MESSAGE_NORM", "0")
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
     forbidden = Mock(side_effect=AssertionError("disabled message normalization"))
     monkeypatch.setattr(layers, "message_norm_decode", forbidden)
     x = mx.ones((1, 1, 17))
@@ -3031,13 +3031,13 @@ def test_message_norm_independent_switch(message_cpu, monkeypatch):
         layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, True),
         layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16),
     )
-    assert layers._fast_decode_enabled()
+    assert not layers._fast_decode_enabled()
     forbidden.assert_not_called()
 
 
-def test_projection_independent_switch(projection_cpu, monkeypatch):
+def test_projection_shared_decode_switch(projection_cpu, monkeypatch):
     cpu = projection_cpu
-    monkeypatch.setenv("RAPID_MLX_INKLING2_PACKED_PROJECTIONS", "0")
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
     forbidden = Mock(side_effect=AssertionError("disabled packed projection"))
     monkeypatch.setattr(cpu.layers, "_packed_quantized_projections", forbidden)
     x = np.ones((1, 1, 4), dtype=np.float32)
@@ -3045,13 +3045,13 @@ def test_projection_independent_switch(projection_cpu, monkeypatch):
     actual = attn._project_inputs(x, x, x, [SimpleNamespace(offset=2)])
     for name, value in zip(("q", "k", "v", "r"), actual):
         np.testing.assert_array_equal(value, getattr(attn, name + "_proj")(x))
-    assert cpu.layers._fast_decode_enabled()
+    assert not cpu.layers._fast_decode_enabled()
     forbidden.assert_not_called()
 
 
-def test_router_independent_switch(projection_cpu, monkeypatch):
+def test_router_shared_decode_switch(projection_cpu, monkeypatch):
     cpu = projection_cpu
-    monkeypatch.setenv("RAPID_MLX_INKLING2_ROUTE_TOPK", "0")
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "0")
     router = cpu.layers.TopKRouter(SimpleNamespace(**CONFIG["text_config"]))
     x = np.ones((1, 1, 64), dtype=np.float32)
     forbidden = Mock(side_effect=AssertionError("disabled router top-k"))
@@ -3063,6 +3063,6 @@ def test_router_independent_switch(projection_cpu, monkeypatch):
     fallback = Mock(return_value=reference)
     monkeypatch.setattr(cpu.layers, "_route_weights", fallback)
     assert router(x, cached_decode=True) is reference
-    assert cpu.layers._fast_decode_enabled()
+    assert not cpu.layers._fast_decode_enabled()
     fallback.assert_called_once()
     forbidden.assert_not_called()

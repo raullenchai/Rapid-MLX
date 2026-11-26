@@ -126,12 +126,7 @@ def unweighted_rms_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
 
 
 def _norm_cast(x, weight, eps, dtype, decode=False):
-    if (
-        decode
-        and _fast_decode_enabled()
-        and os.environ.get("RAPID_MLX_INKLING2_MESSAGE_NORM", "1") != "0"
-        and _use_kernels()
-    ):
+    if decode and _fast_decode_enabled() and _use_kernels():
         out = message_norm_decode(x, None, dtype, weight, eps)
         if out is not None:
             return out
@@ -195,12 +190,7 @@ def _combine_experts(states, weights):
 
 
 def _message_input(states, message, dtype, decode=False):
-    if (
-        decode
-        and _fast_decode_enabled()
-        and os.environ.get("RAPID_MLX_INKLING2_MESSAGE_NORM", "1") != "0"
-        and _use_kernels()
-    ):
+    if decode and _fast_decode_enabled() and _use_kernels():
         out = message_norm_decode(states, message, dtype)
         if out is not None:
             return out
@@ -597,7 +587,6 @@ class Attention(nn.Module):
             and cache is not None
             and cache[0] is not None
             and cache[0].offset > 0
-            and os.environ.get("RAPID_MLX_INKLING2_PACKED_PROJECTIONS", "1") != "0"
             and _fast_decode_enabled()
             and _use_kernels()
         ):
@@ -890,7 +879,6 @@ class TopKRouter(nn.Module):
         logits = hidden_states.astype(mx.float32) @ self.weight.T
         if (
             cached_decode
-            and os.environ.get("RAPID_MLX_INKLING2_ROUTE_TOPK", "1") != "0"
             and hidden_states.shape[:2] == (1, 1)
             and _fast_decode_enabled()
             and _use_kernels()
