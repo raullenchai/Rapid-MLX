@@ -2532,6 +2532,35 @@ def _add_help_parser(
     )
 
 
+def _add_finetune_parser(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "finetune", aliases=["lora"], help="LoRA fine-tuning for local text models"
+    )
+    parser.add_argument(
+        "model", help="Model alias, Hub repo, or local checkpoint"
+    ).completer = alias_completer
+    parser.add_argument(
+        "--data", required=True, help="JSONL file or train/valid directory"
+    )
+    parser.add_argument(
+        "--out",
+        help="New adapter directory (default: ~/.rapid-mlx/adapters/<model>-<timestamp>)",
+    )
+    # mlx-lm 0.31.3 lora.CONFIG_DEFAULTS (keep the CLI import free of MLX).
+    parser.add_argument(
+        "--iters",
+        type=int,
+        help="Training iterations (default: 3 epochs, up to 1000 iterations)",
+    )
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--num-layers", type=int, default=16, help="Layers to adapt (-1 for all)"
+    )
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--max-seq-length", type=int, default=2048)
+    parser.add_argument("--resume", help="Path to existing LoRA safetensors weights")
+
+
 def _add_pull_parser(
     subparsers: "argparse._SubParsersAction[_PortContextArgumentParser]",
 ) -> None:
@@ -3276,6 +3305,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_recipe_parser(subparsers)
     _add_help_parser(subparsers)
     _add_pull_parser(subparsers)
+    _add_finetune_parser(subparsers)
     _add_import_parser(subparsers)
     _add_rm_parser(subparsers)
     _add_alias_parser(subparsers)

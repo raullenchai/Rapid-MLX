@@ -9,6 +9,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+ADAPTER_METADATA = "rapid_mlx_adapter.json"
+
 
 @dataclass(frozen=True)
 class Adapter:
@@ -73,10 +75,21 @@ def validate_adapter(path: str, model: str) -> Adapter:
         raise ValueError(f"--adapter invalid adapter_config.json: {exc}") from exc
     if not isinstance(config, dict) or not isinstance(config.get("model"), str):
         raise ValueError("--adapter adapter_config.json must declare its base 'model'")
-    if _base_identity(config["model"]) != _base_identity(model):
-        raise ValueError(
-            f"--adapter base mismatch: trained on {config['model']!r}, serving {model!r}"
-        )
+    bases = [config["model"]]
+    if (metadata := directory / ADAPTER_METADATA).exists():
+        try:
+            base = json.loads(metadata.read_text())["base_model"]
+            if not isinstance(base, str) or not base:
+                raise ValueError("base_model must be a nonempty string")
+        except (ValueError, TypeError, KeyError, OSError) as exc:
+            raise ValueError(f"--adapter invalid {ADAPTER_METADATA}: {exc}") from exc
+        bases.insert(0, base)
+    selected_base = _base_identity(model)
+    for base in bases:
+        if _base_identity(base) != selected_base:
+            raise ValueError(
+                f"--adapter base mismatch: trained on {base!r}, serving {model!r}"
+            )
     if config.get("fine_tune_type", "lora") != "lora":
         raise ValueError("--adapter currently supports only mlx-lm LoRA adapters")
     return Adapter(str(directory), digest.hexdigest())
@@ -96,10 +109,34 @@ def reject_adapter_options(
 
 
 def validate_adapter_checkpoint(model: str) -> None:
-    from .spec_decode.mtp.detect import _mtp_num_hidden_layers
-    from .utils.tokenizer import _read_model_config_json, _read_num_mtp_layers
+    try:
+        config = _read_checkpoint_config(model, model)
+    except Exception:
+        return  # Serve can inspect the config again after resolving the snapshot.
+    _validate_checkpoint_config(config or {})
 
-    config = _read_model_config_json(model) or {}
+
+def _read_checkpoint_config(model: str, reference: str) -> dict | None:
+    from . import model_downloads
+    from .model_aliases import resolve_revision, resolve_subfolder
+    from .model_metadata import _read_json
+
+    path = Path(model)
+    if path.is_dir():
+        return _read_json(path / "config.json")
+    subfolder = resolve_subfolder(reference)
+    filename = f"{subfolder}/config.json" if subfolder else "config.json"
+    repo = reference if resolve_revision(reference) else model
+    try:
+        config = model_downloads.hf_hub_download(repo, filename, local_files_only=True)
+    except Exception:
+        config = model_downloads.hf_hub_download(repo, filename)
+    return _read_json(Path(config))
+
+
+def _validate_checkpoint_config(config: dict) -> None:
+    from .spec_decode.mtp.detect import _mtp_num_hidden_layers
+
     if (
         any(key in config for key in ("vision_config", "audio_config"))
         or config.get("model_type") == "lfm3_vl"
@@ -112,20 +149,24 @@ def validate_adapter_checkpoint(model: str) -> None:
         raise ValueError("--adapter is unsupported with fp8 repack checkpoints")
 
 
-def prepare_adapter_cli(args) -> None:
-    """Run before CLI dispatch can branch to an alternate weight loader."""
-    if getattr(args, "adapter", None) is None:
-        return
-    model = getattr(args, "model", None)
-    if not model:
-        raise ValueError("--adapter requires a text base model")
-    validate_adapter(args.adapter, model)
+def _read_num_mtp_layers(config: dict[str, object]) -> int:
+    """Read num_nextn_predict_layers from the root or nested text config."""
+    count = config.get("num_nextn_predict_layers")
+    if type(count) is int and count:
+        return count
+    if isinstance(text_config := config.get("text_config"), dict):
+        count = text_config.get("num_nextn_predict_layers")
+    return count if type(count) is int else 0
+
+
+def validate_adapter_runtime(model: str, *, cua_only: bool = False) -> None:
+    """Reject alternate model runtimes that cannot serve mlx-lm adapters."""
     from .audio.probe import is_audio_model_alias
     from .audio.registry import resolve_local_audio_folder
     from .model_aliases import resolve_profile
     from .models.deepseek_v41_native.artifacts import is_product_target
 
-    if is_product_target(model) or getattr(args, "cua_only", False):
+    if is_product_target(model) or cua_only:
         raise ValueError(
             "--adapter is unsupported with dedicated native/media runtimes"
         )
@@ -138,6 +179,17 @@ def prepare_adapter_cli(args) -> None:
         raise ValueError(
             "--adapter supports text models only (no image/video/audio/diffusion)"
         )
+
+
+def prepare_adapter_cli(args) -> None:
+    """Run before CLI dispatch can branch to an alternate weight loader."""
+    if getattr(args, "adapter", None) is None:
+        return
+    model = getattr(args, "model", None)
+    if not model:
+        raise ValueError("--adapter requires a text base model")
+    validate_adapter(args.adapter, model)
+    validate_adapter_runtime(model, cua_only=getattr(args, "cua_only", False))
     payload = getattr(args, "speculative_config", None)
     reject_adapter_options(
         mllm=getattr(args, "mllm", False),

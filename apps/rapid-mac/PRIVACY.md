@@ -45,6 +45,9 @@ counted as two installs. The current engine reports:
 * `model_ref_checked` (metadata verdict, refusal reason, catalog membership,
   reference form and CLI/Desktop surface; model identity follows the same privacy rules);
 * `model_imported` and `model_import_failed` (`rapid-mlx import`);
+* `finetune_completed` (outcome, elapsed-time bucket, row-count bucket, and
+  whether a validation split was prepared for `rapid-mlx finetune` or its
+  alias `rapid-mlx lora`);
 * `capability_rejected` (closed `capability`, `model_type`, optional model and
   caller, plus a closed `reject_reason` only for structured-output/context
   rejections) and `inference_bucket_reached`;

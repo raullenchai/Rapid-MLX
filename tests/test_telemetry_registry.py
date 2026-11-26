@@ -93,6 +93,7 @@ def test_release_one_event_set_is_present():
         {
             "app_opened",
             "active_day",
+            "finetune_completed",
             "server_start_state",
             "model_ref_checked",
             "model_pulled",

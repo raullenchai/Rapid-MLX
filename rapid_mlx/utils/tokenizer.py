@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from ..engine_startup_errors import startup_failure_boundary
+from ..lora_adapter import _read_num_mtp_layers
 from ..model_load_errors import (
     IncompatibleWeights,
     TokenizerLoadFailed,
@@ -2272,18 +2273,6 @@ def _load_strict_false(
     augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
     repair_byte_level_decoder(tokenizer)
     return model, tokenizer
-
-
-def _read_num_mtp_layers(config: dict) -> int:
-    """Read num_nextn_predict_layers from config, checking text_config too.
-
-    Multimodal checkpoints (VLM + MTP) store this under text_config,
-    while text-only checkpoints put it at the top level.  Fixes #121.
-    """
-    n = config.get("num_nextn_predict_layers", 0)
-    if n == 0:
-        n = config.get("text_config", {}).get("num_nextn_predict_layers", 0)
-    return n
 
 
 def _try_inject_mtp(model, model_path, config):
