@@ -71,7 +71,7 @@ def test_buffered_thinking_off_is_content(raw):
 
 
 @pytest.mark.parametrize("size", [1, 3, 7, 1000])
-@pytest.mark.parametrize("raw", [REPRO, LITERAL, "Hello", " \nHello"])
+@pytest.mark.parametrize("raw", [REPRO, LITERAL, "Hello"])
 def test_streaming_thinking_off_emits_each_delta(raw, size):
     parser = Qwen3ReasoningParser(None)
     parser.configure_request(enable_thinking=False, prompt_thinking_active=False)
@@ -117,24 +117,61 @@ def test_streaming_controls_match_unconfigured_parser(thinking, prompt_open, siz
     ) == original.finalize_streaming(previous, prompt_thinking_active=prompt_open)
 
 
-@pytest.mark.parametrize("size", [1, 3, 7, 1000])
-@pytest.mark.parametrize("prefix", ["", " \n"])
-def test_explicit_opener_keeps_existing_behavior(prefix, size):
-    raw = prefix + "<think>Secret.</think>Answer"
+@pytest.mark.parametrize("size", [1, 2, 3, 1000])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (" \n<think>Secret.</think>Answer", ("Secret.", "Answer")),
+        (" \nHello", ("", " \nHello")),
+        (" \n<thinkx", ("", " \n<thinkx")),
+        (" \n<th", ("", " \n<th")),
+        (" \n\t", ("", " \n\t")),
+        (" " * 256 + "<think>Secret.</think>Answer", ("Secret.", "Answer")),
+    ],
+)
+def test_thinking_off_whitespace_streaming_buffered_parity(raw, expected, size):
     parser = Qwen3ReasoningParser()
-    assert parser.extract_reasoning(raw, enable_thinking=False) == ("Secret.", "Answer")
+    buffered = parser.extract_reasoning(raw, enable_thinking=False)
+    assert tuple(value or "" for value in buffered) == expected
     parser.configure_request(enable_thinking=False)
-    original = Qwen3ReasoningParser()
     previous = ""
+    reasoning, content = "", ""
     for delta in chunks(raw, size):
         current = previous + delta
-        if not previous.strip() and not current.strip():
-            previous = current
-            continue
-        assert parser.extract_reasoning_streaming(
-            previous, current, delta
-        ) == original.extract_reasoning_streaming(previous, current, delta)
+        message = parser.extract_reasoning_streaming(previous, current, delta)
+        if message:
+            reasoning += message.reasoning or ""
+            content += message.content or ""
+        if not current.strip():
+            assert (reasoning, content) == ("", "")
         previous = current
+    message = parser.finalize_streaming(raw)
+    if message:
+        reasoning += message.reasoning or ""
+        content += message.content or ""
+    assert (reasoning, content) == expected
+    assert parser.finalize_streaming(raw) is None
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 1000])
+@pytest.mark.parametrize("suffix", ["", "<think>Secret.</think>Answer"])
+def test_thinking_off_whitespace_hold_is_bounded(size, suffix):
+    # At most 256 whitespace characters are held; overflow commits to content.
+    raw = " " * 257 + suffix
+    parser = Qwen3ReasoningParser()
+    parser.configure_request(enable_thinking=False)
+    previous = ""
+    reasoning, content = "", ""
+    for delta in chunks(raw, size):
+        current = previous + delta
+        message = parser.extract_reasoning_streaming(previous, current, delta)
+        if message:
+            reasoning += message.reasoning or ""
+            content += message.content or ""
+        assert content == (current if len(current) > 256 else "")
+        previous = current
+    assert (reasoning, content) == ("", raw)
+    assert parser.finalize_streaming(raw) is None
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])

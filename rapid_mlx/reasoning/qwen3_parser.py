@@ -165,15 +165,30 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         self, previous_text: str, current_text: str, delta_text: str
     ) -> DeltaMessage | None:
         head = current_text.lstrip()
-        if self._content_only and not (
-            head.startswith(self.start_token)
-            or (head and self.start_token.startswith(head))
+        leading_ws = len(current_text) - len(head)
+        # Hold at most 256 leading whitespace characters, then commit to content.
+        if (
+            self._content_only
+            and leading_ws <= 256
+            and len(head) < len(self.start_token)
+            and self.start_token.startswith(head)
+        ):
+            self._held_tag_suffix_len = len(current_text)
+            return None
+        if self._content_only and (
+            leading_ws > 256 or not head.startswith(self.start_token)
         ):
             held = self._held_tag_suffix_len
             self._held_tag_suffix_len = 0
             return DeltaMessage(
                 content=(previous_text[-held:] if held else "") + delta_text
             )
+        if self._content_only:
+            previous_text, current_text = previous_text.lstrip(), head
+            self._held_tag_suffix_len = min(
+                self._held_tag_suffix_len, len(previous_text)
+            )
+            delta_text = current_text[len(previous_text) :]
         return super().extract_reasoning_streaming(
             previous_text, current_text, delta_text
         )
@@ -385,8 +400,9 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            that shape. The bare-text-preamble label fallback still
            routes to ``reasoning`` (preserves #570).
         """
-        if self._content_only and not accumulated_text.lstrip().startswith(
-            self.start_token
+        if self._content_only and (
+            len(accumulated_text) - len(accumulated_text.lstrip()) > 256
+            or not accumulated_text.lstrip().startswith(self.start_token)
         ):
             held = self._held_tag_suffix_len
             self._held_tag_suffix_len = 0
