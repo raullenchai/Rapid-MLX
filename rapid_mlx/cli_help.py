@@ -43,7 +43,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "ADVANCED / EXPERIMENTAL",
-        ("bench", "benchmark", "service", "system-one", "cua"),
+        ("bench", "benchmark", "finetune", "service", "system-one", "cua"),
     ),
 )
 

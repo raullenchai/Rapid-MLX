@@ -1822,7 +1822,7 @@ def _parse_csv(value: str) -> list[str]:
 
 
 def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> list[str]:
-    """Enforce local-only Hosts by default; explicit CLI/env values override."""
+    """Install the Host allowlist with loopback defaults and any CLI/env additions."""
     from .middleware import browser_security
     from .middleware.browser_security import (
         BrowserSecurityMiddleware,

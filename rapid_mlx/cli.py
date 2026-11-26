@@ -17592,7 +17592,7 @@ def main(*, _supervise=False):
     if (
         getattr(args, "model", None)
         and not (args.command == "pull" and getattr(args, "check", False))
-        and args.command not in ("doctor", "service", "system-one")
+        and args.command not in ("doctor", "service", "system-one", "finetune", "lora")
     ):
         from rapid_mlx.model_reference import normalize_model_reference
 
@@ -17762,6 +17762,11 @@ def main(*, _supervise=False):
         _start_quiet_lifecycle(
             "bare", no_telemetry=bool(getattr(args, "no_telemetry", False))
         )
+
+    if args.command in ("finetune", "lora"):
+        from rapid_mlx.finetune import finetune_command
+
+        raise SystemExit(finetune_command(args))
 
     if args.command == "pull" and getattr(args, "check", False):
         from rapid_mlx.byom.reference_check import check_command

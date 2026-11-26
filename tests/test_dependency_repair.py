@@ -66,6 +66,11 @@ def test_missing_module_prints_one_method_command(
     environment, monkeypatch, capsys, method, expected
 ):
     monkeypatch.setattr(
+        repair.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "pip" else None,
+    )
+    monkeypatch.setattr(
         version_check,
         "detect_install_method",
         lambda: version_check.InstallInfo(
