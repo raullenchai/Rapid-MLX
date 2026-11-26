@@ -22,7 +22,7 @@ _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def resolve_trusted_hosts(cli_hosts: list[str] | None = None) -> list[str]:
-    """Explicit CLI/env values replace the local-only default; empty fails closed."""
+    """Extend the loopback defaults with CLI hosts, or env hosts if CLI is absent."""
     entries = (
         cli_hosts
         if cli_hosts is not None
@@ -34,7 +34,7 @@ def resolve_trusted_hosts(cli_hosts: list[str] | None = None) -> list[str]:
         for part in entry.split(",")
         if part.strip()
     ]
-    return hosts or list(DEFAULT_TRUSTED_HOSTS)
+    return list(dict.fromkeys((*DEFAULT_TRUSTED_HOSTS, *hosts)))
 
 
 def _authority(value: str, scheme: str) -> tuple[str, int] | None:

@@ -1502,14 +1502,12 @@ def _add_serve_parser(
         default=None,
         metavar="HOST",
         help=(
-            "Host-header allowlist (DNS-rebinding protection): only "
-            "requests whose Host header matches one of these values are "
-            "accepted; everything else gets 400. Default: localhost, "
-            "127.0.0.1, [::1], *.localhost. For LAN/proxy access set the "
-            "expected hostname explicitly. Values replace defaults and may be "
-            "space- or comma-separated. Example: --trusted-hosts localhost "
-            "127.0.0.1 (also settable via "
-            "RAPID_MLX_TRUSTED_HOSTS)."
+            "Additional allowed Host headers for DNS-rebinding protection. "
+            "Values extend the loopback defaults (localhost, 127.0.0.1, "
+            "[::1], *.localhost). Unmatched hosts get HTTP 400. "
+            "Use space- or comma-separated hostnames, for example "
+            "--trusted-hosts host.docker.internal. Also settable via "
+            "RAPID_MLX_TRUSTED_HOSTS (comma-separated)."
         ),
     )
     serve_parser.add_argument(

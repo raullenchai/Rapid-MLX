@@ -107,7 +107,7 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
     assert calls["config"] == ("org/model", {"trust_remote_code": False})
 
 
-def test_trusted_hosts_default_on_and_cli_comma_normalization(monkeypatch):
+def test_trusted_hosts_default_on(monkeypatch):
     import rapid_mlx.server as server
 
     monkeypatch.delenv("RAPID_MLX_TRUSTED_HOSTS", raising=False)
@@ -129,29 +129,42 @@ def test_trusted_hosts_default_on_and_cli_comma_normalization(monkeypatch):
         == 400
     )
 
-    app = FastAPI()
 
-    @app.get("/health")
-    async def protected_health():
-        return {"ok": True}
-
-    monkeypatch.setattr(server, "app", app)
-    assert server.configure_trusted_hosts(["localhost,127.0.0.1"]) == [
-        "localhost",
-        "127.0.0.1",
-    ]
-    client = TestClient(app)
-    assert client.get("/health", headers={"host": "localhost"}).status_code == 200
-    assert client.get("/health", headers={"host": "evil.test"}).status_code == 400
-
-
-def test_trusted_hosts_env_is_used_when_cli_absent(monkeypatch):
+@pytest.mark.parametrize("source", ["cli", "env"])
+def test_explicit_trusted_hosts_extend_loopback_defaults(monkeypatch, source):
     import rapid_mlx.server as server
 
+    monkeypatch.delenv("RAPID_MLX_LAN_INFERENCE_ONLY", raising=False)
+    entries = " HOST.DOCKER.INTERNAL, 127.0.0.1, , proxy.example, host.docker.internal "
+    if source == "cli":
+        monkeypatch.setenv("RAPID_MLX_TRUSTED_HOSTS", "env-only.example")
+        cli_hosts = [entries, "extra.example"]
+    else:
+        monkeypatch.setenv("RAPID_MLX_TRUSTED_HOSTS", f"{entries},extra.example")
+        cli_hosts = None
+
     app = FastAPI()
+    app.get("/health")(lambda: {"ok": True})
     monkeypatch.setattr(server, "app", app)
-    monkeypatch.setenv("RAPID_MLX_TRUSTED_HOSTS", "localhost, 127.0.0.1")
-    assert server.configure_trusted_hosts(None) == ["localhost", "127.0.0.1"]
+    hosts = server.configure_trusted_hosts(cli_hosts)
+    client = TestClient(app)
+    assert (
+        client.get("/health", headers={"Host": "host.docker.internal:8000"}).status_code
+        == 200
+    )
+    assert client.get("/health", headers={"Host": "localhost:8000"}).status_code == 200
+    assert (
+        client.get("/health", headers={"Host": "env-only.example"}).status_code == 400
+    )
+    assert hosts == [
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+        "*.localhost",
+        "host.docker.internal",
+        "proxy.example",
+        "extra.example",
+    ]
 
 
 def test_sa3_checkpoint_refuses_automatic_unsafe_pickle(monkeypatch):
