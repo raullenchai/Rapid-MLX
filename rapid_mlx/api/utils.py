@@ -717,7 +717,14 @@ def _clean_gpt_oss_output(text: str) -> str:
     return cleaned.strip()
 
 
-def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
+def clean_output_text(
+    text: str,
+    *,
+    muse_wire: bool = False,
+    reasoning_parser: object | None = None,
+    enable_thinking: bool | None = None,
+    prompt_thinking_active: bool = False,
+) -> str:
     """
     Clean model output by removing special tokens.
 
@@ -729,6 +736,10 @@ def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
 
     Args:
         text: Raw model output
+        reasoning_parser: Active parser; only the exact Qwen3 parser opts in
+            to thinking-off content handling (subclasses retain legacy behavior).
+        enable_thinking: False disables implicit opener synthesis for Qwen3 only.
+        prompt_thinking_active: Preserve synthesis if the prompt opened reasoning.
         muse_wire: True when the SERVING MODEL is muse_glimmer (resolved
             from the checkpoint's model_type by the caller, never from
             output bytes). Gates the ATEM channel demux below so a
@@ -764,9 +775,19 @@ def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
     text = SPECIAL_TOKENS_PATTERN.sub("", text)
     text = text.strip()
 
+    from ..reasoning.qwen3_parser import Qwen3ReasoningParser
+
     # Add opening <think> tag if response has closing but not opening
     # This happens when enable_thinking=True in the chat template
-    if "</think>" in text and not text.lstrip().startswith("<think>"):
+    if (
+        (
+            type(reasoning_parser) is not Qwen3ReasoningParser
+            or enable_thinking is not False
+            or prompt_thinking_active
+        )
+        and "</think>" in text
+        and not text.lstrip().startswith("<think>")
+    ):
         text = "<think>" + text
 
     return text

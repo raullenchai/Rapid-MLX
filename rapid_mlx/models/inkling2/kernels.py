@@ -3,6 +3,7 @@
 
 import math
 from collections.abc import Callable
+from functools import cache
 from typing import cast
 
 import mlx.core as mx
@@ -13,6 +14,183 @@ __all__ = [
     "depth_attention",
     "relative_attention",
 ]
+
+
+def _probe_metal(kernel, **launch):
+    """Force lazy Metal compilation using synthetic inputs before caching success."""
+    try:
+        mx.eval(*kernel(**launch))
+    except Exception:
+        return None
+    return kernel
+
+
+@cache
+def _expert_conv_residual_factory():
+    try:
+        return mx.fast.metal_kernel(
+            name="inkling2_expert_conv_residual_decode",
+            input_names=[
+                "x",
+                "mix",
+                "state",
+                "weight",
+                "mask",
+                "lengths",
+                "outer",
+                # Scalar input: bound by reference in the kernel, so it is used
+                # directly rather than indexed.
+                "divisor",
+            ],
+            output_names=["out", "next_state"],
+            header="#pragma clang fp contract(off)\n",
+            source="""
+                const uint c = thread_position_in_grid.x;
+                if (c >= C) return;
+                float combined = 0.0f;
+                for (int e = 0; e < E; ++e) {
+                    float product = float(x[e * x_strides[2] + c * x_strides[3]])
+                        * float(mix[e * mix_strides[2]]);
+                    combined = combined + product;
+                }
+                combined = float(T(combined));
+                float history[K];
+                for (int j = 0; j < K - 1; ++j)
+                    history[j] = state[j * state_strides[1] + c * state_strides[2]];
+                history[K - 1] = HAS_MASK && !mask[0] ? 0.0f : combined;
+                float acc = 0.0f;
+                for (int j = 0; j < K; ++j)
+                    acc = metal::fma(float(W(history[j])),
+                        float(weight[c * weight_strides[0] + j * weight_strides[1]]), acc);
+                // Preserve MoE, Conv1d, and post-convolution token rounding.
+                float convolved = float(T((float(W(acc)) + combined) / divisor));
+                out[c] = T(float(outer[c * outer_strides[2]]) + convolved);
+                const int start = HAS_LENGTHS && lengths[0] <= 0 ? 0 : 1;
+                for (int j = 0; j < K - 1; ++j)
+                    next_state[j * C + c] = history[start + j];
+            """,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+    except Exception:
+        return None
+
+
+@cache
+def _probe_expert_conv_residual(kernel, template, x_dtype):
+    """Force lazy Metal compilation once per specialization; cache failures too."""
+    T, W, C, K, E, masked, ragged = (value for _, value in template)
+    specs = (
+        ((1, 1, E, C), x_dtype),
+        ((1, 1, E), mx.float32),
+        ((1, K - 1, C), mx.float32),
+        ((C, K, 1), W),
+        ((1, 1), mx.bool_ if masked else mx.float32),
+        ((1,), mx.int32 if ragged else mx.float32),
+        ((1, 1, C), mx.float32),
+        ((), mx.float32),
+    )
+    return _probe_metal(
+        kernel,
+        inputs=[mx.ones(s, dtype=d) for s, d in specs],
+        template=list(template),
+        grid=(C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(1, 1, C), (1, K - 1, C)],
+        output_dtypes=[T, mx.float32],
+    )
+
+
+def _expert_conv_residual_ready(dtype, weight, experts, masked, ragged, x_dtype):
+    """Return a kernel after a one-time evaluated probe per variant, or None."""
+    kernel = _expert_conv_residual_factory()
+    if kernel is None:
+        return None
+    C, K = weight.shape[:2]
+    template = (
+        ("T", dtype),
+        ("W", weight.dtype),
+        ("C", C),
+        ("K", K),
+        ("E", experts),
+        ("HAS_MASK", masked),
+        ("HAS_LENGTHS", ragged),
+    )
+    return _probe_expert_conv_residual(kernel, template, x_dtype)
+
+
+def expert_conv_residual_decode(
+    x, mix, state, weight, mask, lengths, outer, dtype, *, kernel=None
+):
+    """Combine routed experts and a cached static convolution for one token.
+
+    Fallback covers construction, the one-time evaluated probe per kernel
+    variant, and guarded invocation. Evaluation of real lazy outputs is
+    intentionally not wrapped because decode evaluates asynchronously.
+    """
+    if any(value is None for value in (x, mix, state, weight, outer)):
+        return None
+    if weight.ndim != 3:
+        return None
+    C, K = weight.shape[:2]
+    types = (mx.float32, mx.bfloat16, mx.float16)
+    if not (
+        x.ndim == 4
+        and x.shape[:2] == (1, 1)
+        and 1 < x.shape[2] <= 8
+        and x.shape[3] == C
+        and C >= 32
+        and C % 4 == 0
+        and mix.shape == x.shape[:3]
+        and mix.dtype == mx.float32
+        and state is not None
+        and state.shape == (1, K - 1, C)
+        and state.dtype == mx.float32
+        and weight.shape == (C, K, 1)
+        and 2 <= K <= 5
+        and outer.shape == (1, 1, C)
+        and outer.dtype == mx.float32
+        and (mask is None or (mask.shape == (1, 1) and mask.dtype == mx.bool_))
+        and (lengths is None or (lengths.shape == (1,) and lengths.dtype == mx.int32))
+        and all(t in types for t in (dtype, x.dtype, weight.dtype))
+    ):
+        return None
+    if kernel is None or x.dtype != dtype:
+        kernel = _expert_conv_residual_ready(
+            dtype, weight, x.shape[2], mask is not None, lengths is not None, x.dtype
+        )
+    if kernel is None:
+        return None
+    empty = scalar(0.0).reshape(1)
+    launch = dict(
+        inputs=[
+            x,
+            mix,
+            state,
+            weight,
+            mask if mask is not None else empty,
+            lengths if lengths is not None else empty,
+            outer,
+            scalar(math.sqrt(K + 1)),
+        ],
+        template=[
+            ("T", dtype),
+            ("W", weight.dtype),
+            ("C", C),
+            ("K", K),
+            ("E", x.shape[2]),
+            ("HAS_MASK", mask is not None),
+            ("HAS_LENGTHS", lengths is not None),
+        ],
+        grid=(C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[outer.shape, state.shape],
+        output_dtypes=[dtype, mx.float32],
+    )
+    try:
+        return kernel(**launch)
+    except Exception:
+        return None
 
 
 # One thread owns a channel, including its FP32 history. Do not contract the
@@ -118,6 +296,137 @@ def short_convolution_decode(
         output_dtypes=[x.dtype, mx.float32],
     )
     return out, state
+
+
+# Four consecutive values per thread preserve the stock row reduction order.
+_MESSAGE_NORM_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint tid = thread_position_in_threadgroup.x;
+    const uint lane = thread_index_in_simdgroup;
+    const uint sg = simdgroup_index_in_threadgroup;
+    threadgroup float scratch[32];
+    threadgroup float inv;
+    for (uint side = 0; side < (OUTPUT ? 1 : 2); ++side) {
+        float values[4];
+        float sum = 0.0f;
+        for (uint j = 0; j < 4; ++j) {
+            uint d = tid * 4 + j;
+            values[j] = d >= D ? 0.0f : (side == 0
+                ? float(x[d * x_strides[2]])
+                : float(message[d * message_strides[2]]));
+            sum = metal::fma(values[j], values[j], sum);
+        }
+        sum = simd_sum(sum);
+        if (sg == 0) scratch[lane] = 0.0f;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (lane == 0) scratch[sg] = sum;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sg == 0) {
+            sum = simd_sum(scratch[lane]);
+            if (lane == 0) inv = metal::precise::rsqrt(sum / float(D) + eps);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint j = 0; j < 4; ++j) {
+            uint d = tid * 4 + j;
+            if (d >= D) continue;
+            float n = side == 0 ? float(X(values[j] * inv))
+                                : float(M(values[j] * inv));
+            out[side * D + d] = O(OUTPUT ? n * float(weight[d * weight_strides[0]]) : n);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+"""
+
+
+@cache
+def _get_message_norm(dim, output, input_dtype, dtype):
+    # Metal builds lazily: validate this exact specialization before caching it.
+    try:
+        kernel = mx.fast.metal_kernel(
+            name="inkling2_message_norm_decode",
+            input_names=["x", "message", "weight", "eps"],
+            output_names=["out"],
+            source=_MESSAGE_NORM_SOURCE,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+        x = mx.ones((1, 1, dim), dtype=input_dtype)
+        threads = ((dim + 127) // 128) * 32
+        mx.eval(
+            *kernel(
+                inputs=[x, x, mx.ones((dim,)), scalar(1e-6)],
+                template=[
+                    ("D", dim),
+                    ("OUTPUT", output),
+                    ("X", input_dtype),
+                    ("M", input_dtype),
+                    ("O", dtype),
+                ],
+                grid=(threads, 1, 1),
+                threadgroup=(threads, 1, 1),
+                output_shapes=[(1, 1, dim if output else 2 * dim)],
+                output_dtypes=[dtype],
+            )
+        )
+        return kernel
+    except Exception:
+        return None
+
+
+def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
+    """Normalize/concatenate controller inputs, or normalize/cast mixed output.
+
+    Failures are detected by a one-time evaluated probe per kernel variant and
+    guarded invocation. Real lazy output evaluation is intentionally not wrapped:
+    decode evaluates asynchronously.
+    """
+    D = x.shape[-1]
+    output = message is None
+    supported = (mx.float32, mx.float16, mx.bfloat16)
+    if (
+        x.ndim != 3
+        or x.shape[:2] != (1, 1)
+        or not 0 < D <= 4096
+        or x.dtype not in supported
+        or dtype not in supported
+        or (not output and (message.shape != x.shape or message.dtype != x.dtype))
+        or (
+            output
+            and (
+                x.dtype != mx.float32
+                or weight is None
+                or weight.shape != (D,)
+                or weight.dtype != mx.float32
+            )
+        )
+    ):
+        return None
+    kernel = _get_message_norm(D, output, x.dtype, dtype)
+    if kernel is None:
+        return None
+    TG = ((D + 127) // 128) * 32
+    try:
+        return kernel(
+            inputs=[
+                x,
+                x if output else message,
+                scalar(1.0).reshape(1) if not output else weight,
+                scalar(eps),
+            ],
+            template=[
+                ("D", D),
+                ("OUTPUT", output),
+                ("X", x.dtype),
+                ("M", x.dtype),
+                ("O", dtype),
+            ],
+            grid=(TG, 1, 1),
+            threadgroup=(TG, 1, 1),
+            output_shapes=[x.shape if output else (1, 1, 2 * D)],
+            output_dtypes=[dtype],
+        )[0]
+    except Exception:
+        return None
 
 
 # One SIMD group computes both low-rank expansion dot products for a channel.
@@ -275,6 +584,78 @@ def route_weights_decode(scores, indices, route_scale):
         output_shapes=[indices.shape],
         output_dtypes=[scores.dtype],
     )[0]
+
+
+@cache
+def _route_topk(n, k):
+    try:
+        kernel = mx.fast.metal_kernel(
+            name="inkling2_route_topk_decode",
+            input_names=["logits", "bias"],
+            output_names=["indices", "out_scores"],
+            source="""
+                #pragma clang fp contract(off)
+                const uint tid = thread_position_in_threadgroup.x;
+                threadgroup float scores[N], order[N];
+                if (tid < N) {
+                    float x = logits[tid * logits_strides[2]];
+                    float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(x)));
+                    scores[tid] = x < 0.0f ? y : 1.0f - y;
+                    out_scores[tid] = scores[tid];
+                    order[tid] = -(scores[tid] + bias[tid * bias_strides[0]]);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (tid < N) {
+                    uint rank = 0;
+                    const float a = order[tid];
+                    for (uint j = 0; j < N; ++j) {
+                        float b = order[j];
+                        bool less = metal::isnan(a) ? !metal::isnan(b)
+                            : !metal::isnan(b) && b < a;
+                        bool equal = a == b || (metal::isnan(a) && metal::isnan(b));
+                        rank += less || (equal && j < tid);
+                    }
+                    if (rank < K) {
+                        indices[rank] = tid;
+                    }
+                }
+            """,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+        return _probe_metal(
+            kernel,
+            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,))],
+            template=[("N", n), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), (1, 1, n)],
+            output_dtypes=[mx.uint32, mx.float32],
+        )
+    except Exception:
+        # Cache unavailability as well, so decode permanently uses the stock path.
+        return None
+
+
+def route_topk_decode(
+    logits: mx.array, bias: mx.array, k: int, scale: float
+) -> tuple[mx.array, mx.array] | None:
+    """Single-row FP32 scoring/selection, with existing decode normalization."""
+    kernel = _route_topk(logits.shape[-1], k)
+    if kernel is None:
+        return None
+    try:
+        indices, scores = kernel(
+            inputs=[logits, bias],
+            template=[("N", logits.shape[-1]), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), logits.shape],
+            output_dtypes=[mx.uint32, mx.float32],
+        )
+    except Exception:
+        return None
+    return indices, route_weights_decode(scores, indices, scale)
 
 
 # Attention of learned queries over the depth sources of each token, in one

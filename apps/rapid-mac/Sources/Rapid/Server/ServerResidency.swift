@@ -193,6 +193,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     let models: [ResidentModelStatus]
     let audioLanes: [ResidentAudioLaneStatus]
     let activity: ServerActivity?
+    let primaryIdleUnloadActive: Bool?
 
     enum CodingKeys: String, CodingKey {
         case memoryLimitBytes = "memory_limit_bytes"
@@ -204,6 +205,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         case models
         case activity
         case audioLanes = "audio_lanes"
+        case primaryIdleUnloadActive = "primary_idle_unload_active"
     }
 
     init(
@@ -215,7 +217,8 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         evictionsTotal: Int,
         models: [ResidentModelStatus],
         audioLanes: [ResidentAudioLaneStatus] = [],
-        activity: ServerActivity? = nil
+        activity: ServerActivity? = nil,
+        primaryIdleUnloadActive: Bool? = nil
     ) {
         self.memoryLimitBytes = memoryLimitBytes
         self.memoryUsedBytes = memoryUsedBytes
@@ -226,6 +229,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         self.models = models
         self.audioLanes = audioLanes
         self.activity = activity
+        self.primaryIdleUnloadActive = primaryIdleUnloadActive
     }
 
     init(from decoder: Decoder) throws {
@@ -238,6 +242,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         evictionsTotal = try values.decode(Int.self, forKey: .evictionsTotal)
         models = try values.decode([ResidentModelStatus].self, forKey: .models)
         activity = try values.decodeIfPresent(ServerActivity.self, forKey: .activity)
+        primaryIdleUnloadActive = try values.decodeIfPresent(Bool.self, forKey: .primaryIdleUnloadActive)
         audioLanes = try values.decodeIfPresent(
             [ResidentAudioLaneStatus].self,
             forKey: .audioLanes
@@ -575,9 +580,9 @@ enum IdleModelReleasePreference {
         case restart(alias: String)
     }
 
-    static func mode(setting: Int, runtimeSupportsNativeUnload: Bool) -> Mode {
+    static func mode(setting: Int, runtimeSupportsNativeUnload: Bool, primaryIdleUnloadActive: Bool? = nil) -> Mode {
         guard choices.contains(setting), setting > 0 else { return .off }
-        return runtimeSupportsNativeUnload ? .native : .legacyStop
+        return (primaryIdleUnloadActive ?? runtimeSupportsNativeUnload) ? .native : .legacyStop
     }
 
     /// Older runtimes still need the process fallback for resident audio.
@@ -595,13 +600,15 @@ enum IdleModelReleasePreference {
     static func restartDecision(
         setting: Int,
         secondsAtSpawn: Int?,
+        audioSecondsAtSpawn: Int? = nil,
         isReady: Bool,
         isOperating: Bool,
         hasActiveRequests: Bool,
         hasResidentLoadsInFlight: Bool,
         alias: String?
     ) -> RestartDecision {
-        guard choices.contains(setting), let secondsAtSpawn, setting != secondsAtSpawn,
+        guard choices.contains(setting), let secondsAtSpawn = secondsAtSpawn ?? audioSecondsAtSpawn,
+              setting != secondsAtSpawn,
               isReady, let alias else { return .none }
         guard !isOperating, !hasActiveRequests, !hasResidentLoadsInFlight else { return .deferred }
         return .restart(alias: alias)
