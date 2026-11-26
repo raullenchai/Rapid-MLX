@@ -51,23 +51,6 @@ def _wait_for_nonempty_file(path: Path, *, timeout: float = 5.0) -> None:
     raise AssertionError(f"{path} stayed empty for {timeout:.1f}s")
 
 
-def _wait_until_stopped(pid: int, *, timeout: float = 10.0) -> None:
-    """Block until ``ps`` reports ``pid`` as stopped (state ``T``)."""
-    deadline = time.monotonic() + timeout
-    state = ""
-    while time.monotonic() < deadline:
-        state = subprocess.run(
-            ["ps", "-o", "state=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout.strip()
-        if state.startswith("T"):
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"process {pid} did not stop (state {state!r})")
-
-
 def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -> str:
     """Read a single line from ``proc.stdout`` but give up after
     ``timeout`` seconds even if the child never prints anything.
@@ -462,13 +445,30 @@ def test_tee_keeps_stderr_mirror_when_durable_sink_fails():
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX signals and flock")
 def test_startup_preserves_crash_file_while_helper_is_writing(tmp_path):
+    ready = tmp_path / "helper-ready"
+    ready.touch()
+    release = tmp_path / "helper-release"
+    os.mkfifo(release)
+    helper_gate = (
+        "import os\n"
+        f"gate = os.open({str(release)!r}, os.O_RDONLY)\n"
+        f"with open({str(ready)!r}, 'w') as ack: ack.write(str(os.getpid()))\n"
+        "assert os.read(gate, 1) == b'x'\n"
+        "os.close(gate)\n"
+    )
     setup = (
         "from pathlib import Path\n"
         "import rapid_mlx._signal_observability as so\n"
         f"so._crash_logs_dir = lambda: Path({str(tmp_path)!r})\n"
         "so._install_crash_file()\n"
     )
-    script = setup + (
+    # Popen returning does not acknowledge helper startup. Gate the real
+    # helper before its copy loop, without SIGSTOP or platform-specific ps.
+    script = setup.replace(
+        "so._install_crash_file()",
+        f"so._CRASH_TEE_SCRIPT = {helper_gate!r} + so._CRASH_TEE_SCRIPT\n"
+        "so._install_crash_file()",
+    ) + (
         "import faulthandler, sys\n"
         "print(so._crash_tee.pid, so._crash_path, flush=True)\n"
         "sys.stdin.readline()\n"
@@ -482,21 +482,21 @@ def test_startup_preserves_crash_file_while_helper_is_writing(tmp_path):
         text=True,
     )
     helper_pid = None
+    # Keep the FIFO open so the helper blocks until we explicitly release it.
+    gate_fd = os.open(release, os.O_RDWR | os.O_NONBLOCK)
     try:
         pid, path = _read_ready_with_timeout(child).strip().split(maxsplit=1)
         helper_pid = int(pid)
         crash = Path(path)
-        os.kill(helper_pid, signal.SIGSTOP)
-        # kill() returns before the stop takes effect. A helper that is still
-        # running would drain the traceback, exit and release its lock, and
-        # the next startup would then correctly report the finished file.
-        _wait_until_stopped(helper_pid)
+        _wait_for_nonempty_file(ready, timeout=10)
+        assert int(ready.read_text()) == helper_pid
         child.stdin.write("crash\n")
         child.stdin.flush()
         assert child.wait(timeout=10) != 0
         subprocess.run([sys.executable, "-c", setup], check=True, timeout=10)
         assert crash.exists(), sorted(path.name for path in tmp_path.iterdir())
-        os.kill(helper_pid, signal.SIGCONT)
+        assert crash.stat().st_size == 0  # traceback is still pending in the pipe
+        os.write(gate_fd, b"x")
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             try:
@@ -508,6 +508,7 @@ def test_startup_preserves_crash_file_while_helper_is_writing(tmp_path):
             pytest.fail("crash mirror helper did not exit")
         assert "Fatal Python error" in crash.read_text(encoding="utf-8")
     finally:
+        os.close(gate_fd)
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
