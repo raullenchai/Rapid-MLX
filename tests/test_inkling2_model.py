@@ -77,7 +77,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "69350af13cd5eb058f21655ecdb6a78b1d0e7f0912bf6b108df175a8246208c2",
-    "kernels.py": "716b3699aeb0b1c7f4f18c1ddb44aed0123d8e3ed7afa58703b1efd0063a899c",
+    "kernels.py": "453a7ae4235d28de5e378247a32057f88dc7baecd6540d4905dd752d3a35d0b6",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "88aa71e9d0c5681eb418a6c0398b3b6e205f2584496fef9f3ff5a5daa54e99d1",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -196,6 +196,185 @@ def compat_loader(glue_loader):
         return result
 
     return load
+
+
+@pytest.fixture
+def message_cpu(glue_loader, compat_loader, monkeypatch):
+    """Load the real wrappers with NumPy arrays and inert Metal construction."""
+    compat_loader()
+    mx = glue_loader.mx
+    mx.bfloat16 = object()  # Distinct supported dtype; NumPy has no bf16.
+    mx.ones = lambda shape, dtype=np.float32: mx.array(np.ones(shape, dtype=dtype))
+    mx.compile = lambda fn, **kwargs: fn
+    mx.fast = SimpleNamespace(
+        metal_kernel=Mock(return_value=Mock()),
+        rms_norm=lambda x, w, eps: (
+            (
+                x
+                / np.sqrt(
+                    np.mean(x.astype(np.float32) ** 2, axis=-1, keepdims=True) + eps
+                )
+            )
+            * (1 if w is None else w)
+        ),
+    )
+    kernels = glue_loader.load("kernels")
+    glue_loader.module("mlx.nn.layers.distributed", sum_gradients=Mock())
+    glue_loader.module(
+        "mlx_lm.models.cache", BatchRotatingKVCache=object, RotatingKVCache=object
+    )
+    glue_loader.module("rapid_mlx.models.inkling2.config", TextArgs=object)
+    layers = glue_loader.load("layers")
+    monkeypatch.setattr(layers, "_use_kernels", lambda: True)
+    monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
+    return mx, kernels, layers
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "construction", "probe", "evaluation", "call"]
+)
+def test_message_norm_cpu_probe_and_fallback(message_cpu, monkeypatch, failure):
+    mx, kernels, layers = message_cpu
+    x, w = mx.ones((1, 1, 17)), mx.ones((17,))
+    probe_output = object()
+    launches = []
+
+    def launch(**kw):
+        launches.append(kw)
+        if len(launches) == 1:
+            if failure == "probe":
+                raise RuntimeError("probe invocation")
+            return [probe_output]
+        if failure == "call":
+            raise RuntimeError("real invocation")
+        a, b, weight, eps = kw["inputs"]
+        output = dict(kw["template"])["OUTPUT"]
+        value = mx.fast.rms_norm(a, weight if output else None, eps)
+        if not output:
+            value = np.concatenate((value, mx.fast.rms_norm(b, None, eps)), axis=-1)
+        return [value.astype(kw["output_dtypes"][0])]
+
+    factory = Mock(
+        side_effect=RuntimeError("construction") if failure == "construction" else None,
+        return_value=launch,
+    )
+    monkeypatch.setattr(mx.fast, "metal_kernel", factory)
+    if failure == "evaluation":
+        mx.eval.side_effect = RuntimeError("probe evaluation")
+    for helper, args in (
+        (layers._message_input, (x, x, mx.float16)),
+        (layers._norm_cast, (x, w, 1e-6, mx.float16)),
+    ):
+        launches.clear()
+        for _ in range(2):
+            np.testing.assert_array_equal(helper(*args, decode=True), helper(*args))
+        assert len(launches) == (
+            0
+            if failure == "construction"
+            else 1
+            if failure in ("probe", "evaluation")
+            else 3
+        )
+    assert factory.call_count == 2  # Cached success/failure, once per variant.
+    assert mx.eval.call_count == (0 if failure in ("construction", "probe") else 2)
+    if failure not in ("construction", "probe"):
+        assert all(call.args == (probe_output,) for call in mx.eval.call_args_list)
+
+
+def test_message_norm_cpu_guards(message_cpu, monkeypatch):
+    mx, kernels, layers = message_cpu
+    forbidden = Mock(side_effect=AssertionError("unsupported input launched a kernel"))
+    monkeypatch.setattr(kernels, "_get_message_norm", forbidden)
+    x = mx.ones((1, 1, 17))
+    # Output mode's default weight must return the sentinel, not dereference None.
+    assert kernels.message_norm_decode(x, None, mx.float32) is None
+    for value, message, dtype, weight in (
+        (mx.ones((1, 17)), x, mx.float32, None),
+        (mx.ones((2, 1, 17)), x, mx.float32, None),
+        (mx.ones((1, 1, 0)), x, mx.float32, None),
+        (mx.ones((1, 1, 4097)), x, mx.float32, None),
+        (x.astype(np.int32), x, mx.float32, None),
+        (x, x, np.int32, None),
+        (x, mx.ones((1, 1, 16)), mx.float32, None),
+        (x, x.astype(np.float16), mx.float32, None),
+        (x.astype(np.float16), None, mx.float32, mx.ones((17,))),
+        (x, None, mx.float32, mx.ones((16,))),
+        (x, None, mx.float32, mx.ones((17,), np.float16)),
+    ):
+        assert kernels.message_norm_decode(value, message, dtype, weight) is None
+    forbidden.assert_not_called()
+    monkeypatch.setattr(layers, "message_norm_decode", forbidden)
+    for decode, enabled, device in (
+        (False, "1", True),
+        (True, "0", True),
+        (True, "1", False),
+    ):
+        monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", enabled)
+        monkeypatch.setattr(layers, "_use_kernels", lambda device=device: device)
+        layers._message_input(x, x, mx.float16, decode)
+        layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, decode)
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["SlidingDecoderLayer", "FullDecoderLayer"])
+@pytest.mark.parametrize("decode", [False, True])
+@pytest.mark.parametrize("with_messages", [False, True])
+def test_message_norm_cpu_forwarding(
+    message_cpu, monkeypatch, kind, decode, with_messages
+):
+    """Exercise real layer call sites with CPU state and recorded leaf operations."""
+    mx, kernels, layers = message_cpu
+    x = mx.ones((1, 1, 17))
+    messages = mx.ones((1, 1, 4, 17)) if with_messages else None
+    norm = SimpleNamespace(weight=mx.ones((17,)), eps=1e-6)
+    cls = getattr(layers, kind)
+    layer = cls.__new__(cls)
+    layer.state = {}
+    layer.input_layernorm = norm
+    layer.q_input_layernorm = layer.k_input_layernorm = layer.v_input_layernorm = norm
+    layer.post_attention_layernorm = norm
+    gates = [Mock(side_effect=lambda a, b, d: a + b) for _ in range(4)]
+    (
+        layer.q_message_gate,
+        layer.k_message_gate,
+        layer.v_message_gate,
+        layer.mlp_message_gate,
+    ) = gates
+    layer.mlp_input = Mock(side_effect=lambda block, a: a[..., None, :])
+    layer.self_attn = Mock(side_effect=lambda q, k, v, **kw: q)
+    layer.attention_input = None
+    layer.is_block_boundary = True
+    layer.mlp = Mock(side_effect=lambda a, **kw: a)
+    layer.post_attention_convolution = layer.post_mlp_convolution = (
+        lambda a, state, mask, **kw: (a, state)
+    )
+    calls = Mock(return_value=None)
+    monkeypatch.setattr(layers, "message_norm_decode", calls)
+    cache = [SimpleNamespace(offset=0), None] if decode else None
+    result, block = layer(x, None, cache=cache, messages=messages)
+    assert result.shape == x.shape and block.shape == (1, *x.shape)
+    for gate in gates:
+        assert gate.call_count == int(with_messages)
+        if with_messages:
+            assert gate.call_args.args[-1] is decode
+    assert calls.call_count == (4 if decode and with_messages else 0)
+    # Also cover the attention-input path with independently supplied Q/K/V.
+    attention = np.stack((x, x, x), axis=-2)
+    layer._self_attention(x, attention, cache, [None] * 4, None, messages)
+    for gate in gates[:3]:
+        assert gate.call_count == (2 if with_messages else 0)
+    # MessageGate must pass decode to the normalization helper itself.
+    gate = layers.MessageGate.__new__(layers.MessageGate)
+    gate.down_proj = Mock(side_effect=lambda a: a[..., :17])
+    gate.down_proj.weight = x
+    gate.forget_gate_proj = gate.message_gate_proj = Mock()
+    gate.forget_gate_proj.weight = x.astype(np.float16)  # Use eager expansion.
+    gate.forget_gate_proj.return_value = x
+    mx.tanh = np.tanh
+    seen = Mock(wraps=layers._message_input)
+    monkeypatch.setattr(layers, "_message_input", seen)
+    assert gate(x, x, decode).shape == x.shape
+    seen.assert_called_once_with(x, x, x.dtype, decode)
 
 
 def _expert_layer(switch_layers, mx, *, global_scale):

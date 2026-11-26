@@ -217,6 +217,7 @@ def message_norm_decode(x, message, dtype, weight=None, eps=1e-6):
             output
             and (
                 x.dtype != mx.float32
+                or weight is None
                 or weight.shape != (D,)
                 or weight.dtype != mx.float32
             )
