@@ -133,8 +133,9 @@ def visit_norm_decode(blocks, partial, queries, *, append_block=False):
         # Another caller may have disabled this variant after our lookup.
         if _KERNELS[key] is None:
             return None
-        try:
-            return kernel(**launch)
-        except Exception:
+    try:
+        return kernel(**launch)
+    except Exception:
+        with _LOCK:
             _KERNELS[key] = None
-            return None
+        return None

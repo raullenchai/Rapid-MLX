@@ -14,7 +14,7 @@ import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import ModuleType, SimpleNamespace
 from unittest.mock import DEFAULT, Mock
 
@@ -75,7 +75,7 @@ CONFIG["text_config"]["loop_config"] = {
 
 
 # Complete reviewed source of the five omitted numerical-core files and the
-# decode kernel. See NOTICE for provenance. Review edits before updating pins;
+# decode kernels. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "d9533b3b4dbf7458ac0bdc17f780a25ddb13df4c36c136aafaca60cbfa040ef3",
@@ -84,6 +84,7 @@ _NUMERICAL_CORE_SHA256 = {
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
     "nvfp4_decode.py": "b40d0dee816f30612de4b3541097f1f3de692251418d4b5c7f3493063d750360",
+    "visit_norm.py": "d4e28982343ac3955480dd3c3df0ca21306cd75939905c4af6436827ee108574",
 }
 
 
@@ -99,7 +100,13 @@ def test_numerical_core_source_contract():
         for path in coverage["run"]["omit"].splitlines()
         if path.strip().startswith(prefix)
     }
-    assert omitted == _NUMERICAL_CORE_SHA256.keys() - {"nvfp4_decode.py"}
+    assert omitted == _NUMERICAL_CORE_SHA256.keys() - {
+        "nvfp4_decode.py",
+        "visit_norm.py",
+    }
+    assert _NUMERICAL_CORE_SHA256.keys() == {
+        path.name for path in (root / prefix).glob("*.py")
+    } - {"__init__.py", "compat.py", "config.py"}
     for filename, expected in _NUMERICAL_CORE_SHA256.items():
         assert hashlib.sha256((root / prefix / filename).read_bytes()).hexdigest() == (
             expected
@@ -275,22 +282,49 @@ def test_visit_norm_cpu_concurrent_first_use(visit_cpu, failure):
     assert kernel.call_count == (1 if failure else 9)
 
 
+def test_visit_norm_cpu_concurrent_invocation_success(visit_cpu):
+    c, barrier = visit_cpu, Barrier(2)
+    output = [object(), object(), object()]
+    # Pre-probe so the barrier checks dispatch concurrency, not compilation.
+    kernel = Mock(return_value=output)
+    c.mx.fast.metal_kernel.return_value = kernel
+    assert c.visit.visit_norm_decode(*c.args) == output
+
+    def invoke(**kwargs):
+        barrier.wait(timeout=10)
+        assert not c.visit._LOCK.locked()
+        return output
+
+    kernel.side_effect = invoke
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(
+            pool.map(lambda _: c.visit.visit_norm_decode(*c.args), range(2))
+        ) == [output, output]
+    c.mx.fast.metal_kernel.assert_called_once()
+    c.mx.eval.assert_called_once()
+
+
 def test_visit_norm_cpu_concurrent_invocation_failure(visit_cpu, monkeypatch):
     c, barrier = visit_cpu, Barrier(2)
+    disabled = Event()
     kernel = Mock(side_effect=[[object(), object(), object()], RuntimeError("invoke")])
     c.mx.fast.metal_kernel.return_value = kernel
     real_ready = c.visit._ready
 
     def ready(*args):
         result = real_ready(*args)
-        barrier.wait(timeout=10)  # Both callers hold a successfully probed kernel.
+        if barrier.wait(timeout=10):  # Both hold a successfully probed kernel.
+            assert disabled.wait(timeout=10)
+        return result
+
+    def run(_):
+        result = c.visit.visit_norm_decode(*c.args)
+        disabled.set()
         return result
 
     monkeypatch.setattr(c.visit, "_ready", ready)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert list(
-            pool.map(lambda _: c.visit.visit_norm_decode(*c.args), range(2))
-        ) == [None, None]
+        assert list(pool.map(run, range(2))) == [None, None]
     assert kernel.call_count == 2  # One probe, one failed invocation; no stale retry.
     c.mx.fast.metal_kernel.assert_called_once()
     c.mx.eval.assert_called_once()
