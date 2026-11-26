@@ -4,6 +4,7 @@ import pytest
 
 from rapid_mlx.api.utils import clean_output_text
 from rapid_mlx.prompt_parse_context import PromptParseContext
+from rapid_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
 from rapid_mlx.reasoning.hy3_parser import Hy3ReasoningParser
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from tests.parser_migration.harness import route
@@ -127,6 +128,9 @@ def test_streaming_controls_match_unconfigured_parser(thinking, prompt_open, siz
         (" \n<th", ("", " \n<th")),
         (" \n\t", ("", " \n\t")),
         (" " * 256 + "<think>Secret.</think>Answer", ("Secret.", "Answer")),
+        (" " * 257 + "<think>Secret.</think>Answer", ("Secret.", "Answer")),
+        (" " * 257, ("", " " * 257)),
+        (" " * 257 + "Hello", ("", " " * 257 + "Hello")),
     ],
 )
 def test_thinking_off_whitespace_streaming_buffered_parity(raw, expected, size):
@@ -150,27 +154,6 @@ def test_thinking_off_whitespace_streaming_buffered_parity(raw, expected, size):
         reasoning += message.reasoning or ""
         content += message.content or ""
     assert (reasoning, content) == expected
-    assert parser.finalize_streaming(raw) is None
-
-
-@pytest.mark.parametrize("size", [1, 2, 3, 1000])
-@pytest.mark.parametrize("suffix", ["", "<think>Secret.</think>Answer"])
-def test_thinking_off_whitespace_hold_is_bounded(size, suffix):
-    # At most 256 whitespace characters are held; overflow commits to content.
-    raw = " " * 257 + suffix
-    parser = Qwen3ReasoningParser()
-    parser.configure_request(enable_thinking=False)
-    previous = ""
-    reasoning, content = "", ""
-    for delta in chunks(raw, size):
-        current = previous + delta
-        message = parser.extract_reasoning_streaming(previous, current, delta)
-        if message:
-            reasoning += message.reasoning or ""
-            content += message.content or ""
-        assert content == (current if len(current) > 256 else "")
-        previous = current
-    assert (reasoning, content) == ("", raw)
     assert parser.finalize_streaming(raw) is None
 
 
@@ -225,7 +208,10 @@ def test_route_reasoning_controls(surface, stream, thinking, raw):
 def test_cleaner_implicit_controls(thinking, prompt_open):
     assert (
         clean_output_text(
-            REPRO, enable_thinking=thinking, prompt_thinking_active=prompt_open
+            REPRO,
+            reasoning_parser=Qwen3ReasoningParser(),
+            enable_thinking=thinking,
+            prompt_thinking_active=prompt_open,
         )
         == "<think>" + REPRO
     )
@@ -233,7 +219,12 @@ def test_cleaner_implicit_controls(thinking, prompt_open):
 
 def test_cleaner_thinking_off_does_not_synthesize_opener():
     assert (
-        clean_output_text(REPRO, enable_thinking=False, prompt_thinking_active=False)
+        clean_output_text(
+            REPRO,
+            reasoning_parser=Qwen3ReasoningParser(),
+            enable_thinking=False,
+            prompt_thinking_active=False,
+        )
         == REPRO
     )
 
@@ -283,3 +274,16 @@ def test_prompt_opened_routes_keep_main_channels(surface, stream, size):
         "content_deltas": (6 if size == 1 else 1) if stream else 0,
         "input_chunks": len(chunks(raw, size)),
     }
+
+
+@pytest.mark.parametrize(
+    "parser", [None, Hy3ReasoningParser(), DeepSeekR1ReasoningParser()]
+)
+@pytest.mark.parametrize("raw", ["Secret.</think>Answer", REPRO, LITERAL])
+def test_non_qwen3_cleaner_thinking_off_retains_main_behavior(parser, raw):
+    # Main strips special tokens/whitespace and always synthesizes the opener.
+    expected = "<think>" + raw
+    assert (
+        clean_output_text(raw, reasoning_parser=parser, enable_thinking=False)
+        == expected
+    )

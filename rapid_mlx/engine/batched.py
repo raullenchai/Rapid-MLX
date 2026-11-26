@@ -3584,6 +3584,9 @@ class BatchedEngine(BaseEngine):
                 admission_token, clear_context=owns_admission
             )
 
+        from ..config import get_config
+
+        clean_reasoning_parser = get_config().reasoning_parser
         clean_enable_thinking: bool | None = kwargs.pop("_clean_enable_thinking", None)
         clean_prompt_active: bool = kwargs.pop("_clean_prompt_active", False)
         continue_final_message = kwargs.pop("_continue_final_message", False)
@@ -3666,6 +3669,7 @@ class BatchedEngine(BaseEngine):
                 output.output_token_ids,
                 fallback_text=clean_output_text(
                     mllm_full_text,
+                    reasoning_parser=clean_reasoning_parser,
                     enable_thinking=clean_enable_thinking,
                     prompt_thinking_active=clean_prompt_active,
                 ),
@@ -3797,6 +3801,7 @@ class BatchedEngine(BaseEngine):
         text = clean_output_text(
             output.output_text,
             muse_wire=self._muse_wire_model(),
+            reasoning_parser=clean_reasoning_parser,
             enable_thinking=clean_enable_thinking,
             prompt_thinking_active=clean_prompt_active,
         )
@@ -3911,6 +3916,9 @@ class BatchedEngine(BaseEngine):
         # disconnect_guard can force-abort the scheduler on client
         # disconnect. Popped from kwargs so it never reaches the
         # scheduler's add_request (which would reject unknown kwargs).
+        from ..config import get_config
+
+        clean_reasoning_parser = get_config().reasoning_parser
         clean_enable_thinking: bool | None = kwargs.pop("_clean_enable_thinking", None)
         clean_prompt_active: bool = kwargs.pop("_clean_prompt_active", False)
         request_id_holder = kwargs.pop("request_id_holder", None)
@@ -4008,6 +4016,7 @@ class BatchedEngine(BaseEngine):
                     text=clean_output_text(
                         output.output_text,
                         muse_wire=self._muse_wire_model(),
+                        reasoning_parser=clean_reasoning_parser,
                         enable_thinking=clean_enable_thinking,
                         prompt_thinking_active=clean_prompt_active,
                     ),
@@ -4132,6 +4141,7 @@ class BatchedEngine(BaseEngine):
                 text = clean_output_text(
                     output.output_text,
                     muse_wire=self._muse_wire_model(),
+                    reasoning_parser=clean_reasoning_parser,
                     enable_thinking=clean_enable_thinking,
                     prompt_thinking_active=clean_prompt_active,
                 )

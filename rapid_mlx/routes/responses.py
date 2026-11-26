@@ -2471,6 +2471,7 @@ async def _non_stream(
             final_content = strip_thinking_tags(
                 clean_output_text(
                     cleaned_text,
+                    reasoning_parser=cfg.reasoning_parser,
                     enable_thinking=resolved_thinking,
                     prompt_thinking_active=bool(
                         clean_context and clean_context.initial_channel == "reasoning"

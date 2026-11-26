@@ -721,6 +721,7 @@ def clean_output_text(
     text: str,
     *,
     muse_wire: bool = False,
+    reasoning_parser: object | None = None,
     enable_thinking: bool | None = None,
     prompt_thinking_active: bool = False,
 ) -> str:
@@ -735,7 +736,9 @@ def clean_output_text(
 
     Args:
         text: Raw model output
-        enable_thinking: False disables implicit reasoning-opener synthesis.
+        reasoning_parser: Active parser; only the exact Qwen3 parser opts in
+            to thinking-off content handling (subclasses retain legacy behavior).
+        enable_thinking: False disables implicit opener synthesis for Qwen3 only.
         prompt_thinking_active: Preserve synthesis if the prompt opened reasoning.
         muse_wire: True when the SERVING MODEL is muse_glimmer (resolved
             from the checkpoint's model_type by the caller, never from
@@ -772,10 +775,16 @@ def clean_output_text(
     text = SPECIAL_TOKENS_PATTERN.sub("", text)
     text = text.strip()
 
+    from ..reasoning.qwen3_parser import Qwen3ReasoningParser
+
     # Add opening <think> tag if response has closing but not opening
     # This happens when enable_thinking=True in the chat template
     if (
-        (enable_thinking is not False or prompt_thinking_active)
+        (
+            type(reasoning_parser) is not Qwen3ReasoningParser
+            or enable_thinking is not False
+            or prompt_thinking_active
+        )
         and "</think>" in text
         and not text.lstrip().startswith("<think>")
     ):

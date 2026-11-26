@@ -323,11 +323,17 @@ def test_legacy_continuation_context_without_history_render():
     assert context.template_contract == "unknown"
 
 
+@pytest.mark.parametrize("parser_name", [None, "qwen3", "hy3", "deepseek_r1"])
 @pytest.mark.parametrize("thinking", [False, True, None])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_reasoning_cleaner_receives_request_mode(
-    engine, monkeypatch, thinking, stream
+    engine, monkeypatch, thinking, stream, parser_name
 ):
+    from rapid_mlx.config import get_config
+    from rapid_mlx.reasoning import get_parser
+
+    parser = get_parser(parser_name)() if parser_name else None
+    monkeypatch.setattr(get_config(), "reasoning_parser", parser)
     raw = "Visible bash: ls\n</think>Answer"
     core_output = SimpleNamespace(
         output_text=raw,
@@ -370,4 +376,5 @@ async def test_reasoning_cleaner_receives_request_mode(
         output = outputs[-1]
     else:
         output = await engine.chat(messages, enable_thinking=thinking)
-    assert output.text == (raw if thinking is False else "<think>" + raw)
+    expected = raw if thinking is False and parser_name == "qwen3" else "<think>" + raw
+    assert output.text == expected
