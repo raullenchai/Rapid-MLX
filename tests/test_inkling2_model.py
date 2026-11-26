@@ -301,6 +301,123 @@ def decode_launches(metal_runtime, monkeypatch):
     return calls
 
 
+@pytest.fixture
+def cpu_decode(glue_loader, monkeypatch):
+    """Run launch plumbing with NumPy metadata and inert kernels, without MLX."""
+    mx = glue_loader.mx
+    for name, value in dict(
+        int32=np.int32,
+        uint32=np.uint32,
+        uint8=np.uint8,
+        bfloat16=np.float16,
+        zeros=np.zeros,
+        full=np.full,
+        fast=SimpleNamespace(metal_kernel=Mock()),
+    ).items():
+        monkeypatch.setattr(mx, name, value, raising=False)
+    decode = glue_loader.load("nvfp4_decode")
+    x = np.zeros((1, 1, 128), np.float16)
+    w = np.zeros((4, 32, 16), np.uint32)
+    scales = np.zeros((4, 32, 8), np.uint8)
+    indices = np.array([0, 2], np.int32)
+    return SimpleNamespace(
+        mx=mx, decode=decode, args=(x, w, scales, indices), probe=object(), out=object()
+    )
+
+
+@pytest.mark.parametrize("has_scale", [False, True])
+def test_nvfp4_cpu_probe_and_guarded_invocation(cpu_decode, has_scale):
+    """Each variant evaluates one probe; real outputs remain lazy and unwrapped."""
+    c = cpu_decode
+    scale = np.ones(4) if has_scale else None
+    kernel = Mock(side_effect=[[c.probe], [c.out], [c.out], RuntimeError("invoke")])
+    c.mx.fast.metal_kernel.return_value = kernel
+    for _ in range(2):
+        assert c.decode.project(*c.args, scale) is c.out
+    c.mx.fast.metal_kernel.assert_called_once()
+    c.mx.eval.assert_called_once_with(c.probe)
+    inputs = kernel.call_args.kwargs["inputs"]
+    assert all(a is b for a, b in zip(inputs[:4], c.args))
+    assert inputs[4] is (scale if has_scale else c.args[2])
+    assert kernel.call_args.kwargs["output_shapes"] == [(2, 1, 32)]
+    assert c.decode.project(*c.args, scale) is None
+    assert kernel.call_count == 4
+    # An exception evaluating a real output is outside the fallback guarantee.
+    c.mx.eval.side_effect = RuntimeError("lazy output")
+    with pytest.raises(RuntimeError, match="lazy output"):
+        c.mx.eval(c.out)
+
+
+@pytest.mark.parametrize("failure", ["construction", "invocation", "evaluation"])
+def test_nvfp4_cpu_probe_failure_cached_per_variant(cpu_decode, failure):
+    c = cpu_decode
+    kernel = Mock(return_value=[c.probe])
+    c.mx.fast.metal_kernel.return_value = kernel
+    # A successful specialization must survive failure of a different variant.
+    assert c.decode._get_kernel() is kernel
+    c.mx.fast.metal_kernel.reset_mock()
+    kernel.reset_mock()
+    c.mx.eval.reset_mock()
+    error = RuntimeError(failure)
+    if failure == "construction":
+        c.mx.fast.metal_kernel.side_effect = error
+    elif failure == "invocation":
+        kernel.side_effect = error
+    else:
+        c.mx.eval.side_effect = error
+    for _ in range(2):
+        assert c.decode.project(*c.args, None) is None
+    c.mx.fast.metal_kernel.assert_called_once()
+    assert kernel.call_count == (failure != "construction")
+    assert c.mx.eval.call_count == (failure == "evaluation")
+    assert c.decode._get_kernel() is kernel
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_nvfp4_cpu_layer_dispatch(cpu_decode, glue_loader, monkeypatch, failure):
+    """Exercise the layer's cached dispatch and sticky invocation fallback on CPU."""
+    c = cpu_decode
+
+    class Module(dict):
+        __getattr__ = dict.__getitem__
+        __setattr__ = dict.__setitem__
+
+    monkeypatch.setattr(
+        sys.modules["mlx"], "nn", glue_loader.module("mlx.nn", Module=Module)
+    )
+    for name, value in dict(
+        gather_qmm=Mock(return_value=c.out),
+        default_device=lambda: "fake-gpu",
+        gpu="fake-gpu",
+        integer=np.integer,
+        issubdtype=np.issubdtype,
+        quantize=Mock(return_value=c.args[1:3]),
+    ).items():
+        monkeypatch.setattr(c.mx, name, value, raising=False)
+    sl = glue_loader.load("switch_layers")
+    layer = sl.QuantizedSwitchLinear.__new__(sl.QuantizedSwitchLinear)
+    layer.mode, layer.bits, layer.group_size = "nvfp4", 4, 16
+    layer._quantize(c.args[1])
+    kernel = (
+        Mock(side_effect=[[c.probe], RuntimeError("invoke")])
+        if failure
+        else Mock(return_value=[c.out])
+    )
+    c.mx.fast.metal_kernel.return_value = kernel
+    monkeypatch.delenv("RAPID_MLX_INKLING2_FAST_DECODE", raising=False)
+    for _ in range(2):
+        assert layer(c.args[0], c.args[3]) is c.out
+    c.mx.fast.metal_kernel.assert_called_once()
+    assert kernel.call_count == (2 if failure else 3)
+    assert c.mx.gather_qmm.call_count == (2 if failure else 0)
+    assert (layer._nvfp4_decode.kernel is None) == failure
+    # Unsupported inputs bypass even a warmed launch.
+    kernel.reset_mock()
+    layer(c.args[0].astype(np.float32), c.args[3])
+    kernel.assert_not_called()
+    assert c.mx.gather_qmm.call_count == (3 if failure else 1)
+
+
 @pytest.mark.parametrize(
     "r,n,m,p",
     [
