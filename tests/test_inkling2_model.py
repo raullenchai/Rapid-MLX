@@ -28,6 +28,61 @@ from rapid_mlx.model_auto_config import detect_model_config
 REPO = "mlx-community/Inkling-2-Mini-4bit"
 REVISION = "9856dc53edead71405f8348930937c3638ff21a2"
 REDUCED_PRECISION_MODEL_TOLERANCE = 2e-2
+# For <=128 positive FP32 terms: plain ops use up to 64 serial additions,
+# decode uses <=4 per lane + a 32-lane tree. Their rounding bounds plus
+# division fit 5e-6 relative; use 1e-8 absolute near zero. No plain-op bit parity.
+ROUTER_PLAIN_OP_RTOL = 5e-6
+ROUTER_PLAIN_OP_ATOL = 1e-8
+
+# Frozen origin/main Metal sources: the shipped two-dispatch decode baseline.
+# Keep these independent of the fused implementation and the plain-op path.
+_MAIN_ROUTE_SELECT_SOURCE = """
+                #pragma clang fp contract(off)
+                const uint tid = thread_position_in_threadgroup.x;
+                threadgroup float scores[N], order[N];
+                if (tid < N) {
+                    float x = logits[tid * logits_strides[2]];
+                    float y = 1.0f / (1.0f + metal::precise::exp(metal::abs(x)));
+                    scores[tid] = x < 0.0f ? y : 1.0f - y;
+                    out_scores[tid] = scores[tid];
+                    order[tid] = -(scores[tid] + bias[tid * bias_strides[0]]);
+                }
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+                if (tid < N) {
+                    uint rank = 0;
+                    const float a = order[tid];
+                    for (uint j = 0; j < N; ++j) {
+                        float b = order[j];
+                        bool less = metal::isnan(a) ? !metal::isnan(b)
+                            : !metal::isnan(b) && b < a;
+                        bool equal = a == b || (metal::isnan(a) && metal::isnan(b));
+                        rank += less || (equal && j < tid);
+                    }
+                    if (rank < K) {
+                        indices[rank] = tid;
+                    }
+                }
+            """
+_MAIN_ROUTE_WEIGHTS_SOURCE = """
+    #pragma clang fp contract(off)
+    const uint row = threadgroup_position_in_grid.x;
+    const uint lane = thread_index_in_simdgroup;
+    float total = 0.0f;
+    for (uint j = lane; j < K; j += 32) {
+        total += scores[row * scores_strides[0]
+                        + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
+    }
+    total = simd_sum(total) + 1e-20f;
+    for (uint j = lane; j < K; j += 32) {
+        const float s = scores[row * scores_strides[0]
+                        + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
+        out[row * K + j] = (s / total) * route_scale;
+    }
+"""
+_MAIN_ROUTE_WEIGHTS_BLOCK_SHA256 = (
+    "ce7f5b683d2c13e7ecbcf6e00a0966f817ad3c13e41446e603cfb8f63404dc18"
+)
+
 
 CONFIG = {
     "model_type": "inkling2",
@@ -80,7 +135,7 @@ CONFIG["text_config"]["loop_config"] = {
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
     "layers.py": "a0519e11bec89c1c6df4edbce9cc401c295c95cdb6b51ed207d6318830b70b50",
-    "kernels.py": "4812f734b49c9165cfbae48f4a4e45e4b5ce9ffb8245051e09a15a256cf7dee5",
+    "kernels.py": "f0555fc2c2d7812ef89f88f0cb082681812d41dbbc8f274c1136cd5e26098fc2",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
     "checkpoint.py": "7ba19519e069ce47319641f473a696dd3cfa82c246f2eec40949268a6bd2935f",
@@ -105,6 +160,24 @@ def test_numerical_core_source_contract():
         assert hashlib.sha256((root / prefix / filename).read_bytes()).hexdigest() == (
             expected
         ), filename
+
+
+def test_main_decode_normalization_source_unchanged(decode_cpu):
+    """Pin main's exact normalization source, construction and launch wrapper."""
+    source = (
+        Path(__file__).parents[1] / "rapid_mlx/models/inkling2/kernels.py"
+    ).read_text()
+    block = source[
+        source.index("_ROUTE_WEIGHTS_SOURCE =") : source.index("_route_topk_lock =")
+    ]
+    assert (
+        hashlib.sha256(block.encode()).hexdigest() == _MAIN_ROUTE_WEIGHTS_BLOCK_SHA256
+    )
+    assert decode_cpu.kernels._ROUTE_WEIGHTS_SOURCE == _MAIN_ROUTE_WEIGHTS_SOURCE
+    assert (
+        hashlib.sha256(_MAIN_ROUTE_SELECT_SOURCE.encode()).hexdigest()
+        == "875073aafb57396901e7c524f012014b8467023ce8796edb348e57e04d6940ee"
+    )
 
 
 @pytest.fixture
@@ -575,18 +648,6 @@ def test_router_complete_cpu_concurrent_first_use(decode_cpu, monkeypatch, failu
     assert factory.call_count == mx.eval.call_count == 2
     k.route_topk_decode(x, bias, 1, 1.0)
     assert factory.call_count == mx.eval.call_count == 3
-
-
-def test_route_weights_cpu_wide_fallback(decode_cpu, monkeypatch):
-    k, mx = decode_cpu.kernels, decode_cpu.mx
-    monkeypatch.setattr(mx, "take_along_axis", np.take_along_axis, raising=False)
-    kernel = Mock(side_effect=AssertionError("wide reduction must use stock ops"))
-    monkeypatch.setattr(k, "_route_weights_kernel", kernel)
-    scores = np.ones((1, 1, 129), np.float32)
-    indices = np.arange(129).reshape(1, 1, 129)
-    actual = k.route_weights_decode(scores, indices, 2.0)
-    np.testing.assert_array_equal(actual, scores / np.float32(129) * 2.0)
-    kernel.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -2196,9 +2257,92 @@ def test_message_norm_guards_and_probe_fallback(metal_runtime, monkeypatch, fail
     mx.eval(create_model(metal_runtime)(mx.array([[1]])))
 
 
+@pytest.fixture
+def main_decode_router(metal_runtime):
+    """Run main's existing select+normalize kernels directly, with no fallback.
+
+    This is the bitwise contract. The plain-op path has a different FP32
+    accumulation order and is compared separately with a tight tolerance.
+    Callers evaluate outputs, including when routing is traced inside an MoE.
+    """
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2.compat import scalar
+
+    select = Mock(
+        wraps=mx.fast.metal_kernel(
+            name="inkling2_main_route_topk_decode",
+            input_names=["logits", "bias"],
+            output_names=["indices", "out_scores"],
+            source=_MAIN_ROUTE_SELECT_SOURCE,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+    )
+    normalize = Mock(
+        wraps=mx.fast.metal_kernel(
+            name="inkling2_main_route_weights_decode",
+            input_names=["scores", "indices", "route_scale"],
+            output_names=["out"],
+            source=_MAIN_ROUTE_WEIGHTS_SOURCE,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+    )
+
+    def run(logits, bias, k, scale):
+        n = logits.shape[-1]
+        select.reset_mock()
+        normalize.reset_mock()
+        indices, scores = select(
+            inputs=[logits, bias],
+            template=[("N", n), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), logits.shape],
+            output_dtypes=[mx.uint32, mx.float32],
+        )
+        weights = normalize(
+            inputs=[scores.reshape(-1, n), indices.reshape(-1, k), scalar(scale)],
+            template=[("K", k)],
+            grid=(32, 1, 1),
+            threadgroup=(32, 1, 1),
+            output_shapes=[indices.shape],
+            output_dtypes=[mx.float32],
+        )[0]
+        select.assert_called_once()
+        normalize.assert_called_once()
+        return indices, weights
+
+    return run
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("k", [1, 4, 31, 32, 33, 63, 64, 65, 127, 128])
+def test_router_main_decode_reduction_exact(metal_runtime, main_decode_router, k):
+    """Fused routing must be bit-identical to main's existing decode kernels."""
+    mx, _ = metal_runtime
+    from rapid_mlx.models.inkling2 import kernels
+
+    mx.random.seed(97)
+    for values in (
+        [0.0] + [-18.0] * (k - 1),
+        mx.random.normal((k,)).tolist(),
+    ):
+        logits = mx.array(values).reshape(1, 1, k)
+        bias = mx.zeros((k,))
+        for scale in (0.0, 0.3, 2.0):
+            expected = main_decode_router(logits, bias, k, scale)
+            actual = kernels.route_topk_decode(logits, bias, k, scale)
+            assert actual is not None  # Compile and run the fused variant.
+            mx.eval(*actual)
+            for a, e in zip(actual, expected):
+                assert mx.array_equal(a.view(mx.uint32), e.view(mx.uint32)).item()
+
+
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("seed", [0, 17, 53])
-def test_router_topk_exact(metal_runtime, monkeypatch, seed):
+def test_router_topk_exact(metal_runtime, main_decode_router, monkeypatch, seed):
+    """Bit-identical to main decode; plain-op parity uses the tolerance test."""
     mx, inkling2 = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
@@ -2218,8 +2362,8 @@ def test_router_topk_exact(metal_runtime, monkeypatch, seed):
                 (mx.full(random.shape, -100.0, dtype=dtype), mx.zeros((n,))),
             ):
                 router.e_score_correction_bias = bias
-                expected = layers._route_weights_reference(
-                    mx.sigmoid(logits.astype(mx.float32)),
+                expected = main_decode_router(
+                    logits.astype(mx.float32),
                     bias,
                     k,
                     router.routed_scaling_factor,
@@ -2253,11 +2397,27 @@ def test_router_topk_exact(metal_runtime, monkeypatch, seed):
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize(
-    "n,k", [(1, 1), (31, 3), (32, 32), (33, 31), (65, 64), (128, 127)]
+    "n,k",
+    [
+        (1, 1),
+        (31, 3),
+        (31, 31),
+        (32, 32),
+        (33, 31),
+        (33, 33),
+        (63, 63),
+        (64, 64),
+        (65, 64),
+        (65, 65),
+        (127, 127),
+        (128, 127),
+        (128, 128),
+    ],
 )
-def test_router_complete_strided_exact(metal_runtime, n, k):
+def test_router_complete_strided_exact(metal_runtime, main_decode_router, n, k):
+    """Strided inputs retain main decode bits; plain ops have tolerance parity."""
     mx, _ = metal_runtime
-    from rapid_mlx.models.inkling2 import kernels, layers
+    from rapid_mlx.models.inkling2 import kernels
 
     mx.random.seed(73)
     # Non-contiguous inputs must be copied by the kernel API before flat loads.
@@ -2271,9 +2431,7 @@ def test_router_complete_strided_exact(metal_runtime, n, k):
         (mx.full(logits.shape, -100.0), bias),
     ):
         for scale in (0.0, 0.3, 2.0):
-            expected = layers._route_weights_reference(
-                mx.sigmoid(values), correction, k, scale
-            )
+            expected = main_decode_router(values, correction, k, scale)
             actual = kernels.route_topk_decode(values, correction, k, scale)
             assert actual is not None  # No silent fallback can satisfy parity.
             for a, e in zip(actual, expected):
@@ -2282,7 +2440,13 @@ def test_router_complete_strided_exact(metal_runtime, n, k):
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("k", [1, 4, 31, 32, 33, 63, 64, 65, 127, 128])
-def test_router_stock_reduction_exact(metal_runtime, k):
+def test_router_plain_op_tolerance(metal_runtime, k):
+    """Decode is within tolerance of plain ops, whose sum order differs.
+
+    Main's existing decode kernels and the fused kernel sum lane-strided terms
+    then SIMD-reduce. Plain ops sum sequentially through K=64, then reduce
+    four consecutive terms per lane. Even the K=4 example differs in bits.
+    """
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels, layers
 
@@ -2293,30 +2457,37 @@ def test_router_stock_reduction_exact(metal_runtime, k):
     ):
         logits = mx.array(values).reshape(1, 1, k)
         scores, bias = mx.sigmoid(logits), mx.zeros((k,))
-        if k == 4 and values[0] == 0.0:
-            # Sequential stock sum loses each tiny addend; a tree sum does not.
-            assert scores.sum(axis=-1).view(mx.uint32).item() == 0x3F000000
         for scale in (0.0, 0.3, 2.0):
             indices, expected = layers._route_weights_reference(scores, bias, k, scale)
             actual = kernels.route_topk_decode(logits, bias, k, scale)
-            assert actual is not None  # Must compile and run the fused variant.
+            assert actual is not None  # No fallback may satisfy this comparison.
             mx.eval(*actual)
             assert mx.array_equal(actual[0], indices).item()
             for weights in (
                 actual[1],
                 kernels.route_weights_decode(scores, indices, scale),
             ):
-                assert mx.array_equal(
-                    weights.view(mx.uint32), expected.view(mx.uint32)
+                assert mx.allclose(
+                    weights,
+                    expected,
+                    rtol=ROUTER_PLAIN_OP_RTOL,
+                    atol=ROUTER_PLAIN_OP_ATOL,
                 ).item()
+                if k == 4 and values[0] == 0.0 and scale != 0.0:
+                    # Each tiny sequential addend rounds away; SIMD sum keeps
+                    # their combined contribution. Preserve main's latter order.
+                    assert scores.sum(axis=-1).view(mx.uint32).item() == 0x3F000000
+                    assert not mx.array_equal(
+                        weights.view(mx.uint32), expected.view(mx.uint32)
+                    ).item()
 
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("n", [4, 33, 65, 128])
 @pytest.mark.parametrize("nan_input", ["logits", "bias"])
-def test_router_nan_total_order(metal_runtime, n, nan_input):
+def test_router_nan_total_order(metal_runtime, main_decode_router, n, nan_input):
     mx, _ = metal_runtime
-    from rapid_mlx.models.inkling2 import kernels, layers
+    from rapid_mlx.models.inkling2 import kernels
 
     for positions in ([0], [n // 2], [n - 1], [0, n // 2, n - 1], list(range(n))):
         logits, bias = [0.0] * n, [0.0] * n
@@ -2326,7 +2497,7 @@ def test_router_nan_total_order(metal_runtime, n, nan_input):
         # Ascending stock routing order is stable, with all NaNs last.
         order = [i for i in range(n) if i not in positions] + sorted(positions)
         for k in (1, n // 2, n):
-            expected = layers._route_weights_reference(mx.sigmoid(logits), bias, k, 2.0)
+            expected = main_decode_router(logits, bias, k, 2.0)
             assert expected[0].reshape(-1).tolist() == order[:k]
             for _ in range(3):
                 actual = kernels.route_topk_decode(logits, bias, k, 2.0)
@@ -2340,7 +2511,7 @@ def test_router_nan_total_order(metal_runtime, n, nan_input):
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("k", [4, 64, 65, 128, 129, 256])
-def test_route_weights_stock_rows_exact(metal_runtime, k):
+def test_route_weights_plain_op_rows_tolerance(metal_runtime, k):
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import kernels
 
@@ -2350,7 +2521,9 @@ def test_route_weights_stock_rows_exact(metal_runtime, k):
     weights = mx.take_along_axis(scores, indices, axis=-1)
     expected = (weights / (weights.sum(axis=-1, keepdims=True) + 1e-20)) * 0.3
     actual = kernels.route_weights_decode(scores, indices, 0.3)
-    assert mx.array_equal(actual.view(mx.uint32), expected.view(mx.uint32)).item()
+    assert mx.allclose(
+        actual, expected, rtol=ROUTER_PLAIN_OP_RTOL, atol=ROUTER_PLAIN_OP_ATOL
+    ).item()
 
 
 @pytest.mark.requires_mlx
@@ -2451,7 +2624,10 @@ def test_router_topk_real_invocation_failure(metal_runtime, monkeypatch):
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
-def test_router_topk_cached_logits_exact(metal_runtime, monkeypatch, dtype):
+def test_router_topk_cached_logits_exact(
+    metal_runtime, main_decode_router, monkeypatch, dtype
+):
+    """Cached model logits match main decode bits; plain ops only within tolerance."""
     mx, _ = metal_runtime
     from rapid_mlx.models.inkling2 import layers
 
@@ -2472,12 +2648,8 @@ def test_router_topk_cached_logits_exact(metal_runtime, monkeypatch, dtype):
         for i, (model, cache) in enumerate(zip(models, caches)):
             with monkeypatch.context() as patch:
                 patch.setattr(
-                    layers, "route_topk_decode", calls if i else lambda *a: None
+                    layers, "route_topk_decode", calls if i else main_decode_router
                 )
-                if i == 0:
-                    patch.setattr(
-                        layers, "_route_weights", layers._route_weights_reference
-                    )
                 ids = tokens[:, step : step + 1]
                 out = model(ids, cache=cache)
                 mx.eval(out)

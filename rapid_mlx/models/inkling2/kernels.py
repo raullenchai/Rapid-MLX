@@ -715,16 +715,11 @@ _ROUTE_WEIGHTS_SOURCE = """
     const uint row = threadgroup_position_in_grid.x;
     const uint lane = thread_index_in_simdgroup;
     float total = 0.0f;
-    // Stock row sum is sequential through 64, then four consecutive
-    // elements per lane followed by a SIMD sum (supported here through 128).
-    const uint start = K <= 64 ? 0 : lane * 4;
-    const uint end = K <= 64 ? K : min(start + 4, uint(K));
-    for (uint j = start; j < end; ++j) {
+    for (uint j = lane; j < K; j += 32) {
         total += scores[row * scores_strides[0]
                         + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
     }
-    if (K > 64) total = simd_sum(total);
-    total += 1e-20f;
+    total = simd_sum(total) + 1e-20f;
     for (uint j = lane; j < K; j += 32) {
         const float s = scores[row * scores_strides[0]
                         + indices[row * indices_strides[0] + j * indices_strides[1]] * scores_strides[1]];
@@ -747,9 +742,6 @@ _route_weights_kernel = cast(
 
 def route_weights_decode(scores, indices, route_scale):
     K = indices.shape[-1]
-    if K > 128:
-        weights = mx.take_along_axis(scores, indices, axis=-1)
-        return (weights / (weights.sum(axis=-1, keepdims=True) + 1e-20)) * route_scale
     return _route_weights_kernel(
         inputs=[
             scores.reshape(-1, scores.shape[-1]),
@@ -820,15 +812,13 @@ def _build_route_topk(n, k):
                     }
                 }
                 threadgroup_barrier(mem_flags::mem_threadgroup);
-                // Match the stock single-row sum's FP32 rounding points.
+                // Match main's existing normalization kernel: lane-strided
+                // FP32 accumulation, then SIMD sum (not the plain-op order).
                 if (tid < 32) {
                     float total = 0.0f;
-                    const uint start = K <= 64 ? 0 : lane * 4;
-                    const uint end = K <= 64 ? K : min(start + 4, uint(K));
-                    for (uint j = start; j < end; ++j)
+                    for (uint j = lane; j < K; j += 32)
                         total += scores[picked[j]];
-                    if (K > 64) total = simd_sum(total);
-                    total += 1e-20f;
+                    total = simd_sum(total) + 1e-20f;
                     for (uint j = lane; j < K; j += 32)
                         weights[j] = (scores[picked[j]] / total) * scale[0];
                 }
@@ -854,6 +844,11 @@ def route_topk_decode(
     logits: mx.array, bias: mx.array, k: int, scale: float
 ) -> tuple[mx.array, mx.array] | None:
     """Single-row FP32 scoring, stable NaNs-last selection, and normalization.
+
+    Finite-input outputs are bit-identical to the existing select+normalize
+    decode kernels, and within FP32 tolerance of the plain-op path. The decode
+    kernels use lane-strided accumulation and SIMD reduction; the plain-op
+    path uses a different sum order, so plain-op bit parity is not guaranteed.
 
     Fallback covers a one-time evaluated probe per (expert count, top-k)
     variant and guarded invocation; either failure disables that variant.
