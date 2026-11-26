@@ -78,7 +78,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
 | `--allow-unauthenticated-public` | Explicitly permit a non-loopback listener without an API key | false |
 | `--cors-origins` | Allowed CORS origins (also via `RAPID_MLX_CORS_ALLOW_ORIGINS`) | Disabled (explicit opt-in) |
-| `--trusted-hosts` | Host-header allowlist; non-matching requests get HTTP 400 | `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` |
+| `--trusted-hosts` | Additional hosts for the Host-header allowlist. Non-matching requests get HTTP 400. | `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
 | `--max-request-bytes` | Max HTTP request body size; oversized requests get HTTP 413 before parsing (0 disables) | 8 MiB (8388608) |
 | `--timeout` | Default request timeout in seconds; per-request `timeout: null` or `timeout: 0` uses this value | 1800 |
@@ -1512,12 +1512,13 @@ when access should be limited to specific extensions. Credentials stay disabled
 by default on the CLI/env path; `RAPID_MLX_CORS_ALLOW_CREDENTIALS=true` opts in.
 Scheme patterns echo the matched origin and support credentials, unlike bare `*`.
 
-For LAN or reverse-proxy access, set the expected Host names explicitly; this
-replaces the local defaults, so include loopback names if they are also needed:
+For LAN or reverse-proxy access, use `--trusted-hosts` or the comma-separated
+`RAPID_MLX_TRUSTED_HOSTS` environment variable to add the expected hostnames
+to the loopback defaults. For example, to allow a LAN hostname and IP address:
 
 ```bash
 rapid-mlx serve qwen3.5-4b-4bit --host 0.0.0.0 --api-key "$RAPID_MLX_API_KEY" \
-  --trusted-hosts localhost 127.0.0.1 workstation.local 192.168.1.10
+  --trusted-hosts workstation.local 192.168.1.10
 ```
 
 `--cors-origins '*'` and `--trusted-hosts '*'` explicitly opt out of their
