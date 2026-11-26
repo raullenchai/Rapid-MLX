@@ -265,7 +265,8 @@ private struct GeneratedImageDetail: View {
         }
         .task(id: url) {
             let location = url
-            let loaded = await Task.detached { NSImage(contentsOf: location) }.value
+            let data = await Task.detached { try? Data(contentsOf: location) }.value
+            let loaded = data.flatMap(NSImage.init(data:))
             image = loaded
             failed = loaded == nil
         }

@@ -117,7 +117,7 @@ struct ArtifactViewer<Trailing: View, Accessory: View>: View {
                 .accessibilityIdentifier("Artifact.Panel.Save.PNG")
             } label: {
                 Image(systemName: "square.and.arrow.down")
-                    .font(.rapid(size: 11))
+                    .font(.system(size: 11))
                     .foregroundStyle(RapidTheme.utilityActionLabel)
                     .frame(width: RapidTheme.ControlHeight.small, height: RapidTheme.ControlHeight.small)
             }

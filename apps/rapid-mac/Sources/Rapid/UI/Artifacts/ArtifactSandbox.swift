@@ -22,10 +22,12 @@ import WebKit
 /// 5. WebRTC removed before any page script runs. An `RTCPeerConnection` with
 ///    its own ICE server opens sockets that neither the CSP nor the content
 ///    rules see, and WebKit offers no switch for it. The load is only shown
-///    once the removal is confirmed, otherwise it fails closed.
+///    once the lock-down's per-load token is read back, otherwise it fails
+///    closed.
 ///
 /// There is deliberately no `WKScriptMessageHandler`: the page has no way to
-/// call into the app. The one user script only deletes globals.
+/// call into the app. The one user script only locks globals and records
+/// that it did.
 enum ArtifactSandbox {
 
     /// A scheme of our own: not `file:`, which can expose the disk, and not
@@ -47,33 +49,43 @@ enum ArtifactSandbox {
         "[" + blockedGlobals.map { "\"\($0)\"" }.joined(separator: ",") + "]"
     }
 
-    /// Runs first in every frame. The properties become non-writable and
-    /// non-configurable, so a page cannot put them back, and no other realm is
-    /// reachable under the CSP (no frames, workers or objects).
-    static var isolationScript: String {
-        """
-        (function () {
-          var names = \(blockedGlobalsLiteral);
-          for (var i = 0; i < names.length; i++) {
-            try {
-              Object.defineProperty(window, names[i], { value: undefined, writable: false, configurable: false });
-            } catch (e) {}
-          }
-        })();
-        """
-    }
+    /// One load's WebRTC lock-down. Its proof is a property named after a
+    /// random token, which a page cannot forge without knowing the token.
+    struct Isolation: Sendable {
+        let token: String
 
-    /// Evaluates to true only if every global above is locked down.
-    static var isolationCheck: String {
-        """
-        (function () {
-          var names = \(blockedGlobalsLiteral);
-          return names.every(function (n) {
-            var d = Object.getOwnPropertyDescriptor(window, n);
-            return !!d && d.configurable === false && d.writable === false && d.value === undefined;
-          });
-        })()
-        """
+        init() {
+            token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        }
+
+        private var marker: String { "__rapidIsolation_\(token)" }
+
+        /// Runs first in every frame. A frame whose globals cannot all be
+        /// locked is stopped and records no proof.
+        var script: String {
+            """
+            (function () {
+              var define = Object.defineProperty, names = \(ArtifactSandbox.blockedGlobalsLiteral), locked = true;
+              for (var i = 0; i < names.length; i++) {
+                try {
+                  define(window, names[i], { value: undefined, writable: false, configurable: false });
+                } catch (e) {
+                  locked = false;
+                }
+              }
+              if (locked) {
+                define(window, "\(marker)", { value: "\(token)", writable: false, configurable: false });
+              } else {
+                window.stop();
+              }
+            })();
+            """
+        }
+
+        /// A plain property read: no call the page could have replaced.
+        var check: String { "window.\(marker)" }
+
+        func isConfirmed(by result: Any?) -> Bool { result as? String == token }
     }
 
     static let contentSecurityPolicy = [
@@ -126,7 +138,7 @@ enum ArtifactSandbox {
     /// A fresh configuration. Built per load, never reused.
     @MainActor
     static func makeConfiguration(
-        source: String, ruleList: WKContentRuleList, isolationScript: String = isolationScript
+        source: String, ruleList: WKContentRuleList, isolationScript: String
     ) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()

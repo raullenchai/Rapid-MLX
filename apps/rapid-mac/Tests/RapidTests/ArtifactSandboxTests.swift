@@ -132,7 +132,7 @@ private final class ArtifactHarness {
 
     init(
         source: String,
-        isolationScript: String = ArtifactSandbox.isolationScript,
+        isolationScript: @escaping (ArtifactSandbox.Isolation) -> String = { $0.script },
         loadTimeout: Duration = .seconds(10),
         pingInterval: Duration = .seconds(5),
         pingTimeout: Duration = .seconds(10)
@@ -236,6 +236,11 @@ struct ArtifactNetworkVector: Sendable, CustomTestStringConvertible {
             template: "<script>try{var pc=new RTCPeerConnection({iceServers:[{urls:'turn:127.0.0.1:PORT?transport=tcp',username:'u',credential:'c'}]});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)}).catch(function(){})}catch(e){}</script>",
             baselineReachesProbe: true
         ),
+        .init(
+            name: "webrtc turn from a child frame",
+            template: "<script>try{var f=document.createElement('iframe');document.body.appendChild(f);var pc=new f.contentWindow.RTCPeerConnection({iceServers:[{urls:'turn:127.0.0.1:PORT?transport=tcp',username:'u',credential:'c'}]});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)}).catch(function(){})}catch(e){}</script>",
+            baselineReachesProbe: true
+        ),
         .init(name: "preconnect", template: "<link rel='preconnect' href='TARGET'>", baselineReachesProbe: true),
         .init(name: "window.open", template: "<script>window.open('TARGET')</script>", baselineReachesProbe: false),
     ]
@@ -253,14 +258,20 @@ struct ArtifactSandboxWebKitTests {
     func configuration() async throws {
         let compiled = await ArtifactSandbox.compiledRuleList()
         let ruleList = try #require(compiled)
-        let first = ArtifactSandbox.makeConfiguration(source: "<html></html>", ruleList: ruleList)
-        let second = ArtifactSandbox.makeConfiguration(source: "<html></html>", ruleList: ruleList)
+        let isolation = ArtifactSandbox.Isolation()
+        #expect(isolation.token != ArtifactSandbox.Isolation().token)
+        let first = ArtifactSandbox.makeConfiguration(
+            source: "<html></html>", ruleList: ruleList, isolationScript: isolation.script
+        )
+        let second = ArtifactSandbox.makeConfiguration(
+            source: "<html></html>", ruleList: ruleList, isolationScript: isolation.script
+        )
         #expect(!first.websiteDataStore.isPersistent)
         #expect(first.websiteDataStore !== second.websiteDataStore)
         #expect(!first.preferences.javaScriptCanOpenWindowsAutomatically)
         let scripts = first.userContentController.userScripts
         #expect(scripts.count == 1, "only the isolation script, nothing that talks to the app")
-        #expect(scripts.first?.source == ArtifactSandbox.isolationScript)
+        #expect(scripts.first?.source == isolation.script)
         #expect(scripts.first?.injectionTime == .atDocumentStart)
         #expect(scripts.first?.isForMainFrameOnly == false)
         #expect(first.urlSchemeHandler(forURLScheme: ArtifactSandbox.scheme) != nil)
@@ -288,9 +299,46 @@ struct ArtifactSandboxWebKitTests {
 
     @Test("A load whose WebRTC removal cannot be confirmed fails closed")
     func failsClosedWithoutIsolation() async throws {
-        let harness = ArtifactHarness(source: page("<p>x</p>"), isolationScript: "")
+        let harness = ArtifactHarness(source: page("<p>x</p>"), isolationScript: { _ in "" })
         harness.controller.start()
         let failed = await harness.wait(until: { $0 == .failed(.sandboxUnavailable) })
+        #expect(failed, "state: \(harness.controller.state)")
+        #expect(harness.controller.webView == nil)
+    }
+
+    @Test("A page cannot forge the isolation proof when the lock-down is absent")
+    func isolationProofCannotBeForged() async throws {
+        let harness = ArtifactHarness(
+            source: page("""
+                <script>
+                Array.prototype.every = function () { return true; };
+                Object.getOwnPropertyDescriptor = function () {
+                  return { value: undefined, writable: false, configurable: false };
+                };
+                </script>
+                """),
+            isolationScript: { _ in "" }
+        )
+        harness.controller.start()
+        let failed = await harness.wait(until: { $0 == .failed(.sandboxUnavailable) })
+        #expect(failed, "state: \(harness.controller.state)")
+        #expect(harness.controller.webView == nil)
+    }
+
+    @Test("A global that cannot be locked fails the load closed")
+    func unlockableGlobalFailsClosed() async throws {
+        let harness = ArtifactHarness(
+            source: page("<p>x</p>"),
+            isolationScript: {
+                "Object.defineProperty(window, 'RTCPeerConnection', { value: 1, writable: false, configurable: false });"
+                    + $0.script
+            }
+        )
+        harness.controller.start()
+        let failed = await harness.wait(until: {
+            if case .failed = $0 { return true }
+            return false
+        })
         #expect(failed, "state: \(harness.controller.state)")
         #expect(harness.controller.webView == nil)
     }
