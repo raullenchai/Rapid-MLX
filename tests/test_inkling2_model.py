@@ -76,7 +76,7 @@ CONFIG["text_config"]["loop_config"] = {
 # decode kernel. See NOTICE for provenance. Review edits before updating pins;
 # this contract reads bytes only and requires neither MLX nor Metal.
 _NUMERICAL_CORE_SHA256 = {
-    "layers.py": "f30e646d49cc4f36450cf99f4465862a22448e1998d9d83d020f5f01217c9217",
+    "layers.py": "38265ccd14b31cf32b044e328b1cf3d97ec313772cc75f8ffe50b35a9491801e",
     "kernels.py": "355670b093d3cdf23e435fd90b14bfb12bdd0d681d8c2e940dc9bf603e2195bc",
     "model.py": "4dee052b0aaaf5df2a90b9f1d80b215fd4546b7ee55367589fb30d84a3e9cd08",
     "switch_layers.py": "1df554e66c4a627ffb1e6f91989abe65c4663a457977d05fdffbe25771e7fc47",
@@ -377,7 +377,7 @@ def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure, bounda
     elif failure == "ineligible":
         layer.mlp.gate.top_k = 1
     elif failure == "disabled":
-        monkeypatch.setenv("RAPID_MLX_INKLING2_EXPERT_CONV_RESIDUAL", "0")
+        monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "EXPERT_CONV_RESIDUAL", False)
     for step in range(2):
         block_states = None if boundary == "first" else x[None]
         actual, block = layer(x, block_states, cache=cache)
@@ -404,10 +404,8 @@ def test_decoder_cpu_evaluates_mlp_once(decode_cpu, monkeypatch, failure, bounda
 def test_decode_cpu_independent_switches(decode_cpu, monkeypatch, feature):
     layers = decode_cpu.layers
     features = ("MESSAGE_NORM", "ROUTE_TOPK", "EXPERT_CONV_RESIDUAL")
-    for name in features:
-        monkeypatch.delenv(f"RAPID_MLX_INKLING2_{name}", raising=False)
     assert all(layers._fast_decode_enabled(name) for name in features)
-    monkeypatch.setenv(f"RAPID_MLX_INKLING2_{feature}", "0")
+    monkeypatch.setitem(layers._FAST_DECODE_FEATURES, feature, False)
     assert layers._fast_decode_enabled()
     for name in features:
         assert layers._fast_decode_enabled(name) is (name != feature)
@@ -431,7 +429,7 @@ def test_route_topk_cpu_switch_and_fallback(
     monkeypatch.setattr(layers, "route_topk_decode", fused)
     monkeypatch.setattr(layers, "_route_weights", stock)
     monkeypatch.setattr(mx, "sigmoid", lambda x: 1 / (1 + np.exp(-x)), raising=False)
-    monkeypatch.setenv("RAPID_MLX_INKLING2_ROUTE_TOPK", "0" if disabled else "1")
+    monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "ROUTE_TOPK", not disabled)
     assert router(np.ones((1, 1, 32), np.float32), cached_decode=True) is expected
     assert fused.call_count == int(not disabled)
     assert stock.call_count == int(disabled or unavailable)
@@ -596,7 +594,7 @@ def test_message_norm_cpu_guards(message_cpu, monkeypatch):
         layers._message_input(x, x, mx.float16, decode)
         layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, decode)
     monkeypatch.setenv("RAPID_MLX_INKLING2_FAST_DECODE", "1")
-    monkeypatch.setenv("RAPID_MLX_INKLING2_MESSAGE_NORM", "0")
+    monkeypatch.setitem(layers._FAST_DECODE_FEATURES, "MESSAGE_NORM", False)
     monkeypatch.setattr(layers, "_use_kernels", lambda: True)
     layers._message_input(x, x, mx.float16, True)
     layers._norm_cast(x, mx.ones((17,)), 1e-6, mx.float16, True)

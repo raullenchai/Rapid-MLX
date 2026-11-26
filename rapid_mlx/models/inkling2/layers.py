@@ -95,9 +95,16 @@ def _block_decode_only(fn):
     return call
 
 
+_FAST_DECODE_FEATURES = {
+    "MESSAGE_NORM": True,
+    "ROUTE_TOPK": True,
+    "EXPERT_CONV_RESIDUAL": True,
+}
+
+
 def _fast_decode_enabled(feature: str | None = None) -> bool:
     return os.environ.get("RAPID_MLX_INKLING2_FAST_DECODE", "1") != "0" and (
-        feature is None or os.environ.get(f"RAPID_MLX_INKLING2_{feature}", "1") != "0"
+        feature is None or _FAST_DECODE_FEATURES[feature]
     )
 
 
