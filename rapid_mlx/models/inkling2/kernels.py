@@ -17,6 +17,183 @@ __all__ = [
 ]
 
 
+def _probe_metal(kernel, **launch):
+    """Force lazy Metal compilation using synthetic inputs before caching success."""
+    try:
+        mx.eval(*kernel(**launch))
+    except Exception:
+        return None
+    return kernel
+
+
+@cache
+def _expert_conv_residual_factory():
+    try:
+        return mx.fast.metal_kernel(
+            name="inkling2_expert_conv_residual_decode",
+            input_names=[
+                "x",
+                "mix",
+                "state",
+                "weight",
+                "mask",
+                "lengths",
+                "outer",
+                # Scalar input: bound by reference in the kernel, so it is used
+                # directly rather than indexed.
+                "divisor",
+            ],
+            output_names=["out", "next_state"],
+            header="#pragma clang fp contract(off)\n",
+            source="""
+                const uint c = thread_position_in_grid.x;
+                if (c >= C) return;
+                float combined = 0.0f;
+                for (int e = 0; e < E; ++e) {
+                    float product = float(x[e * x_strides[2] + c * x_strides[3]])
+                        * float(mix[e * mix_strides[2]]);
+                    combined = combined + product;
+                }
+                combined = float(T(combined));
+                float history[K];
+                for (int j = 0; j < K - 1; ++j)
+                    history[j] = state[j * state_strides[1] + c * state_strides[2]];
+                history[K - 1] = HAS_MASK && !mask[0] ? 0.0f : combined;
+                float acc = 0.0f;
+                for (int j = 0; j < K; ++j)
+                    acc = metal::fma(float(W(history[j])),
+                        float(weight[c * weight_strides[0] + j * weight_strides[1]]), acc);
+                // Preserve MoE, Conv1d, and post-convolution token rounding.
+                float convolved = float(T((float(W(acc)) + combined) / divisor));
+                out[c] = T(float(outer[c * outer_strides[2]]) + convolved);
+                const int start = HAS_LENGTHS && lengths[0] <= 0 ? 0 : 1;
+                for (int j = 0; j < K - 1; ++j)
+                    next_state[j * C + c] = history[start + j];
+            """,
+            ensure_row_contiguous=False,
+            compile_options={"math_mode": "safe"},
+        )
+    except Exception:
+        return None
+
+
+@cache
+def _probe_expert_conv_residual(kernel, template, x_dtype):
+    """Force lazy Metal compilation once per specialization; cache failures too."""
+    T, W, C, K, E, masked, ragged = (value for _, value in template)
+    specs = (
+        ((1, 1, E, C), x_dtype),
+        ((1, 1, E), mx.float32),
+        ((1, K - 1, C), mx.float32),
+        ((C, K, 1), W),
+        ((1, 1), mx.bool_ if masked else mx.float32),
+        ((1,), mx.int32 if ragged else mx.float32),
+        ((1, 1, C), mx.float32),
+        ((), mx.float32),
+    )
+    return _probe_metal(
+        kernel,
+        inputs=[mx.ones(s, dtype=d) for s, d in specs],
+        template=list(template),
+        grid=(C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(1, 1, C), (1, K - 1, C)],
+        output_dtypes=[T, mx.float32],
+    )
+
+
+def _expert_conv_residual_ready(dtype, weight, experts, masked, ragged, x_dtype):
+    """Return a kernel after a one-time evaluated probe per variant, or None."""
+    kernel = _expert_conv_residual_factory()
+    if kernel is None:
+        return None
+    C, K = weight.shape[:2]
+    template = (
+        ("T", dtype),
+        ("W", weight.dtype),
+        ("C", C),
+        ("K", K),
+        ("E", experts),
+        ("HAS_MASK", masked),
+        ("HAS_LENGTHS", ragged),
+    )
+    return _probe_expert_conv_residual(kernel, template, x_dtype)
+
+
+def expert_conv_residual_decode(
+    x, mix, state, weight, mask, lengths, outer, dtype, *, kernel=None
+):
+    """Combine routed experts and a cached static convolution for one token.
+
+    Fallback covers construction, the one-time evaluated probe per kernel
+    variant, and guarded invocation. Evaluation of real lazy outputs is
+    intentionally not wrapped because decode evaluates asynchronously.
+    """
+    if any(value is None for value in (x, mix, state, weight, outer)):
+        return None
+    if weight.ndim != 3:
+        return None
+    C, K = weight.shape[:2]
+    types = (mx.float32, mx.bfloat16, mx.float16)
+    if not (
+        x.ndim == 4
+        and x.shape[:2] == (1, 1)
+        and 1 < x.shape[2] <= 8
+        and x.shape[3] == C
+        and C >= 32
+        and C % 4 == 0
+        and mix.shape == x.shape[:3]
+        and mix.dtype == mx.float32
+        and state is not None
+        and state.shape == (1, K - 1, C)
+        and state.dtype == mx.float32
+        and weight.shape == (C, K, 1)
+        and 2 <= K <= 5
+        and outer.shape == (1, 1, C)
+        and outer.dtype == mx.float32
+        and (mask is None or (mask.shape == (1, 1) and mask.dtype == mx.bool_))
+        and (lengths is None or (lengths.shape == (1,) and lengths.dtype == mx.int32))
+        and all(t in types for t in (dtype, x.dtype, weight.dtype))
+    ):
+        return None
+    if kernel is None or x.dtype != dtype:
+        kernel = _expert_conv_residual_ready(
+            dtype, weight, x.shape[2], mask is not None, lengths is not None, x.dtype
+        )
+    if kernel is None:
+        return None
+    empty = scalar(0.0).reshape(1)
+    launch = dict(
+        inputs=[
+            x,
+            mix,
+            state,
+            weight,
+            mask if mask is not None else empty,
+            lengths if lengths is not None else empty,
+            outer,
+            scalar(math.sqrt(K + 1)),
+        ],
+        template=[
+            ("T", dtype),
+            ("W", weight.dtype),
+            ("C", C),
+            ("K", K),
+            ("E", x.shape[2]),
+            ("HAS_MASK", mask is not None),
+            ("HAS_LENGTHS", lengths is not None),
+        ],
+        grid=(C, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[outer.shape, state.shape],
+        output_dtypes=[dtype, mx.float32],
+    )
+    try:
+        return kernel(**launch)
+    except Exception:
+        return None
+
+
 # One thread owns a channel, including its FP32 history. Do not contract the
 # dynamic multiply/reduce: the reference materializes the products before sum.
 # Static Conv1d, in contrast, accumulates with FMA then rounds to weight dtype.
@@ -373,8 +550,8 @@ def _probe_attend_clip(hq, hk, dk, dr, dtype, qs_dtype, rs_dtype, has_tau):
 def attend_clip_decode(q, k, r, qs, rs, qt, rt, tau, *, row_contiguous=False):
     """Clip Q/K/relative states and optionally apply log scaling, or return None.
 
-    A one-time evaluated probe per kernel variant detects probe failures;
-    invocation is guarded. Real lazy output evaluation is not wrapped.
+    A one-time evaluated probe and guarded invocation cache unavailability per
+    kernel variant. Real lazy output evaluation is not wrapped.
 
     Only known row-contiguous producers may opt in. MLX has no unevaluated
     Python stride accessor; copying an arbitrary layout here would change the
@@ -400,7 +577,7 @@ def attend_clip_decode(q, k, r, qs, rs, qt, rt, tau, *, row_contiguous=False):
         or (tau is not None and (tau.size != 1 or tau.dtype != mx.float32))
     ):
         return None
-    kernel = _get_attend_clip(
+    variant = (
         q.shape[2],
         k.shape[2],
         q.shape[-1],
@@ -410,11 +587,14 @@ def attend_clip_decode(q, k, r, qs, rs, qt, rt, tau, *, row_contiguous=False):
         rs.dtype,
         tau is not None,
     )
+    kernel = _get_attend_clip(*variant)
     if kernel is None:
         return None
     try:
         return _launch_attend_clip(kernel, q, k, r, qs, rs, qt, rt, tau)
     except Exception:
+        with _ATTEND_CLIP_LOCK:
+            _ATTEND_CLIP_CACHE[variant] = None
         return None
 
 
@@ -612,18 +792,15 @@ def _route_topk(n, k):
             ensure_row_contiguous=False,
             compile_options={"math_mode": "safe"},
         )
-        # Metal builds lazily: evaluate synthetic outputs before caching success.
-        mx.eval(
-            *kernel(
-                inputs=[mx.zeros((1, 1, n)), mx.zeros((n,))],
-                template=[("N", n), ("K", k)],
-                grid=(128, 1, 1),
-                threadgroup=(128, 1, 1),
-                output_shapes=[(1, 1, k), (1, 1, n)],
-                output_dtypes=[mx.uint32, mx.float32],
-            )
+        return _probe_metal(
+            kernel,
+            inputs=[mx.zeros((1, 1, n)), mx.zeros((n,))],
+            template=[("N", n), ("K", k)],
+            grid=(128, 1, 1),
+            threadgroup=(128, 1, 1),
+            output_shapes=[(1, 1, k), (1, 1, n)],
+            output_dtypes=[mx.uint32, mx.float32],
         )
-        return kernel
     except Exception:
         # Cache unavailability as well, so decode permanently uses the stock path.
         return None
