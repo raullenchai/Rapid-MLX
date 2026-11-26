@@ -1259,7 +1259,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             flushFolders: { ConversationFolderStore.flush() },
             flushDrafts: { ConversationDraftStore.flush() },
-            removeTemporaryChats: { TemporaryChatStorage.removeAll() }
+            removeTemporaryChats: {
+                if let temporaryChat = AppDelegate.shared.temporaryChat {
+                    temporaryChat.closeForTermination()
+                } else {
+                    TemporaryChatStorage.removeAll()
+                }
+            }
         )
     }
 }

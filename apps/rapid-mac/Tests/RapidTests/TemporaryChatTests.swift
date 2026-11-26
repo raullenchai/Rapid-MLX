@@ -437,6 +437,25 @@ struct TemporaryChatTests {
         #expect(session.documentCache.get(id) == nil)
     }
 
+    @Test("Quit closes an unused temporary chat before the sweep, so a late extraction writes nothing")
+    func lateExtractionAfterQuitWritesNothing() async throws {
+        let root = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = makeController(root: root)
+        controller.toggle()
+        let session = try #require(controller.session)
+        let id = UUID()
+        let (release, task) = startBlockedExtraction(in: session.documentCache, id: id)
+
+        controller.closeForTermination()
+        release()
+        await task.value
+
+        #expect(!controller.isActive)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        #expect(session.documentCache.get(id) == nil)
+    }
+
     @Test("An extraction registered after the cache closed is cancelled")
     func extractionRegisteredAfterCloseIsCancelled() async throws {
         let root = try scratchDirectory()
@@ -498,6 +517,7 @@ struct TemporaryChatTests {
         let app = try strippedSource("Sources/Rapid/RapidApp.swift")
         #expect(app.contains("funcapplicationShouldTerminate("))
         #expect(app.contains("TemporaryChatController.askBeforeQuitting()"))
+        #expect(app.contains("temporaryChat.closeForTermination()"))
         let tray = try strippedSource("Sources/Rapid/UI/MenuBarController.swift")
         #expect(tray.contains("temporaryChat.leave{chat?.newConversation()}"))
         #expect(!tray.contains("AppDelegate.shared.chat?.newConversation()"))

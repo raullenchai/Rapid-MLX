@@ -127,6 +127,13 @@ final class TemporaryChatController {
         }
     }
 
+    /// Quit path: closes the open session, used or not, before sweeping so a
+    /// late extraction cannot write the folder back after the sweep.
+    func closeForTermination() {
+        discard()
+        TemporaryChatStorage.removeAll(in: storageRoot)
+    }
+
     private func discard() {
         session?.close()
         session = nil

@@ -36,9 +36,13 @@ struct TemporaryChatExitDialog: ViewModifier {
             isPresented: $controller.isConfirmingExit
         ) {
             Button("Export Markdown…") { controller.export(.markdown) }
+                .accessibilityIdentifier("Chat.TemporaryExit.ExportMarkdown")
             Button("Export JSON…") { controller.export(.json) }
+                .accessibilityIdentifier("Chat.TemporaryExit.ExportJSON")
             Button("Discard Chat", role: .destructive) { controller.confirmDiscard() }
+                .accessibilityIdentifier("Chat.TemporaryExit.Discard")
             Button("Cancel", role: .cancel) { controller.cancelExit() }
+                .accessibilityIdentifier("Chat.TemporaryExit.Cancel")
         } message: {
             Text("Temporary chats aren't saved. Turning this off deletes the conversation. Export it first to keep a copy.")
         }
