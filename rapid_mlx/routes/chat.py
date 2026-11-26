@@ -7530,7 +7530,17 @@ async def _create_chat_completion_impl(
         if channels_owned:
             final_content = strip_special_tokens(cleaned_text)
         else:
-            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            clean_context = getattr(output, "prompt_parse_context", None)
+            final_content = strip_thinking_tags(
+                clean_output_text(
+                    cleaned_text,
+                    reasoning_parser=cfg.reasoning_parser,
+                    enable_thinking=resolved_thinking,
+                    prompt_thinking_active=bool(
+                        clean_context and clean_context.initial_channel == "reasoning"
+                    ),
+                )
+            )
             final_content = sanitize_output(final_content)
         if response_format and final_content:
             final_content = extract_json_from_response(final_content)

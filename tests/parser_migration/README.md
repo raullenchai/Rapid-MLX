@@ -64,7 +64,7 @@ new pairs from silently escaping the gate. Required/named/none/auto choices and
 undeclared names are separate executable controls. The forced Chat fixture uses
 the actual synthetic assistant prefix, as the real engine does.
 
-`ledger.json` classifies the 180 changed Qwen/Hermes focused observations
+`ledger.json` classifies the 186 changed Qwen/Hermes focused observations
 between the immutable baseline and the reviewed head. The selected owner added 56
 entries and refreshed 24; every thinking-on tools-enabled row it changed now
 agrees across the six API modes on content, reasoning and calls, apart from
@@ -85,3 +85,9 @@ The normalizer retains duplicate names/arguments and uses actual Responses
 argument deltas. Separate clean controls compare streamed accumulation with both
 Responses completed items and the terminal response. Full cross-family terminal
 parity remains an API-consolidation gate, not a claim of this evidence PR.
+
+Thinking-off implicit-style output now stays content unless a leading `<think>`
+opens reasoning. Six buffered focused rows and six buffered Qwen3.5 prompt-owner
+rows record this correction with explicit reasons; immutable baseline rows and
+all streaming observations remain unchanged. Existing content sanitation remains
+in place.
