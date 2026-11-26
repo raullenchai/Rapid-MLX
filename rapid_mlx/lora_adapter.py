@@ -108,6 +108,10 @@ def reject_adapter_options(
             raise ValueError(f"--adapter is unsupported with {name}")
 
 
+class _UninspectableQwen35WeightsError(ValueError):
+    pass
+
+
 def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
     from . import checkpoint_integrity as integrity
     from .model_metadata import MAX_WEIGHT_INDEX_BYTES, _read_json
@@ -123,34 +127,63 @@ def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
         try:
             names = [
                 name
-                for shard in snapshot.glob("model*.safetensors")
+                for shard in snapshot.glob("*.safetensors")
                 for name in integrity._read_header(shard)
             ]
-        except integrity._UnreadableHeaderError as exc:
-            raise ValueError(
+            if not names:
+                raise integrity._UnreadableHeaderError
+        except (OSError, integrity._UnreadableHeaderError) as exc:
+            raise _UninspectableQwen35WeightsError(
                 "--adapter cannot inspect Qwen3.5 checkpoint weights"
             ) from exc
     return any("mtp" in name.split(".") for name in names)
 
 
-def validate_adapter_checkpoint(model: str) -> bool:
-    """Check adapter compatibility and return whether this is dense Qwen3.5."""
+def validate_adapter_checkpoint(model: str, *, strict: bool = False) -> bool:
+    """Check adapter compatibility and return whether this is dense Qwen3.5.
+
+    Early probes can defer when checkpoint files are unavailable.
+    """
     from .model_aliases import resolve_model, resolve_revision
     from .model_metadata import read_model_metadata
 
+    resolved = model
+    metadata = None
+    inspection_error: Exception | None = None
     try:
         resolved = resolve_model(model)
         reference = model if resolve_revision(model) else resolved
         metadata = read_model_metadata(
             resolved if Path(resolved).is_dir() else reference
         )
-        config = metadata.config if metadata else None
-        snapshot = metadata.snapshot_dir if metadata else None
-        if not config:
-            config = _read_checkpoint_config(resolved, model)
-    except Exception:
-        return False  # Serve checks again after resolving the snapshot.
-    return _validate_checkpoint_config(config or {}, snapshot)
+    except Exception as exc:
+        inspection_error = exc
+    config = metadata.config if metadata else None
+    snapshot = metadata.snapshot_dir if metadata else None
+    if not config:
+        try:
+            config = _read_checkpoint_config(
+                str(snapshot) if snapshot else resolved, model
+            )
+        except Exception as exc:
+            inspection_error = exc
+    if not config:
+        if strict:
+            raise ValueError(
+                f"--adapter cannot inspect config.json for {model!r}. "
+                "Restore the checkpoint's config.json or download the base model again."
+            ) from inspection_error
+        return False
+    local_path = Path(resolved)
+    is_local = local_path.is_dir()
+    try:
+        return _validate_checkpoint_config(
+            config, snapshot or (local_path if is_local else None)
+        )
+    except _UninspectableQwen35WeightsError:
+        if strict or is_local:
+            raise
+        return False  # A Hub snapshot may contain only prefetched metadata.
 
 
 def _read_checkpoint_config(model: str, reference: str) -> dict | None:

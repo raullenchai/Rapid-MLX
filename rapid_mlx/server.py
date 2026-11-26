@@ -2709,7 +2709,7 @@ def load_model(
             lazy=_primary_lazy_load or _primary_idle_unload_seconds > 0,
         )
         adapter = validate_adapter(adapter_path, model_name)
-        if not force_text and validate_adapter_checkpoint(model_name):
+        if not force_text and validate_adapter_checkpoint(model_name, strict=True):
             force_text = True
             print(
                 "Serving text-only because --adapter is set; image inputs are disabled"

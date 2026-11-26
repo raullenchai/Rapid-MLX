@@ -1568,6 +1568,9 @@ def load_model_with_fallback(
         if resolved_snapshot is not None:
             model_name = str(resolved_snapshot)
 
+    if adapter is not None:
+        validate_adapter_checkpoint(model_name, strict=True)
+
     validate_model_config_file(model_name)
 
     # ``mlx_lm.load`` may import config.json::model_file. Validate ordinary
@@ -1593,9 +1596,6 @@ def load_model_with_fallback(
     if adapter is not None:
         from mlx_lm import load as _mlx_lm_load
 
-        from ..lora_adapter import validate_adapter_checkpoint
-
-        validate_adapter_checkpoint(model_name)
         tokenizer_config = _neutralize_unbundled_template_types(
             model_name, tokenizer_config
         )

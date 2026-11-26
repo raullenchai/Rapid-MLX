@@ -440,6 +440,10 @@ def test_downloaded_checkpoint_selects_qwen35_after_local_cache_miss(
         (snapshot / "config.json").write_text(
             '{"model_type":"qwen3_5","vision_config":{},"mtp_num_hidden_layers":1}'
         )
+        save_file(
+            {"language_model.model.norm.weight": np.ones((2,), dtype=np.float32)},
+            snapshot / "model.safetensors",
+        )
         return str(snapshot)
 
     monkeypatch.setattr(ft.model_downloads, "snapshot_download", download)
@@ -569,6 +573,11 @@ def test_default_iterations_from_full_training_batches(
         else '{"model_type":"qwen3"}'
     )
     (model / "config.json").write_text(config)
+    if qwen35:
+        save_file(
+            {"language_model.model.norm.weight": np.ones((2,), dtype=np.float32)},
+            model / "model.safetensors",
+        )
     out = tmp_path / "out"
     args = cli.build_parser().parse_args(
         [
