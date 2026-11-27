@@ -123,8 +123,13 @@ def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
         or {}
     )
     names = index.get("weight_map")
-    if not isinstance(names, dict) or not names:
-        try:
+    try:
+        if isinstance(names, dict) and names:
+            if any(
+                integrity._safe_shard_name(shard) is None for shard in names.values()
+            ) or integrity.incomplete_checkpoint_reason(snapshot):
+                raise integrity._UnreadableHeaderError
+        else:
             names = [
                 name
                 for shard in snapshot.glob("*.safetensors")
@@ -132,11 +137,11 @@ def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
             ]
             if not names:
                 raise integrity._UnreadableHeaderError
-        except (OSError, integrity._UnreadableHeaderError) as exc:
-            raise _UninspectableQwen35WeightsError(
-                "--adapter cannot inspect Qwen3.5 checkpoint weights"
-            ) from exc
-    return any("mtp" in name.split(".") for name in names)
+    except (OSError, integrity._UnreadableHeaderError) as exc:
+        raise _UninspectableQwen35WeightsError(
+            "--adapter cannot inspect Qwen3.5 checkpoint weights"
+        ) from exc
+    return any(part.startswith("mtp") for name in names for part in name.split("."))
 
 
 def validate_adapter_checkpoint(

@@ -56,6 +56,16 @@ def adapter(tmp_path):
     return directory, base
 
 
+def _write_weight_shard(path, *names):
+    header = json.dumps(
+        {
+            name: {"dtype": "U8", "shape": [1], "data_offsets": [i, i + 1]}
+            for i, name in enumerate(names)
+        }
+    ).encode()
+    path.write_bytes(struct.pack("<Q", len(header)) + header + bytes(len(names)))
+
+
 def test_parser_adapter_opt_in():
     parser = build_parser()
     assert parser.parse_args(["serve", "base"]).adapter is None
@@ -318,6 +328,7 @@ def test_unsupported_options(option):
 def test_checkpoint_probe_failure_uses_local_config(adapter, monkeypatch, probe):
     _, base = adapter
     (base / "config.json").write_text('{"model_type":"qwen3_5","vision_config":{}}')
+    _write_weight_shard(base / "model.safetensors", "model.layers.0.weight")
     (base / "model.safetensors.index.json").write_text(
         '{"weight_map":{"model.layers.0.weight":"model.safetensors"}}'
     )
@@ -459,7 +470,21 @@ def test_qwen35_server_routes_and_resolves_weights(
         )
 
 
-@pytest.mark.parametrize("weights", ["no_snapshot", "missing", "dense", "mtp"])
+@pytest.mark.parametrize(
+    "weights",
+    [
+        "no_snapshot",
+        "missing",
+        "index_only",
+        "partial",
+        "unreadable",
+        "invalid_shard",
+        "dense",
+        "mtp",
+        "mtp_head",
+        "mtp_layers",
+    ],
+)
 def test_qwen35_loader_requires_inspectable_weights(
     remote_qwen35, monkeypatch, weights
 ):
@@ -468,10 +493,27 @@ def test_qwen35_loader_requires_inspectable_weights(
     from rapid_mlx.utils import tokenizer as loader
 
     repo, directory, base = remote_qwen35
-    if weights in ("dense", "mtp"):
-        tensor = "model.mtp.weight" if weights == "mtp" else "model.layers.0.weight"
+    if weights not in ("no_snapshot", "missing"):
+        text_key = "language_model.model.layers.0.self_attn.q_proj.weight"
+        vision_key = "vision_tower.blocks.0.attn.qkv.weight"
+        if weights.startswith("mtp"):
+            text_key = f"language_model.{weights}.weight"
+        text_shard = "model-00001-of-00002.safetensors"
+        vision_shard = "model-00002-of-00002.safetensors"
+        if weights != "index_only":
+            _write_weight_shard(base / text_shard, text_key)
+        if weights == "unreadable":
+            (base / vision_shard).write_bytes(b"broken")
+        elif weights not in ("index_only", "partial"):
+            _write_weight_shard(base / vision_shard, vision_key)
+        weight_map = {
+            text_key: text_shard,
+            vision_key: "../outside.safetensors"
+            if weights == "invalid_shard"
+            else vision_shard,
+        }
         (base / "model.safetensors.index.json").write_text(
-            json.dumps({"weight_map": {tensor: "model.safetensors"}})
+            json.dumps({"weight_map": weight_map})
         )
     monkeypatch.setattr(loader, "_resolve_subfolder_checkpoint", lambda name: name)
     monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name, **_: name)
@@ -492,13 +534,12 @@ def test_qwen35_loader_requires_inspectable_weights(
         raise ReachedModelConfigValidationError
 
     monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
-    expected = {
-        "no_snapshot": (_UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"),
-        "missing": (_UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"),
-        "dense": (ReachedModelConfigValidationError, None),
-        "mtp": (ValueError, "unsupported with MTP checkpoint heads"),
-    }
-    error, match = expected[weights]
+    if weights == "dense":
+        error, match = ReachedModelConfigValidationError, None
+    elif weights.startswith("mtp"):
+        error, match = ValueError, "unsupported with MTP checkpoint heads"
+    else:
+        error, match = _UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"
     with pytest.raises(error, match=match):
         loader.load_model_with_fallback(repo, adapter_path=str(directory))
 
@@ -550,6 +591,7 @@ def test_qwen35_cli_selects_text_and_disables_draft(adapter, capsys, draft_tenso
         '{"model_type":"qwen3_5","vision_config":{},"text_config":{"mtp_num_hidden_layers":1}}'
     )
     weight_name = draft_tensor or "model.language_model.layers.0.weight"
+    _write_weight_shard(base / "model.safetensors", weight_name)
     (base / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {weight_name: "model.safetensors"}})
     )
@@ -817,6 +859,9 @@ def test_server_propagates_adapter_and_publishes_identity(
     (base / "model.safetensors").write_bytes(b"stub weights")
     if modality == "qwen3_5":
         (base / "config.json").write_text('{"model_type":"qwen3_5","vision_config":{}}')
+        _write_weight_shard(
+            base / "model.safetensors", "language_model.model.norm.weight"
+        )
         (base / "model.safetensors.index.json").write_text(
             '{"weight_map":{"language_model.model.norm.weight":"model.safetensors"}}'
         )
