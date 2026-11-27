@@ -346,6 +346,8 @@ def test_unavailable_checkpoint_defers_until_strict(monkeypatch, config_read_rai
         ValueError, match=r"--adapter.*config\.json.*test-org/unavailable"
     ):
         validate_adapter_checkpoint("test-org/unavailable", strict=True)
+    with pytest.raises(ValueError, match=r"--adapter.*config\.json"):
+        validate_adapter_checkpoint("test-org/unavailable", require_weights=True)
 
 
 @pytest.mark.parametrize("weights", ["dense", "mtp", "missing", "empty", "unreadable"])
@@ -378,17 +380,127 @@ def test_qwen35_checks_all_unindexed_shards(adapter, weights):
             validate_adapter_checkpoint(str(base), strict=True)
 
 
-def test_qwen35_cached_metadata_without_weights_defers(adapter, monkeypatch):
-    from rapid_mlx import model_metadata
+@pytest.fixture
+def remote_qwen35(adapter, monkeypatch):
+    from rapid_mlx import model_downloads, model_metadata
 
-    _, base = adapter
-    metadata = model_metadata.ModelMetadata({"model_type": "qwen3_5"}, None, base)
-    monkeypatch.setattr(model_metadata, "read_model_metadata", lambda _: metadata)
-    assert validate_adapter_checkpoint("test-org/qwen35") is False
-    with pytest.raises(
-        ValueError, match="--adapter cannot inspect Qwen3.5 checkpoint weights"
-    ):
-        validate_adapter_checkpoint("test-org/qwen35", strict=True)
+    directory, base = adapter
+    repo = "test-org/qwen35"
+    (directory / "adapter_config.json").write_text(json.dumps({"model": repo}))
+    config = {"model_type": "qwen3_5", "vision_config": {}}
+    (base / "config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(
+        model_downloads, "hf_hub_download", lambda *_a, **_k: str(base / "config.json")
+    )
+    monkeypatch.setattr(model_metadata, "read_cached_model_metadata", lambda _: None)
+    return repo, directory, base
+
+
+@pytest.mark.usefixtures("isolated_server_model_state")
+@pytest.mark.parametrize("cache_state", ["absent", "config_only", "complete"])
+def test_qwen35_server_routes_and_resolves_weights(
+    remote_qwen35, monkeypatch, scheduler_config_stub, cache_state
+):
+    from rapid_mlx import _download_gate, model_downloads, model_metadata, server
+    from rapid_mlx.utils import tokenizer as loader
+
+    repo, directory, base = remote_qwen35
+    shard = base / "model.safetensors"
+    header = b'{"model.layers.0.weight":{"data_offsets":[0,1]}}'
+    shard_bytes = struct.pack("<Q", len(header)) + header + b"\x00"
+    if cache_state == "complete":
+        shard.write_bytes(shard_bytes)
+    if cache_state != "absent":
+        metadata = model_metadata.ModelMetadata({"model_type": "qwen3_5"}, None, base)
+        monkeypatch.setattr(
+            model_metadata, "read_cached_model_metadata", lambda _: metadata
+        )
+        monkeypatch.setattr(
+            model_metadata, "resolve_offline_cached_snapshot", lambda _: base
+        )
+    monkeypatch.setattr(_download_gate, "is_repo_cached", lambda _: False)
+    monkeypatch.setattr(
+        model_metadata, "resolve_unreferenced_cached_snapshot", lambda _: None
+    )
+    assert validate_adapter_checkpoint(repo) is (cache_state == "complete")
+    if cache_state == "complete":
+        assert loader._local_snapshot_if_cached(repo, require_complete=True) == str(
+            base
+        )
+
+    class ReachedTextEngineError(Exception):
+        pass
+
+    def download(model):
+        assert model == repo
+        shard.write_bytes(shard_bytes)
+        return str(base)
+
+    def validate_model_config(model):
+        assert model == str(base)
+        assert shard.exists()
+        raise ReachedTextEngineError
+
+    def create_engine(**kwargs):
+        assert kwargs["force_text"] is True
+        assert kwargs["adapter_path"] == str(directory)
+        if cache_state == "complete":
+            assert kwargs["model_name"] == str(base)
+            raise ReachedTextEngineError
+        assert kwargs["model_name"] == repo
+        loader.load_model_with_fallback(repo, adapter_path=kwargs["adapter_path"])
+
+    monkeypatch.setattr(server, "BatchedEngine", create_engine)
+    monkeypatch.setattr(model_downloads, "snapshot_download", download)
+    monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
+    with pytest.raises(ReachedTextEngineError):
+        server.load_model(
+            repo, adapter_path=str(directory), scheduler_config=scheduler_config_stub()
+        )
+
+
+@pytest.mark.parametrize("weights", ["no_snapshot", "missing", "dense", "mtp"])
+def test_qwen35_loader_requires_inspectable_weights(
+    remote_qwen35, monkeypatch, weights
+):
+    from rapid_mlx import model_downloads
+    from rapid_mlx.lora_adapter import _UninspectableQwen35WeightsError
+    from rapid_mlx.utils import tokenizer as loader
+
+    repo, directory, base = remote_qwen35
+    if weights in ("dense", "mtp"):
+        tensor = "model.mtp.weight" if weights == "mtp" else "model.layers.0.weight"
+        (base / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {tensor: "model.safetensors"}})
+        )
+    monkeypatch.setattr(loader, "_resolve_subfolder_checkpoint", lambda name: name)
+    monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name, **_: name)
+
+    def download(model):
+        assert model == repo
+        if weights == "no_snapshot":
+            raise OSError("download unavailable")
+        return str(base)
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", download)
+
+    class ReachedModelConfigValidationError(Exception):
+        pass
+
+    def validate_model_config(model):
+        assert model == str(base)
+        raise ReachedModelConfigValidationError
+
+    monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
+    expected = {
+        "no_snapshot": (_UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"),
+        "missing": (_UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"),
+        "dense": (ReachedModelConfigValidationError, None),
+        "mtp": (ValueError, "unsupported with MTP checkpoint heads"),
+    }
+    error, match = expected[weights]
+    with pytest.raises(error, match=match):
+        loader.load_model_with_fallback(repo, adapter_path=str(directory))
 
 
 @pytest.mark.parametrize(
@@ -591,7 +703,7 @@ def test_text_loader_rejects_missing_config_after_resolution(adapter, monkeypatc
         "rapid_mlx.model_downloads.hf_hub_download", lambda *_a, **_k: None
     )
     monkeypatch.setattr(loader, "_resolve_subfolder_checkpoint", lambda name: name)
-    monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name: name)
+    monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name, **_: name)
     monkeypatch.setattr(loader, "_resolve_model_path", lambda _: base)
 
     with pytest.raises(ValueError, match=r"--adapter.*config\.json"):

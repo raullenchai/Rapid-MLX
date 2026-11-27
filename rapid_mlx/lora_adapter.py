@@ -139,10 +139,13 @@ def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
     return any("mtp" in name.split(".") for name in names)
 
 
-def validate_adapter_checkpoint(model: str, *, strict: bool = False) -> bool:
+def validate_adapter_checkpoint(
+    model: str, *, strict: bool = False, require_weights: bool = False
+) -> bool:
     """Check adapter compatibility and return whether this is dense Qwen3.5.
 
-    Early probes can defer when checkpoint files are unavailable.
+    Early probes can defer when checkpoint files are unavailable. Strict routing
+    needs config, while the final loader also requires inspectable Qwen3.5 weights.
     """
     from .model_aliases import resolve_model, resolve_revision
     from .model_metadata import read_model_metadata
@@ -168,7 +171,7 @@ def validate_adapter_checkpoint(model: str, *, strict: bool = False) -> bool:
         except Exception as exc:
             inspection_error = exc
     if not config:
-        if strict:
+        if strict or require_weights:
             raise ValueError(
                 f"--adapter cannot inspect config.json for {model!r}. "
                 "Restore the checkpoint's config.json or download the base model again."
@@ -176,14 +179,21 @@ def validate_adapter_checkpoint(model: str, *, strict: bool = False) -> bool:
         return False
     local_path = Path(resolved)
     is_local = local_path.is_dir()
+    snapshot = snapshot or (local_path if is_local else None)
     try:
-        return _validate_checkpoint_config(
-            config, snapshot or (local_path if is_local else None)
-        )
+        qwen35 = _validate_checkpoint_config(config, snapshot)
     except _UninspectableQwen35WeightsError:
-        if strict or is_local:
+        if require_weights or is_local:
             raise
-        return False  # A Hub snapshot may contain only prefetched metadata.
+        # A Hub snapshot may contain only prefetched metadata.
+        return strict and _validate_checkpoint_config(config, None)
+    if qwen35 and snapshot is None:
+        if require_weights:
+            raise _UninspectableQwen35WeightsError(
+                "--adapter cannot inspect Qwen3.5 checkpoint weights"
+            )
+        return strict
+    return qwen35
 
 
 def _read_checkpoint_config(model: str, reference: str) -> dict | None:

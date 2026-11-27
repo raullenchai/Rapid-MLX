@@ -1227,7 +1227,9 @@ def _post_load_ubc_evict(model_name: str) -> None:
         logger.debug(f"Defect 4 post-load UBC evict skipped (non-fatal): {e}")
 
 
-def _local_snapshot_if_cached(model_name: str) -> str:
+def _local_snapshot_if_cached(
+    model_name: str, *, require_complete: bool = False
+) -> str:
     """Resolve a verified-complete cached repo id to its on-disk snapshot dir,
     so the loader is handed a local path and never makes a network round-trip.
 
@@ -1246,7 +1248,8 @@ def _local_snapshot_if_cached(model_name: str) -> str:
     Gated on ``is_repo_cached`` — the same completeness signal the pre-download
     gate trusts to skip fetching. On anything else (cold cache, not a repo id, a
     local path, or a resolve failure) return ``model_name`` unchanged so the
-    normal online pull still runs.
+    normal online pull still runs. With ``require_complete``, fallback cache
+    paths must also have all their weight files before they can replace a repo id.
     """
     try:
         from .._download_gate import is_repo_cached
@@ -1259,6 +1262,11 @@ def _local_snapshot_if_cached(model_name: str) -> str:
             snapshot = resolve_unreferenced_cached_snapshot(model_name)
             if snapshot is None:
                 snapshot = resolve_offline_cached_snapshot(model_name)
+            if snapshot is not None and require_complete:
+                from .._download_gate import _snapshot_is_complete
+
+                if not _snapshot_is_complete(str(snapshot)):
+                    return model_name
             return str(snapshot) if snapshot is not None else model_name
     except Exception:
         return model_name
@@ -1558,7 +1566,10 @@ def load_model_with_fallback(
     # so mlx_lm's own ``snapshot_download`` never fires the online metadata
     # round-trip that hangs a start on a poisoned-DNS network. No-op for a cold
     # cache or an already-local path (see the helper).
-    model_name = _local_snapshot_if_cached(model_name)
+    if adapter is not None:
+        model_name = _local_snapshot_if_cached(model_name, require_complete=True)
+    else:
+        model_name = _local_snapshot_if_cached(model_name)
 
     # Pin remote repositories to the concrete snapshot that THIS load will
     # consume. Persisted KV identity must never be derived later from mutable
@@ -1571,7 +1582,7 @@ def load_model_with_fallback(
     if adapter is not None:
         from ..lora_adapter import validate_adapter_checkpoint
 
-        validate_adapter_checkpoint(model_name, strict=True)
+        validate_adapter_checkpoint(model_name, strict=True, require_weights=True)
 
     validate_model_config_file(model_name)
 

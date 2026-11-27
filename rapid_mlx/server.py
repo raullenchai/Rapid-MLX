@@ -3047,6 +3047,16 @@ def load_model(
             requested_spec_decode=requested_spec_decode,
         )
         _engine_model_path = _serving_checkpoint.load_path
+        if (
+            adapter is not None
+            and _engine_model_path != model_name
+            and not Path(model_name).is_dir()
+        ):
+            from ._download_gate import _snapshot_is_complete
+
+            # Keep the Hub reference so the loader can retry an incomplete pull.
+            if not _snapshot_is_complete(_engine_model_path):
+                _engine_model_path = effective_model_alias or model_name
         _auto_text_fallback = _serving_checkpoint.auto_text_fallback
         _serving_lane_reason = _serving_checkpoint.lane_reason
         # Desktop and direct ``server.load_model`` callers bypass cli.py's
