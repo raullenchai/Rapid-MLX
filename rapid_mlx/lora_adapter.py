@@ -114,6 +114,7 @@ class _UninspectableQwen35WeightsError(ValueError):
 
 def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
     from . import checkpoint_integrity as integrity
+    from ._download_gate import _numbered_shards_are_complete
     from .model_metadata import MAX_WEIGHT_INDEX_BYTES, _read_json
 
     index = (
@@ -122,21 +123,24 @@ def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
         )
         or {}
     )
-    names = index.get("weight_map")
+    weight_map = index.get("weight_map")
     try:
-        if isinstance(names, dict) and names:
+        if isinstance(weight_map, dict) and weight_map:
             if any(
-                integrity._safe_shard_name(shard) is None for shard in names.values()
+                integrity._safe_shard_name(shard) is None
+                for shard in weight_map.values()
             ) or integrity.incomplete_checkpoint_reason(snapshot):
                 raise integrity._UnreadableHeaderError
+            # Shard headers can contain tensors omitted from the index.
+            shards = set(snapshot.glob("model*.safetensors"))
+            shards.update(snapshot / shard for shard in weight_map.values())
         else:
-            names = [
-                name
-                for shard in snapshot.glob("*.safetensors")
-                for name in integrity._read_header(shard)
-            ]
-            if not names:
+            if _numbered_shards_are_complete(str(snapshot)) is False:
                 raise integrity._UnreadableHeaderError
+            shards = set(snapshot.glob("*.safetensors"))
+        names = [name for shard in shards for name in integrity._read_header(shard)]
+        if not names:
+            raise integrity._UnreadableHeaderError
     except (OSError, integrity._UnreadableHeaderError) as exc:
         raise _UninspectableQwen35WeightsError(
             "--adapter cannot inspect Qwen3.5 checkpoint weights"
@@ -145,12 +149,17 @@ def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
 
 
 def validate_adapter_checkpoint(
-    model: str, *, strict: bool = False, require_weights: bool = False
+    model: str,
+    *,
+    strict: bool = False,
+    require_weights: bool = False,
+    config_only: bool = False,
 ) -> bool:
     """Check adapter compatibility and return whether this is dense Qwen3.5.
 
-    Early probes can defer when checkpoint files are unavailable. Strict routing
-    needs config, while the final loader also requires inspectable Qwen3.5 weights.
+    CLI routing checks config only and can defer when it is unavailable. Strict
+    routing needs config. The final loader requires a concrete directory with
+    inspectable Qwen3.5 weights.
     """
     from .model_aliases import resolve_model, resolve_revision
     from .model_metadata import read_model_metadata
@@ -182,9 +191,14 @@ def validate_adapter_checkpoint(
                 "Restore the checkpoint's config.json or download the base model again."
             ) from inspection_error
         return False
+    if config_only and not require_weights:
+        return _validate_checkpoint_config(config, None)
     local_path = Path(resolved)
     is_local = local_path.is_dir()
     snapshot = snapshot or (local_path if is_local else None)
+    if require_weights and not Path(model).is_dir():
+        # The loader must consume the same directory we inspect.
+        snapshot = None
     try:
         qwen35 = _validate_checkpoint_config(config, snapshot)
     except _UninspectableQwen35WeightsError:
@@ -310,7 +324,9 @@ def prepare_adapter_cli(args) -> None:
             )
         ),
     )
-    if validate_adapter_checkpoint(model) and not getattr(args, "no_mllm", False):
+    if validate_adapter_checkpoint(model, config_only=True) and not getattr(
+        args, "no_mllm", False
+    ):
         args.no_mllm = True
         print("Serving text-only because --adapter is set; image inputs are disabled")
     # Automatic acceleration profiles must not select an unadapted draft head.

@@ -407,10 +407,41 @@ def remote_qwen35(adapter, monkeypatch):
     return repo, directory, base
 
 
+@pytest.mark.parametrize(
+    "cache_state", ["absent", "config_only", "fallback", "dense", "mtp"]
+)
+def test_qwen35_cli_routes_from_config(remote_qwen35, monkeypatch, cache_state):
+    from rapid_mlx import lora_adapter, model_metadata
+    from rapid_mlx.cli import _serve_will_run_on_mllm_lane
+
+    repo, directory, base = remote_qwen35
+    if cache_state == "absent":
+        monkeypatch.setattr(lora_adapter, "_read_checkpoint_config", lambda *_: None)
+    elif cache_state != "fallback":
+        metadata = model_metadata.ModelMetadata(
+            {"model_type": "qwen3_5", "vision_config": {}}, None, base
+        )
+        monkeypatch.setattr(
+            model_metadata, "read_cached_model_metadata", lambda _: metadata
+        )
+    if cache_state == "mtp":
+        _write_weight_shard(base / "model.safetensors", "model.mtp_head.weight")
+    elif cache_state == "dense":
+        _write_weight_shard(base / "model.safetensors", "model.layers.0.weight")
+
+    args = build_parser().parse_args(["serve", repo, "--adapter", str(directory)])
+    prepare_adapter_cli(args)
+    assert args.no_spec_decode is True
+    assert args.no_mllm is (cache_state != "absent")
+    if args.no_mllm:
+        assert _serve_will_run_on_mllm_lane(args) is False
+
+
 @pytest.mark.usefixtures("isolated_server_model_state")
 @pytest.mark.parametrize("cache_state", ["absent", "config_only", "complete"])
+@pytest.mark.parametrize("via_cli", [False, True])
 def test_qwen35_server_routes_and_resolves_weights(
-    remote_qwen35, monkeypatch, scheduler_config_stub, cache_state
+    remote_qwen35, monkeypatch, scheduler_config_stub, cache_state, via_cli
 ):
     from rapid_mlx import _download_gate, model_downloads, model_metadata, server
     from rapid_mlx.utils import tokenizer as loader
@@ -464,9 +495,16 @@ def test_qwen35_server_routes_and_resolves_weights(
     monkeypatch.setattr(server, "BatchedEngine", create_engine)
     monkeypatch.setattr(model_downloads, "snapshot_download", download)
     monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
+    args = build_parser().parse_args(["serve", repo, "--adapter", str(directory)])
+    if via_cli:
+        prepare_adapter_cli(args)
+        assert args.no_mllm is True
     with pytest.raises(ReachedTextEngineError):
         server.load_model(
-            repo, adapter_path=str(directory), scheduler_config=scheduler_config_stub()
+            repo,
+            force_text=args.no_mllm,
+            adapter_path=str(directory),
+            scheduler_config=scheduler_config_stub(),
         )
 
 
@@ -474,15 +512,18 @@ def test_qwen35_server_routes_and_resolves_weights(
     "weights",
     [
         "no_snapshot",
+        "cached_but_unresolved",
         "missing",
         "index_only",
         "partial",
+        "unindexed_partial",
         "unreadable",
         "invalid_shard",
         "dense",
         "mtp",
         "mtp_head",
         "mtp_layers",
+        "unindexed_mtp",
     ],
 )
 def test_qwen35_loader_requires_inspectable_weights(
@@ -504,7 +545,7 @@ def test_qwen35_loader_requires_inspectable_weights(
             _write_weight_shard(base / text_shard, text_key)
         if weights == "unreadable":
             (base / vision_shard).write_bytes(b"broken")
-        elif weights not in ("index_only", "partial"):
+        elif weights not in ("index_only", "partial", "unindexed_partial"):
             _write_weight_shard(base / vision_shard, vision_key)
         weight_map = {
             text_key: text_shard,
@@ -512,15 +553,29 @@ def test_qwen35_loader_requires_inspectable_weights(
             if weights == "invalid_shard"
             else vision_shard,
         }
-        (base / "model.safetensors.index.json").write_text(
-            json.dumps({"weight_map": weight_map})
-        )
+        if weights != "unindexed_partial":
+            (base / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": weight_map})
+            )
+        if weights == "cached_but_unresolved":
+            from rapid_mlx import model_metadata
+
+            metadata = model_metadata.ModelMetadata(
+                {"model_type": "qwen3_5"}, None, base
+            )
+            monkeypatch.setattr(
+                model_metadata, "read_cached_model_metadata", lambda _: metadata
+            )
+        if weights == "unindexed_mtp":
+            _write_weight_shard(
+                base / text_shard, text_key, "language_model.mtp_head.weight"
+            )
     monkeypatch.setattr(loader, "_resolve_subfolder_checkpoint", lambda name: name)
     monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name, **_: name)
 
     def download(model):
         assert model == repo
-        if weights == "no_snapshot":
+        if weights in ("no_snapshot", "cached_but_unresolved"):
             raise OSError("download unavailable")
         return str(base)
 
@@ -536,7 +591,7 @@ def test_qwen35_loader_requires_inspectable_weights(
     monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
     if weights == "dense":
         error, match = ReachedModelConfigValidationError, None
-    elif weights.startswith("mtp"):
+    elif weights.startswith("mtp") or weights == "unindexed_mtp":
         error, match = ValueError, "unsupported with MTP checkpoint heads"
     else:
         error, match = _UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"
@@ -555,14 +610,17 @@ def test_qwen35_loader_requires_inspectable_weights(
         {"text_config": {"num_nextn_predict_layers": 1}},
         {"quantization_config": {"quant_method": "fp8"}},
         {"model_type": "qwen3_5", "audio_config": {}},
+        {"model_type": "qwen3_5", "text_config": {"num_nextn_predict_layers": 1}},
+        {"model_type": "qwen3_5", "quantization_config": {"quant_method": "fp8"}},
         {"model_type": "qwen3_5_moe", "vision_config": {}},
     ],
 )
 def test_checkpoint_paths(adapter, config):
-    _, base = adapter
+    directory, base = adapter
     (base / "config.json").write_text(json.dumps(config))
+    args = build_parser().parse_args(["serve", str(base), "--adapter", str(directory)])
     with pytest.raises(ValueError, match="--adapter is unsupported"):
-        validate_adapter_checkpoint(str(base))
+        prepare_adapter_cli(args)
 
 
 @pytest.mark.parametrize(
@@ -584,22 +642,17 @@ def test_cli_rejects_before_alternate_dispatch(adapter, flag):
         prepare_adapter_cli(args)
 
 
-@pytest.mark.parametrize("draft_tensor", [None, "model.mtp.layers.0.weight"])
-def test_qwen35_cli_selects_text_and_disables_draft(adapter, capsys, draft_tensor):
+def test_qwen35_cli_selects_text_and_disables_draft(adapter, capsys):
     directory, base = adapter
     (base / "config.json").write_text(
         '{"model_type":"qwen3_5","vision_config":{},"text_config":{"mtp_num_hidden_layers":1}}'
     )
-    weight_name = draft_tensor or "model.language_model.layers.0.weight"
+    weight_name = "model.mtp.layers.0.weight"
     _write_weight_shard(base / "model.safetensors", weight_name)
     (base / "model.safetensors.index.json").write_text(
         json.dumps({"weight_map": {weight_name: "model.safetensors"}})
     )
     args = build_parser().parse_args(["serve", str(base), "--adapter", str(directory)])
-    if draft_tensor:
-        with pytest.raises(ValueError, match="MTP checkpoint heads"):
-            prepare_adapter_cli(args)
-        return
     prepare_adapter_cli(args)
     assert args.no_mllm is True
     assert args.no_spec_decode is True
