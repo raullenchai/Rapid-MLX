@@ -6,10 +6,30 @@ Use checkpoints from sources you trust, since mlx-lm allows custom tokenizer cod
 
 ## Which model should I fine-tune?
 
-Choose a text-only checkpoint that supports serving LoRA adapters, such as
-`qwen3-0.6b-4bit`. Qwen3.5-family multimodal checkpoints do not support adapters
-yet. Fine-tuning checks serve compatibility before loading weights. See the
+Choose an mlx-lm text checkpoint that supports LoRA, such as `qwen3-0.6b-4bit`,
+or a dense Qwen3.5 checkpoint such as `qwen3.5-9b-4bit` or `qwen3.5-27b-4bit`.
+For dense Qwen3.5, `serve --adapter` automatically loads the text backbone.
+Image inputs return HTTP 400. Adapter serving disables speculative decoding
+and requires a base checkpoint without MTP draft tensors. See the
 [serve CLI reference](../reference/cli.md#rapid-mlx-serve).
+
+Qwen3.5 training uses the native gated-delta backward pass when available
+(MLX 0.32.4 or newer with a compatible mlx-lm). On older MLX, the stock
+training path runs with a warning about speed and memory use.
+
+These measurements were taken on an M3 Ultra with 4-bit weights, 16 adapted
+layers, and a maximum sequence length of 1,024 tokens.
+
+| Checkpoint | Batch | Path | Peak memory | Steps/s |
+| --- | ---: | --- | ---: | ---: |
+| Qwen3.5-9B | 1 | Stock mlx-lm 0.31.3 | 70.3 GB | 0.05 |
+| Qwen3.5-9B | 1 | Native gated delta | 13.8 GB | 0.55 |
+| Qwen3.5-9B | 4 | Native gated delta | 35.2 GB | 0.11 |
+| Qwen3.5-27B | 1 | Native gated delta | 26.2 GB | 0.28 |
+| Qwen3.5-27B | 2 | Native gated delta | 36.6 GB | 0.10 |
+
+The 9B loss at the compared step was 2.854 with the native path and 2.855
+with stock mlx-lm. The CLI memory estimate assumes the native path for Qwen3.5.
 
 ## Prepare data and run
 

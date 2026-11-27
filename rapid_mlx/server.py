@@ -2694,7 +2694,11 @@ def load_model(
     """
     adapter = None
     if adapter_path is not None:
-        from .lora_adapter import reject_adapter_options, validate_adapter
+        from .lora_adapter import (
+            reject_adapter_options,
+            validate_adapter,
+            validate_adapter_checkpoint,
+        )
 
         reject_adapter_options(
             mllm=force_mllm,
@@ -2705,6 +2709,11 @@ def load_model(
             lazy=_primary_lazy_load or _primary_idle_unload_seconds > 0,
         )
         adapter = validate_adapter(adapter_path, model_name)
+        if not force_text and validate_adapter_checkpoint(model_name, strict=True):
+            force_text = True
+            print(
+                "Serving text-only because --adapter is set; image inputs are disabled"
+            )
         no_spec_decode = True
 
     if force_mllm and force_text:
@@ -3038,6 +3047,16 @@ def load_model(
             requested_spec_decode=requested_spec_decode,
         )
         _engine_model_path = _serving_checkpoint.load_path
+        if (
+            adapter is not None
+            and _engine_model_path != model_name
+            and not Path(model_name).is_dir()
+        ):
+            from ._download_gate import _snapshot_is_complete
+
+            # Keep the Hub reference so the loader can retry an incomplete pull.
+            if not _snapshot_is_complete(_engine_model_path):
+                _engine_model_path = effective_model_alias or model_name
         _auto_text_fallback = _serving_checkpoint.auto_text_fallback
         _serving_lane_reason = _serving_checkpoint.lane_reason
         # Desktop and direct ``server.load_model`` callers bypass cli.py's

@@ -108,12 +108,111 @@ def reject_adapter_options(
             raise ValueError(f"--adapter is unsupported with {name}")
 
 
-def validate_adapter_checkpoint(model: str) -> None:
+class _UninspectableQwen35WeightsError(ValueError):
+    pass
+
+
+def _has_qwen35_draft_tensors(snapshot: Path) -> bool:
+    from . import checkpoint_integrity as integrity
+    from ._download_gate import _numbered_shards_are_complete
+    from .model_metadata import MAX_WEIGHT_INDEX_BYTES, _read_json
+
+    index = (
+        _read_json(
+            snapshot / integrity.INDEX_FILENAME, max_bytes=MAX_WEIGHT_INDEX_BYTES
+        )
+        or {}
+    )
+    weight_map = index.get("weight_map")
     try:
-        config = _read_checkpoint_config(model, model)
-    except Exception:
-        return  # Serve can inspect the config again after resolving the snapshot.
-    _validate_checkpoint_config(config or {})
+        if isinstance(weight_map, dict) and weight_map:
+            if any(
+                integrity._safe_shard_name(shard) is None
+                for shard in weight_map.values()
+            ) or integrity.incomplete_checkpoint_reason(snapshot):
+                raise integrity._UnreadableHeaderError
+            # Shard headers can contain tensors omitted from the index.
+            shards = set(snapshot.glob("model*.safetensors"))
+            shards.update(snapshot / shard for shard in weight_map.values())
+        else:
+            if _numbered_shards_are_complete(str(snapshot)) is False:
+                raise integrity._UnreadableHeaderError
+            shards = set(snapshot.glob("*.safetensors"))
+        names = [name for shard in shards for name in integrity._read_header(shard)]
+        if not names:
+            raise integrity._UnreadableHeaderError
+    except (OSError, integrity._UnreadableHeaderError) as exc:
+        raise _UninspectableQwen35WeightsError(
+            "--adapter cannot inspect Qwen3.5 checkpoint weights"
+        ) from exc
+    return any(part.startswith("mtp") for name in names for part in name.split("."))
+
+
+def validate_adapter_checkpoint(
+    model: str,
+    *,
+    strict: bool = False,
+    require_weights: bool = False,
+    config_only: bool = False,
+) -> bool:
+    """Check adapter compatibility and return whether this is dense Qwen3.5.
+
+    CLI routing checks config only and can defer when it is unavailable. Strict
+    routing needs config. The final loader requires a concrete directory with
+    inspectable Qwen3.5 weights.
+    """
+    from .model_aliases import resolve_model, resolve_revision
+    from .model_metadata import read_model_metadata
+
+    resolved = model
+    metadata = None
+    inspection_error: Exception | None = None
+    try:
+        resolved = resolve_model(model)
+        reference = model if resolve_revision(model) else resolved
+        metadata = read_model_metadata(
+            resolved if Path(resolved).is_dir() else reference
+        )
+    except Exception as exc:
+        inspection_error = exc
+    config = metadata.config if metadata else None
+    snapshot = metadata.snapshot_dir if metadata else None
+    if not config:
+        try:
+            config = _read_checkpoint_config(
+                str(snapshot) if snapshot else resolved, model
+            )
+        except Exception as exc:
+            inspection_error = exc
+    if not config:
+        if strict or require_weights:
+            raise ValueError(
+                f"--adapter cannot inspect config.json for {model!r}. "
+                "Restore the checkpoint's config.json or download the base model again."
+            ) from inspection_error
+        return False
+    if config_only and not require_weights:
+        return _validate_checkpoint_config(config, None)
+    local_path = Path(resolved)
+    is_local = local_path.is_dir()
+    snapshot = snapshot or (local_path if is_local else None)
+    if require_weights and not Path(model).is_dir():
+        # The loader must consume the same directory we inspect.
+        snapshot = None
+    try:
+        qwen35 = _validate_checkpoint_config(config, snapshot)
+    except _UninspectableQwen35WeightsError:
+        if require_weights or is_local:
+            raise
+        # A Hub snapshot may contain only prefetched metadata.
+        return strict and _validate_checkpoint_config(config, None)
+    if qwen35 and snapshot is None:
+        if require_weights:
+            raise _UninspectableQwen35WeightsError(
+                "--adapter cannot inspect Qwen3.5 checkpoint weights"
+            )
+        return strict
+    return qwen35
 
 
 def _read_checkpoint_config(model: str, reference: str) -> dict | None:
@@ -134,19 +233,27 @@ def _read_checkpoint_config(model: str, reference: str) -> dict | None:
     return _read_json(Path(config))
 
 
-def _validate_checkpoint_config(config: dict) -> None:
+def _validate_checkpoint_config(config: dict, snapshot: Path | None) -> bool:
     from .spec_decode.mtp.detect import _mtp_num_hidden_layers
 
+    qwen35 = config.get("model_type") == "qwen3_5"
     if (
-        any(key in config for key in ("vision_config", "audio_config"))
+        "audio_config" in config
+        or ("vision_config" in config and not qwen35)
         or config.get("model_type") == "lfm3_vl"
     ):
         raise ValueError("--adapter is unsupported with vision/MLLM or audio models")
-    if _read_num_mtp_layers(config) or _mtp_num_hidden_layers(config):
+    # Converted dense Qwen3.5 packs can retain MTP config without draft weights.
+    if (
+        _read_num_mtp_layers(config)
+        or (not qwen35 and _mtp_num_hidden_layers(config))
+        or (qwen35 and snapshot is not None and _has_qwen35_draft_tensors(snapshot))
+    ):
         raise ValueError("--adapter is unsupported with MTP checkpoint heads")
     quant = config.get("quantization_config") or {}
     if "fp8" in str(quant).lower():
         raise ValueError("--adapter is unsupported with fp8 repack checkpoints")
+    return qwen35
 
 
 def _read_num_mtp_layers(config: dict[str, object]) -> int:
@@ -217,6 +324,10 @@ def prepare_adapter_cli(args) -> None:
             )
         ),
     )
-    validate_adapter_checkpoint(model)
+    if validate_adapter_checkpoint(model, config_only=True) and not getattr(
+        args, "no_mllm", False
+    ):
+        args.no_mllm = True
+        print("Serving text-only because --adapter is set; image inputs are disabled")
     # Automatic acceleration profiles must not select an unadapted draft head.
     args.no_spec_decode = True

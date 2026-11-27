@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +54,16 @@ def adapter(tmp_path):
     )
     (directory / "adapters.safetensors").write_bytes(b"test weights")
     return directory, base
+
+
+def _write_weight_shard(path, *names):
+    header = json.dumps(
+        {
+            name: {"dtype": "U8", "shape": [1], "data_offsets": [i, i + 1]}
+            for i, name in enumerate(names)
+        }
+    ).encode()
+    path.write_bytes(struct.pack("<Q", len(header)) + header + bytes(len(names)))
 
 
 def test_parser_adapter_opt_in():
@@ -307,6 +318,288 @@ def test_unsupported_options(option):
 
 
 @pytest.mark.parametrize(
+    "probe",
+    [
+        "rapid_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_revision",
+        "rapid_mlx.model_metadata.read_model_metadata",
+    ],
+)
+def test_checkpoint_probe_failure_uses_local_config(adapter, monkeypatch, probe):
+    _, base = adapter
+    (base / "config.json").write_text('{"model_type":"qwen3_5","vision_config":{}}')
+    _write_weight_shard(base / "model.safetensors", "model.layers.0.weight")
+    (base / "model.safetensors.index.json").write_text(
+        '{"weight_map":{"model.layers.0.weight":"model.safetensors"}}'
+    )
+
+    def fail_probe(_model):
+        raise ValueError("checkpoint metadata unavailable")
+
+    monkeypatch.setattr(probe, fail_probe)
+    assert validate_adapter_checkpoint(str(base)) is True
+    assert validate_adapter_checkpoint(str(base), strict=True) is True
+
+
+@pytest.mark.parametrize("config_read_raises", [False, True])
+def test_unavailable_checkpoint_defers_until_strict(monkeypatch, config_read_raises):
+    from rapid_mlx import lora_adapter
+
+    def read_config(*_):
+        if config_read_raises:
+            raise OSError("offline")
+        return None
+
+    monkeypatch.setattr("rapid_mlx.model_metadata.read_model_metadata", lambda _: None)
+    monkeypatch.setattr(lora_adapter, "_read_checkpoint_config", read_config)
+    assert validate_adapter_checkpoint("test-org/unavailable") is False
+    with pytest.raises(
+        ValueError, match=r"--adapter.*config\.json.*test-org/unavailable"
+    ):
+        validate_adapter_checkpoint("test-org/unavailable", strict=True)
+    with pytest.raises(ValueError, match=r"--adapter.*config\.json"):
+        validate_adapter_checkpoint("test-org/unavailable", require_weights=True)
+
+
+@pytest.mark.parametrize("weights", ["dense", "mtp", "missing", "empty", "unreadable"])
+def test_qwen35_checks_all_unindexed_shards(adapter, weights):
+    _, base = adapter
+    (base / "config.json").write_text('{"model_type":"qwen3_5","vision_config":{}}')
+    if weights in ("dense", "mtp"):
+        header = b'{"model.layers.0.weight":{"data_offsets":[0,1]}}'
+        (base / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(header)) + header + b"\x00"
+        )
+    if weights in ("mtp", "empty"):
+        header = b'{"model.mtp.layers.0.weight":{"data_offsets":[0,1]}}'
+        if weights == "empty":
+            header = b"{}"
+        (base / "extra.safetensors").write_bytes(
+            struct.pack("<Q", len(header)) + header + b"\x00"
+        )
+    if weights == "unreadable":
+        (base / "extra.safetensors").write_bytes(b"broken")
+    if weights == "dense":
+        assert validate_adapter_checkpoint(str(base), strict=True) is True
+    else:
+        message = (
+            "MTP checkpoint heads"
+            if weights == "mtp"
+            else "--adapter cannot inspect Qwen3.5 checkpoint weights"
+        )
+        with pytest.raises(ValueError, match=message):
+            validate_adapter_checkpoint(str(base), strict=True)
+
+
+@pytest.fixture
+def remote_qwen35(adapter, monkeypatch):
+    from rapid_mlx import model_downloads, model_metadata
+
+    directory, base = adapter
+    repo = "test-org/qwen35"
+    (directory / "adapter_config.json").write_text(json.dumps({"model": repo}))
+    config = {"model_type": "qwen3_5", "vision_config": {}}
+    (base / "config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(
+        model_downloads, "hf_hub_download", lambda *_a, **_k: str(base / "config.json")
+    )
+    monkeypatch.setattr(model_metadata, "read_cached_model_metadata", lambda _: None)
+    return repo, directory, base
+
+
+@pytest.mark.parametrize(
+    "cache_state", ["absent", "config_only", "fallback", "dense", "mtp"]
+)
+def test_qwen35_cli_routes_from_config(remote_qwen35, monkeypatch, cache_state):
+    from rapid_mlx import lora_adapter, model_metadata
+    from rapid_mlx.cli import _serve_will_run_on_mllm_lane
+
+    repo, directory, base = remote_qwen35
+    if cache_state == "absent":
+        monkeypatch.setattr(lora_adapter, "_read_checkpoint_config", lambda *_: None)
+    elif cache_state != "fallback":
+        metadata = model_metadata.ModelMetadata(
+            {"model_type": "qwen3_5", "vision_config": {}}, None, base
+        )
+        monkeypatch.setattr(
+            model_metadata, "read_cached_model_metadata", lambda _: metadata
+        )
+    if cache_state == "mtp":
+        _write_weight_shard(base / "model.safetensors", "model.mtp_head.weight")
+    elif cache_state == "dense":
+        _write_weight_shard(base / "model.safetensors", "model.layers.0.weight")
+
+    args = build_parser().parse_args(["serve", repo, "--adapter", str(directory)])
+    prepare_adapter_cli(args)
+    assert args.no_spec_decode is True
+    assert args.no_mllm is (cache_state != "absent")
+    if args.no_mllm:
+        assert _serve_will_run_on_mllm_lane(args) is False
+
+
+@pytest.mark.usefixtures("isolated_server_model_state")
+@pytest.mark.parametrize("cache_state", ["absent", "config_only", "complete"])
+@pytest.mark.parametrize("via_cli", [False, True])
+def test_qwen35_server_routes_and_resolves_weights(
+    remote_qwen35, monkeypatch, scheduler_config_stub, cache_state, via_cli
+):
+    from rapid_mlx import _download_gate, model_downloads, model_metadata, server
+    from rapid_mlx.utils import tokenizer as loader
+
+    repo, directory, base = remote_qwen35
+    shard = base / "model.safetensors"
+    header = b'{"model.layers.0.weight":{"data_offsets":[0,1]}}'
+    shard_bytes = struct.pack("<Q", len(header)) + header + b"\x00"
+    if cache_state == "complete":
+        shard.write_bytes(shard_bytes)
+    if cache_state != "absent":
+        metadata = model_metadata.ModelMetadata({"model_type": "qwen3_5"}, None, base)
+        monkeypatch.setattr(
+            model_metadata, "read_cached_model_metadata", lambda _: metadata
+        )
+        monkeypatch.setattr(
+            model_metadata, "resolve_offline_cached_snapshot", lambda _: base
+        )
+    monkeypatch.setattr(_download_gate, "is_repo_cached", lambda _: False)
+    monkeypatch.setattr(
+        model_metadata, "resolve_unreferenced_cached_snapshot", lambda _: None
+    )
+    assert validate_adapter_checkpoint(repo) is (cache_state == "complete")
+    if cache_state == "complete":
+        assert loader._local_snapshot_if_cached(repo, require_complete=True) == str(
+            base
+        )
+
+    class ReachedTextEngineError(Exception):
+        pass
+
+    def download(model):
+        assert model == repo
+        shard.write_bytes(shard_bytes)
+        return str(base)
+
+    def validate_model_config(model):
+        assert model == str(base)
+        assert shard.exists()
+        raise ReachedTextEngineError
+
+    def create_engine(**kwargs):
+        assert kwargs["force_text"] is True
+        assert kwargs["adapter_path"] == str(directory)
+        if cache_state == "complete":
+            assert kwargs["model_name"] == str(base)
+            raise ReachedTextEngineError
+        assert kwargs["model_name"] == repo
+        loader.load_model_with_fallback(repo, adapter_path=kwargs["adapter_path"])
+
+    monkeypatch.setattr(server, "BatchedEngine", create_engine)
+    monkeypatch.setattr(model_downloads, "snapshot_download", download)
+    monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
+    args = build_parser().parse_args(["serve", repo, "--adapter", str(directory)])
+    if via_cli:
+        prepare_adapter_cli(args)
+        assert args.no_mllm is True
+    with pytest.raises(ReachedTextEngineError):
+        server.load_model(
+            repo,
+            force_text=args.no_mllm,
+            adapter_path=str(directory),
+            scheduler_config=scheduler_config_stub(),
+        )
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        "no_snapshot",
+        "cached_but_unresolved",
+        "missing",
+        "index_only",
+        "partial",
+        "unindexed_partial",
+        "unreadable",
+        "invalid_shard",
+        "dense",
+        "mtp",
+        "mtp_head",
+        "mtp_layers",
+        "unindexed_mtp",
+    ],
+)
+def test_qwen35_loader_requires_inspectable_weights(
+    remote_qwen35, monkeypatch, weights
+):
+    from rapid_mlx import model_downloads
+    from rapid_mlx.lora_adapter import _UninspectableQwen35WeightsError
+    from rapid_mlx.utils import tokenizer as loader
+
+    repo, directory, base = remote_qwen35
+    if weights not in ("no_snapshot", "missing"):
+        text_key = "language_model.model.layers.0.self_attn.q_proj.weight"
+        vision_key = "vision_tower.blocks.0.attn.qkv.weight"
+        if weights.startswith("mtp"):
+            text_key = f"language_model.{weights}.weight"
+        text_shard = "model-00001-of-00002.safetensors"
+        vision_shard = "model-00002-of-00002.safetensors"
+        if weights != "index_only":
+            _write_weight_shard(base / text_shard, text_key)
+        if weights == "unreadable":
+            (base / vision_shard).write_bytes(b"broken")
+        elif weights not in ("index_only", "partial", "unindexed_partial"):
+            _write_weight_shard(base / vision_shard, vision_key)
+        weight_map = {
+            text_key: text_shard,
+            vision_key: "../outside.safetensors"
+            if weights == "invalid_shard"
+            else vision_shard,
+        }
+        if weights != "unindexed_partial":
+            (base / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": weight_map})
+            )
+        if weights == "cached_but_unresolved":
+            from rapid_mlx import model_metadata
+
+            metadata = model_metadata.ModelMetadata(
+                {"model_type": "qwen3_5"}, None, base
+            )
+            monkeypatch.setattr(
+                model_metadata, "read_cached_model_metadata", lambda _: metadata
+            )
+        if weights == "unindexed_mtp":
+            _write_weight_shard(
+                base / text_shard, text_key, "language_model.mtp_head.weight"
+            )
+    monkeypatch.setattr(loader, "_resolve_subfolder_checkpoint", lambda name: name)
+    monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name, **_: name)
+
+    def download(model):
+        assert model == repo
+        if weights in ("no_snapshot", "cached_but_unresolved"):
+            raise OSError("download unavailable")
+        return str(base)
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", download)
+
+    class ReachedModelConfigValidationError(Exception):
+        pass
+
+    def validate_model_config(model):
+        assert model == str(base)
+        raise ReachedModelConfigValidationError
+
+    monkeypatch.setattr(loader, "validate_model_config_file", validate_model_config)
+    if weights == "dense":
+        error, match = ReachedModelConfigValidationError, None
+    elif weights.startswith("mtp") or weights == "unindexed_mtp":
+        error, match = ValueError, "unsupported with MTP checkpoint heads"
+    else:
+        error, match = _UninspectableQwen35WeightsError, "cannot inspect Qwen3.5"
+    with pytest.raises(error, match=match):
+        loader.load_model_with_fallback(repo, adapter_path=str(directory))
+
+
+@pytest.mark.parametrize(
     "config",
     [
         {"vision_config": {"layers": 2}},
@@ -316,13 +609,18 @@ def test_unsupported_options(option):
         {"text_config": {"mtp_num_hidden_layers": 1}},
         {"text_config": {"num_nextn_predict_layers": 1}},
         {"quantization_config": {"quant_method": "fp8"}},
+        {"model_type": "qwen3_5", "audio_config": {}},
+        {"model_type": "qwen3_5", "text_config": {"num_nextn_predict_layers": 1}},
+        {"model_type": "qwen3_5", "quantization_config": {"quant_method": "fp8"}},
+        {"model_type": "qwen3_5_moe", "vision_config": {}},
     ],
 )
 def test_checkpoint_paths(adapter, config):
-    _, base = adapter
+    directory, base = adapter
     (base / "config.json").write_text(json.dumps(config))
+    args = build_parser().parse_args(["serve", str(base), "--adapter", str(directory)])
     with pytest.raises(ValueError, match="--adapter is unsupported"):
-        validate_adapter_checkpoint(str(base))
+        prepare_adapter_cli(args)
 
 
 @pytest.mark.parametrize(
@@ -344,11 +642,23 @@ def test_cli_rejects_before_alternate_dispatch(adapter, flag):
         prepare_adapter_cli(args)
 
 
-def test_cli_disables_automatic_draft_selection(adapter):
+def test_qwen35_cli_selects_text_and_disables_draft(adapter, capsys):
     directory, base = adapter
+    (base / "config.json").write_text(
+        '{"model_type":"qwen3_5","vision_config":{},"text_config":{"mtp_num_hidden_layers":1}}'
+    )
+    weight_name = "model.mtp.layers.0.weight"
+    _write_weight_shard(base / "model.safetensors", weight_name)
+    (base / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {weight_name: "model.safetensors"}})
+    )
     args = build_parser().parse_args(["serve", str(base), "--adapter", str(directory)])
     prepare_adapter_cli(args)
+    assert args.no_mllm is True
     assert args.no_spec_decode is True
+    assert capsys.readouterr().out.splitlines() == [
+        "Serving text-only because --adapter is set; image inputs are disabled"
+    ]
 
 
 def test_without_adapter_does_not_mutate_options():
@@ -477,6 +787,24 @@ def test_text_loader_without_adapter_preserves_call(adapter, monkeypatch):
     assert calls == [((str(base), {"trust_remote_code": False}), {})]
 
 
+def test_text_loader_rejects_missing_config_after_resolution(adapter, monkeypatch):
+    from rapid_mlx.utils import tokenizer as loader
+
+    directory, base = adapter
+    (directory / "adapter_config.json").write_text('{"model":"test-org/base"}')
+    (base / "config.json").unlink()
+    monkeypatch.setattr("rapid_mlx.model_metadata.read_model_metadata", lambda _: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.hf_hub_download", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(loader, "_resolve_subfolder_checkpoint", lambda name: name)
+    monkeypatch.setattr(loader, "_local_snapshot_if_cached", lambda name, **_: name)
+    monkeypatch.setattr(loader, "_resolve_model_path", lambda _: base)
+
+    with pytest.raises(ValueError, match=r"--adapter.*config\.json"):
+        loader.load_model_with_fallback("test-org/base", adapter_path=str(directory))
+
+
 @pytest.mark.parametrize("bad_tensor", [None, "lora_a", "lora_b"])
 def test_real_text_loader_validates_shapes_before_loading(
     adapter, monkeypatch, bad_tensor
@@ -542,6 +870,16 @@ def test_real_text_loader_validates_shapes_before_loading(
 
 
 @pytest.mark.usefixtures("isolated_server_model_state")
+def test_server_rejects_missing_config_before_lane_selection(adapter):
+    from rapid_mlx import server
+
+    directory, base = adapter
+    (base / "config.json").unlink()
+    with pytest.raises(ValueError, match=r"--adapter.*config\.json"):
+        server.load_model(str(base), adapter_path=str(directory))
+
+
+@pytest.mark.usefixtures("isolated_server_model_state")
 @pytest.mark.parametrize(
     ("served_name", "with_alias", "modality"),
     [
@@ -549,6 +887,7 @@ def test_real_text_loader_validates_shapes_before_loading(
         ("custom", False, "text"),
         ("custom:lora:verbatim", False, "text"),
         ("custom", True, "text"),
+        ("qwen35", False, "qwen3_5"),
         (None, False, "image-gen"),
     ],
 )
@@ -568,11 +907,20 @@ def test_server_propagates_adapter_and_publishes_identity(
 
         def __init__(self, **kwargs):
             constructed.append(kwargs)
+            self.is_mllm = not kwargs["force_text"]
 
     (base / "model.safetensors").write_bytes(b"stub weights")
+    if modality == "qwen3_5":
+        (base / "config.json").write_text('{"model_type":"qwen3_5","vision_config":{}}')
+        _write_weight_shard(
+            base / "model.safetensors", "language_model.model.norm.weight"
+        )
+        (base / "model.safetensors.index.json").write_text(
+            '{"weight_map":{"language_model.model.norm.weight":"model.safetensors"}}'
+        )
     monkeypatch.setattr(server, "BatchedEngine", Engine)
     monkeypatch.setattr(server, "_model_alias", str(base) if with_alias else None)
-    if modality != "text":
+    if modality == "image-gen":
         profile = model_aliases._coerce(
             "test",
             {"hf_path": str(base), "modality": modality, "supports_spec_decode": False},
@@ -585,7 +933,7 @@ def test_server_propagates_adapter_and_publishes_identity(
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _: None)
     monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
     before = disk_caches.disabled()
-    if modality != "text":
+    if modality == "image-gen":
         with pytest.raises(ValueError, match="--adapter supports text models only"):
             server.load_model(str(base), adapter_path=str(directory), force_text=True)
         assert constructed == []
@@ -595,10 +943,24 @@ def test_server_propagates_adapter_and_publishes_identity(
         adapter_path=str(directory),
         served_model_name=served_name,
         scheduler_config=scheduler_config_stub(response_cache_entries=8),
-        force_text=True,
+        force_text=modality != "qwen3_5",
     )
     assert constructed[0]["adapter_path"] == str(directory)
     assert constructed[0]["no_spec_decode"] is True
+    assert constructed[0]["force_text"] is True
+    if modality == "qwen3_5":
+        from fastapi.testclient import TestClient
+
+        image = {"type": "image_url", "image_url": {"url": "https://example.com/i.png"}}
+        response = TestClient(server.app).post(
+            "/v1/chat/completions",
+            json={
+                "model": served_name,
+                "messages": [{"role": "user", "content": [image]}],
+            },
+        )
+        assert response.status_code == 400
+        assert "image_input_unsupported" in response.text
     public_name = (
         served_name if served_name is not None else expected.model_identity(str(base))
     )

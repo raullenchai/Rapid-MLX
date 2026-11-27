@@ -186,6 +186,7 @@ def _print_plan(args, out, train, valid):
     try:
         metadata = read_model_metadata(args.model)
         config = (metadata.config or {}) if metadata else {}
+        qwen35 = config.get("model_type") == "qwen3_5"
         if (text_config := config.get("text_config")) is not None:
             config = text_config
         weights = size_bytes(args.model)
@@ -198,6 +199,13 @@ def _print_plan(args, out, train, valid):
         layers = max(args.num_layers, 0) or config.get("num_hidden_layers") or 32
         tokens = args.batch_size * args.max_seq_length
         activations = 56 * hidden * layers * tokens
+        if qwen35:
+            # Fit native-kernel peaks on dense 9B and 27B. Account for the
+            # wider recurrent projections of the 27B when scaling the budget.
+            recurrent_width = (config.get("linear_num_value_heads") or 0) * (
+                config.get("linear_key_head_dim") or 0
+            )
+            activations = 77 * max(hidden, recurrent_width) * layers * tokens
         # Allow one float32 buffer each for the full-vocabulary logits and their
         # gradient during cross-entropy training.
         logits_and_grad = 8 * (config.get("vocab_size") or 0) * tokens
@@ -252,7 +260,10 @@ def _check_checkpoint(model, reference):
         config = _read_checkpoint_config(model, reference)
         if not config:
             raise ValueError(f"missing or invalid config.json for {model}")
-        _validate_checkpoint_config(config)
+        checkpoint = Path(model)
+        return _validate_checkpoint_config(
+            config, checkpoint if checkpoint.is_dir() else None
+        )
     except Exception as exc:
         raise ValueError(
             f"Cannot fine-tune {reference!r} for serving with LoRA. {exc}. "
@@ -391,13 +402,13 @@ def _stop_training(child):
         child.wait()
 
 
-def _train(args, model, data, out):
+def _train(args, model, data, out, *, qwen35=False):
     command = [
         sys.executable,
         "-u",
         "-m",
-        "mlx_lm",
-        "lora",
+        "rapid_mlx._finetune_runner",
+        *(["--qwen35"] if qwen35 else []),
         "--train",
         "--fine-tune-type=lora",
         f"--model={model}",
@@ -558,7 +569,7 @@ def finetune_command(args):
             _validate_resume(
                 Path(args.resume).expanduser(), args.model, args.num_layers
             )
-        _check_checkpoint(args.model, args.model if local else reference)
+        qwen35 = _check_checkpoint(args.model, args.model if local else reference)
         with tempfile.TemporaryDirectory(prefix="rapid-mlx-finetune-") as scratch:
             data, train, valid, has_valid_split = _prepare_data(
                 Path(args.data).expanduser(), scratch, args.batch_size
@@ -575,7 +586,7 @@ def finetune_command(args):
             _print_plan(args, out, train, valid)
             model = _training_model(args.model, reference)
             if model != args.model:
-                _check_checkpoint(model, reference)
+                qwen35 = _check_checkpoint(model, reference)
                 if args.resume:
                     _validate_resume(
                         Path(args.resume).expanduser(), model, args.num_layers
@@ -588,7 +599,7 @@ def finetune_command(args):
             except FileExistsError as exc:
                 raise ValueError("use a new --out directory.") from exc
             created_out = out
-            _train(args, model, data, out)
+            _train(args, model, data, out, qwen35=qwen35)
             _validate_output(out, serve_model, args.num_layers)
             metadata = read_model_metadata(model)
             config = (metadata.config or {}) if metadata else {}
