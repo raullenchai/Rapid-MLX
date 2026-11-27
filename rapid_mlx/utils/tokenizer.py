@@ -1569,6 +1569,8 @@ def load_model_with_fallback(
             model_name = str(resolved_snapshot)
 
     if adapter is not None:
+        from ..lora_adapter import validate_adapter_checkpoint
+
         validate_adapter_checkpoint(model_name, strict=True)
 
     validate_model_config_file(model_name)
