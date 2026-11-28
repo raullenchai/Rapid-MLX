@@ -10,7 +10,7 @@ final class CustomInstructionsConfig {
     nonisolated static let storageKey = "rapid.custom-instructions.global.v1"
     nonisolated static let maximumLength = 4_000
 
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
     private var storedGlobal: String
 
     var global: String {
@@ -19,9 +19,9 @@ final class CustomInstructionsConfig {
             let value = Self.limited(newValue)
             storedGlobal = value
             if value.isEmpty {
-                defaults.removeObject(forKey: Self.storageKey)
+                defaults?.removeObject(forKey: Self.storageKey)
             } else {
-                defaults.set(value, forKey: Self.storageKey)
+                defaults?.set(value, forKey: Self.storageKey)
             }
         }
     }
@@ -29,6 +29,16 @@ final class CustomInstructionsConfig {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.storedGlobal = Self.limited(defaults.string(forKey: Self.storageKey) ?? "")
+    }
+
+    /// Empty and detached from preferences: reads nothing, writes nothing.
+    static func ephemeral() -> CustomInstructionsConfig {
+        CustomInstructionsConfig(detached: ())
+    }
+
+    private init(detached: Void) {
+        self.defaults = nil
+        self.storedGlobal = ""
     }
 
     nonisolated static func normalized(_ value: String) -> String? {

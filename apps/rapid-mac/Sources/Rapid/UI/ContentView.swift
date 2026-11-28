@@ -127,6 +127,7 @@ struct ContentView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(ShareComputeManager.self) private var shareCompute
     @Environment(ChatViewModel.self) private var chat
+    @Environment(TemporaryChatController.self) private var temporaryChat
     @Environment(ImageGenViewModel.self) private var imageGen
     @Environment(AudioViewModel.self) private var audio
     @Environment(VideoGenViewModel.self) private var video
@@ -401,6 +402,7 @@ struct ContentView: View {
             // the server reaches ``.ready`` again.
             if case .ready = newState {
                 chat.clearStaleErrorBanner()
+                temporaryChat.session?.chat.clearStaleErrorBanner()
                 if server.downloadProgress.hasObservedGrowth {
                     downloads.markCacheChanged()
                 }
@@ -557,6 +559,7 @@ struct ContentView: View {
         // the browse sheet above — an MCP server is an arbitrary local process,
         // so "may the model run this" is a decision that belongs on screen.
         .modifier(MCPToolApprovalDialog(store: mcpApproval))
+        .modifier(TemporaryChatExitDialog(controller: temporaryChat))
         .onAppear {
             githubStarPrompt.startMonitoringUserActivity()
             githubStarPrompt.updatePresentationContext(starPromptPresentationContext)
@@ -728,15 +731,19 @@ struct ContentView: View {
                     cuaViewModel: cuaServer.viewModel,
                     chat: chat,
                 onNewChat: {
-                    chat.newConversation()
-                    section = .chat
+                    temporaryChat.leave {
+                        chat.newConversation()
+                        section = .chat
+                    }
                 },
                 onSearchChats: {
                     openConversationSearch()
                 },
                 onSelectConversation: { id in
-                    chat.selectConversation(id)
-                    section = .chat
+                    temporaryChat.leave {
+                        chat.selectConversation(id)
+                        section = .chat
+                    }
                 },
                 server: server,
                 catalogEntries: catalogEntries,
@@ -890,6 +897,9 @@ struct ContentView: View {
         }
     }
 
+    /// The chat on screen: the unsaved one while temporary mode is on.
+    private var activeChat: ChatViewModel { temporaryChat.session?.chat ?? chat }
+
     private var hasActiveModelWork: Bool {
         let dictationIsBusy: Bool = switch dictation.phase {
         case .preparingModel, .starting, .recording, .transcribing: true
@@ -897,6 +907,7 @@ struct ContentView: View {
         }
 
         return chat.isStreaming
+            || (temporaryChat.session?.chat.isStreaming ?? false)
             || imageGen.isGenerating
             || audio.isBusy
             || video.hasLiveActiveJobs
@@ -950,8 +961,13 @@ struct ContentView: View {
         showCommandPalette = false
         switch command {
         case .newChat:
-            chat.newConversation()
+            temporaryChat.leave {
+                chat.newConversation()
+                section = .chat
+            }
+        case .toggleTemporaryChat:
             section = .chat
+            temporaryChat.toggle()
         case .searchChats:
             openConversationSearch()
         case .images:
@@ -1017,13 +1033,17 @@ struct ContentView: View {
                     now: Date(),
                     onNewChat: {
                         showConversationSearch = false
-                        chat.newConversation()
-                        section = .chat
+                        temporaryChat.leave {
+                            chat.newConversation()
+                            section = .chat
+                        }
                     },
                     onSelectConversation: { id in
                         showConversationSearch = false
-                        chat.selectConversation(id)
-                        section = .chat
+                        temporaryChat.leave {
+                            chat.selectConversation(id)
+                            section = .chat
+                        }
                     },
                     onDismiss: { showConversationSearch = false }
                 )
@@ -1111,15 +1131,15 @@ struct ContentView: View {
         if let load = server.residentLoadFailure(for: alias) {
             return ModelReadiness.Failure(message: load.message, alias: load.alias)
         }
-        return chat.lastError.map {
+        return activeChat.lastError.map {
             ModelReadiness.Failure(
                 message: $0,
-                kind: chat.lastFailureKind,
+                kind: activeChat.lastFailureKind,
                 // The alias the failure is ABOUT — not the one
                 // currently selected. Passing `alias` here is what
                 // let a failure follow the user onto whatever model
                 // they picked next.
-                alias: chat.lastFailureAlias
+                alias: activeChat.lastFailureAlias
             )
         }
     }
@@ -1269,10 +1289,10 @@ struct ContentView: View {
             // Clear the failure first, or the banner would stay in its
             // failed state until the next server transition lands and
             // the user would read "Couldn't start X" while X is starting.
-            chat.clearStaleErrorBanner()
+            activeChat.clearStaleErrorBanner()
             startModel(target)
         case .restart(let target):
-            chat.clearStaleErrorBanner()
+            activeChat.clearStaleErrorBanner()
             restartModel(target)
         case .openStartupLog:
             showLogs = true
@@ -1284,13 +1304,14 @@ struct ContentView: View {
     }
 
     private func startModel(_ target: String) {
-        let intentID = chat.startAndSendIntent.pending.flatMap { $0.alias == target ? $0.id : nil }
+        let intentChat = activeChat
+        let intentID = intentChat.startAndSendIntent.pending.flatMap { $0.alias == target ? $0.id : nil }
         Task {
             let served = await serveReadinessModel(target)
             // ensureServing waits for its own memory decision and confirmed launch.
             // Completion while still needsStart therefore means declined/not started;
             // pendingMemoryWarning alone is unsafe (it disappears during confirmation).
-            if let intentID { chat.startAndSendIntent.finishStartAttempt(intentID, served: served) }
+            if let intentID { intentChat.startAndSendIntent.finishStartAttempt(intentID, served: served) }
         }
     }
 
@@ -1398,8 +1419,10 @@ struct ContentView: View {
                     settingsRouter.requestedCategory = .app
                     openWindow(id: "settings")
                 }, onAskFolder: { folder in
-                    chat.startFolderChat(folderID: folder.id, title: LocalSearchPath.folderTitle(folder.path))
-                    section = .chat
+                    temporaryChat.leave {
+                        chat.startFolderChat(folderID: folder.id, title: LocalSearchPath.folderTitle(folder.path))
+                        section = .chat
+                    }
                 }, folderChatAvailable: chat.folderChatAvailable, onFolderChatSettings: {
                     settingsRouter.requestedCategory = .experimentalFeatures
                     openWindow(id: "settings")
@@ -1506,7 +1529,7 @@ struct ContentView: View {
         case .chat:
             let imageAvailability = imageInputAvailability(for: alias)
             ChatView(
-                viewModel: chat,
+                viewModel: activeChat,
                 server: server,
                 alias: $alias,
                 knownNonChatAliases: knownNonChatAliases,
@@ -1517,8 +1540,20 @@ struct ContentView: View {
                 onUserModelSelection: selectChatModel,
                 onReadinessAction: performReadinessAction,
                 onOpenAgentSetup: { section = .launch },
-                composerFocusRequest: composerFocusRequest
+                composerFocusRequest: composerFocusRequest,
+                documentCache: temporaryChat.session?.documentCache ?? .shared,
+                allowsConversationInstructions: !temporaryChat.isActive,
+                isTemporary: temporaryChat.isActive,
+                retainedDraftOwners: temporaryChat.isActive
+                    ? Set(chat.conversations.map(\.id)).union([chat.activeConversationID])
+                    : []
             )
+            .overlay(alignment: .topTrailing) {
+                if temporaryChat.isActive || chat.messages.isEmpty {
+                    TemporaryChatToggle(isOn: temporaryChat.isActive) { temporaryChat.toggle() }
+                        .padding(RapidTheme.Space.md)
+                }
+            }
         case .missing:
             missingOverlay
         }
@@ -1936,14 +1971,14 @@ struct ContentView: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
                 ServerStatusPill(state: server.state)
-                TokensPerSecondPill(messages: { chat.messages })
+                TokensPerSecondPill(messages: { activeChat.messages })
                 CPUPill()
                 GPUPill()
                 MemoryPill()
             }
             HStack(spacing: 8) {
                 ServerStatusPill(state: server.state)
-                TokensPerSecondPill(messages: { chat.messages })
+                TokensPerSecondPill(messages: { activeChat.messages })
             }
             ServerStatusPill(state: server.state)
             EmptyView()

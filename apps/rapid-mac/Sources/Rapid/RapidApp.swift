@@ -142,6 +142,8 @@ struct RapidApp: App {
     @State private var mcpCatalog: MCPCatalog
     @State private var mcpApproval: MCPToolApprovalStore
     @State private var mcpTools: MCPToolRegistry
+    /// The chat view's "Temporary chat" mode: a second, unsaved view model.
+    @State private var temporaryChat: TemporaryChatController
     /// Per-model performance overrides (issue #1717) — the KV-cache and
     /// prefix-cache flags the app hands the engine at spawn.
     @State private var perfConfig: ModelPerfConfigStore
@@ -173,6 +175,9 @@ struct RapidApp: App {
         CrashReporter.install()
         DesktopRuntimeTrust.prewarm()
         LegacyPreferenceCleanup.run()
+        // Leftovers from a crashed run; after the single-instance check so a
+        // second launch cannot wipe the running instance's windows.
+        TemporaryChatStorage.removeAll()
         // Reconcile the local sender gate before any launch task can emit. A
         // missing policy revision remains fail-closed until the startup task
         // persists it successfully.
@@ -306,6 +311,22 @@ struct RapidApp: App {
 
         let chatBackendConfig = ChatBackendConfig()
         _chatBackendConfig = State(initialValue: chatBackendConfig)
+        let temporaryChatController = TemporaryChatController(
+            server: manager,
+            sampling: samplingConfig,
+            makeTools: { documents, pages in
+                CompositeToolRegistry(
+                    builtin: BuiltinToolRegistry(
+                        browseApproval: browseApprovalStore,
+                        webSearch: webSearchConfig,
+                        documentCache: documents,
+                        browseCache: pages
+                    ),
+                    mcp: mcpRegistry
+                )
+            }
+        )
+        _temporaryChat = State(initialValue: temporaryChatController)
         let chat = ChatViewModel(
             chatBackendConfig: chatBackendConfig,
             tools: toolRegistry,
@@ -423,6 +444,7 @@ struct RapidApp: App {
         AppDelegate.shared.updater = updateChecker
         AppDelegate.shared.sparkleUpdater = sparkleUpdateController
         AppDelegate.shared.chat = chat
+        AppDelegate.shared.temporaryChat = temporaryChatController
         AppDelegate.shared.dictation = dictationController
         AppDelegate.shared.appearance = appearanceConfig
     }
@@ -460,6 +482,7 @@ struct RapidApp: App {
                 .environment(webSearch)
                 .environment(browseApproval)
                 .environment(chatBackendConfig)
+                .environment(temporaryChat)
                 .environment(mcpConfig)
                 .environment(mcpCatalog)
                 .environment(mcpApproval)
@@ -709,6 +732,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// cancel the in-flight chat stream task before shutting the child
     /// down, and the menu-bar tray's "New Chat" can reach it.
     weak var chat: ChatViewModel?
+    /// The unsaved chat mode. Quit and the tray's New Chat go through it so
+    /// neither silently discards or resets what is on screen.
+    weak var temporaryChat: TemporaryChatController?
     /// Process-wide dictation owns a global CGEvent tap, microphone capture,
     /// and asynchronous transcription work. It must be disarmed before the
     /// server begins its synchronous quit grace, while keeping the persisted
@@ -990,6 +1016,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController()
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let temporaryChat, temporaryChat.hasInteraction else { return .terminateNow }
+        NSApp.activate(ignoringOtherApps: true)
+        switch TemporaryChatController.askBeforeQuitting() {
+        case .discard:
+            return .terminateNow
+        case .cancel:
+            return .terminateCancel
+        case .export(let format):
+            temporaryChat.export(
+                format,
+                then: { NSApp.reply(toApplicationShouldTerminate: true) },
+                orElse: { NSApp.reply(toApplicationShouldTerminate: false) }
+            )
+            return .terminateLater
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Codex round-2 finding: the previous implementation posted
         // ``Task { @MainActor in await store.flush() }`` and then
@@ -1141,7 +1185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reapDownloads: () -> Void,
         flushConversations: () -> Void,
         flushFolders: () -> Void,
-        flushDrafts: () -> Void
+        flushDrafts: () -> Void,
+        removeTemporaryChats: () -> Void = {}
     ) {
         // ORDER MATTERS — stop accepting process-global input before any
         // dependency teardown. Otherwise the dictation hotkey remains live
@@ -1177,6 +1222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A still-debounced draft is enqueued earlier by `stopStream`
         // (`ChatViewModel.stopAndPersist()` saves drafts first); this drains it.
         flushDrafts()
+        removeTemporaryChats()
     }
 
     /// The single clean-shutdown wiring, shared by ``applicationWillTerminate``
@@ -1212,7 +1258,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ImageArtifactStore.flush()
             },
             flushFolders: { ConversationFolderStore.flush() },
-            flushDrafts: { ConversationDraftStore.flush() }
+            flushDrafts: { ConversationDraftStore.flush() },
+            removeTemporaryChats: {
+                if let temporaryChat = AppDelegate.shared.temporaryChat {
+                    temporaryChat.closeForTermination()
+                } else {
+                    TemporaryChatStorage.removeAll()
+                }
+            }
         )
     }
 }

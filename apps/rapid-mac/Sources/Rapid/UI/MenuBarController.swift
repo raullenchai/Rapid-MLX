@@ -212,8 +212,15 @@ final class MenuBarController: NSObject {
         case .open:
             bringMainWindowForward()
         case .newChat:
-            // Start a fresh conversation and surface the window.
-            AppDelegate.shared.chat?.newConversation()
+            // Start a fresh conversation and surface the window. While
+            // temporary mode is on this goes through the same exit path as
+            // the sidebar, so the hidden normal chat is not reset.
+            let chat = AppDelegate.shared.chat
+            if let temporaryChat = AppDelegate.shared.temporaryChat {
+                temporaryChat.leave { chat?.newConversation() }
+            } else {
+                chat?.newConversation()
+            }
             bringMainWindowForward()
         case .update:
             Task { _ = await AppDelegate.shared.updater?.check() }

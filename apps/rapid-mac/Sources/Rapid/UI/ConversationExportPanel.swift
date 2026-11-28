@@ -8,11 +8,12 @@ import AppKit
 /// than failing silently, and cancelling is a clean no-op.
 @MainActor
 enum ConversationExportPanel {
-    /// Export one conversation.
+    /// Export one conversation. `completion` reports whether the file was written.
     static func export(
         _ conversation: ChatConversation,
         format: ConversationExport.Format,
-        now: Date = Date()
+        now: Date = Date(),
+        completion: ((Bool) -> Void)? = nil
     ) {
         let panel = NSSavePanel()
         panel.title = "Export Conversation"
@@ -25,7 +26,10 @@ enum ConversationExportPanel {
         panel.isExtensionHidden = false
         panel.canCreateDirectories = true
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
+            guard response == .OK, let url = panel.url else {
+                completion?(false)
+                return
+            }
             do {
                 let data: Data
                 switch format {
@@ -36,11 +40,13 @@ enum ConversationExportPanel {
                 }
                 try data.write(to: url, options: .atomic)
                 NSWorkspace.shared.activateFileViewerSelecting([url])
+                completion?(true)
             } catch {
                 presentFailure(
                     "Couldn't export the conversation",
                     errorText: error.localizedDescription
                 )
+                completion?(false)
             }
         }
     }

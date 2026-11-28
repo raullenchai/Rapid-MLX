@@ -260,6 +260,6 @@ struct StartAndSendIntentTests {
         let content = try source("Sources/Rapid/UI/ContentView.swift")
         #expect(content.contains("case.start(lettarget):startModel(target)"))
         #expect(content.contains("letserved=awaitserveReadinessModel(target)"))
-        #expect(content.contains("chat.startAndSendIntent.finishStartAttempt(intentID,served:served)"))
+        #expect(content.contains("intentChat.startAndSendIntent.finishStartAttempt(intentID,served:served)"))
     }
 }

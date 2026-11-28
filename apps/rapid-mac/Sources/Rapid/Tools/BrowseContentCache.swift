@@ -112,6 +112,8 @@ final class BrowseContentCache: @unchecked Sendable {
     private var totalBytes = 0
     private var nextDiskWriteID: UInt64 = 0
     private var pendingDiskWrites: [String: UInt64] = [:]
+    /// Guarded by `memoryLock`. Once set, nothing is stored or written.
+    private var isClosed = false
 
     private let maxEntries: Int
     private let maxBytes: Int
@@ -232,6 +234,10 @@ final class BrowseContentCache: @unchecked Sendable {
     func put(_ rawURL: String, entry: Entry) {
         let k = Self.key(for: rawURL)
         memoryLock.lock()
+        guard !isClosed else {
+            memoryLock.unlock()
+            return
+        }
         insertLocked(k, entry: entry)
         let writeID: UInt64?
         if diskDirectory != nil {
@@ -248,6 +254,23 @@ final class BrowseContentCache: @unchecked Sendable {
         if let writeID {
             writeToDisk(k, entry: entry, writeID: writeID)
         }
+    }
+
+    /// Ends this cache's life: drops memory, deletes the disk folder, and
+    /// refuses every later `put` so a fetch that finishes after a discard
+    /// cannot write the folder back. Idempotent.
+    func close() {
+        memoryLock.lock()
+        isClosed = true
+        store.removeAll()
+        order.removeAll()
+        totalBytes = 0
+        pendingDiskWrites.removeAll()
+        memoryLock.unlock()
+
+        guard let dir = diskDirectory else { return }
+        diskLock.lock(); defer { diskLock.unlock() }
+        try? FileManager.default.removeItem(at: dir)
     }
 
     // MARK: - Memory tier (lock held by callers)

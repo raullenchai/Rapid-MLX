@@ -296,6 +296,16 @@ struct ChatView: View {
     /// Test seam for the composer-adjacent resident unload action. Production
     /// leaves this nil and uses ``ServerManager``'s guarded whole-pool unload.
     var onUnloadResidentModels: (() async -> Void)? = nil
+    /// Where attached documents' full text is kept. A temporary chat swaps in
+    /// a window-private cache so extracts never reach the shared one.
+    var documentCache: DocumentContentCache = .shared
+    /// Hidden in temporary chats, which never apply conversation instructions.
+    var allowsConversationInstructions = true
+    /// Swaps the hero copy for the temporary-chat explanation.
+    var isTemporary = false
+    /// Conversations whose attachment drafts must survive although this view
+    /// is showing another chat (the normal chat while temporary mode is on).
+    var retainedDraftOwners: Set<UUID> = []
 
     /// Backing state for the composer's inline model picker (Ollama-style).
     /// The picker lives in the compose box now, not a top control bar.
@@ -781,8 +791,12 @@ struct ChatView: View {
     private var heroBlock: some View {
         VStack(spacing: RapidTheme.Space.lg) {
             EmptyState(
-                title: String(localized: "Ask anything"),
-                message: emptyStateSubtitle,
+                title: isTemporary
+                    ? String(localized: "Temporary chat")
+                    : String(localized: "Ask anything"),
+                message: isTemporary
+                    ? String(localized: "This chat won't appear in your history. Memory and instructions are off.")
+                    : emptyStateSubtitle,
                 hint: downloadHint,
                 // No disc. The plate was framing an illustration that already
                 // has its own silhouette, and — being amber-tinted — it was
@@ -1141,38 +1155,40 @@ struct ChatView: View {
                 .padding(RapidTheme.Space.sm)
                 .frame(width: 190)
             }
-            Button {
-                conversationInstructionsDraft = viewModel.conversationInstructions
-                showsConversationInstructions = true
-            } label: {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(
-                        CustomInstructionsConfig.normalized(
-                            viewModel.conversationInstructions
-                        ) == nil
-                            ? Color.secondary
-                            : RapidTheme.brandPrimary
+            if allowsConversationInstructions {
+                Button {
+                    conversationInstructionsDraft = viewModel.conversationInstructions
+                    showsConversationInstructions = true
+                } label: {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(
+                            CustomInstructionsConfig.normalized(
+                                viewModel.conversationInstructions
+                            ) == nil
+                                ? Color.secondary
+                                : RapidTheme.brandPrimary
+                        )
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.primary.opacity(0.06)))
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isStreaming)
+                .help("Conversation system prompt")
+                .accessibilityLabel("Conversation system prompt")
+                .accessibilityIdentifier("ChatView.ConversationInstructions")
+                .popover(isPresented: $showsConversationInstructions, arrowEdge: .bottom) {
+                    ConversationInstructionsPopover(
+                        draft: $conversationInstructionsDraft,
+                        global: viewModel.customInstructions.global,
+                        onSave: { value in
+                            viewModel.setConversationInstructions(value)
+                            showsConversationInstructions = false
+                        },
+                        onCancel: { showsConversationInstructions = false }
                     )
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Color.primary.opacity(0.06)))
-            }
-            .buttonStyle(.plain)
-            .disabled(viewModel.isStreaming)
-            .help("Conversation system prompt")
-            .accessibilityLabel("Conversation system prompt")
-            .accessibilityIdentifier("ChatView.ConversationInstructions")
-            .popover(isPresented: $showsConversationInstructions, arrowEdge: .bottom) {
-                ConversationInstructionsPopover(
-                    draft: $conversationInstructionsDraft,
-                    global: viewModel.customInstructions.global,
-                    onSave: { value in
-                        viewModel.setConversationInstructions(value)
-                        showsConversationInstructions = false
-                    },
-                    onCancel: { showsConversationInstructions = false }
-                )
-                .id(viewModel.activeConversationID)
+                    .id(viewModel.activeConversationID)
+                }
             }
             // Lowest priority: free width goes to the model chip first, so a
             // long alias uses the room that exists before it truncates, and
@@ -1527,7 +1543,7 @@ struct ChatView: View {
                             // document: stop any background extraction still
                             // running for it, and delete the plaintext extract
                             // rather than leaving it in Application Support.
-                            DocumentContentCache.shared.remove(attachment.id)
+                            documentCache.remove(attachment.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
@@ -1688,8 +1704,9 @@ struct ChatView: View {
             conversationID: viewModel.activeConversationID
         ) else { return false }
         Task { @MainActor in
+            let cache = documentCache
             let outcome = await Task.detached(priority: .userInitiated) {
-                Self.loadFileAttachments(selection.accepted)
+                Self.loadFileAttachments(selection.accepted, cache: cache)
             }.value
 
             let notice = selection.rejectedCount > 0
@@ -1709,7 +1726,7 @@ struct ChatView: View {
             // Delete them here; ``remove`` also cancels the background OCR,
             // which for a large scan is minutes of Vision work nobody awaits.
             if !adopted {
-                DocumentContentCache.shared.remove(
+                documentCache.remove(
                     contentsOf: outcome.0.map(\.attachment.id)
                 )
             }
@@ -1725,9 +1742,11 @@ struct ChatView: View {
         // remaining opportunity to delete that plaintext. ``remove`` also
         // cancels any extraction still running for them.
         let discarded = attachmentDrafts.retainDrafts(
-            for: Set(viewModel.conversations.map(\.id)).union([viewModel.activeConversationID])
+            for: Set(viewModel.conversations.map(\.id))
+                .union([viewModel.activeConversationID])
+                .union(retainedDraftOwners)
         )
-        DocumentContentCache.shared.remove(contentsOf: discarded)
+        documentCache.remove(contentsOf: discarded)
     }
 
     /// Parse candidates without losing which source produced each attachment.
@@ -1735,7 +1754,8 @@ struct ChatView: View {
     /// filtered attachments array with the original URL array by index would
     /// associate every success after a failure with the wrong path.
     nonisolated static func loadFileAttachments(
-        _ urls: [URL]
+        _ urls: [URL],
+        cache: DocumentContentCache = .shared
     ) -> (
         accepted: [(attachment: ChatFileAttachment, sourceURL: URL)],
         rejection: String?
@@ -1749,7 +1769,7 @@ struct ChatView: View {
             }
             do {
                 accepted.append((
-                    attachment: try ChatFileAttachment(contentsOf: url),
+                    attachment: try ChatFileAttachment(contentsOf: url, cache: cache),
                     sourceURL: url
                 ))
             } catch {

@@ -452,6 +452,8 @@ final class ChatViewModel {
     private let onImageReplyDelivered: @MainActor () -> Void
     /// Injectable so conversation deletion can remove extracts in isolated tests.
     private let documentCache: DocumentContentCache
+    /// Off for surfaces with no conversation list to name.
+    private let generatesTitles: Bool
 
     init(
         client: ChatStreamClient = ChatStreamClient(),
@@ -468,7 +470,8 @@ final class ChatViewModel {
         conversationStoreURL: URL? = nil,
         onProductValueDelivered: @escaping @MainActor (ProductValueKind) -> Void = { _ in },
         onImageReplyDelivered: @escaping @MainActor () -> Void = {},
-        documentCache: DocumentContentCache = .shared
+        documentCache: DocumentContentCache = .shared,
+        generatesTitles: Bool = true
     ) {
         self.client = client
         self.chatBackendConfig = chatBackendConfig ?? ChatBackendConfig()
@@ -486,6 +489,7 @@ final class ChatViewModel {
         self.onProductValueDelivered = onProductValueDelivered
         self.onImageReplyDelivered = onImageReplyDelivered
         self.documentCache = documentCache
+        self.generatesTitles = generatesTitles
         // Absent preferences enable tools; explicit stored false disables them.
         var disabled = Set<String>()
         for def in tools.definitions {
@@ -794,19 +798,21 @@ final class ChatViewModel {
             alias: alias
         )
 
-        scheduleTitle(for: conversationID, transcript: transcript) { _ in
-            guard let target = Self.revalidatedBackgroundTarget(
-                scheduledTarget,
-                state: server.state,
-                activePort: server.activePort,
-                activeBearer: server.activeBearer
-            ) else { return nil }
-            guard let prompt = ConversationTitleSuggestion.messages(forFirstExchange: transcript)
-            else { return nil }
-            return await BackgroundCompletionClient().complete(
-                prompt, target: target, maxTokens: 24,
-                temperature: 0.2, deadline: .seconds(15)
-            )
+        if generatesTitles {
+            scheduleTitle(for: conversationID, transcript: transcript) { _ in
+                guard let target = Self.revalidatedBackgroundTarget(
+                    scheduledTarget,
+                    state: server.state,
+                    activePort: server.activePort,
+                    activeBearer: server.activeBearer
+                ) else { return nil }
+                guard let prompt = ConversationTitleSuggestion.messages(forFirstExchange: transcript)
+                else { return nil }
+                return await BackgroundCompletionClient().complete(
+                    prompt, target: target, maxTokens: 24,
+                    temperature: 0.2, deadline: .seconds(15)
+                )
+            }
         }
 
         backgroundAssist = Task { [weak self] in
