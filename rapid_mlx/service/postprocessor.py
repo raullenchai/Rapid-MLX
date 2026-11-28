@@ -29,6 +29,11 @@ from ..parsing.prompt_owner import (
     served_model_identity,
 )
 from ..parsing.shadow import make_shadow
+from ..parsing.token_ids import (
+    extract_reasoning_streaming,
+    extract_tool_calls_streaming,
+    supports_token_method,
+)
 from ..streaming_markers import StreamingMarkerBuffer
 from ..tool_call_authorization import resolve_tool_names
 from ..tool_parsers.streaming import tool_openers
@@ -2528,6 +2533,7 @@ class StreamingPostProcessor:
         # so a re-used processor doesn't prepend the prior turn's held
         # ``<`` / ``<t`` into the new stream's first delta.
         self._ambiguous_prefix_held = ""
+        self._pending_reasoning_token_ids = []
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
@@ -2741,8 +2747,23 @@ class StreamingPostProcessor:
 
     def _process_chunk_events(self, output: GenerationOutput) -> list[StreamEvent]:
         """Build events before resolving content held across a tool boundary."""
+        if not hasattr(self, "_pending_reasoning_token_ids"):
+            self._pending_reasoning_token_ids = []
         delta_text = output.new_text
+        original_delta_text = delta_text
+        token_ids = list(getattr(output, "tokens", ()) or ())
+        # Stop lookback can split a token before a match is reported. Keep
+        # stop-string requests text-only rather than attribute partial bytes.
+        if getattr(output, "matched_stop", None) or (
+            isinstance(self.request, dict) and self.request.get("stop")
+        ):
+            token_ids = []
+            self._pending_reasoning_token_ids.clear()
         if not delta_text and not getattr(output, "tool_calls", None):
+            if token_ids and supports_token_method(
+                self.reasoning_parser, "extract_reasoning_streaming_with_tokens"
+            ):
+                self._pending_reasoning_token_ids.extend(token_ids)
             # Handle finish-only chunks
             if output.finished:
                 # #447 round-4 NIT (PR #948): if a stream emitted an
@@ -2847,6 +2868,7 @@ class StreamingPostProcessor:
         if self._ambiguous_prefix_held:
             delta_text = self._ambiguous_prefix_held + delta_text
             self._ambiguous_prefix_held = ""
+            self._pending_reasoning_token_ids.clear()
             output.new_text = delta_text
             if hasattr(output, "text"):
                 output.text = delta_text
@@ -2863,6 +2885,7 @@ class StreamingPostProcessor:
                 for _opener, _ in self._TOOL_ENVELOPE_OPENERS:
                     if _opener.startswith(_probe_head):
                         self._ambiguous_prefix_held = delta_text
+                        self._pending_reasoning_token_ids.clear()
                         return []
 
         # Step 1: Separate content from reasoning
@@ -2885,8 +2908,17 @@ class StreamingPostProcessor:
             # explicit wrapper here and re-enter the reasoning lane so
             # the gate splits BEFORE content emit. See
             # ``_should_route_through_reasoning`` for the policy.
-            events = self._process_with_reasoning(delta_text, output)
+            candidate_ids = self._pending_reasoning_token_ids + token_ids
+            self._pending_reasoning_token_ids.clear()
+            events = self._process_with_reasoning(
+                delta_text,
+                output,
+                token_ids=(candidate_ids or None)
+                if delta_text == original_delta_text
+                else None,
+            )
         else:
+            self._pending_reasoning_token_ids.clear()
             events = self._process_standard(delta_text, output)
 
         # H-07: ```json markdown-fence strip for streaming json_mode.
@@ -3285,7 +3317,7 @@ class StreamingPostProcessor:
         return events
 
     def _process_with_reasoning(
-        self, delta_text: str, output: GenerationOutput
+        self, delta_text: str, output: GenerationOutput, *, token_ids=None
     ) -> list[StreamEvent]:
         """Handle models with text-based reasoning parsers."""
         # If the reasoning cap fired on a prior chunk, splice ``</think>``
@@ -3319,8 +3351,17 @@ class StreamingPostProcessor:
             self.accumulated_text += original_delta_text
             parser_current = previous_text + parser_delta_text
         try:
-            delta_msg = self.reasoning_parser.extract_reasoning_streaming(
-                previous_text, parser_current, parser_delta_text
+            delta_msg = extract_reasoning_streaming(
+                self.reasoning_parser,
+                previous_text,
+                parser_current,
+                parser_delta_text,
+                delta_token_ids=(
+                    token_ids
+                    if parser_delta_text == original_delta_text
+                    and delta_text == getattr(output, "new_text", delta_text)
+                    else None
+                ),
             )
         except Exception:
             # Codex round-10 BLOCKING #1: if the parser raises on a
@@ -3507,7 +3548,14 @@ class StreamingPostProcessor:
 
         # Tool call detection
         if self.tool_parser and content:
-            result = self._detect_tool_calls(content)
+            content_token_ids = getattr(delta_msg, "content_token_ids", None)
+            if content != getattr(delta_msg, "content", None):
+                content_token_ids = None
+            result = (
+                self._detect_tool_calls(content, delta_token_ids=content_token_ids)
+                if content_token_ids is not None
+                else self._detect_tool_calls(content)
+            )
             if result is None:
                 # Suppressed (inside tool markup OR prefix-held). When
                 # also the finished chunk, emit finish so the chat
@@ -4457,14 +4505,18 @@ class StreamingPostProcessor:
             tool_calls_detected=True,
         )
 
-    def _detect_tool_calls(self, content: str) -> dict | None:
+    def _detect_tool_calls(self, content: str, *, delta_token_ids=None) -> dict | None:
         """Run incremental tool call detection.
 
         Returns None if content is suppressed (inside tool markup).
         Returns {"tool_calls": [...]} if tool calls detected.
         Returns {"content": "..."} for normal content pass-through.
         """
-        content = self._tool_marker_buffer.process(content)
+        token_aware = supports_token_method(
+            self.tool_parser, "extract_tool_calls_streaming_with_tokens"
+        )
+        if delta_token_ids is None or not token_aware:
+            content = self._tool_marker_buffer.process(content)
         if not content:
             return None
 
@@ -4477,6 +4529,7 @@ class StreamingPostProcessor:
 
         if (
             not self.tool_markup_possible
+            and not (token_aware and delta_token_ids is not None)
             and "<" not in content
             and "[" not in content
             and not any(
@@ -4518,11 +4571,13 @@ class StreamingPostProcessor:
 
         tool_previous = self.tool_accumulated_text
         self.tool_accumulated_text += content
-        tool_result = self.tool_parser.extract_tool_calls_streaming(
+        tool_result = extract_tool_calls_streaming(
+            self.tool_parser,
             tool_previous,
             self.tool_accumulated_text,
             content,
             request=self.request,
+            delta_token_ids=delta_token_ids,
         )
 
         if tool_result is None:

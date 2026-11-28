@@ -50,6 +50,11 @@ from ..errors import (
     MemoryContextExceededError,
     MetalMemoryBackpressureError,
 )
+from ..parsing.token_ids import (
+    extract_reasoning,
+    extract_tool_calls,
+    supports_token_method,
+)
 from ..tool_call_authorization import declared_names, log_drop, resolve_tool_names
 from ..tool_parsers import ToolParserManager
 from ..utils.chat_template import (
@@ -281,6 +286,7 @@ def _finalize_content_and_reasoning(
     finish_reason: str | None = None,
     json_mode: bool = False,
     channels_owned: bool = False,
+    output_token_ids: list[int] | None = None,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -464,14 +470,31 @@ def _finalize_content_and_reasoning(
         extract_kwargs["prompt_thinking_active"] = prompt_thinking_active
     if _parser_accepts_parameter(reasoning_parser, "json_mode"):
         extract_kwargs["json_mode"] = json_mode
-    extract = lambda text: reasoning_parser.extract_reasoning(text, **extract_kwargs)
+    extract = lambda text: extract_reasoning(
+        reasoning_parser,
+        text,
+        token_ids=output_token_ids if text == raw_text else None,
+        **extract_kwargs,
+    )
     if tool_calls:
         reasoning_text, _ = extract(raw_text)
     else:
         # Preserve raw reasoning boundaries; suffix cleanup runs on the visible
         # content after this extraction in each buffered route.
         text_to_parse = cleaned_text or raw_text
-        new_reasoning, new_cleaned = extract(text_to_parse)
+        if (
+            output_token_ids is not None
+            and text_to_parse != raw_text
+            and supports_token_method(reasoning_parser, "extract_reasoning_with_tokens")
+        ):
+            # A prior tool pass may have removed malformed or reasoning wire
+            # text. IDs still describe raw_text, so use them only to recover
+            # reasoning and keep the authoritative cleaned content.
+            new_reasoning, _ = extract(raw_text)
+            new_cleaned = cleaned_text
+            text_to_parse = raw_text
+        else:
+            new_reasoning, new_cleaned = extract(text_to_parse)
         # Capture the FIRST-parse Case-4 signal BEFORE the harmony
         # retry overwrites ``new_reasoning``. The leak plug below
         # MUST gate on what the parser routed when it saw the
@@ -3402,6 +3425,7 @@ def _parse_tool_calls_with_parser(
     structured_tool_calls: list[dict] | None = None,
     channels_owned: bool = False,
     finish_reason: str | None = None,
+    output_token_ids: list[int] | None = None,
 ) -> tuple[str, list | None]:
     """Parse tool calls, then honor ``tool_choice="none"`` by dropping them.
 
@@ -3421,6 +3445,7 @@ def _parse_tool_calls_with_parser(
         request,
         structured_tool_calls=structured_tool_calls,
         channels_owned=channels_owned,
+        output_token_ids=output_token_ids,
     )
     if not structured_tool_calls and get_config().reasoning_parser is None:
         request_dict = request.model_dump() if request else None
@@ -3441,6 +3466,7 @@ def _run_tool_parser(
     *,
     structured_tool_calls: list[dict] | None = None,
     channels_owned: bool = False,
+    output_token_ids: list[int] | None = None,
 ) -> tuple[str, list | None]:
     """Parse tool calls from model output using the configured parser.
 
@@ -3507,7 +3533,9 @@ def _run_tool_parser(
                     parser_cls = ToolParserManager.get_tool_parser(inferred)
                     parser = parser_cls(tokenizer)
                     parser.reset()
-                    result = parser.extract_tool_calls(output_text, request_dict)
+                    result = extract_tool_calls(
+                        parser, output_text, request_dict, token_ids=output_token_ids
+                    )
                     _undeclared_tool_dropped_this_parse.set(
                         bool(parser._undeclared_dropped)
                     )
@@ -3543,7 +3571,9 @@ def _run_tool_parser(
 
     try:
         parser.reset()
-        result = parser.extract_tool_calls(output_text, request_dict)
+        result = extract_tool_calls(
+            parser, output_text, request_dict, token_ids=output_token_ids
+        )
         _undeclared_tool_dropped_this_parse.set(bool(parser._undeclared_dropped))
         if result.tools_called:
             tool_calls = [
