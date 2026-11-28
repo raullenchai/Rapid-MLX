@@ -459,27 +459,41 @@ def test_local_diagnosis_handles_exception_cycles_and_hostile_text(tmp_path):
     assert local_serve_diagnostic(HostileError(), str(model)) is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["config", "local", "hub_debug"])
 async def test_engine_start_prints_two_lines_and_preserves_failure(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, caplog, mode
 ):
     from fastapi import FastAPI
+    from uvicorn import Config
+    from uvicorn.lifespan.on import LifespanOn
 
     from rapid_mlx import _signal_observability, server
+    from rapid_mlx.model_load_errors import typed_weight_boundary
     from rapid_mlx.routes import agents
-    from rapid_mlx.telemetry import model_events, server_start
+    from rapid_mlx.telemetry import server_start, track
 
     model = _model(tmp_path, model_type="qwen3_vl")
     failure = TypeError("TextConfig.__init__() missing required arguments")
+
+    ref = "owner/checkpoint" if mode == "hub_debug" else str(model)
+    if mode != "config":
+        failure = ValueError(
+            "Expected shape (8, 4) but received shape (8, 1) for parameter embed.weight"
+            if mode == "hub_debug"
+            else "Received 1 parameters not in model: \nforeign.weight."
+        )
 
     class FailingEngine:
         _loaded = False
 
         async def start(self):
+            if mode != "config":
+                with typed_weight_boundary():
+                    raise failure
             raise failure
 
     monkeypatch.setattr(server, "_engine", FailingEngine())
-    monkeypatch.setattr(server, "_model_alias", str(model))
+    monkeypatch.setattr(server, "_model_alias", ref)
     monkeypatch.setattr(server, "_primary_model_lifecycle", None)
     monkeypatch.setattr(server, "_primary_lazy_load", False)
     monkeypatch.setattr(server, "_primary_idle_unload_seconds", 0)
@@ -494,18 +508,26 @@ async def test_engine_start_prints_two_lines_and_preserves_failure(
         server_start, "failed", lambda stage, **_kw: stages.append(stage)
     )
     monkeypatch.setattr(
-        model_events,
-        "emit_model_serve_failed",
-        lambda exc, **kwargs: emitted.append((exc, kwargs)),
+        track, "would_accept", lambda event, props: emitted.append(props)
     )
 
-    with pytest.raises(TypeError) as caught:
-        await anext(server.lifespan(FastAPI()))
-
-    assert caught.value is failure
+    debug = mode == "hub_debug"
+    caplog.set_level("DEBUG" if debug else "INFO", logger="uvicorn.error")
+    lifespan = LifespanOn(Config(FastAPI(lifespan=server.lifespan), log_config=None))
+    await lifespan.startup()
+    assert lifespan.should_exit
     assert stages == ["engine_start"]
-    assert emitted[0][0] is failure
-    assert emitted[0][1]["failure_stage"] == "engine_start"
+    (event,) = emitted
+    assert event["failure_stage"] == "engine_start"
+    assert ("Traceback (most recent call last)" in caplog.text) is debug
+    if mode != "config":
+        assert event["error_class"] == "incompatible_weights"
+        assert "failure_subtype" not in event
+        assert capsys.readouterr().err.splitlines() == [
+            "  Cause: The checkpoint's tensor names or shapes do not match the model Rapid-MLX loaded.",
+            "  Next step: Use a compatible MLX conversion of the same model, or run `rapid-mlx models` to find a supported build.",
+        ]
+        return
     assert capsys.readouterr().err.splitlines() == [
         "  Cause: config.json is missing required VLM text_config fields.",
         "  Next step: Copy a complete config.json from the matching VLM checkpoint.",

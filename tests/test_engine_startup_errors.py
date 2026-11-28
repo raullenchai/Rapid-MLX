@@ -174,3 +174,84 @@ def test_invalid_boundary_is_rejected_before_operation():
         startup_failure_boundary("private/path"),
     ):
         pytest.fail("an invalid boundary must not run the operation")
+
+
+@pytest.mark.parametrize(
+    "case", ["extra", "shape", "early", "non_strict", "quantize", "ok"]
+)
+async def test_stock_vlm_weight_boundary(monkeypatch, tmp_path, case):
+    import sys
+    from types import SimpleNamespace as Namespace
+
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.model_load_errors import IncompatibleWeights
+    from rapid_mlx.models import mllm
+
+    message = "Received 1 parameters not in model: \ntransformer.wte.weight."
+    if case == "shape":
+        message = "Expected shape (8, 4) but received shape (8, 1) for parameter w"
+    failure = ValueError(message)
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    class Module:
+        config = Namespace()
+        load_weights = (lambda *args, **kwargs: None) if case == "ok" else fail
+
+    def load(path, *, trust_remote_code):
+        if case == "early":
+            raise failure
+        if case == "quantize":
+            nn.quantize()
+        model = Module()
+        model.load_weights([], strict=case != "non_strict")
+        return model, Namespace()
+
+    load.__module__ = "mlx_vlm.utils"
+    nn = Namespace(Module=Module, quantize=fail)
+    scheduler_config = Namespace(
+        __dataclass_fields__={"prefill_step_size": Namespace(default=512)}
+    )
+    for name, stub in {
+        "mlx": Namespace(nn=nn),
+        "mlx.nn": nn,
+        "mlx_vlm": Namespace(load=load),
+        "mlx_vlm.utils": Namespace(load_config=lambda *a, **kw: {}),
+        "rapid_mlx.engine_core": Namespace(_init_mlx_step_thread=lambda: None),
+        "rapid_mlx.scheduler": Namespace(SchedulerConfig=None),
+        "rapid_mlx.mllm_scheduler": Namespace(
+            MLLMScheduler=None, MLLMSchedulerConfig=scheduler_config
+        ),
+    }.items():
+        monkeypatch.setitem(sys.modules, name, stub)
+    for suffix in ("runtime_fix", "processor_patch", "forget_gate_quant_fix"):
+        monkeypatch.setitem(
+            sys.modules,
+            "rapid_mlx.patches.glm5_next_" + suffix.rsplit("_", 1)[0],
+            Namespace(**{f"install_glm5_next_{suffix}": lambda: None}),
+        )
+    monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
+    monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda _: str(tmp_path))
+    if case == "ok":
+        instance = mllm.MLXMultimodalLM(str(tmp_path))
+        instance.load()
+        assert instance._loaded and isinstance(instance.model, Module)
+        return
+
+    engine = object.__new__(BatchedEngine)
+    engine._force_mllm = engine._trust_remote_code = False
+    engine._model_name = "owner/checkpoint" if case == "shape" else str(tmp_path)
+    engine._scheduler_config = Namespace()
+    engine._model_load_executor = None
+    typed = case in ("extra", "shape")
+    with pytest.raises(IncompatibleWeights if typed else ValueError) as caught:
+        await engine._start_mllm()
+    assert engine._model_load_executor is None
+    assert startup_boundary_for(caught.value) == "weights_load"
+    if typed:
+        assert caught.value.__cause__ is failure
+        assert serve_error_class(caught.value) == "incompatible_weights"
+    else:
+        assert caught.value is failure
+        assert serve_error_class(failure) == "other"

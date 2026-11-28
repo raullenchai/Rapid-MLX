@@ -663,7 +663,7 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch, tmp_pat
     """A checkpoint missing BOTH vision AND language-backbone tensors is
     genuinely incomplete — the text lane can't serve it either — so
     MLLMModel.load() must NOT classify it as text-only. It must re-raise the
-    RAW ValueError (never the typed TextOnlyCheckpointError), so the engine
+    IncompatibleWeights with its original cause, so the engine
     surfaces the real corruption instead of masking it behind an auto-degrade
     that fails again, more confusingly, in the text lane. Guards the codex
     BLOCKING finding on PR #1189: the classifier keys on ALL missing weights
@@ -676,14 +676,15 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch, tmp_pat
     except ImportError:
         pytest.skip("mlx_vlm not installed (vision extra)")
 
+    import mlx.nn as nn
+
+    from rapid_mlx.model_load_errors import IncompatibleWeights
     from rapid_mlx.models import mllm as mllm_mod
 
     real_mlx_vlm = sys.modules["mlx_vlm"]
 
     class _FakeMlxVlm:
-        @staticmethod
-        def load(_name, *, trust_remote_code):
-            assert trust_remote_code is False
+        def fail_weights(self, weights, strict=True):
             # Vision tensors AND a language-backbone tensor are both absent:
             # this is corruption, not a text-only fork.
             raise ValueError(
@@ -692,6 +693,14 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch, tmp_pat
                 "vision_tower.blocks.27.attn.proj.weight,\n"
                 "vision_tower.blocks.27.attn.qkv.bias."
             )
+
+        @staticmethod
+        def load(_name, *, trust_remote_code):
+            assert trust_remote_code is False
+            nn.Module().load_weights([])
+
+    _FakeMlxVlm.load.__module__ = "mlx_vlm.utils"
+    monkeypatch.setattr(nn.Module, "load_weights", _FakeMlxVlm.fail_weights)
 
     class _FakeMlxVlmUtils:
         @staticmethod
@@ -709,14 +718,9 @@ def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch, tmp_pat
     inst = mllm_mod.MLXMultimodalLM(model_name="fake/corrupt-vlm")
 
     try:
-        with pytest.raises(ValueError) as excinfo:
+        with pytest.raises(IncompatibleWeights) as excinfo:
             inst.load()
-        # Must be the RAW ValueError, NOT the typed degrade signal.
-        assert not isinstance(excinfo.value, mllm_mod.TextOnlyCheckpointError), (
-            "A checkpoint missing language-backbone weights must NOT be "
-            "classified as text-only; the raw ValueError has to propagate so "
-            "the engine reports genuine corruption instead of auto-degrading."
-        )
+        assert type(excinfo.value.__cause__) is ValueError
         assert "language_model.model.layers.5" in str(excinfo.value), (
             "The original missing-parameter detail must survive so operators "
             "can see WHICH weights are missing."

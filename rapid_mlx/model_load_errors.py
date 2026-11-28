@@ -54,8 +54,8 @@ _TYPED_LOAD_FAILURES = (
     FileNotFoundError,
     ModuleNotFoundError,
 )
-_MLX_LOAD_BOUNDARIES_ACTIVE: ContextVar[bool] = ContextVar(
-    "mlx_load_boundaries_active", default=False
+_MLX_LOAD_BOUNDARY_MODE: ContextVar[str | None] = ContextVar(
+    "mlx_load_boundary_mode", default=None
 )
 
 
@@ -179,7 +179,7 @@ def quantize_checked(quantize: Callable[..., _T], *args: Any, **kwargs: Any) -> 
 
 
 def _install_mlx_load_boundary_hooks() -> None:
-    """Install context-gated wrappers at mlx-lm's two shared load call sites."""
+    """Install context-gated wrappers at the shared MLX load call sites."""
 
     try:
         import mlx.nn as nn
@@ -191,7 +191,7 @@ def _install_mlx_load_boundary_hooks() -> None:
 
         @wraps(original_quantize)
         def checked_quantize(*args: Any, **kwargs: Any) -> Any:
-            if not _MLX_LOAD_BOUNDARIES_ACTIVE.get():
+            if _MLX_LOAD_BOUNDARY_MODE.get() != "text":
                 return original_quantize(*args, **kwargs)
             with typed_quantization_boundary():
                 return original_quantize(*args, **kwargs)
@@ -204,25 +204,27 @@ def _install_mlx_load_boundary_hooks() -> None:
 
         @wraps(original_load_weights)
         def checked_load_weights(self: Any, *args: Any, **kwargs: Any) -> Any:
-            if not _MLX_LOAD_BOUNDARIES_ACTIVE.get():
-                return original_load_weights(self, *args, **kwargs)
-            with typed_weight_boundary():
-                return original_load_weights(self, *args, **kwargs)
+            mode = _MLX_LOAD_BOUNDARY_MODE.get()
+            strict = args[1] if len(args) > 1 else kwargs.get("strict", True)
+            if mode == "text" or (mode == "strict" and strict):
+                with typed_weight_boundary():
+                    return original_load_weights(self, *args, **kwargs)
+            return original_load_weights(self, *args, **kwargs)
 
         checked_load_weights._rapid_mlx_typed_boundary = True  # type: ignore[attr-defined]
         nn.Module.load_weights = checked_load_weights
 
 
 @contextmanager
-def typed_mlx_load_boundaries() -> Iterator[None]:
-    """Enable the shared mlx-lm weight and quantization API boundaries."""
+def typed_mlx_load_boundaries(*, strict_weights_only: bool = False) -> Iterator[None]:
+    """Enable MLX load boundaries, optionally limited to strict weight calls."""
 
     _install_mlx_load_boundary_hooks()
-    token = _MLX_LOAD_BOUNDARIES_ACTIVE.set(True)
+    token = _MLX_LOAD_BOUNDARY_MODE.set("strict" if strict_weights_only else "text")
     try:
         yield
     finally:
-        _MLX_LOAD_BOUNDARIES_ACTIVE.reset(token)
+        _MLX_LOAD_BOUNDARY_MODE.reset(token)
 
 
 def load_model_checked(

@@ -45,6 +45,7 @@ from requests.adapters import HTTPAdapter
 from rapid_mlx._env import env_truthy
 from rapid_mlx.engine_startup_errors import startup_failure_boundary
 from rapid_mlx.mllm_cache import MLLMPrefixCacheManager
+from rapid_mlx.model_load_errors import IncompatibleWeights, typed_mlx_load_boundaries
 from rapid_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
 from rapid_mlx.runtime.optional_runtime import OptionalRuntimeStatus
 
@@ -1868,7 +1869,9 @@ class MLXMultimodalLM:
                 # Specialized shardwise loaders retain their own evaluation
                 # policy; only the standard loader has this lazy contract.
                 if getattr(load, "__module__", None) == "mlx_vlm.utils":
-                    load = partial(load_with_progress, load)
+                    load = typed_mlx_load_boundaries(strict_weights_only=True)(
+                        partial(load_with_progress, load)
+                    )
                 self.model, self.processor = load(
                     model_path,
                     trust_remote_code=trust_remote_code,
@@ -2004,7 +2007,7 @@ class MLXMultimodalLM:
             #   * ANY language/text-backbone tensor also missing → the
             #     checkpoint is genuinely incomplete; the text lane can't serve
             #     it either. Degrading would MASK real corruption behind a
-            #     confusing two-stage failure, so re-raise the raw ValueError.
+            #     confusing two-stage failure, so propagate the load error.
             #
             # The partition uses the SAME canonical MULTIMODAL_TENSOR_PREFIXES
             # allowlist the routing detector keys on — one source of truth, not
@@ -2046,7 +2049,7 @@ class MLXMultimodalLM:
                     "Re-run with --no-mllm (or --text-only) to force "
                     "text-only routing. Tracked in #393.",
                     missing_count=missing_count,
-                ) from e
+                ) from ((e.__cause__ or e) if isinstance(e, IncompatibleWeights) else e)
             logger.error(f"Failed to load MLLM: {e}")
             raise
         except Exception as e:
