@@ -73,6 +73,33 @@ def test_complete_tool_dispatch_preserves_legacy_fallback():
     )
 
 
+def test_complete_reasoning_recovers_raw_ids_without_replacing_cleaned_content():
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
+
+    raw_text = "<think>plan</think>answer with removed tool markup"
+    token_ids = list(raw_text.encode())
+
+    class Parser:
+        def extract_reasoning(self, text):
+            pytest.fail("aligned raw token IDs must use the token-aware parser")
+
+        def extract_reasoning_with_tokens(self, text, *, token_ids):
+            assert text == raw_text
+            assert bytes(token_ids).decode() == raw_text
+            return "plan", "answer with removed tool markup"
+
+    content, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw_text,
+        cleaned_text="answer",
+        tool_calls=[],
+        reasoning_parser=Parser(),
+        output_token_ids=token_ids,
+    )
+
+    assert reasoning == "plan"
+    assert content == "answer"
+
+
 class _Reasoning:
     def __init__(self):
         self.seen = []
