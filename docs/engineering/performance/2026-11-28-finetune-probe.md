@@ -13,23 +13,50 @@ whose stock speed (0.05 steps/s) matched only the two warm-up steps.
 
 ## Data
 
-16 train and 4 valid rows of `{"text": ...}`, each about 2,200 tokens of
-synthetic text, so every row is truncated to the 1,024-token maximum and each
-step trains 1,023 tokens per batch element. Generator: Python `random.seed(0)`,
-2,200 words drawn from a fixed 28-word vocabulary.
+16 train and 4 valid rows of `{"text": ...}`, each about 2,200 tokens, so every
+row is truncated to the 1,024-token maximum and each step trains 1,023 tokens
+per batch element. Exact generator (writes `./data/train.jsonl` and
+`./data/valid.jsonl`):
+
+```python
+import json, os, random
+random.seed(0)
+words = ("the model learns a mapping from tokens to actions while the optimizer "
+         "adjusts low rank adapters across sixteen layers of the network and "
+         "memory grows with sequence length").split()
+os.makedirs("data", exist_ok=True)
+for name, n in (("train", 16), ("valid", 4)):
+    with open(f"data/{name}.jsonl", "w") as f:
+        for _ in range(n):
+            text = " ".join(random.choice(words) for _ in range(2200))
+            f.write(json.dumps({"text": text}) + "\n")
+```
 
 ## Commands
 
-Stock (isolated venv with `mlx-lm==0.31.3` or `==0.32.2`):
+Stock, in an isolated venv with `mlx-lm==0.31.3` (24 steps) or `==0.32.2`
+(6 steps):
 
-    python -m mlx_lm lora --model mlx-community/Qwen3.5-9B-4bit --train \
-      --data ./data --batch-size 1 --num-layers 16 --max-seq-length 1024 \
-      --iters 24 --steps-per-report 1
+```bash
+python -m mlx_lm lora --model mlx-community/Qwen3.5-9B-4bit --train \
+  --data ./data --batch-size 1 --num-layers 16 --max-seq-length 1024 \
+  --iters 24 --steps-per-report 1 --steps-per-eval 100 --val-batches 1
+```
 
-Native:
+Native, one run per reported row:
 
-    rapid-mlx finetune mlx-community/Qwen3.5-9B-4bit --data ./data \
-      --batch-size 1 --num-layers 16 --max-seq-length 1024 --iters 30
+```bash
+for cfg in "9B 1 30" "9B 4 20" "27B 1 20" "27B 2 20"; do
+  set -- $cfg   # bash; in zsh use ${=cfg}
+  rapid-mlx finetune "mlx-community/Qwen3.5-$1-4bit" --data ./data \
+    --batch-size "$2" --num-layers 16 --max-seq-length 1024 --iters "$3" \
+    --out "./adapter-$1-b$2"
+done
+```
+
+Peak memory is the `Peak mem` value mlx-lm prints; steps/s is its `It/sec`
+after the first two steps. The 0.32.2 run printed no `Peak mem`, so its peak
+came from `mx.get_peak_memory()` at exit.
 
 ## Results
 
