@@ -2275,6 +2275,13 @@ class BatchedEngine(BaseEngine):
             f"{vision_max_pixels or 'model-default'}"
         )
 
+        # Same GET /experts binding as the text lane. Runs after the VLM
+        # weights exist so mlx-vlm's private SwitchGLU family is already
+        # imported and can be enrolled.
+        from ..expert_stats import bind as bind_expert_stats
+
+        bind_expert_stats(self._model, model_name=self._model_name)
+
     async def _start_qwen36_native_text_engine(self, language_model: Any) -> None:
         """Share qualified Qwen hybrid weights with a native-cache text scheduler.
 
@@ -2542,6 +2549,9 @@ class BatchedEngine(BaseEngine):
         # ServerConfig and concurrent cache load/save tasks can observe it.
         # This is deliberately outside the eager branch so disk-stream engines
         # receive the same single, immutable namespace.
+        from ..expert_stats import bind as bind_expert_stats
+
+        bind_expert_stats(self._model, model_name=self._model_name)
         from ..runtime.cache import pin_prefix_cache_identity
 
         kv_dtype = str(
@@ -2900,6 +2910,9 @@ class BatchedEngine(BaseEngine):
             self._model_load_executor = None
         self._start_time = None
 
+        from ..expert_stats import unbind as unbind_expert_stats
+
+        unbind_expert_stats(self._model)
         self._model = None
         self._tokenizer = None
         self._processor = None

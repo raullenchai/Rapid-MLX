@@ -1203,6 +1203,13 @@ async def lifespan(app: FastAPI):
         from .routes._mlx_worker import shutdown_mlx_worker
 
         await asyncio.to_thread(shutdown_mlx_worker)
+        # Server-lifecycle teardown for the opt-in expert-stats recorder:
+        # turn the flag off, clear history, restore the receivers. Runs
+        # even when the engine stop above failed, so a second server in
+        # the same process can never inherit a stale arm.
+        from .expert_stats import disable as _disable_expert_stats
+
+        _disable_expert_stats()
 
     _flush_v2_telemetry()
 
@@ -3999,6 +4006,7 @@ from .routes.completions import router as _completions_router
 from .routes.control_status import mount_status as _mount_control_status
 from .routes.cua import router as _cua_router
 from .routes.embeddings import router as _embeddings_router
+from .routes.experts import router as _experts_router
 from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
@@ -4021,6 +4029,7 @@ app.include_router(_health_router)
 # ``X-Rapid-MLX-Internal: true`` gate ALSO applies when ``--api-key`` is unset.
 app.include_router(_health_admin_router)
 app.include_router(_metrics_router)
+app.include_router(_experts_router)
 # Keep literal residency paths ahead of ``/v1/models/{model_id:path}`` so the
 # latter cannot consume ``residency`` as an ordinary model id.
 app.include_router(_residency_router)

@@ -601,6 +601,16 @@ def _add_serve_parser(
     # suppress that warning: resident components (attention, KV cache,
     # dense layers, the cache budget itself) still consume real RAM.
     serve_parser.add_argument(
+        "--expert-stats",
+        action="store_true",
+        default=False,
+        help=(
+            "Record which experts each MoE layer picks and serve them at "
+            "GET /experts. Off by default; copying the ids off the GPU "
+            "syncs once per block. RAPID_MLX_EXPERT_STATS=1 is the same switch."
+        ),
+    )
+    serve_parser.add_argument(
         "--disk-stream",
         action="store_true",
         default=False,
