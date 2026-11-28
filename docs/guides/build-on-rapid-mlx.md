@@ -353,3 +353,54 @@ Close the Python client when your controller shuts down:
 ```python
 api.close()
 ```
+
+## Build a dataset from your documents
+
+To try fine-tuning a model to write in your style, start with your own
+papers, articles, or notes. Aim for 20,000–50,000 words across at least
+three documents in one genre.
+
+```bash
+rapid-mlx dataset --from docs --input ./articles --out ./writing-dataset
+```
+
+Use a UTF-8 `.md`, `.txt`, or `.tex` file, or a directory scanned recursively.
+Export PDFs to Markdown or text first. Use headings to mark sections,
+especially if you have one document. The command uses a local model to
+extract neutral bullet points and, for some samples, summarize the previous
+passage. Override the default outline model (`qwen3.5-4b-4bit`) with `--model`,
+set the target document holdout with `--val-ratio` (default `0.15`), or change
+the split and prompt mix with `--seed`.
+
+For Markdown, the assistant answer keeps the surrounding prose and link text.
+The builder removes link destinations, images including their alt text, HTML
+tags and comments, opening YAML front matter, code blocks, and tables. Code
+blocks and tables are removed from otherwise usable passages. The builder
+also drops heading lines, reference definitions, and reference sections. It
+merges sections under 100 words with neighboring prose within the same H1
+group. Prose before the first H1 forms its own group, and a document without
+an H1 forms a single group. Groups still under 100 words are dropped.
+
+The output directory must be new or empty. Fine-tuning reads `train.jsonl`
+and `valid.jsonl`. Save `eval.jsonl` for evaluating the adapter later.
+The command holds out whole documents for eval when possible. With one
+usable document, it holds out the final sections if available, which gives
+a weaker evaluation. When only one training document remains, validation
+uses passages from that document. `dataset_card.json` records the actual
+splits, source basenames, and the number of words read, kept, and dropped for
+each reason, including failed outlines. Counts use whitespace-separated units
+in the source and saved assistant passages, so standalone markup and table
+separators count toward the source total. The command prints the same word
+breakdown, brief previews, and elapsed time in your terminal. Your documents
+and generated examples stay local.
+
+Replace `<model>` with a text model that supports adapters. The `finetune`
+command checks compatibility.
+
+```text
+rapid-mlx finetune <model> --data ./writing-dataset
+```
+
+LoRA learns how you write, not what you know; facts and claims must come from
+the outline. With little text, try few-shot prompting first; eval tells you
+whether fine-tuning was worth it.
