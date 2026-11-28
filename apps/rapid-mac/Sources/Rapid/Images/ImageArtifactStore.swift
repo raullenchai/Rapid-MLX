@@ -65,6 +65,36 @@ final class ImageArtifactStore: Sendable {
         }
     }
 
+    struct Metadata: Equatable, Identifiable, Sendable {
+        let id: UUID
+        let prompt: String
+        let modelAlias: String
+        let size: String
+        let createdAt: Date
+        let isEdit: Bool
+        let byteCount: Int
+    }
+
+    /// The gallery's index without the pixels, for listings. Never writes.
+    func metadata() async throws -> [Metadata] {
+        try await withCheckedThrowingContinuation { continuation in
+            Self.queue.async {
+                continuation.resume(with: Result {
+                    try self.readIndex().prefix(self.limit).map { entry in
+                        let bytes = (try? FileManager.default.attributesOfItem(
+                            atPath: self.imageURL(entry.id).path
+                        )[.size] as? Int) ?? 0
+                        return Metadata(
+                            id: entry.id, prompt: entry.prompt, modelAlias: entry.modelAlias,
+                            size: entry.size, createdAt: entry.createdAt,
+                            isEdit: entry.isEdit, byteCount: bytes
+                        )
+                    }
+                })
+            }
+        }
+    }
+
     func load() async throws -> [GeneratedImage] {
         try await withCheckedThrowingContinuation { continuation in
             Self.queue.async {

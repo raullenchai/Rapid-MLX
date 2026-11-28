@@ -1210,6 +1210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flushConversations: {
                 ConversationStore.flush()
                 ImageArtifactStore.flush()
+                AudioArtifactStore.flush()
             },
             flushFolders: { ConversationFolderStore.flush() },
             flushDrafts: { ConversationDraftStore.flush() }

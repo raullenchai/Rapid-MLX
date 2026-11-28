@@ -422,11 +422,51 @@ struct MarkdownCompiler: Sendable {
             items = items.map { Self.restoringInlineMath($0, from: inlineMath) }
         }
 
-        return MarkdownResult(items: items, revision: revision)
+        var result = MarkdownResult(items: items, revision: revision)
             .postProcessed(
                 with: postProcessors,
                 context: MarkdownPostProcessContext(isComplete: isComplete)
             )
+        // An unclosed fence runs to the end of the text, so only the last
+        // code block can be the one that never closed.
+        if Self.endsInsideOpenFence(source),
+           let last = result.items.lastIndex(where: {
+               if case .code = $0 { return true }
+               return false
+           }),
+           case .code(var block) = result.items[last] {
+            block.isClosed = false
+            result.items[last] = .code(block)
+        }
+        return result
+    }
+
+    /// Whether `source` ends inside a fenced code block that never closed.
+    /// Follows the CommonMark fence rules at the top level; a fence nested in
+    /// a list or quote that is indented past three spaces is not seen, which
+    /// errs toward treating the block as closed.
+    static func endsInsideOpenFence(_ source: String) -> Bool {
+        var open: (marker: Character, length: Int)?
+        for line in source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            var rest = line[...]
+            var indent = 0
+            while rest.first == " ", indent < 3 {
+                rest = rest.dropFirst()
+                indent += 1
+            }
+            guard let marker = rest.first, marker == "`" || marker == "~" else { continue }
+            let length = rest.prefix { $0 == marker }.count
+            guard length >= 3 else { continue }
+            let tail = rest.dropFirst(length)
+            if let current = open {
+                if marker == current.marker, length >= current.length, tail.allSatisfy(\.isWhitespace) {
+                    open = nil
+                }
+            } else if !(marker == "`" && tail.contains("`")) {
+                open = (marker, length)
+            }
+        }
+        return open != nil
     }
 
     private func appendMarkdown(

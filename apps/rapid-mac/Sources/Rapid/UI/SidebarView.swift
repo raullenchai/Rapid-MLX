@@ -5,6 +5,7 @@ import SwiftUI
 /// ("Older" list) is a later milestone.
 enum SidebarSection: Hashable {
     case chat
+    case artifacts
     case search
     case images
     case audio
@@ -34,6 +35,7 @@ enum SidebarSection: Hashable {
               let name = environment["RAPID_GUI_INITIAL_SECTION"] else { return nil }
         switch name {
         case "chat": return .chat
+        case "artifacts": return .artifacts
         case "search": return .search
         case "images": return .images
         case "audio": return .audio
@@ -290,6 +292,13 @@ struct SidebarView: View {
                 action: onNewChat
             )
             .accessibilityIdentifier("Sidebar.NewChat")
+            row(
+                title: String(localized: "Artifacts"),
+                systemImage: "square.stack.3d.up",
+                isSelected: selection == .artifacts,
+                action: { selection = .artifacts }
+            )
+            .accessibilityIdentifier("Sidebar.Artifacts")
             row(
                 title: String(localized: "Images"),
                 systemImage: "photo",
@@ -669,6 +678,13 @@ struct SidebarView: View {
                 if !isPresented { cancelRename() }
             }
             .onDisappear { showCompactChats = false }
+            compactItem(
+                title: String(localized: "Artifacts"),
+                systemImage: "square.stack.3d.up",
+                isSelected: selection == .artifacts,
+                action: { selection = .artifacts }
+            )
+            .accessibilityIdentifier("Sidebar.Artifacts")
             compactItem(
                 title: String(localized: "Images"),
                 systemImage: "photo",

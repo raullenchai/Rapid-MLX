@@ -129,6 +129,7 @@ struct ContentView: View {
     @Environment(ChatViewModel.self) private var chat
     @Environment(ImageGenViewModel.self) private var imageGen
     @Environment(AudioViewModel.self) private var audio
+    @State private var artifactLibrary = ArtifactLibrary()
     @Environment(VideoGenViewModel.self) private var video
     @Environment(DictationController.self) private var dictation
     @Environment(SamplingConfig.self) private var sampling
@@ -1390,6 +1391,15 @@ struct ContentView: View {
         switch section {
         case .chat:
             mainArea
+        case .artifacts:
+            ArtifactLibraryView(
+                library: artifactLibrary,
+                conversations: chat.conversations,
+                onOpenConversation: { id in
+                    chat.selectConversation(id)
+                    section = .chat
+                }
+            )
         case .search:
             if localSearchEnabled {
                 LocalSearchView(server: server, model: localSearch, onStartModel: {
