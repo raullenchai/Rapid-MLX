@@ -14786,10 +14786,8 @@ def chat_command(args):
     RED = "\x1b[31m" if _is_tty else ""
     RESET = "\x1b[0m" if _is_tty else ""
 
-    # P0-3 (first-run guide): did the user see real value this session — i.e.
-    # at least one completed, non-empty response? Gates the one-time agent-
-    # connect tip printed on exit, so a load-then-immediate-/exit run neither
-    # nags the user nor burns the one-time marker.
+    # Only offer the connection next step after a completed, non-empty reply.
+    # An immediate /exit must not consume the install-wide marker.
     _generated_any = False
 
     def _teardown_proc(p) -> None:
@@ -15149,12 +15147,7 @@ def chat_command(args):
         f"{DIM}type {RESET}{BOLD}/help{RESET}{DIM} for commands, "
         f"Ctrl-D to exit.{RESET}"
     )
-    # A single blank line before the prompt keeps the layout consistent.
-    # The "connect your agent" nudge that used to live here (a start-of-chat
-    # agents/codex banner) moved to a one-time tip printed after the user's
-    # FIRST successful chat exit — see the P0-3 block at the end of this
-    # function and ``rapid_mlx/first_run.py``. Nudging once, after value has
-    # landed, beats nudging on every cold start.
+    # Keep connection guidance on exit, after the user has received a reply.
     print()
 
     served_name = getattr(args, "_original_alias", args.model)
@@ -15693,7 +15686,7 @@ def chat_command(args):
             if assistant:
                 messages.append({"role": "assistant", "content": assistant})
                 # A non-empty response reached the user → the session
-                # delivered value. Arms the one-time exit tip (P0-3).
+                # delivered value. Arms the one-time connection hint on exit.
                 _generated_any = True
             else:
                 _recover_failed_chat_turn(messages, turn_start)
@@ -15704,26 +15697,9 @@ def chat_command(args):
         # ordering deadlock and also tears down a spawned model server promptly.
         _cleanup()
 
-    # P0-3 (first-run guide): after the user's FIRST session that actually
-    # produced a response, print a one-line nudge to connect their coding
-    # agent — the highest-retention next step, offered only once value has
-    # landed. Fires at most once per machine (a marker under ~/.rapid-mlx/),
-    # interactive terminals only, and never on a crash (an uncaught exception
-    # propagates through ``finally`` before reaching here). Fail-silent.
-    if _generated_any and _is_tty:
-        try:
-            from rapid_mlx.first_run import chat_agent_tip_text, claim_chat_agent_tip
-
-            # Build the tip text (which runs agent detection) BEFORE claiming
-            # the marker, so a detection error can't burn the one-time chance
-            # without ever showing the tip. The atomic claim is last, so only
-            # the process that wins the exclusive-create prints — concurrent
-            # first sessions can't both show it.
-            _tip = chat_agent_tip_text()
-            if claim_chat_agent_tip():
-                print(f"\n  {DIM}{_tip}{RESET}")
-        except Exception:
-            pass
+    # Offer integration only after value has landed and the REPL has closed.
+    if _generated_any:
+        _print_next_step(connect_after_chat=True)
 
 
 def info_command(args):
@@ -15801,9 +15777,40 @@ def info_command(args):
         _print_next_step(original_alias)
 
 
-def _print_next_step(alias: str | None = None) -> None:
-    """Append a copyable serve command only to terminal-facing output."""
+def _print_next_step(
+    alias: str | None = None, *, connect_after_chat: bool = False
+) -> None:
+    """Print a terminal next step, or the install-wide post-chat connection tip."""
     if not sys.stdout.isatty():
+        return
+
+    if connect_after_chat:
+        from rapid_mlx.telemetry.state import CI_ENV_VARS
+
+        if not sys.stdin.isatty() or any(name in os.environ for name in CI_ENV_VARS):
+            return
+        try:
+            from rapid_mlx.first_run import _state_dir, claim_serve_next_tip
+            from rapid_mlx.onboarding import detected_launch_agents, track_next_step
+
+            if (_state_dir() / "first_integration_seen").exists():
+                return
+            agents = detected_launch_agents()
+            # Chat's temporary server has stopped; launch owns its server.
+            hint = (
+                "  Next: connect a coding agent (choose one; uses its own local server).\n"
+                + "    "
+                + " ; ".join(f"rapid-mlx launch {agent}" for agent in agents)
+                if agents
+                else "  Next: connect an agent or client.\n"
+                "    Start a stable server: rapid-mlx serve <model>\n"
+                "    Then run rapid-mlx agents for client setup."
+            )
+            if claim_serve_next_tip():
+                print(f"\n{hint}\n    This tip appears only once; you can ignore it.")
+                track_next_step()
+        except Exception:
+            pass
         return
 
     from rapid_mlx.recommendations import physical_ram_gb, recommendation_tier

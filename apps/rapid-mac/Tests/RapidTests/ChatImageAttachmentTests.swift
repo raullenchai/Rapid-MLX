@@ -397,6 +397,7 @@ struct ChatImageAttachmentTests {
                    imageAttachments: [image])
         try await Self.waitForStream(model)
         #expect(model.messages.last?.status == .complete)
+        #expect(model.successfulReplyCount == 1)
         #expect(EffectiveUse(defaults: defaults).count(.chatReply) == 1)
         #expect(telemetryValues.isEmpty)
     }

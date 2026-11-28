@@ -178,6 +178,7 @@ struct ConnectToolsView: View {
         // page had a hard right edge and could not use the window it was
         // given. main already fixes the same #1470 defect via this modifier,
         // so we keep it rather than the PR's inline frame.
+        .onAppear { ChatNextStepHint.shared.dismiss() }
         .modifier(ConnectToolsFrame(fixedSize: showsCloseButton))
         .background(RapidTheme.surfaceCanvas)
         .task {

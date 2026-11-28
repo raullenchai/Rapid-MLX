@@ -490,6 +490,8 @@ struct LocalizationTests {
         // settings, about, status — if any of these regress to
         // untranslated, the Chinese surface is visibly broken.
         let mustHaveZH: [String] = [
+            "Connect an agent or client",
+            "Dismiss connection hint",
             "Send a message…",
             "New chat",
             "Search chats",
@@ -641,6 +643,8 @@ struct LocalizationTests {
         let strings = try #require(json["strings"] as? [String: Any])
 
         let mustHaveZH: [String] = [
+            "Connect an agent or client",
+            "Dismiss connection hint",
             "New Chat", "Images", "Audio", "Agent",
             "Ask anything", "Send a message…", "Chatting with %@",
             "Model Management", "System Prompt", "Memory", "Tools",
