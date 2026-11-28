@@ -34,13 +34,30 @@ for name, n in (("train", 16), ("valid", 4)):
 
 ## Commands
 
-Stock, in an isolated venv with `mlx-lm==0.31.3` (24 steps) or `==0.32.2`
-(6 steps):
+Stock, mlx-lm 0.31.3 (isolated venv with `mlx-lm==0.31.3`), 24 steps:
 
 ```bash
 python -m mlx_lm lora --model mlx-community/Qwen3.5-9B-4bit --train \
   --data ./data --batch-size 1 --num-layers 16 --max-seq-length 1024 \
   --iters 24 --steps-per-report 1 --steps-per-eval 100 --val-batches 1
+```
+
+Stock, mlx-lm 0.32.2 (isolated venv with `mlx-lm==0.32.2`), 6 steps. Its
+progress display does not print peak memory, so the run goes through a wrapper
+that prints `mx.get_peak_memory()` at exit. Save as `probe.py`:
+
+```python
+import atexit, runpy, sys
+import mlx.core as mx
+atexit.register(lambda: print(f"PEAK_GB {mx.get_peak_memory() / 1e9:.2f}", flush=True))
+sys.argv = ["mlx_lm"] + sys.argv[1:]
+runpy.run_module("mlx_lm", run_name="__main__")
+```
+
+```bash
+python probe.py lora --model mlx-community/Qwen3.5-9B-4bit --train \
+  --data ./data --batch-size 1 --num-layers 16 --max-seq-length 1024 \
+  --iters 6 --steps-per-report 1 --steps-per-eval 100 --val-batches 1
 ```
 
 Native, one run per reported row:
@@ -55,8 +72,8 @@ done
 ```
 
 Peak memory is the `Peak mem` value mlx-lm prints; steps/s is its `It/sec`
-after the first two steps. The 0.32.2 run printed no `Peak mem`, so its peak
-came from `mx.get_peak_memory()` at exit.
+after the first two steps. For 0.32.2, peak is the `PEAK_GB` line and steps/s is
+derived from its tokens/s (1,023 tokens per step).
 
 ## Results
 
