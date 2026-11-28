@@ -303,6 +303,33 @@ This saves a private Claude Code profile, starts a local server if needed, and l
 
 ---
 
+## Fine-tune a model on your Mac
+
+`rapid-mlx finetune` trains a LoRA adapter on your own JSONL data, and
+`rapid-mlx serve --adapter` serves the result through the same OpenAI- and
+Anthropic-compatible API.
+
+```bash
+rapid-mlx finetune qwen3.5-9b-4bit --data ./examples.jsonl --out ./my-adapter
+rapid-mlx serve qwen3.5-9b-4bit --adapter ./my-adapter
+```
+
+Qwen3.5 trains through MLX's native gated-delta kernel. Measured on an M3 Ultra
+with 4-bit weights, batch size 1, 16 adapted layers and a 1,024-token maximum
+sequence length:
+
+| Checkpoint | Path | Peak memory | Steps/s |
+| --- | --- | ---: | ---: |
+| Qwen3.5-9B | Stock mlx-lm 0.31.3 | 70.3 GB | 0.05 |
+| Qwen3.5-9B | Rapid-MLX | 13.8 GB | 0.55 |
+| Qwen3.5-27B | Rapid-MLX | 26.2 GB | 0.28 |
+
+Adapters are text only: image inputs return HTTP 400 while an adapter is
+loaded. See the [fine-tuning guide](https://github.com/raullenchai/Rapid-MLX/blob/main/docs/guides/finetune.md)
+for data formats, defaults and limits.
+
+---
+
 ## Image generation
 
 Generate images locally from the Desktop **Images** tab or the
