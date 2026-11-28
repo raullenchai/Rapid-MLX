@@ -33,6 +33,7 @@ it. Steps/s is the steady-state rate; the first two stock steps run at about
 
 Stock mlx-lm 0.32.2, the latest release, peaked at the same 85.9 GB on this
 probe. Shorter rows use less memory on both paths.
+
 The CLI memory estimate assumes the native path for Qwen3.5.
 
 ## Prepare data and run
