@@ -574,6 +574,16 @@ def _incomplete_checkpoint_diagnostic(
                         "Re-download the complete checkpoint, or use the "
                         "config.json that matches these weights.",
                     )
+                if isinstance(error.__cause__, ValueError) and re.match(
+                    r"(?:Received \d+ parameters? not in model:|Expected shape .+ but received shape )",
+                    str(error.__cause__),
+                ):
+                    return (
+                        "incompatible_weights",
+                        "The checkpoint's tensor names or shapes do not match the model Rapid-MLX loaded.",
+                        "Use a compatible MLX conversion of the same model, or run "
+                        "`rapid-mlx models` to find a supported build.",
+                    )
 
     if (
         error_class == "corrupt_weights"
