@@ -654,6 +654,34 @@ class TestStreamingPostProcessorToolCalls:
         events = pp.finalize()
         assert [e for e in events if e.type == "content"] == []
 
+    @pytest.mark.parametrize(
+        "raw_content",
+        [
+            None,
+            42,
+            {"unexpected": "value"},
+            ["unexpected"],
+            MagicMock(),
+            "held example",
+        ],
+        ids=["none", "integer", "mapping", "list", "mock", "string"],
+    )
+    def test_finalize_raw_hook_emits_only_string_content(self, raw_content):
+        tool_parser = self._make_tool_parser()
+        tool_parser.finalize_legacy_raw_stream.return_value = {
+            "content": raw_content,
+            "tool_calls": [],
+        }
+        pp = StreamingPostProcessor(
+            _make_cfg(enable_auto_tool_choice=True, tool_parser_instance=tool_parser)
+        )
+        pp.reset()
+        pp.tool_accumulated_text = "ordinary prose"
+
+        events = pp.finalize()
+        content = [event.content for event in events if event.type == "content"]
+        assert content == ([raw_content] if isinstance(raw_content, str) else [])
+
 
 class TestStreamingPostProcessorGemma4StrippedForm:
     """Tests for the gemma4 stripped-wire-form fast-path regression
@@ -3317,6 +3345,36 @@ def test_finalize_sanitizer_tail_precedes_tool_call(accumulate):
     assert events[0] == StreamEvent(type="content", content="[")
     assert pp.accumulated_text == ("before [" if accumulate else "")
     assert not any(event.content for event in pp.finalize())
+
+
+@pytest.mark.parametrize("padding", [100, 65537])
+def test_qwen_markdown_deferral_releases_content_once_at_eof(padding):
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+
+    pp = StreamingPostProcessor(
+        _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=Qwen3CoderToolParser(tokenizer=None),
+        ),
+        tools_requested=True,
+        request={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "read", "parameters": {"type": "object"}},
+                }
+            ]
+        },
+    )
+    pp.reset()
+    chunks = ["Use `<tool_call>", "x" * padding, "` trailing text"]
+    events = []
+    for chunk in chunks:
+        events.extend(pp.process_chunk(_make_output(chunk)))
+    assert pp._tool_suppression_released is (padding > 65536)
+    events.extend(pp.finalize())
+    assert "".join(event.content or "" for event in events) == "".join(chunks)
+    assert not any(event.tool_calls for event in events)
 
 
 def test_reasoning_parser_eof_content_follows_sanitizer_tail():
