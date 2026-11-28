@@ -316,13 +316,13 @@ rapid-mlx serve qwen3.5-9b-4bit --adapter ./my-adapter
 
 Qwen3.5 trains through MLX's native gated-delta kernel. Measured on an M3 Ultra
 with 4-bit weights, batch size 1, 16 adapted layers and a 1,024-token maximum
-sequence length:
+sequence length (steady-state speed, every row filling the 1,024 tokens):
 
 | Checkpoint | Path | Peak memory | Steps/s |
 | --- | --- | ---: | ---: |
-| Qwen3.5-9B | Stock mlx-lm 0.31.3 | 70.3 GB | 0.05 |
-| Qwen3.5-9B | Rapid-MLX | 13.8 GB | 0.55 |
-| Qwen3.5-27B | Rapid-MLX | 26.2 GB | 0.28 |
+| Qwen3.5-9B | Stock mlx-lm 0.31.3 | 85.9 GB | 0.11 |
+| Qwen3.5-9B | Rapid-MLX | 15.4 GB | 0.45 |
+| Qwen3.5-27B | Rapid-MLX | 26.3 GB | 0.20 |
 
 The default batch size is 4, which peaked at 35.2 GB on Qwen3.5-9B in the
 same setup; pass `--batch-size 1` on Macs with less memory.

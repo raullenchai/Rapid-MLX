@@ -18,18 +18,23 @@ Qwen3.5 training uses the native gated-delta backward pass when available
 training path runs with a warning about speed and memory use.
 
 These measurements were taken on an M3 Ultra with 4-bit weights, 16 adapted
-layers, and a maximum sequence length of 1,024 tokens.
+layers, a maximum sequence length of 1,024 tokens and training rows that fill
+it. Steps/s is the steady-state rate; the first two stock steps run at about
+0.05 while compiling. Method and commands:
+[fine-tuning probe](../engineering/performance/2026-11-28-finetune-probe.md).
 
 | Checkpoint | Batch | Path | Peak memory | Steps/s |
 | --- | ---: | --- | ---: | ---: |
-| Qwen3.5-9B | 1 | Stock mlx-lm 0.31.3 | 70.3 GB | 0.05 |
-| Qwen3.5-9B | 1 | Native gated delta | 13.8 GB | 0.55 |
+| Qwen3.5-9B | 1 | Stock mlx-lm 0.31.3 | 85.9 GB | 0.11 |
+| Qwen3.5-9B | 1 | Native gated delta | 15.4 GB | 0.45 |
 | Qwen3.5-9B | 4 | Native gated delta | 35.2 GB | 0.11 |
-| Qwen3.5-27B | 1 | Native gated delta | 26.2 GB | 0.28 |
+| Qwen3.5-27B | 1 | Native gated delta | 26.3 GB | 0.20 |
 | Qwen3.5-27B | 2 | Native gated delta | 36.6 GB | 0.10 |
 
-The 9B loss at the compared step was 2.854 with the native path and 2.855
-with stock mlx-lm. The CLI memory estimate assumes the native path for Qwen3.5.
+Stock mlx-lm 0.32.2, the latest release, peaked at the same 85.9 GB on this
+probe. Shorter rows use less memory on both paths.
+
+The CLI memory estimate assumes the native path for Qwen3.5.
 
 ## Prepare data and run
 
