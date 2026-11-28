@@ -168,12 +168,17 @@ For Claude Desktop, [set up its in-app Gateway](https://rapidmlx.com/docs/claude
   <a href="https://langchain.com"><img src="https://img.shields.io/badge/LangChain-F3F4F6?style=flat&amp;logo=langchain&amp;logoColor=111827" alt="LangChain"></a>
   <a href="https://ai.pydantic.dev"><img src="https://img.shields.io/badge/PydanticAI-F3F4F6?style=flat&amp;logo=pydantic&amp;logoColor=111827" alt="PydanticAI"></a>
   <a href="https://github.com/huggingface/smolagents"><img src="https://img.shields.io/badge/smolagents-F3F4F6?style=flat&amp;logo=huggingface&amp;logoColor=111827" alt="smolagents"></a>
+  <a href="https://docker.github.io/docker-agent/providers/rapid-mlx/"><img src="https://img.shields.io/badge/Docker_Agent-F3F4F6?style=flat&amp;logo=docker&amp;logoColor=111827" alt="Docker Agent"></a>
   <img src="https://img.shields.io/badge/%2B_any_local--endpoint_client-F3F4F6?style=flat" alt="Any local-endpoint client">
 </p>
 
 Five Tier-1 agents are exercised end-to-end on real weights before release.
 See the [tested compatibility matrix](https://rapidmlx.com/docs/matrix.html)
 for exact API coverage and setup status.
+
+Docker Agent documents Rapid-MLX as a local provider; see the
+[Docker Agent setup page](https://docker.github.io/docker-agent/providers/rapid-mlx/)
+for the provider definition.
 
 ---
 
