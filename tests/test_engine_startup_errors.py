@@ -176,6 +176,7 @@ def test_invalid_boundary_is_rejected_before_operation():
         pytest.fail("an invalid boundary must not run the operation")
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case", ["extra", "shape", "early", "non_strict", "quantize", "ok"]
 )

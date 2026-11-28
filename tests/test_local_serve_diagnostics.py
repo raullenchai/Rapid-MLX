@@ -459,6 +459,7 @@ def test_local_diagnosis_handles_exception_cycles_and_hostile_text(tmp_path):
     assert local_serve_diagnostic(HostileError(), str(model)) is None
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["config", "local", "hub_debug"])
 async def test_engine_start_prints_two_lines_and_preserves_failure(
     tmp_path, monkeypatch, capsys, caplog, mode
