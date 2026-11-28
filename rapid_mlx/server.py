@@ -1192,6 +1192,13 @@ async def lifespan(app: FastAPI):
         from .routes._mlx_worker import shutdown_mlx_worker
 
         await asyncio.to_thread(shutdown_mlx_worker)
+        # Server-lifecycle teardown for the opt-in expert-stats recorder:
+        # turn the flag off, clear history, restore the receivers. Runs
+        # even when the engine stop above failed, so a second server in
+        # the same process can never inherit a stale arm.
+        from .expert_stats import disable as _disable_expert_stats
+
+        _disable_expert_stats()
 
     _flush_v2_telemetry()
 
